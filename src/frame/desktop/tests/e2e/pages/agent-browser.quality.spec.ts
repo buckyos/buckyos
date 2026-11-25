@@ -29,6 +29,7 @@ async function openBrowser(page: Page, again = false) {
   await expect(page.getByTestId('mobile-taskbar')).toBeAttached()
   await openFromAllApps(page, 'agent-browser')
   if (!again) await page.getByTestId(`ab-agent-${AGENT}`).tap()
+  await page.getByTestId('ab-mode-page').tap()
   await expect(page.getByTestId('ab-screen')).toHaveAttribute('data-status', 'open')
   const address = page.getByTestId('ab-address-input')
   await address.tap()

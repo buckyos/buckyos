@@ -1,22 +1,18 @@
+import { failureResult, HELP } from "../commands/reflow.ts";
 import {
   contentTypeOf,
-  getPackage,
+  fallbackKey,
   libraryBucketId,
   libraryState,
   listSites,
-  manifestProblems,
   normalizeUrl,
-  packageMatches,
-  packageProblems,
   pathMatches,
-  putPackage,
-  putResult,
-  readPreference,
+  putFallback,
   reflowAddress,
   ReflowError,
   removeSite,
+  rulesMatch,
   siteOfHost,
-  viewOf,
 } from "./reflow.ts";
 import type { LibraryStore } from "./reflow.ts";
 
@@ -46,29 +42,26 @@ const VECTORS = JSON.parse(
     new URL("../../../../doc/opendan/protocol/fixtures/reflow_vectors.json", import.meta.url),
   ),
 ) as {
-  normalize: { url: string; normalized: string; site: string; page: string; view: string }[];
+  normalize: { url: string; normalized: string; site: string; page: string }[];
   invalid: string[];
   match: { manifest_match: { host: string; path?: string }[]; url: string; matches: boolean }[];
 };
 
-Deno.test("site, normalized URL, page and view follow the shared vectors", async () => {
+Deno.test("site, normalized URL and page follow the shared vectors", async () => {
   for (const vector of VECTORS.normalize) {
     const address = await reflowAddress(vector.url);
-    assertEquals(
-      [address.url, address.site, address.page, viewOf(address, { result: true, fallback: false })],
-      [vector.normalized, vector.site, vector.page, vector.view],
-      vector.url,
-    );
+    assertEquals([address.url, address.site, address.page], [vector.normalized, vector.site, vector.page], vector.url);
+    assertEquals(fallbackKey(address), `${vector.site}/fallback/${vector.page}.html`);
   }
   for (const url of VECTORS.invalid) {
     await assertRejects(() => reflowAddress(url), "");
   }
 });
 
-Deno.test("package matching follows the shared vectors", async () => {
+Deno.test("match rules follow the shared vectors", async () => {
   for (const vector of VECTORS.match) {
     assertEquals(
-      packageMatches(vector.manifest_match, await reflowAddress(vector.url)),
+      rulesMatch(vector.manifest_match, await reflowAddress(vector.url)),
       vector.matches,
       `${JSON.stringify(vector.manifest_match)} ${vector.url}`,
     );
@@ -92,82 +85,16 @@ Deno.test("a site is a host name with dashes; one without a dash gets -host", ()
   }
 });
 
-const SITE = "www-example-com";
-const manifest = (patch: Record<string, unknown> = {}) => ({
-  schema: "buckyos.reflow/1",
-  site: SITE,
-  match: [{ host: "www.example.com", path: "/news/*" }],
-  preference: "只看标题、日期和正文，手机单栏",
-  author: { kind: "agent", id: "did:bns:jarvis.alice" },
-  updated_at: 1794600000000,
-  refresh: { script: "refresh.mjs", timeout_s: 60 },
-  ...patch,
-});
-
-Deno.test("a manifest is checked field by field", () => {
-  assertEquals(manifestProblems(manifest(), SITE), []);
-  assertEquals(manifestProblems(manifest({ refresh: undefined, preference: undefined }), SITE), []);
-  const bad: [Record<string, unknown>, string][] = [
-    [{ schema: "buckyos.reflow/2" }, "schema"],
-    [{ site: "other-site" }, "site"],
-    [{ match: [] }, "match"],
-    [{ match: [{ host: "news.example.com" }] }, "match[0].host"],
-    [{ match: [{ host: "WWW.example.com" }] }, "match[0].host"],
-    [{ match: [{ host: "www.example.com:8080" }] }, "match[0].host"],
-    [{ match: [{ host: "www.example.com", path: "news/*" }] }, "match[0].path"],
-    [{ preference: 3 }, "preference"],
-    [{ author: { kind: "robot", id: "x" } }, "author"],
-    [{ author: undefined }, "author"],
-    [{ updated_at: "today" }, "updated_at"],
-    [{ refresh: { script: "other.mjs", timeout_s: 60 } }, "refresh.script"],
-    [{ refresh: { script: "refresh.mjs", timeout_s: 0 } }, "refresh.timeout_s"],
-  ];
-  for (const [patch, field] of bad) {
-    const problems = manifestProblems(manifest(patch), SITE);
-    if (problems.length !== 1 || !problems[0].includes(field)) {
-      throw new Error(`${JSON.stringify(patch)}: ${JSON.stringify(problems)}`);
-    }
-  }
-  assertEquals(manifestProblems("x", SITE), ["manifest.json is not a JSON object"]);
-});
-
-Deno.test("a package has a manifest, refresh.mjs or index.html, and none of the library's data", () => {
-  assertEquals(packageProblems(["index.html", "manifest.json", "refresh.mjs"], manifest(), SITE), []);
-  assertEquals(
-    packageProblems(["index.html", "manifest.json"], manifest({ refresh: undefined }), SITE),
-    [],
-  );
-  const one = (files: string[], value: unknown, includes: string) => {
-    const problems = packageProblems(files, value, SITE);
-    if (problems.length !== 1 || !problems[0].includes(includes)) {
-      throw new Error(`${files}: ${JSON.stringify(problems)}`);
-    }
-  };
-  one(["index.html"], undefined, "manifest.json is missing");
-  one(["manifest.json", "style.css"], manifest({ refresh: undefined }), "refresh.mjs, index.html or both");
-  one(["index.html", "manifest.json"], manifest(), "refresh.mjs is missing");
-  one(["index.html", "manifest.json", "results/a.json"], manifest({ refresh: undefined }), "results/");
-  one(["fallback/a.html", "index.html", "manifest.json"], manifest({ refresh: undefined }), "fallback/");
-  one(["index.html", "manifest.json", "preference.json"], manifest({ refresh: undefined }), "preference.json");
-  // Only the one beside the manifest is the library's.
-  assertEquals(
-    packageProblems(["assets/preference.json", "index.html", "manifest.json"], manifest({ refresh: undefined }), SITE),
-    [],
-  );
-});
-
-Deno.test("package files are served with their web types", () => {
+Deno.test("files are served with their web types", () => {
   assertEquals(contentTypeOf("index.html"), "text/html; charset=utf-8");
-  assertEquals(contentTypeOf("refresh.mjs"), "text/javascript; charset=utf-8");
+  assertEquals(contentTypeOf("fetch.mjs"), "text/javascript; charset=utf-8");
   assertEquals(contentTypeOf("a/b/style.CSS"), "text/css; charset=utf-8");
-  assertEquals(contentTypeOf("manifest.json"), "application/json");
+  assertEquals(contentTypeOf("site.json"), "application/json");
   assertEquals(contentTypeOf("blob"), "application/octet-stream");
 });
 
+const SITE = "www-example-com";
 const BUCKET = libraryBucketId("alice");
-
-// `<site>/preference.json` as the App writes it for a site without a package.
-const kept = (preference: string) => ({ schema: "buckyos.reflow.preference/1", preference, updated_at: 1794500000000 });
 
 // A bucket service of its own: lists two entries at a time, like a server page.
 function fakeStore(initial: Record<string, string> = {}, options: { readOnly?: boolean } = {}) {
@@ -227,246 +154,99 @@ function fakeStore(initial: Record<string, string> = {}, options: { readOnly?: b
   return { store, objects, puts, text, keys: () => [...objects.keys()].sort() };
 }
 
-async function packageDir(files: Record<string, string>): Promise<string> {
+async function fileDir(files: Record<string, string>): Promise<string> {
   const dir = await Deno.makeTempDir();
-  for (const [name, text] of Object.entries(files)) {
-    const path = `${dir}/${name}`;
-    await Deno.mkdir(path.slice(0, path.lastIndexOf("/")), { recursive: true });
-    await Deno.writeTextFile(path, text);
-  }
+  for (const [name, text] of Object.entries(files)) await Deno.writeTextFile(`${dir}/${name}`, text);
   return dir;
 }
 
-Deno.test("put checks the package, uploads the manifest last and replaces the old package", async () => {
-  const { store, puts, text, keys, objects } = fakeStore({
-    [`${SITE}/manifest.json`]: JSON.stringify(manifest()),
-    [`${SITE}/index.html`]: "old",
-    [`${SITE}/old.css`]: "old",
-    [`${SITE}/results/0123456789abcdef.json`]: "{}",
-    [`${SITE}/fallback/0123456789abcdef.html`]: "<p>",
-    "other-site/index.html": "other",
-  });
-  const local = manifest({ author: undefined, updated_at: undefined });
-  const dir = await packageDir({
-    "manifest.json": JSON.stringify(local),
-    "refresh.mjs": "export default async () => ({})",
-    "index.html": "<!doctype html>",
-    "assets/app.js": "1",
-    ".DS_Store": "x",
-  });
-  try {
-    const report = await putPackage(store, BUCKET, SITE, dir, { agentDid: "did:bns:jarvis.alice", now: 1794700000000 });
-    assertEquals(report.files, ["assets/app.js", "index.html", "manifest.json", "refresh.mjs"]);
-    assertEquals(report.removed, ["old.css"]);
-    assertEquals(puts.at(-1), `${SITE}/manifest.json`);
-    assertEquals(keys(), [
-      "other-site/index.html",
-      `${SITE}/assets/app.js`,
-      `${SITE}/fallback/0123456789abcdef.html`,
-      `${SITE}/index.html`,
-      `${SITE}/manifest.json`,
-      `${SITE}/refresh.mjs`,
-      `${SITE}/results/0123456789abcdef.json`,
-    ]);
-    const stored = JSON.parse(text(`${SITE}/manifest.json`));
-    assertEquals([stored.updated_at, stored.author], [1794700000000, { kind: "agent", id: "did:bns:jarvis.alice" }]);
-    assertEquals(objects.get(`${SITE}/index.html`)!.contentType, "text/html; charset=utf-8");
-    assertEquals(objects.get(`${SITE}/refresh.mjs`)!.contentType, "text/javascript; charset=utf-8");
-    assertEquals(manifestProblems(stored, SITE), []);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("put uploads nothing of an invalid package and names every problem", async () => {
-  const { store, puts } = fakeStore();
-  const dir = await packageDir({
-    "manifest.json": JSON.stringify(manifest({ site: "elsewhere-com", match: [{ host: "elsewhere.com" }] })),
-    "style.css": "x",
-  });
-  try {
-    const err = await assertRejects(() => putPackage(store, BUCKET, SITE, dir), "is not valid");
-    assertEquals(err.problems.length, 4, JSON.stringify(err.problems));
-    await assertRejects(() => putPackage(store, BUCKET, "localhost", dir), "not a site name");
-    assertEquals(puts, []);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("a store that refuses the write is reported with its code", async () => {
-  const { store } = fakeStore({}, { readOnly: true });
-  const dir = await packageDir({ "manifest.json": JSON.stringify(manifest({ refresh: undefined })), "index.html": "x" });
-  try {
-    await putPackage(store, BUCKET, SITE, dir);
-  } catch (err) {
-    assertEquals((err as { code?: string }).code, "permission_denied");
-    return;
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-  throw new Error("expected permission_denied");
-});
-
-Deno.test("get writes the package without the library's data; rm removes the site", async () => {
-  const { store, keys } = fakeStore({
-    [`${SITE}/manifest.json`]: JSON.stringify(manifest()),
-    [`${SITE}/assets/app.js`]: "1",
-    [`${SITE}/index.html`]: "<!doctype html>",
-    [`${SITE}/preference.json`]: JSON.stringify(kept("Text only")),
-    [`${SITE}/refresh.mjs`]: "export default async () => ({})",
-    [`${SITE}/results/0123456789abcdef.json`]: "{}",
-    "other-site/index.html": "other",
-    "wish-site/preference.json": JSON.stringify(kept("Large text")),
-  });
-  const dir = await Deno.makeTempDir();
-  try {
-    const files = await getPackage(store, BUCKET, SITE, `${dir}/pkg`);
-    assertEquals(files, ["assets/app.js", "index.html", "manifest.json", "refresh.mjs"]);
-    assertEquals(await Deno.readTextFile(`${dir}/pkg/assets/app.js`), "1");
-    await assertRejects(() => getPackage(store, BUCKET, SITE, `${dir}/pkg`), "not empty");
-    await assertRejects(() => getPackage(store, BUCKET, "nothing-here", `${dir}/none`), "no package");
-    // A preference alone is no package to get; rm takes it with the site.
-    await assertRejects(() => getPackage(store, BUCKET, "wish-site", `${dir}/wish`), "no package");
-    assertEquals(await removeSite(store, BUCKET, SITE), 6);
-    assertEquals(keys(), ["other-site/index.html", "wish-site/preference.json"]);
-    assertEquals(await removeSite(store, BUCKET, SITE), 0);
-    assertEquals(await removeSite(store, BUCKET, "wish-site"), 1);
-    assertEquals(keys(), ["other-site/index.html"]);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("ls lists every site, with its package when it has a valid one, and the user's preference", async () => {
-  const { store } = fakeStore({
-    "a-site/manifest.json": JSON.stringify(manifest({ site: "a-site", match: [{ host: "a.site" }], preference: undefined })),
-    "a-site/preference.json": JSON.stringify(kept("Stale: the package is what counts")),
-    "b-site/fallback/0123456789abcdef.html": "<p>",
-    "c-site/manifest.json": "{ broken",
-    "c-site/preference.json": JSON.stringify(kept("Text only")),
-    "d-site/preference.json": JSON.stringify(kept("Large text")),
-    "e-site/preference.json": "{ broken",
-    [`${SITE}/manifest.json`]: JSON.stringify(manifest()),
-  });
-  const sites = await listSites(store, BUCKET);
-  assertEquals(sites.map((entry) => [entry.site, !!entry.package, entry.preference]), [
-    ["a-site", true, ""],
-    ["b-site", false, ""],
-    ["c-site", false, "Text only"],
-    ["d-site", false, "Large text"],
-    ["e-site", false, ""],
-    [SITE, true, "只看标题、日期和正文，手机单栏"],
-  ]);
-  assertEquals(sites[5].package!.match, [{ host: "www.example.com", path: "/news/*" }]);
-  assertEquals(await readPreference(store, BUCKET, "c-site"), "Text only");
-  assertEquals(await readPreference(store, BUCKET, SITE), "只看标题、日期和正文，手机单栏");
-  assertEquals(await readPreference(store, BUCKET, "no-site"), "");
-});
-
-// The same rules as the App's import (Agent Browser Protocol §5.2).
-Deno.test("put keeps the user's preference: the manifest's own, else the site's, and preference.json gives way", async () => {
-  const files = (preference?: string) => ({
-    "manifest.json": JSON.stringify(manifest({ refresh: undefined, author: undefined, updated_at: undefined, preference })),
-    "index.html": "<!doctype html>",
-  });
-  const put = async (initial: Record<string, string>, preference?: string) => {
-    const library = fakeStore(initial);
-    const dir = await packageDir(files(preference));
-    try {
-      const report = await putPackage(library.store, BUCKET, SITE, dir, { agentDid: "did:bns:jarvis.alice", now: 1794700000000 });
-      const stored = JSON.parse(library.text(`${SITE}/manifest.json`));
-      assertEquals(stored.preference, report.manifest.preference);
-      assertEquals(manifestProblems(stored, SITE), []);
-      return { preference: stored.preference, removed: report.removed, keys: library.keys(), puts: library.puts };
-    } finally {
-      await Deno.remove(dir, { recursive: true });
-    }
-  };
-  const keptFile = { [`${SITE}/preference.json`]: JSON.stringify(kept("Text only")) };
-  const packageKeys = [`${SITE}/index.html`, `${SITE}/manifest.json`];
-
-  // A site without a package: what the user asked for in the App goes into the manifest.
-  let done = await put(keptFile);
-  assertEquals([done.preference, done.removed, done.keys], ["Text only", ["preference.json"], packageKeys]);
-  assertEquals(done.puts.at(-1), `${SITE}/manifest.json`, "the preference is in the manifest before its file goes");
-
-  // The manifest states one: that one counts.
-  done = await put(keptFile, "Title and text");
-  assertEquals([done.preference, done.removed, done.keys], ["Title and text", ["preference.json"], packageKeys]);
-  done = await put(keptFile, "");
-  assertEquals([done.preference, done.keys], ["", packageKeys]);
-
-  // A package replacing a package: the old one's preference stays unless the new one states its own.
-  const old = { [`${SITE}/manifest.json`]: JSON.stringify(manifest()), [`${SITE}/old.css`]: "old" };
-  done = await put(old);
-  assertEquals([done.preference, done.removed], ["只看标题、日期和正文，手机单栏", ["old.css"]]);
-  done = await put(old, "Title and text");
-  assertEquals(done.preference, "Title and text");
-
-  // Beside a valid package the manifest is where the preference is: a preference.json left there is not read.
-  done = await put({ ...keptFile, [`${SITE}/manifest.json`]: JSON.stringify(manifest({ preference: undefined })) });
-  assertEquals([done.preference, done.removed, done.keys], [undefined, ["preference.json"], packageKeys]);
-  // Beside a broken one it is.
-  done = await put({ ...keptFile, [`${SITE}/manifest.json`]: "{ broken" });
-  assertEquals([done.preference, done.keys], ["Text only", packageKeys]);
-
-  // Nothing kept, nothing stated: no preference.
-  done = await put({});
-  assertEquals([done.preference, done.removed], [undefined, []]);
-  done = await put({ [`${SITE}/preference.json`]: "{ broken" });
-  assertEquals([done.preference, done.keys], [undefined, packageKeys]);
-});
-
-Deno.test("a package cannot bring a preference.json; the library's stays until a valid package is in", async () => {
-  const library = fakeStore({ [`${SITE}/preference.json`]: JSON.stringify(kept("Text only")) });
-  const dir = await packageDir({
-    "manifest.json": JSON.stringify(manifest({ refresh: undefined })),
-    "index.html": "<!doctype html>",
-    "preference.json": JSON.stringify(kept("From the package")),
-  });
-  try {
-    const err = await assertRejects(() => putPackage(library.store, BUCKET, SITE, dir), "is not valid");
-    assertEquals(err.problems.length, 1);
-    if (!err.problems[0].includes("state the preference in manifest.json")) throw new Error(err.problems[0]);
-    assertEquals(library.puts, []);
-    assertEquals(library.keys(), [`${SITE}/preference.json`]);
-    assertEquals(await readPreference(library.store, BUCKET, SITE), "Text only");
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("what the library shows for a URL: a package's result, else a fallback page", async () => {
+Deno.test("what the library shows for a URL is the fallback page kept for it", async () => {
   const address = await reflowAddress("https://www.example.com/news/1?a=1#top");
   const other = await reflowAddress("https://www.example.com/about");
   const made = { made_at: 1794600001000, made_by: "did:bns:jarvis.alice", source_url: address.url };
-  const { store } = fakeStore({ [`${SITE}/manifest.json`]: JSON.stringify(manifest()) });
-  let state = await libraryState(store, BUCKET, address);
-  assertEquals([state.package?.updated_at, state.result, state.fallback, state.view], [1794600000000, null, null, null]);
-  assertEquals((await libraryState(store, BUCKET, other)).package, null, "the path does not match");
+  const { store, objects, puts, text } = fakeStore();
+  assertEquals(await libraryState(store, BUCKET, address), {
+    url: "https://www.example.com/news/1?a=1",
+    site: SITE,
+    page: address.page,
+    fallback: null,
+    view: null,
+  });
 
-  const dir = await packageDir({ "data.json": '{"title":"T"}', "page.html": "<h1>T</h1>", "notes.txt": "x" });
+  const dir = await fileDir({ "page.html": "<h1>T</h1>", "data.json": '{"title":"T"}', "notes.txt": "x" });
   try {
-    const result = await putResult(store, BUCKET, address, `${dir}/data.json`, made.made_by, made.made_at);
-    assertEquals([result.kind, result.key], ["result", `${SITE}/results/${address.page}.json`]);
-    assertEquals(result.state.result, made);
-    assertEquals(
-      result.state.view,
-      `${SITE}/?url=${encodeURIComponent("https://www.example.com/news/1?a=1")}&page=${address.page}`,
-    );
-    const stored = JSON.parse(await (await store.fetchObject(BUCKET, result.key)).text());
-    assertEquals(stored, { schema: "buckyos.reflow.result/1", source_url: address.url, made_at: made.made_at, made_by: made.made_by, data: { title: "T" } });
+    const report = await putFallback(store, BUCKET, address, `${dir}/page.html`, made.made_by, made.made_at);
+    const key = `${SITE}/fallback/${address.page}.html`;
+    assertEquals(report, { key, state: { url: address.url, site: SITE, page: address.page, fallback: made, view: key } });
+    assertEquals(puts, [key, `${SITE}/fallback/${address.page}.json`], "the page before what says it is there");
+    assertEquals([text(key), objects.get(key)!.contentType], ["<h1>T</h1>", "text/html; charset=utf-8"]);
+    assertEquals(JSON.parse(text(`${SITE}/fallback/${address.page}.json`)), { schema: "buckyos.reflow.fallback/1", source_url: address.url, made_at: made.made_at, made_by: made.made_by });
+    assertEquals((await libraryState(store, BUCKET, other)).view, null, "another page of the site has none");
 
-    // A page no package covers: data has nowhere to be drawn, a fallback page shows by itself.
-    await assertRejects(() => putResult(store, BUCKET, other, `${dir}/data.json`, made.made_by), "no package");
-    await assertRejects(() => putResult(store, BUCKET, other, `${dir}/notes.txt`, made.made_by), ".json");
-    const fallback = await putResult(store, BUCKET, other, `${dir}/page.html`, made.made_by, made.made_at);
-    assertEquals([fallback.kind, fallback.key], ["fallback", `${SITE}/fallback/${other.page}.html`]);
-    assertEquals(fallback.state.view, `${SITE}/fallback/${other.page}.html`);
-    assertEquals(fallback.state.fallback, { ...made, source_url: other.url });
-    state = await libraryState(store, BUCKET, other);
-    assertEquals([state.package, state.result], [null, null]);
+    // Only a page: data for a package to draw has nowhere to go any more.
+    for (const file of ["data.json", "notes.txt"]) {
+      await assertRejects(() => putFallback(store, BUCKET, other, `${dir}/${file}`, made.made_by), "a fallback page is a .html file");
+    }
+    // A file that is not there is the caller's local error, not the library's.
+    try {
+      await putFallback(store, BUCKET, other, `${dir}/missing.html`, made.made_by);
+      throw new Error("expected NotFound");
+    } catch (err) {
+      assertEquals((err as Error).name, "NotFound");
+      assertEquals(failureResult(err).exitCode, 5);
+    }
+    assertEquals(puts.length, 2);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("ls lists the sites that have fallback pages; rm removes everything of a site", async () => {
+  const { store, keys } = fakeStore({
+    "a-site/fallback/0123456789abcdef.html": "<p>",
+    "a-site/fallback/0123456789abcdef.json": "{}",
+    "a-site/fallback/fedcba9876543210.html": "<p>",
+    "a-site/fallback/fedcba9876543210.json": "{}",
+    "b-site/index.html": "left by a package of before",
+    "c-site/fallback/0123456789abcdef.html": "<p>",
+    // The reading site lives in the same bucket and is no site of the library.
+    "_data/site.json": "{}",
+    "_data/a/0123456789abcdef.json": "{}",
+    "_app/t1/app.js": "1",
+    "_src/news-example-com/s1/source.json": "{}",
+    "index.html": "<!doctype html>",
+  });
+  assertEquals(await listSites(store, BUCKET), [{ site: "a-site", pages: 2 }, { site: "c-site", pages: 1 }]);
+  assertEquals(await removeSite(store, BUCKET, "a-site"), 4);
+  assertEquals(await removeSite(store, BUCKET, "a-site"), 0);
+  assertEquals(await removeSite(store, BUCKET, "b-site"), 1);
+  assertEquals(keys().filter((key) => !key.startsWith("_")), ["c-site/fallback/0123456789abcdef.html", "index.html"]);
+  for (const name of ["_data", "localhost", "index.html", "A-Site"]) {
+    await assertRejects(() => removeSite(store, BUCKET, name), "not a site name");
+  }
+  assertEquals(keys().filter((key) => key.startsWith("_")).length, 4, "nothing of the reading site was touched");
+});
+
+Deno.test("failures are told apart: bad input 1, the service 2, a local file 5", async () => {
+  const of = (err: unknown, write = false) => {
+    const { result, exitCode } = failureResult(err, { write });
+    return [exitCode, result.title];
+  };
+  assertEquals(of(new ReflowError("not a URL: x")), [1, "reflow => invalid"]);
+  assertEquals(of(new Deno.errors.NotFound("No such file or directory (os error 2): readfile 'page.html'")), [5, "reflow => io_failed"]);
+  assertEquals(of(await Deno.readFile("/nonexistent/page.html").catch((err) => err)), [5, "reflow => io_failed"]);
+  const coded = (code: string) => Object.assign(new Error(code), { code });
+  assertEquals(of(coded("permission_denied"), true), [2, "reflow => permission_denied"]);
+  assertEquals(of(coded("permission_denied")), [2, "reflow => failed"]);
+  assertEquals(of(coded("bucket_not_found")), [2, "reflow => no_library"]);
+  assertEquals(of(new Error("connection reset")), [2, "reflow => failed"]);
+
+  const { store } = fakeStore({}, { readOnly: true });
+  const dir = await fileDir({ "page.html": "<h1>T</h1>" });
+  try {
+    const address = await reflowAddress("https://www.example.com/news/1");
+    const err = await putFallback(store, BUCKET, address, `${dir}/page.html`, "did:bns:jarvis.alice").catch((e) => e);
+    assertEquals(of(err, true), [2, "reflow => permission_denied"]);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -485,93 +265,28 @@ async function reflow(args: string[], env: Record<string, string> = {}) {
     stderr: "piped",
   }).output();
   const stdout = new TextDecoder().decode(output.stdout).trim();
-  return { code: output.code, result: stdout ? JSON.parse(stdout) : null };
+  return { code: output.code, result: stdout ? JSON.parse(stdout) : null, stderr: new TextDecoder().decode(output.stderr) };
 }
-
-// An Agent Service answering `browser.reflow_*` with the states given, in order.
-function fakeAgentService(answers: (Record<string, unknown> | string)[]) {
-  const calls: { method: string; params: unknown; token: unknown }[] = [];
-  const server = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen: () => {} }, async (req) => {
-    const body = await req.json();
-    calls.push({ method: body.method, params: body.params, token: body.sys[1] });
-    const answer = answers[Math.min(calls.length, answers.length) - 1];
-    return Response.json(typeof answer === "string" ? { error: answer, sys: [body.sys[0]] } : { result: answer, sys: [body.sys[0]] });
-  });
-  const { port } = server.addr as Deno.NetAddr;
-  return {
-    calls,
-    env: { OPENDAN_BROWSER_RPC: `http://127.0.0.1:${port}/kapi/jarvis.alice`, BUCKYOS_APPCLIENT_SESSION_TOKEN: "session-token" },
-    close: () => server.shutdown(),
-  };
-}
-
-const URL_1 = "https://www.example.com/news/1";
-const state = (status: string, extra: Record<string, unknown> = {}) => ({
-  url: URL_1,
-  site: SITE,
-  page: "0123456789abcdef",
-  package: { updated_at: 1794600000000, author: { kind: "agent", id: "did:bns:jarvis.alice" }, preference: "" },
-  result: null,
-  fallback: null,
-  refresh: { status, error: null, at_ms: null },
-  view: null,
-  ...extra,
-});
 
 Deno.test("reflow: bad arguments end before any service is called", async () => {
-  for (const args of [[], ["bogus"], ["match"], ["put", SITE], ["result", "get", "x", "y"], ["ls", "--force"]]) {
+  const bad = [
+    [], ["bogus"], ["match"], ["ls", "--force"], ["rm"], ["result", "get", "x", "y"], ["result", "put", "https://a.example/"],
+    // Gone with the packages.
+    ["put", SITE, "dir"], ["get", SITE, "dir"], ["refresh", "https://www.example.com/"], ["match", "https://a.example/", "--no-wait"],
+  ];
+  for (const args of bad) {
     const { code, result } = await reflow(args);
-    assertEquals([code, result.status, result.tool], [1, "error", "reflow"], args.join(" "));
+    assertEquals([code, result.status, result.tool, result.title], [1, "error", "reflow", "reflow => arg_error"], args.join(" "));
   }
 });
 
-Deno.test("reflow refresh asks the Agent Service and waits for the result", async () => {
-  const made = { made_at: 1794600002000, made_by: "did:bns:jarvis.alice", source_url: URL_1 };
-  const view = `${SITE}/?url=${encodeURIComponent(URL_1)}&page=0123456789abcdef`;
-  const service = fakeAgentService([state("running"), state("running"), state("idle", { result: made, view })]);
-  try {
-    const { code, result } = await reflow(["refresh", URL_1], service.env);
-    assertEquals([code, result.status, result.detail.result, result.detail.view], [0, "success", made, view]);
-    assertEquals(service.calls.map((call) => call.method), [
-      "browser.reflow_refresh",
-      "browser.reflow_state",
-      "browser.reflow_state",
-    ]);
-    assertEquals([service.calls[0].params, service.calls[0].token], [{ url: URL_1 }, "session-token"]);
-  } finally {
-    await service.close();
+Deno.test("reflow --help describes what is left and points to site for reading sites", async () => {
+  const { code, result, stderr } = await reflow(["--help"]);
+  assertEquals([code, result, stderr.trim()], [0, null, HELP]);
+  for (const kept of ["reflow match <url>", "reflow ls", "reflow rm <site>", "reflow result put <url> <page.html>", "site --help", "Exit codes:"]) {
+    if (!HELP.includes(kept)) throw new Error(`the help does not mention: ${kept}`);
   }
-});
-
-Deno.test("reflow refresh reports a failed script, a missing package and a missing browser", async () => {
-  const failing = fakeAgentService([state("running"), state("failed", { refresh: { status: "failed", error: "TypeError: x is not a function", at_ms: 1 } })]);
-  try {
-    const { code, result } = await reflow(["refresh", URL_1], failing.env);
-    assertEquals([code, result.status, result.title], [2, "error", "reflow refresh => refresh_failed"]);
-    if (!result.summary.includes("TypeError: x is not a function")) throw new Error(result.summary);
-  } finally {
-    await failing.close();
+  for (const gone of ["manifest", "refresh", "package", "preference", "reflow put", "reflow get", "results/", "--timeout", "--no-wait"]) {
+    if (HELP.includes(gone)) throw new Error(`the help still mentions: ${gone}`);
   }
-
-  const none = fakeAgentService(['browser: {"kind":"invalid","code":"reflow_no_package","message":"no package matches"}']);
-  try {
-    const { code, result } = await reflow(["refresh", URL_1], none.env);
-    assertEquals([code, result.title, result.detail.error_code], [2, "reflow refresh => reflow_no_package", "reflow_no_package"]);
-    if (!result.summary.includes("reflow put")) throw new Error(result.summary);
-  } finally {
-    await none.close();
-  }
-
-  const started = fakeAgentService([state("running")]);
-  try {
-    const noWait = await reflow(["refresh", URL_1, "--no-wait"], started.env);
-    assertEquals([noWait.code, noWait.result.status, started.calls.length], [0, "success", 1]);
-    const timedOut = await reflow(["refresh", URL_1, "--timeout", "1"], started.env);
-    assertEquals([timedOut.code, timedOut.result.title], [4, "reflow refresh => wait_timeout"]);
-  } finally {
-    await started.close();
-  }
-
-  const { code, result } = await reflow(["refresh", URL_1]);
-  assertEquals([code, result.title], [2, "reflow refresh => no_browser"]);
 });

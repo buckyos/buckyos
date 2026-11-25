@@ -55,35 +55,92 @@ ask_user "<question>" [--option <id>=<label>]... [--allow-text] [--expires <seco
 - 退出码：0 已提问（pending）或已回答；1 参数错误或不在 run 的工具调用里；2 发送失败、找不到收件人、被拒绝或撤销；
   4 已过期。
 
-## 重排库 `reflow`
+## 兜底页 `reflow`
 
-`commands/reflow.ts`（规则与读写在 `lib/reflow.ts`）：Agent 浏览器的重排库是用户的桶 `user/control-panel/<owner>/reflow`，
-每个站点一个包（`manifest.json`、`refresh.mjs`、`index.html` 及其引用的文件）、用包制作的结果（`results/<页面>.json`）、兜底页
-（`fallback/<页面>.html`），以及站点还没有包时用户的偏好（`preference.json`，由 App 写）。协议见 [`doc/opendan/protocol/Agent Browser Protocol.md`](../../../doc/opendan/protocol/Agent%20Browser%20Protocol.md) §5。
+`commands/reflow.ts`（规则与读写在 `lib/reflow.ts`）：单个网页“只整理这一页”的兜底页，存在用户的重排桶
+`user/control-panel/<owner>/reflow` 里（`<site>/fallback/<页面>.html` 和同名的 `.json`），在 `https://reflow.<zone>/` 上显示。协议见
+[`doc/opendan/protocol/Agent Browser Protocol.md`](../../../doc/opendan/protocol/Agent%20Browser%20Protocol.md) §5。主人长期阅读的网站不在这里做：
+那是个人站的来源，见下一节的 `site`。
 
 ```bash
-reflow match <url>               # 站点、页面、匹配的包、用户对这个站点的偏好、已有的结果和兜底页、该显示哪一页
-reflow ls                        # 库里的站点，带各自的偏好
-reflow get <site> <dir>          # 把包取到本地目录（新目录或空目录）
-reflow put <site> <dir>          # 校验目录里的包，放进库里（整包替换，结果和兜底页保留）
-reflow rm <site>                 # 删除这个站点的包、偏好、结果和兜底页
-reflow result put <url> <file>   # .json 是包要画的数据，.html 是兜底页
-reflow refresh <url>             # 请本 Agent 的常驻浏览器跑包里的 refresh.mjs
+reflow match <url>                    # 站点、页面、已有的兜底页、该显示哪一页
+reflow ls                             # 有兜底页的站点
+reflow rm <site>                      # 删除这个站点下的全部内容
+reflow result put <url> <page.html>   # 把这份 .html 存成这个网址的兜底页
 ```
 
 - 站点名、规范化网址、页面散列、匹配规则和 Agent Service（Rust）共用一份测试向量：
-  `doc/opendan/protocol/fixtures/reflow_vectors.json`，`lib/reflow_test.ts` 用它。
-- `put` 先校验再上传：`manifest.json` 的 schema、`site` 与参数一致、`match[].host` 是这个站点的主机名、有 `refresh.mjs` 或
-  `index.html` 之一、不带 `results/`、`fallback/` 和根下的 `preference.json`。`manifest.json` 最后上传，`updated_at` 由 `put` 写，
-  manifest 没写 `author` 时用 `$OPENDAN_AGENT_DID` 补上。隐藏文件不上传。
-- 偏好是用户的，放入包时的规则和 App 的导入相同（协议 §5.2）：manifest 写了 `preference` 就用它；没写时 `put` 把站点现有的偏好
-  写进去（原来有合法的包取旧 manifest 的，否则取 `preference.json` 的）。`manifest.json` 写完后 `preference.json` 被删掉，由包接替。
-  `get` 不取 `preference.json`。写包时应把用户的偏好写进 manifest，`reflow match <url>` 会给出站点现有的偏好。
-- `refresh` 不读写桶，它调本 Agent 的 Agent Service：入口是 `$OPENDAN_BROWSER_RPC`（只在 Agent 自己的 runtime 上有），令牌是
-  `$BUCKYOS_APPCLIENT_SESSION_TOKEN`；`browser.reflow_refresh` 之后轮询 `browser.reflow_state` 直到结束，`--no-wait` 不等。
-- 只读权限的 Agent 写不了这个桶：`put`、`rm`、`result put` 以 `permission_denied` 失败，结果里写明把包留在工作目录、请用户在
-  「Agent 浏览器」里导入。
-- 退出码：0 完成；1 参数错误或包不合法；2 服务拒绝或失败；4 `refresh` 等到 `--timeout` 还没结束；5 本地文件错误。
+  `doc/opendan/protocol/fixtures/reflow_vectors.json`，`lib/reflow_test.ts` 用它。`site.json` 里来源的 `match` 用的是同一套匹配规则
+  （`rulesMatch`），文章 id 就是这里的页面散列。
+- `reflow match` 的 `detail` 是 `{ url, site, page, fallback, view }`，和 Agent Service 的 `browser.reflow_state` 同一形状；`view` 是相对
+  `https://reflow.<zone>/` 的路径，没有兜底页时是 `null`。
+- 只读权限的 Agent 写不了这个桶：`rm`、`result put` 以 `permission_denied` 失败。
+- 退出码：0 完成；1 参数错误；2 服务拒绝或失败；5 本地文件错误（如 `result put` 的文件不存在）。
+
+## 个人重排站 `site`
+
+`commands/site.ts`（数据、流水线在 `lib/site/`，翻译用的模型调用在 `lib/model.ts`）：一个用户一个个人站，数据在用户的重排桶
+`user/control-panel/<owner>/reflow` 里（`_data/`、`_app/`、`_src/`、`index.html`），页面在 `https://reflow.<zone>/`。契约是
+[`doc/opendan/protocol/Personal Site Protocol.md`](../../../doc/opendan/protocol/Personal%20Site%20Protocol.md)，共用样例在
+`doc/opendan/protocol/fixtures/site/`。`site --help` 列出全部子命令、来源包的格式和退出码。
+
+```bash
+site init --title 我的阅读 --language zh-CN --topics 国际,科技,体育   # 建 site.json，装默认模板（site-template/）
+site try site-sources/news-yahoo-co-jp --limit 3 --no-translate      # 不碰桶：取数、核对、图片，写到本地目录
+site try <dir> --fixtures --no-translate                             # 只用包里的 fixtures/，不联网
+site source put <dir> --state active                                 # 校验来源包，存成 _src/<id>/s<n>/，写进 site.json
+site sync <source> --dir <dir>                                       # 完整同步一次；作业就是它
+site preview site-template --data <site try 的输出目录>               # 本机看模板
+site status | match <url> | config get|set | source list|get|rm | template put|list|use|get
+site upgrade open|close|dismiss|list | events get [--out <file>]|put | supplement put
+site reading [--compact] | visits [--days 7]
+```
+
+- **来源包**（`source.json`、`extract.ts`、`fixtures/`、`NOTES.md`）由 Agent 写，其余是这里的产品代码。三个样板在 `site-sources/`：
+  `news-yahoo-co-jp`（RSS → 文章页内嵌的 `__PRELOADED_STATE__`，评论另取一页）、`news-ycombinator-com`（RSS → 讨论页的评论 +
+  外链页面经 `ctx.blocks` 取正文）、`news-web-nhk`（只能取到导语的站：标题、导语、配图，`check.min_chars` 调低）。各自的
+  `NOTES.md` 写了怎么取、怎么核对、有什么坑。`extract.ts` 不 import 包外的东西：解析用 `ctx.html / ctx.xml / ctx.feed / ctx.blocks`，
+  失败用全局的 `SiteError`。
+- **取数环境**（`lib/site/extract.ts`）：统一的 UA、同一主机 1 次/秒、30 秒超时、条件请求（`ETag` / `Last-Modified` 存在作业的
+  `state.json`）。`linkedom` 只在 `site` 的代码路径里动态 import（`deno.json` 的 `"linkedom": "npm:linkedom@0.18.12"`；分发时由构建打成
+  `vendor/` 里的一个文件），别的命令不加载它。`ctx.browser` 调本 Agent 的 Agent Service `browser.background_run`
+  （`lib/agent_service.ts`）；要渲染、要登录的来源的样板和不依赖 Agent Service 的本机跑法在 `test/agent_browser_dv/`。
+- **一次同步**（`lib/site/pipeline.ts`，协议 §5.1）：取数 → 核对（`check.ts`，§5.3 一条规则一个用例）→ 图片（`images.ts`）→ 翻译与归类
+  （`translate.ts`）→ FeedObject 外壳（`feed.ts`）→ 写文章 → 最后写 `feed/<source>.json` → 每天一次清理。没发布完的留在作业的
+  `data/pending.json`，下一次接着做；作为 Goal 作业运行时（有 `OPENDAN_JOB_RUN_ID`）状态放在工作目录，stdout 最后一行是作业的结果行，
+  否则放在当前目录的 `.site-job/<source>/`。
+- **图片**：`PATH` 上有 `magick`、进程又被允许运行它（`--allow-run=magick`，`deno task site` 和安装态的 launcher 都只放行这一个程序）时，
+  缩到长边 1280、去元数据，第一张另出 480 的小图；没装、或不许运行（`NotCapable` / `PermissionDenied`）时一样处理：存原图（至多 2 MiB）。
+  `site` 的代码不启动别的程序。取不到的图片（网络错误、超时、4xx / 5xx）等下一次同步再试一次，还取不到就按 `missing` 发布；取到了但不是
+  站里收的图片（SVG 图标、ICO、回 200 的错误页……）当场去掉这一块，不重试、不留占位，文章在这一次同步里照常发布；地址以 `.svg` 结尾的
+  根本不去取（`ctx.blocks` 也不把它们和 `data:` 图片变成块）；取到了、是图片但存不下的（太大、转换失败）当场按 `missing` 发布。每去掉一张，
+  日志里有一行。
+- **翻译**：一篇一次 `helper.llm_chat`，模型 `llm.translate`，`json_schema`，`policy: { allow_fallback: false, runtime_failover: false }`。
+  译文按原文块的 SHA-256 缓存在 `data/tr/<article>.json`。用量按 `xllm` 的格式追加到 `$OPENDAN_USAGE_LOG`，受 `$OPENDAN_MODEL_BUDGET` 和
+  `site.json` 的 `limits.translate_tokens_per_day` 约束；被拒绝时不发布未翻译的文章，`feed` 的 `status.pending` 说明原因
+  （`translate_budget` / `translate_config`；译文长度对不上、模型临时出错是 `translate_failed`，连续三次同步都失败就放弃这一篇），退出码仍是 0。
+- **桶**：`lib/site/store.ts` 只用 websdk `BucketClient` 的一小部分（测试用内存里的桶）。`site.json` 带 `If-Match` 写，冲突时重读再改，三次不成
+  报错。不变的对象（图片、模板文件）先 `PUT`（`If-None-Match: *`）再用 `bucket.put` 补上 `Cache-Control: immutable`：数据面的 `putBytes`
+  没有带这个头的参数。
+- **保留与清理**：作业每天按自己的 `data/index.json` 删过保留期的文章、Markdown 和不再被它引用的图片。另有桶自己的过期时间兜底
+  （`_data/a/`、`_data/md/`、`_data/img/` 写入时带 `fetched_at` 加 181 天；图片每次被再次引用时顺延）：来源被移除、换了维护者之后留下的
+  对象靠它清掉。**已知的限制**：图片按内容命名，两个来源收到同一张图时共用一个对象，而清理只看本作业的索引，先过期的那个来源会把它删掉，
+  另一个来源的文章里这张图就没有了（转载同一个页面的来源之间会遇到，比如 Hacker News 的外链和那个站自己的来源）。
+- **阅读汇总**（`lib/site/reading.ts`）：`site reading --compact` 把 `_read/` 的上报汇成 `reading.json`；`article` 和 `opened_at` 相同的几条算
+  一次打开，停留相加。作业结果行的 `metrics` 是 `{ records, opens_7d, dwell_ms_7d, articles_7d, profile }`，`profile` 是最近 7 天按停留排的
+  前 3 个标签和前 3 个来源（`tags:a,b,c;sources:x,y,z`，停留相同按名字排），同样的阅读得到同样的一行，检查脚本拿它比较。
+- **事件**：`site events put <file>` 校验后把每个条目的 `title`、`source`、`at` 从文章里取来填上；条目指的文章不在桶里就报错并指明是哪一条。
+  `site events get --out <file>` 把现有的 `events.json` 写成 `put` 收的文件（还没有时是空的一份）。
+- **作业结果行**：`site sync` 的 `metrics` 是 `{ listed, new, published, rejected, images, tokens, ms, pending, pending_reason }`。宿主不保留退出码
+  为 0 的运行的 `kind`，所以“翻译被拒”（`kind: "budget"`）到不了检查脚本，它看 `pending`（取到了还没发布的篇数）和 `pending_reason`
+  （`null` 或 `feed` 的 `pending.reason`）。汇总作业 `site reading --compact` 的程序目录不能是空的（`goal job put` 不收空目录），放一份说明即可。
+- **浏览记录**：`site visits [--days 7]`（`lib/site/visits.ts`）经 `lib/agent_service.ts` 调本 Agent 的 `browser.visits`，按主机和按页面列出主人在
+  Agent 浏览器里看过什么；记录被主人关掉时写明；不在 Agent 自己的 runtime 上（没有 `$OPENDAN_BROWSER_RPC`）或服务连不上时是 `no_browser`。
+- **换维护者**：来源包用 `site source get` 取回，改过的模板用 `site template get <version> <dir>` 取回（连同 `index.html`，取到的目录 `template put` 照收）。
+  升级请求做完了是 `site upgrade close`，主人说不做是 `site upgrade dismiss`。
+- 只读权限的 Agent 写不了这个桶：写操作以 `permission_denied` 失败。
+- 测试：`deno test -A lib/site/ lib/model_test.ts`（内存桶、假的模型、三个样板包对着自己的 fixtures）。要渲染、要登录的
+  来源：`node test/agent_browser_dv/sources_check.mjs`（测试站点 + 代替 Agent Service 的 `browser_stub.mjs`，要本机有 ext-core 的 Chromium）。
 
 ## AICC Agent CLI Tools
 
@@ -117,6 +174,8 @@ Agent 应当能直接读 `commands/*.ts` 学到怎么调 AICC，然后自己写�
 | `lib/bucket.ts` | 本 Agent 的桶：`uploadNamed()`（字节直传 `artifacts` 或 `scratch`，≤32 MiB 走 `PUT /bucket/v1`，更大走 NDM 上传 + `bind`）、`copyToArtifacts()`（`bucket.copy`）、`readBucketObject()`、`obj://bucket/...` 解析 |
 | `lib/cli.ts` | `parseArgvOrExit()`、`requireString/flagInt/flagFloat/flagBool`、`takeRepeatedFlags()`（可重复的 `--x v`）、`COMMON_OPTIONS_HELP`、`bailArgError()` |
 | `lib/ask.ts` | `ask_user` 的部件：`askUser()` 发 `input` 通知并把通知状态映射成 AgentToolResult；`askRecipient()` 从会话 token 取收件人 |
+| `lib/model.ts` | 程序里的一步模型调用：`aiccModel()`（`helper.llm_chat`，`json_schema`，不换模型）、`MeteredModel`（记 `$OPENDAN_USAGE_LOG`、守 `$OPENDAN_MODEL_BUDGET`） |
+| `lib/agent_service.ts` | `callAgentService()`：调本 Agent 的 Agent Service（`$OPENDAN_BROWSER_RPC`） |
 | `lib/result.ts` | AgentToolResult builders + `emit/emitAndExit`、各种 `bail*` 错误收敛、退出码常量 |
 | `lib/types.ts` | Agent 输出类型，以及从发布版 `buckyos` SDK 派生的 AICC response / `ResourceRef` 视图 |
 

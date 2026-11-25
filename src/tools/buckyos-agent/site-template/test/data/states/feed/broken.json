@@ -1,0 +1,33 @@
+{
+  "schema": "buckyos.site.feed/1",
+  "source": "broken",
+  "status": {
+    "state": "failed",
+    "checked_at": 1764001800000,
+    "published_at": 1764001800000,
+    "error": {
+      "kind": "program",
+      "message": "the list had 20 entries and now has none",
+      "at": 1764001800000
+    },
+    "pending": null,
+    "login_url": null
+  },
+  "items": [
+    {
+      "id": "e971c8da00000000",
+      "object_id": "cyfeed:0000000000000000000000000000000000000000000000000000000000000000",
+      "url": "https://broken.example.com/a/0",
+      "title": "An article of broken",
+      "summary": "A summary that says what the article is about.",
+      "image": null,
+      "tags": [
+        "Tech"
+      ],
+      "published_at": 1764000000000,
+      "fetched_at": 1764001700000,
+      "rev": 1
+    }
+  ],
+  "updated_at": 1764001800000
+}

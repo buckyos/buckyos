@@ -8,7 +8,7 @@ import { expandOpenPath, isOpenRequest, parseSystemOpen, type OpenBinding } from
 import { isAppPath } from 'buckyos/open-app'
 import type { AppDefinition, WindowLaunch } from '../models/ui'
 import { desktopCatalogIdForLogicalApp } from './backend-apps'
-import { agentBrowserLaunchSchema } from './agent-browser/launch'
+import { agentBrowserLaunchParams, agentBrowserLaunchSchema } from './agent-browser/launch'
 import { agentSetupLaunchSchema } from './agent-setup/launch'
 import { aiCenterLaunchSchema } from './ai-center/launch'
 import { appServiceLaunchSchema } from './app-service/launch'
@@ -102,10 +102,10 @@ const pages: Readonly<Record<string, AppPages>> = {
     },
   },
   'agent-browser': {
-    payload: (_name, params) => given(params, ['agent', 'mode']),
+    payload: (_name, params) => given(params, ['agent', ...agentBrowserLaunchParams]),
     path: (payload) => {
       const launch = agentBrowserLaunchSchema.safeParse(payload)
-      return launch.success ? appPath('', { agent: launch.data.agent, mode: launch.data.mode }) : undefined
+      return launch.success ? appPath('', launch.data) : undefined
     },
   },
   'agent-setup': {

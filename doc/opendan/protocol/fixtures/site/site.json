@@ -1,0 +1,135 @@
+{
+  "schema": "buckyos.site/1",
+  "title": "我的阅读",
+  "language": "zh-CN",
+  "owner_did": "did:bns:alice",
+  "topics": [
+    "国际",
+    "科技",
+    "经济",
+    "社会",
+    "体育"
+  ],
+  "template": {
+    "version": "t1",
+    "params": {
+      "home_order": "time",
+      "per_column": 20,
+      "hide_topics": [
+        "体育"
+      ],
+      "collapsed": []
+    }
+  },
+  "columns": [
+    {
+      "id": "jp",
+      "title": "日本",
+      "sources": [
+        "news-yahoo-co-jp"
+      ]
+    },
+    {
+      "id": "tech",
+      "title": "科技",
+      "sources": [
+        "news-ycombinator-com"
+      ]
+    }
+  ],
+  "sources": [
+    {
+      "id": "news-yahoo-co-jp",
+      "title": "雅虎日本",
+      "home_url": "https://news.yahoo.co.jp/",
+      "match": [
+        {
+          "host": "news.yahoo.co.jp"
+        }
+      ],
+      "lang": "ja",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-news-yahoo-co-jp",
+      "version": "s2",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "news-ycombinator-com",
+      "title": "Hacker News",
+      "home_url": "https://news.ycombinator.com/",
+      "match": [
+        {
+          "host": "news.ycombinator.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "forum",
+      "needs": "http",
+      "job": "src-news-ycombinator-com",
+      "version": "s1",
+      "every_secs": 3600,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763996400000,
+      "added_by": "work:ws-20261124T080910-4e5f6a7b"
+    },
+    {
+      "id": "www-nikkei-com",
+      "title": "日经",
+      "home_url": "https://www.nikkei.com/",
+      "match": [
+        {
+          "host": "www.nikkei.com"
+        }
+      ],
+      "lang": "ja",
+      "kind": "news",
+      "needs": "login",
+      "job": "src-www-nikkei-com",
+      "version": "s1",
+      "every_secs": 21600,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 0,
+      "state": "failed",
+      "note": "正文需要订阅，只能取到列表",
+      "added_at": 1763998200000,
+      "added_by": "work:ws-20261124T080910-4e5f6a7b"
+    }
+  ],
+  "upgrades": [
+    {
+      "id": "hn-comments-layout",
+      "source": "news-ycombinator-com",
+      "title": "Hacker News 的评论页改版了",
+      "summary": "评论改成按需加载，现在只能取到前 3 条。要改成用浏览器取，或者不再收评论。",
+      "file": "upgrades/2026-11-24-hn-comments-layout.md",
+      "goal_id": "g-20261123T020304-9c8d7e6f",
+      "opened_at": 1763999400000,
+      "state": "open"
+    }
+  ],
+  "reading": {
+    "enabled": true
+  },
+  "limits": {
+    "translate_tokens_per_day": 1000000
+  },
+  "maintainer": {
+    "agent": "did:bns:jarvis.alice",
+    "goal_id": "g-20261123T020304-9c8d7e6f"
+  },
+  "updated_at": 1764000000000,
+  "updated_by": "did:bns:jarvis.alice"
+}

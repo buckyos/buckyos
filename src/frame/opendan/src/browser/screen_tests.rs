@@ -301,7 +301,7 @@ async fn a_screen_is_admitted_as_the_owner_after_its_hello() {
     for bad in [
         json!({ "type": "ack", "seq": 1 }),
         json!({ "type": "hello", "token": TOKEN, "group_id": "thing", "viewport": phone() }),
-        json!({ "type": "hello", "token": TOKEN, "group_id": "_reflow", "viewport": phone() }),
+        json!({ "type": "hello", "token": TOKEN, "group_id": "_job", "viewport": phone() }),
         json!({ "type": "hello", "token": TOKEN, "group_id": "default" }),
     ] {
         let mut client = connect(m, owner()).await;

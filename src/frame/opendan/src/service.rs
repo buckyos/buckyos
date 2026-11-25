@@ -610,6 +610,12 @@ fn authorize_agent_method(
             format!("{method} is the owner's: an Agent does not change which skills an Agent has (the Skills page, or `buckyos skill` as the owner)")
         }));
     }
+    // What another Agent may do on this one, reading included, stops at what is this Agent's own.
+    if is_own_only(method) && mode.is_some() && caller.app_id().as_str() != target_app_id {
+        return Err(RPCErrors::NoPermission(format!(
+            "{method} is the owner's and this Agent's own: what the owner looked at in an Agent's browser is not told to another Agent"
+        )));
+    }
     if mode != Some(AgentPermissionMode::ReadOnly) || is_read(method) {
         return Ok(());
     }
@@ -646,10 +652,17 @@ fn is_owner_only(method: &str) -> bool {
             | "browser.upload"
             | "browser.download_export"
             | "browser.clear_profile"
-            | "browser.reflow_action"
+            | "browser.visits_set_enabled"
+            | "browser.visits_clear"
             | "browser.screen"
             | "sync.set_secret"
     )
+}
+
+/// Methods of an Agent no other Agent of the owner calls, whatever its permission mode: the owner's, and the Agent's
+/// own. What the owner looked at in its browser.
+fn is_own_only(method: &str) -> bool {
+    method == "browser.visits"
 }
 
 fn is_read(method: &str) -> bool {
@@ -723,6 +736,8 @@ fn is_read(method: &str) -> bool {
             | "loader.status"
             | "browser.status"
             | "browser.reflow_state"
+            | "browser.page_hint"
+            | "browser.visits"
             | "sync.list"
             | "sync.get"
             | "sync.runs"
@@ -765,8 +780,9 @@ fn is_operation(method: &str) -> bool {
             | "browser.upload"
             | "browser.download_export"
             | "browser.clear_profile"
-            | "browser.reflow_refresh"
-            | "browser.reflow_action"
+            | "browser.background_run"
+            | "browser.visits_set_enabled"
+            | "browser.visits_clear"
             | "browser.screen"
             | "sync.put"
             | "sync.set_enabled"
@@ -936,7 +952,7 @@ mod permission_tests {
             "session.work_tree", "ui.conversation",
             "home.summary", "memory.overview", "memory.list", "memory.read", "deliveries.recent",
             "agent.profile", "usage.models", "ui.bindings", "home.workspaces", "loader.status", "runtimes.settings", "runtimes.impact",
-            "browser.status", "browser.reflow_state", "sync.list", "sync.get", "sync.runs",
+            "browser.status", "browser.reflow_state", "browser.page_hint", "sync.list", "sync.get", "sync.runs",
         ] {
             for target in [OWN_APP, OTHER_APP] {
                 assert!(authorize(Some(AgentPermissionMode::ReadOnly), method, target), "{method}");
@@ -959,7 +975,7 @@ mod permission_tests {
             "session.decide", "session.post", "goals.activate", "goals.post",
             // Using its own browser is the Agent's own ability, whatever it may do to the owner's files.
             "browser.ensure", "browser.acquire", "browser.renew", "browser.release", "browser.request_handover",
-            "browser.reflow_refresh",
+            "browser.background_run",
             // Its sync tasks are the Agent's own work: it writes, tries and runs them.
             "sync.put", "sync.set_enabled", "sync.delete", "sync.try", "sync.run",
         ] {
@@ -979,7 +995,9 @@ mod permission_tests {
             "skills.draft_discard", "skills.self_improve_set", "memory.forget",
             // The user's side of the browser: an Agent neither takes its browser over nor hands it to itself.
             "browser.take_over", "browser.hand_back", "browser.hand_to_agent", "browser.bind_default", "browser.upload",
-            "browser.download_export", "browser.clear_profile", "browser.reflow_action", "browser.screen",
+            "browser.download_export", "browser.clear_profile", "browser.screen",
+            // Whether what the owner looks at is recorded, and forgetting it, is the owner's.
+            "browser.visits_set_enabled", "browser.visits_clear",
             // The credentials of a sync task are entered by the owner only.
             "sync.set_secret",
         ] {
@@ -993,6 +1011,21 @@ mod permission_tests {
             // An App of the owner that is no Agent (the desktop, the CLI's App) acts for the owner.
             assert!(authorize(None, method, OTHER_APP), "{method} by an owner App");
         }
+    }
+
+    /// What the owner looked at in an Agent's browser is read by the owner and by that Agent, by no other Agent.
+    #[test]
+    fn only_the_agent_itself_reads_what_its_owner_looked_at() {
+        for mode in [Some(AgentPermissionMode::ReadOnly), Some(AgentPermissionMode::ReadWrite)] {
+            assert!(authorize(mode, "browser.visits", OWN_APP), "its own ({mode:?})");
+            assert!(!authorize(mode, "browser.visits", OTHER_APP), "another Agent's ({mode:?})");
+            // What else is read of another Agent's browser stays readable.
+            for method in ["browser.status", "browser.page_hint", "browser.reflow_state"] {
+                assert!(authorize(mode, method, OTHER_APP), "{method} ({mode:?})");
+            }
+        }
+        // The Agent's own App identity without a permission record, and an App of the owner that is no Agent.
+        assert!(authorize(None, "browser.visits", OWN_APP) && authorize(None, "browser.visits", OTHER_APP));
     }
 
     #[test]
@@ -1065,7 +1098,7 @@ mod permission_tests {
             "browser.status", "browser.ensure", "browser.acquire", "browser.renew", "browser.release",
             "browser.request_handover", "browser.take_over", "browser.hand_back", "browser.hand_to_agent",
             "browser.bind_default", "browser.upload", "browser.download_export", "browser.clear_profile", "browser.reflow_state",
-            "browser.reflow_refresh", "browser.reflow_action",
+            "browser.background_run", "browser.page_hint", "browser.visits", "browser.visits_set_enabled", "browser.visits_clear",
         ] {
             assert!(is_read(method) != is_operation(method), "{method} is read or an operation");
             assert!(!is_read(method) || !is_owner_only(method), "{method}");

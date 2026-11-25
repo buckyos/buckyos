@@ -312,10 +312,10 @@ async fn tabs_belong_to_groups() {
     assert!(m.tab(&extra).is_none());
     // The module's own groups are not counted and not listed.
     {
-        let _expected = m.expect_tabs("_reflow");
+        let _expected = m.expect_tabs("_job");
         let own = b.fake.open("https://e.example/", None);
         until("the module's tab is seen", || m.tab(&own).is_some()).await;
-        assert_eq!(m.tab(&own).unwrap().group_id, "_reflow");
+        assert_eq!(m.tab(&own).unwrap().group_id, "_job");
     }
     let listed: Vec<String> = m.status().await["groups"].as_array().unwrap().iter().map(|g| g["group_id"].as_str().unwrap().to_string()).collect();
     assert_eq!(listed, vec!["default"]);
@@ -668,6 +668,184 @@ async fn clearing_the_profile_stops_the_browser_and_deletes_its_data() {
     m.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_page_hint_looks_at_the_current_tab_and_starts_nothing() {
+    let b = Bench::new(section(12, 600), |_| {}).await;
+    let m = &b.module;
+    let hint = || async { rpc::call(m, OWNER, None, "browser.page_hint", &json!({})).await.unwrap() };
+    let asked = || b.fake.received("Runtime.evaluate").into_iter().filter(|(_, params)| params["expression"].as_str().is_some_and(|e| e.contains("password_fields"))).collect::<Vec<_>>();
+    let nothing = json!({ "hint": "unknown", "url": null, "title": null });
+
+    // No browser runs: nothing is known, and none is started to find out.
+    assert_eq!(hint().await, nothing);
+    assert!(b.fake.pid().is_none() && !m.running());
+    // It runs without a tab; a tab of the module's own is not what the user looks at.
+    m.ensure().await.unwrap();
+    m.open_tab("_job", Some("https://job.example/")).await.unwrap();
+    assert_eq!(hint().await, nothing);
+    assert!(asked().is_empty());
+
+    // The current tab is asked once. A page that tells nothing (the fake browser's) is unknown, with what the tab shows.
+    m.open_tab(DEFAULT_GROUP, Some("https://a.example/")).await.unwrap();
+    let tab = m.open_tab(DEFAULT_GROUP, Some("https://b.example/")).await.unwrap();
+    let (_, session) = m.tab_session(&tab.tab_id).await.unwrap();
+    b.fake.set_page(&tab.tab_id, "https://b.example/read?id=7", "Reading");
+    m.status().await;
+    assert_eq!(hint().await, json!({ "hint": "unknown", "url": "https://b.example/read?id=7", "title": "Reading" }));
+    let evaluations = asked();
+    assert_eq!(evaluations.len(), 1);
+    assert_eq!((evaluations[0].0.as_deref(), &evaluations[0].1["returnByValue"]), (Some(session.as_str()), &json!(true)));
+    let group = m.group(DEFAULT_GROUP);
+    assert!(group.lease.is_none() && group.controller == Controller::User && group.tabs.len() == 2);
+    m.shutdown().await;
+
+    // An agent without a browser has no page to tell about.
+    let off = Bench::new(BrowserSection { enabled: false, ..section(12, 600) }, |_| {}).await;
+    let refused = rpc::call(&off.module, OWNER, None, "browser.page_hint", &json!({})).await.unwrap_err();
+    assert_eq!((refused.code, refused.unavailable_code), ("browser_unavailable", Some("disabled")));
+}
+
+/// What the owner looks at is recorded while they look and operate the
+/// browser: not what the agent does in it, not what they do while they enter
+/// a password the agent asked for, not the tabs of the module's own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_pages_the_owner_looks_at_are_recorded() {
+    let b = Bench::new(section(12, 600), |_| {}).await;
+    let m = &b.module;
+    let call = |method: &'static str, params: Value| async move { rpc::call(m, OWNER, None, method, &params).await.unwrap() };
+    // `(address, title, arrivals)`, the newest first.
+    let visits = || async {
+        let listed = call("browser.visits", json!({})).await;
+        assert_eq!(listed["enabled"], true);
+        let visits = listed["visits"].as_array().unwrap().clone();
+        visits.iter().map(|v| (v["url"].as_str().unwrap().to_string(), v["title"].as_str().unwrap().to_string(), v["count"].as_u64().unwrap())).collect::<Vec<_>>()
+    };
+    let visit = |url: &str, title: &str, count: u64| (url.to_string(), title.to_string(), count);
+    // The page of a tab changes, as the browser reports it; the title a document has is read when the tabs are.
+    let goes = |tab_id: &str, url: &'static str, title: &'static str| {
+        b.fake.set_page(tab_id, url, title);
+        let tab_id = tab_id.to_string();
+        async move {
+            until("the page changed", || m.tab(&tab_id).is_some_and(|tab| tab.url == url)).await;
+            m.refresh_running().await;
+        }
+    };
+
+    // Nobody looks at the browser: nothing is recorded.
+    let tab = m.open_tab(DEFAULT_GROUP, Some("https://a.example/first?from=mail")).await.unwrap();
+    m.tab_session(&tab.tab_id).await.unwrap();
+    assert_eq!(visits().await, vec![]);
+
+    // Someone looks, the user operates: the page counts, under its address without query and fragment.
+    let viewer = m.viewer(DEFAULT_GROUP);
+    assert_eq!(visits().await, vec![visit("https://a.example/first", "", 1)]);
+    goes(&tab.tab_id, "https://a.example/second?token=SECRET#frag", "Second").await;
+    assert_eq!(visits().await[0], visit("https://a.example/second", "Second", 1));
+    // The same page under another query is the same visit; a page come back to is arrived at again.
+    goes(&tab.tab_id, "https://a.example/second?token=OTHER", "Second").await;
+    goes(&tab.tab_id, "https://a.example/first", "First").await;
+    assert_eq!(visits().await, vec![visit("https://a.example/first", "First", 2), visit("https://a.example/second", "Second", 1)]);
+    // Another tab becomes the current one.
+    let other = m.open_tab(DEFAULT_GROUP, Some("https://b.example/")).await.unwrap();
+    m.tab_session(&other.tab_id).await.unwrap();
+    assert_eq!(visits().await[0].0, "https://b.example/");
+    m.activate_tab(&tab.tab_id).unwrap();
+    assert_eq!(visits().await[0], visit("https://a.example/first", "First", 3));
+    // What is no page of the web is not recorded.
+    goes(&tab.tab_id, "chrome://settings/passwords", "Settings").await;
+    let seen = visits().await;
+    assert_eq!(seen.len(), 3);
+
+    // The agent operates: where it goes is not the owner's reading.
+    let lease = m.acquire("work-1").await.unwrap();
+    goes(&tab.tab_id, "https://agent.example/does?q=1", "Agent").await;
+    assert_eq!(visits().await, seen);
+    // It asks the user to enter a password: what they do until they hand the browser back is not recorded.
+    m.request_handover("password", Some("the bank's login".into())).await.unwrap();
+    assert_eq!(m.renew(&lease.lease_id).unwrap_err().code, "lease_lost");
+    assert_eq!(m.controller(DEFAULT_GROUP), Controller::User);
+    goes(&tab.tab_id, "https://bank.example/login?user=bob", "Sign in").await;
+    goes(&tab.tab_id, "https://bank.example/login/code", "Your code").await;
+    assert_eq!(visits().await, seen);
+    goes(&tab.tab_id, "https://bank.example/account", "Account").await;
+    m.hand(OWNER, Handed::HandBack).await.unwrap();
+    assert_eq!(visits().await[0], visit("https://bank.example/account", "Account", 1));
+    // Asked to take over for something else, they are the one who reads.
+    m.request_handover("captcha", None).await.unwrap();
+    goes(&tab.tab_id, "https://shop.example/check", "Are you human").await;
+    assert_eq!(visits().await[0].0, "https://shop.example/check");
+    m.hand(OWNER, Handed::HandToAgent).await.unwrap();
+
+    // A tab of the module's own (a background run's) is nobody's reading, whatever it shows.
+    let own = {
+        let _expected = m.expect_tabs("_job");
+        let own = b.fake.open("https://job.example/list?page=1", None);
+        until("the module's tab is seen", || m.tab(&own).is_some()).await;
+        own
+    };
+    goes(&own, "https://job.example/list?page=2", "List").await;
+    let seen = visits().await;
+    assert_eq!((seen.len(), seen[0].0.as_str()), (5, "https://shop.example/check"));
+    // The viewer leaves: nobody looks.
+    drop(viewer);
+    goes(&tab.tab_id, "https://alone.example/", "Alone").await;
+    assert_eq!(visits().await, seen);
+
+    // Only those since a time are asked for.
+    let listed = call("browser.visits", json!({ "since_ms": now_ms() + 1000 })).await;
+    assert_eq!(listed, json!({ "enabled": true, "visits": [] }));
+    let all = call("browser.visits", json!({ "since_ms": 0 })).await["visits"].clone();
+    let first = &all[4];
+    assert_eq!(first["url"], "https://a.example/second");
+    assert!(first["first_at_ms"].as_u64().unwrap() <= first["last_at_ms"].as_u64().unwrap() && first["dwell_ms"].is_u64());
+
+    // The file has them when the service ends, and nothing of a query.
+    m.shutdown().await;
+    let dir = b.root.join("state/browser");
+    let file = std::fs::read_to_string(dir.join("visits.jsonl")).unwrap();
+    assert_eq!(file.lines().map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>(), all.as_array().unwrap().clone());
+    for told in ["?", "#", "SECRET", "OTHER", "from=mail", "frag", "user=bob", "agent.example", "bank.example/login", "job.example", "alone.example", "chrome:"] {
+        assert!(!file.contains(told), "{told} in {file}");
+    }
+
+    // The next service has them. The owner switches the recording off: nothing more is recorded, what was stays.
+    let tuning = Tuning { chromium: Some(fake_browser::chromium()), dirs: Some(m.dirs().clone()), ..Default::default() };
+    let again = BrowserModule::with_tuning(BrowserSection { enabled: false, ..section(12, 600) }, deps(&b.root), tuning);
+    let call = |method: &'static str, params: Value| {
+        let again = again.clone();
+        async move { rpc::call(&again, OWNER, None, method, &params).await }
+    };
+    // They are the owner's to see and to forget whether or not the agent has a browser.
+    assert_eq!(call("browser.visits", json!({})).await.unwrap(), json!({ "enabled": true, "visits": all }));
+    assert_eq!(call("browser.visits_set_enabled", json!({ "enabled": false })).await.unwrap(), json!({ "enabled": false }));
+    assert_eq!(call("browser.visits", json!({})).await.unwrap(), json!({ "enabled": false, "visits": all }));
+    assert_eq!(std::fs::read_to_string(dir.join("visits.json")).unwrap(), r#"{"enabled":false}"#);
+    assert_eq!(call("browser.visits_set_enabled", json!({})).await.unwrap_err().code, "invalid_argument");
+    assert_eq!(call("browser.visits_clear", json!({})).await.unwrap(), json!({}));
+    assert_eq!(call("browser.visits", json!({})).await.unwrap(), json!({ "enabled": false, "visits": [] }));
+    assert!(!dir.join("visits.jsonl").exists());
+}
+
+/// Whether the owner's reading is recorded is the agent's configuration
+/// until the owner says so themselves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_switch_of_the_visits_comes_before_the_configuration() {
+    let quiet = BrowserSection { visits: false, ..section(12, 600) };
+    let b = Bench::new(quiet.clone(), |_| {}).await;
+    let m = &b.module;
+    let tab = m.open_tab(DEFAULT_GROUP, Some("https://a.example/")).await.unwrap();
+    m.tab_session(&tab.tab_id).await.unwrap();
+    let _viewer = m.viewer(DEFAULT_GROUP);
+    assert_eq!(m.visited(None), json!({ "enabled": false, "visits": [] }));
+    m.visits_set_enabled(true).unwrap();
+    let recorded = m.visited(None);
+    assert_eq!((&recorded["enabled"], &recorded["visits"][0]["url"]), (&json!(true), &json!("https://a.example/")));
+    m.shutdown().await;
+    let tuning = Tuning { chromium: Some(fake_browser::chromium()), dirs: Some(m.dirs().clone()), ..Default::default() };
+    let again = BrowserModule::with_tuning(quiet, deps(&b.root), tuning);
+    assert_eq!(again.visited(None)["enabled"], true);
+}
+
 // ---------------------------------------------------------------------------
 // A real Chromium (`OPENDAN_CHROMIUM`)
 // ---------------------------------------------------------------------------
@@ -943,6 +1121,131 @@ mod real {
         let answer = m.tab_send(&tab.tab_id, "Runtime.evaluate", json!({ "expression": passkey, "awaitPromise": true, "returnByValue": true, "userGesture": true })).await.unwrap();
         assert_eq!(answer["result"]["value"], "NotAllowedError NotAllowedError true");
         m.shutdown().await;
+    }
+
+    /// A site of the pages `pages` (`(path, html)`); every other path is a document without a title.
+    async fn pages(pages: Vec<(&'static str, String)>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let pages = Arc::new(pages);
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let pages = pages.clone();
+                tokio::spawn(async move {
+                    let mut request = [0u8; 8192];
+                    let read = stream.read(&mut request).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&request[..read]).to_string();
+                    let path = request.split_whitespace().nth(1).unwrap_or("/").split('?').next().unwrap_or_default().to_string();
+                    let page = pages.iter().find(|(at, _)| *at == path).map(|(_, html)| html.clone()).unwrap_or_else(|| "<p>no title</p>".to_string());
+                    let body = format!("<!doctype html><meta charset=utf-8>{page}");
+                    let _ = stream
+                        .write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
+                        .await;
+                });
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// The current tab goes to `url`; its document is there and its title read.
+    async fn go(m: &BrowserModule, tab_id: &str, url: &str) {
+        m.tab_send(tab_id, "Page.navigate", json!({ "url": url })).await.unwrap();
+        let started = Instant::now();
+        while eval(m, tab_id, "document.readyState + ' ' + location.href").await != format!("complete {url}") {
+            assert!(started.elapsed() < Duration::from_secs(10), "{url} does not load");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        m.refresh_running().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs OPENDAN_CHROMIUM"]
+    async fn the_page_hint_tells_a_page_to_read_from_one_to_do_something_on() {
+        let words = |n: usize| "字".repeat(n);
+        let site = pages(vec![
+            ("/login", "<title>Sign in</title><form><input name=user> <input type=password name=pw> <input type=submit></form>".into()),
+            // What is not shown does not count: a sign-in form in a closed dialog, fields that are hidden.
+            ("/story", "<title>Story</title><article><p>short</p></article><form style='display: none'><input type=password><input><input><input></form>".into()),
+            ("/order", "<title>Order</title><form><input name=a> <select><option>x</option></select> <textarea></textarea> <input type=hidden name=h> <input type=search> <input type=submit></form>".into()),
+            ("/find", "<title>Find</title><input type=search> <input type=text> <input type=checkbox style='visibility: hidden'> <input type=hidden> <input type=button value=Go> <button>go</button><p>few words</p>".into()),
+            ("/og", "<title>Og</title><meta property='og:type' content=' Article '><p>x</p>".into()),
+            ("/ld", r#"<title>Ld</title><script type="application/ld+json">not json</script><script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite"},{"@type":["Thing","BlogPosting"]}]}</script><p>x</p>"#.into()),
+            ("/site", r#"<title>Site</title><script type="application/ld+json">[{"@type":"WebSite","name":"Article"}]</script><p>x</p>"#.into()),
+            ("/long", format!("<title>Long</title><p>{}</p><p hidden>{}</p><a href='/x'>{}</a>", words(1400), words(5000), words(100))),
+            ("/short", format!("<title>Short</title><p>{}</p>", words(1499))),
+            ("/links", format!("<title>Links</title><p>{}</p>{}", words(1000), format!("<a href='/x'>{}</a> ", words(10)).repeat(100))),
+        ])
+        .await;
+        let r = real(section(12, 600), |_| {});
+        let m = &r.module;
+        assert_eq!(m.page_hint().await.unwrap(), json!({ "hint": "unknown", "url": null, "title": null }));
+        assert!(!m.running(), "asking starts no browser");
+        let tab = m.open_tab(DEFAULT_GROUP, Some("about:blank")).await.unwrap();
+        assert_eq!(m.page_hint().await.unwrap(), json!({ "hint": "unknown", "url": "about:blank", "title": "" }));
+        for (path, title, hint) in [
+            ("/login?next=%2Faccount#form", "Sign in", "task"),
+            ("/story", "Story", "reading"),
+            ("/order", "Order", "task"),
+            ("/find", "Find", "unknown"),
+            ("/og", "Og", "reading"),
+            ("/ld", "Ld", "reading"),
+            ("/site", "Site", "unknown"),
+            ("/long", "Long", "reading"),
+            ("/short", "Short", "unknown"),
+            ("/links", "Links", "unknown"),
+            ("/untitled", "", "unknown"),
+        ] {
+            let url = format!("{site}{path}");
+            go(m, &tab.tab_id, &url).await;
+            let page = "document.documentElement.outerHTML.length + ' ' + Object.getOwnPropertyNames(window).length";
+            let before = eval(m, &tab.tab_id, page).await;
+            assert_eq!(m.page_hint().await.unwrap(), json!({ "hint": hint, "url": url, "title": title }), "{path}");
+            assert_eq!(eval(m, &tab.tab_id, page).await, before, "{path}: the page is as it was");
+        }
+        let group = m.group(DEFAULT_GROUP);
+        assert!(group.lease.is_none() && group.controller == Controller::User && group.tabs.len() == 1);
+        // A page that shows a dialog does not answer: nothing is known about it, and the call does not hang.
+        go(m, &tab.tab_id, &format!("{site}/login")).await;
+        let _viewer = m.viewer(DEFAULT_GROUP);
+        m.cdp().unwrap().post(m.tab(&tab.tab_id).unwrap().session.as_deref(), "Runtime.evaluate", json!({ "expression": "alert('wait')" })).unwrap();
+        until("the dialog is open", || m.open_dialogs(DEFAULT_GROUP).len() == 1).await;
+        let asked = Instant::now();
+        assert_eq!(m.page_hint().await.unwrap(), json!({ "hint": "unknown", "url": format!("{site}/login"), "title": "Sign in" }));
+        assert!(asked.elapsed() < Duration::from_secs(8), "{:?}", asked.elapsed());
+        m.shutdown().await;
+    }
+
+    /// What a real browser reports of the pages the owner goes to: also the
+    /// title it shows for a document that has none, which is its address,
+    /// query and all.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs OPENDAN_CHROMIUM"]
+    async fn what_the_owner_looks_at_is_recorded_without_its_query() {
+        let site = pages(vec![("/read", "<title>Reading</title><p>text</p>".into())]).await;
+        let r = real(section(12, 600), |t| t.tick = Duration::from_millis(100));
+        let m = &r.module;
+        let housekeeping = tokio::spawn(m.clone().run());
+        let tab = m.open_tab(DEFAULT_GROUP, Some("about:blank")).await.unwrap();
+        m.tab_session(&tab.tab_id).await.unwrap();
+        let _viewer = m.viewer(DEFAULT_GROUP);
+        go(m, &tab.tab_id, &format!("{site}/read?from=mail#top")).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        // A document without a title: the browser shows its address for one.
+        go(m, &tab.tab_id, &format!("{site}/untitled?token=SECRET-TOKEN&q=two%20words#frag")).await;
+        let shown = m.group(DEFAULT_GROUP).tabs[0].title.clone();
+        assert!(shown.contains("SECRET-TOKEN"), "what this browser shows for a document without a title: {shown}");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let visits = m.visited(None)["visits"].as_array().unwrap().clone();
+        assert_eq!(visits.iter().map(|v| (v["url"].as_str().unwrap(), v["title"].as_str().unwrap(), v["count"].as_u64().unwrap())).collect::<Vec<_>>(), vec![(format!("{site}/untitled").as_str(), "", 1), (format!("{site}/read").as_str(), "Reading", 1)]);
+        assert!(visits.iter().all(|v| (300..5000).contains(&v["dwell_ms"].as_u64().unwrap())), "{visits:?}");
+        housekeeping.abort();
+        m.shutdown().await;
+        let file = std::fs::read_to_string(r.root.join("state/browser/visits.jsonl")).unwrap();
+        assert_eq!(file.lines().count(), 2);
+        for told in ["?", "#", "SECRET", "two", "frag", "from=mail", "top"] {
+            assert!(!file.contains(told), "{told} in {file}");
+        }
     }
 
     /// `OPENDAN_TEST_PLAYWRIGHT=<script.mjs>`: a script run as `node <script> <cdp_url>` that

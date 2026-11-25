@@ -17,13 +17,17 @@
 //! - [`screen`]: a screen connection; [`input`]: what the user does as
 //!   input commands; [`requests`]: what a page shows outside itself;
 //!   [`transfer`]: uploads and downloads.
-//! - [`reflow`]: the owner's reflow library and refreshing a page of it.
+//! - [`reflow`]: what the owner's reflow library has for an address.
+//! - [`background`]: what the service itself runs in a tab of its own.
+//! - [`hint`]: what kind of page the user looks at; [`visits`]: which pages they looked at.
 //!
 //! [Agent Browser Protocol]: ../../../../../doc/opendan/protocol/Agent%20Browser%20Protocol.md
 
+pub mod background;
 pub mod cdp;
 pub mod display;
 pub mod groups;
+pub mod hint;
 pub mod http;
 pub mod identity;
 pub mod input;
@@ -40,6 +44,7 @@ pub mod sessions;
 #[cfg(test)]
 mod tests;
 pub mod transfer;
+pub mod visits;
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -110,8 +115,10 @@ pub struct Tuning {
     /// Interval of the housekeeping loop.
     pub tick: Duration,
     pub lease_ttl_ms: u64,
-    /// The `agent-browser` command (default: [`reflow::find_agent_browser`]).
+    /// The `agent-browser` command (default: [`background::find_agent_browser`]).
     pub agent_browser: Option<PathBuf>,
+    /// How long a background run waits for its turn in the browser.
+    pub background_queue_wait: Duration,
     /// The owner's reflow library (default: the one of the Zone the service runs in).
     pub reflow_library: Option<reflow::Library>,
     /// The waits of a screen connection.
@@ -132,6 +139,7 @@ impl Default for Tuning {
             tick: Duration::from_secs(1),
             lease_ttl_ms: groups::LEASE_TTL_MS,
             agent_browser: None,
+            background_queue_wait: Duration::from_secs(300),
             reflow_library: None,
             screen: screen::Timing::default(),
             upload_limit: transfer::UPLOAD_LIMIT,
@@ -198,6 +206,9 @@ struct Shared {
     last_active: Instant,
     stopping: bool,
     restoring: bool,
+    /// The browser was started for background work only: the tabs it had
+    /// when it stopped wait until someone uses it.
+    dormant: bool,
     /// What `groups.json` holds.
     written: String,
 }
@@ -216,6 +227,8 @@ pub struct BrowserModule {
     revision: watch::Sender<u64>,
     closed: AtomicBool,
     reflow: reflow::Reflow,
+    background: background::Background,
+    visits: Mutex<visits::Visits>,
     /// What pages show outside themselves, for the screens.
     outside: requests::Outside,
     /// The tabs whose frames are being taken.
@@ -243,7 +256,7 @@ impl Drop for Viewer {
 }
 
 /// While it lives, tabs that appear without an opener belong to its group
-/// (a command opens tabs of its own, like a reflow refresh in `_reflow`).
+/// (a command opens tabs of its own, like a background run in `_job`).
 pub struct ExpectedTabs {
     module: Arc<BrowserModule>,
     id: u64,
@@ -269,6 +282,7 @@ impl BrowserModule {
         let mut groups = Groups::new(cfg.max_tabs).with_lease_ttl(tuning.lease_ttl_ms);
         groups.load(&groups_file);
         let written = groups.to_json();
+        let visits = visits::Visits::open(groups_file.parent().expect("groups.json has a directory"), cfg.visits);
         let outside = requests::Outside::new(&tuning.dirs.clone().unwrap_or_else(|| BrowserDirs::of(&deps.agent_root)), tuning.screen.dialog);
         Arc::new_cyclic(|me| Self {
             me: me.clone(),
@@ -297,11 +311,14 @@ impl BrowserModule {
                 last_active: Instant::now(),
                 stopping: false,
                 restoring: false,
+                dormant: false,
                 written,
             }),
             revision: watch::channel(0).0,
             closed: AtomicBool::new(false),
             reflow: reflow::Reflow::default(),
+            background: background::Background::default(),
+            visits: Mutex::new(visits),
             outside,
             casts: screen::Casts::default(),
             proxies: Arc::new(proxy::Proxies::default()),
@@ -583,21 +600,38 @@ impl BrowserModule {
 
     /// Start the browser unless it runs. Returns the connection to it.
     pub async fn ensure(&self) -> Result<Arc<CdpClient>, BrowserError> {
+        self.ensure_for(false).await
+    }
+
+    /// [`Self::ensure`], for someone who uses the browser, or for
+    /// `background` work of the service's own. Started for that only, the
+    /// browser does not open the tabs it had and is stopped soon after
+    /// (`background_idle_stop_secs`); they are opened as soon as someone
+    /// uses it.
+    pub(super) async fn ensure_for(&self, background: bool) -> Result<Arc<CdpClient>, BrowserError> {
         self.usable()?;
         if self.closed.load(Ordering::SeqCst) {
             return Err(BrowserError::unavailable("the Agent Service is shutting down"));
         }
         let mut life = self.life.lock().await;
-        if let Some(proc) = life.proc.as_ref().filter(|p| !p.cdp.is_closed()) {
-            self.shared().last_active = Instant::now();
-            return Ok(proc.cdp.clone());
+        if let Some(cdp) = life.proc.as_ref().filter(|p| !p.cdp.is_closed()).map(|p| p.cdp.clone()) {
+            let dormant = {
+                let mut s = self.shared();
+                s.last_active = Instant::now();
+                s.dormant
+            };
+            if dormant && !background {
+                log::info!("browser: it was started for background work only and is used now: its tabs are opened");
+                self.reopen_saved(&cdp).await;
+            }
+            return Ok(cdp);
         }
         self.stop(&mut life, "its connection is closed").await;
         life.crashes = 0;
-        self.start(&mut life).await
+        self.start(&mut life, background).await
     }
 
-    async fn start(&self, life: &mut Life) -> Result<Arc<CdpClient>, BrowserError> {
+    async fn start(&self, life: &mut Life, dormant: bool) -> Result<Arc<CdpClient>, BrowserError> {
         let exe = self.usable()?;
         let (display, shown) = match self.headed() {
             false => (None, process::Shown::Headless),
@@ -668,6 +702,7 @@ impl BrowserModule {
             s.last_active = Instant::now();
             s.stopping = false;
             s.restoring = true;
+            s.dormant = dormant;
         }
         let tracker = tokio::spawn(self.me().track(cdp.clone(), events, pid));
         tokio::spawn(self.me().monitor(child, generation, exited_tx));
@@ -725,16 +760,28 @@ impl BrowserModule {
         let browser_version = product.rsplit('/').next().filter(|v| !v.is_empty()).map(str::to_string);
         log::info!("browser: {product} started (pid {pid}, debugging port {port}, profile {})", self.dirs.profile.display());
 
-        // What was open when it stopped.
+        self.shared().browser_version = browser_version;
+        if dormant {
+            self.shared().restoring = false;
+            self.bump();
+        } else {
+            self.reopen_saved(&cdp).await;
+        }
+        Ok(cdp)
+    }
+
+    /// Open what was open when the browser stopped.
+    async fn reopen_saved(&self, cdp: &CdpClient) {
         let saved = {
             let mut s = self.shared();
-            s.browser_version = browser_version;
+            s.restoring = true;
+            s.dormant = false;
             s.groups.take_saved()
         };
         for (group_id, tabs, active) in saved {
             let mut opened = Vec::new();
             for tab in tabs {
-                match self.open_in(&cdp, &group_id, &tab.url).await {
+                match self.open_in(cdp, &group_id, &tab.url).await {
                     Ok(tab_id) => opened.push(Some(tab_id)),
                     Err(e) => {
                         log::warn!("browser: tab {} of group {group_id} was not opened again: {e}", tab.url);
@@ -748,7 +795,6 @@ impl BrowserModule {
         }
         self.shared().restoring = false;
         self.bump();
-        Ok(cdp)
     }
 
     /// End the browser: it is asked to close; if it does not, its process
@@ -850,7 +896,8 @@ impl BrowserModule {
             if life.proc.is_some() || life.generation != generation || self.closed.load(Ordering::SeqCst) {
                 return;
             }
-            match self.start(&mut life).await {
+            let dormant = self.shared().dormant;
+            match self.start(&mut life, dormant).await {
                 Ok(_) => {
                     log::info!("browser: started again after it ended unexpectedly");
                     return;
@@ -963,6 +1010,7 @@ impl BrowserModule {
         };
         if changed {
             self.bump();
+            self.note_visit();
         }
     }
 
@@ -1123,7 +1171,7 @@ impl BrowserModule {
     /// Keep a headed browser's windows on its display: a tab's window has
     /// the display's size (a popup keeps its own, within the display); the
     /// group's current tab is the window in front, also after a window of
-    /// the module's own (a reflow's) opened over it.
+    /// the module's own (a background run's) opened over it.
     async fn keep_windows(self: Arc<Self>, cdp: Arc<CdpClient>, display: Arc<Display>) {
         let mut changes = self.changes();
         let mut painting = display.painting();
@@ -1196,12 +1244,16 @@ impl BrowserModule {
         }
     }
 
-    fn idle(&self) -> bool {
+    /// How long the browser has been used by nobody, when that is long
+    /// enough to stop it.
+    fn idle(&self) -> Option<Duration> {
         let mut s = self.shared();
-        if !s.viewers.is_empty() || s.groups.has_lease(now_ms()) || self.reflow.working() {
+        if !s.viewers.is_empty() || s.groups.has_lease(now_ms()) || self.background.working() {
             s.last_active = Instant::now();
         }
-        s.cdp.is_some() && s.last_active.elapsed() >= Duration::from_secs(self.cfg.idle_stop_secs)
+        let limit = if s.dormant { self.cfg.background_idle_stop_secs } else { self.cfg.idle_stop_secs };
+        let unused = s.last_active.elapsed();
+        (s.cdp.is_some() && unused >= Duration::from_secs(limit)).then_some(unused)
     }
 
     async fn housekeep(&self, ticks: u64) {
@@ -1220,10 +1272,12 @@ impl BrowserModule {
                 self.refresh_waiting().await;
             }
         }
-        if self.idle() {
+        self.note_visit();
+        self.visits().flush(now_ms(), false);
+        if self.idle().is_some() {
             let mut life = self.life.lock().await;
-            if self.idle() {
-                self.stop(&mut life, &format!("nobody used it for {}s", self.cfg.idle_stop_secs)).await;
+            if let Some(unused) = self.idle() {
+                self.stop(&mut life, &format!("nobody used it for {}s", unused.as_secs())).await;
             }
         }
         self.persist();
@@ -1273,6 +1327,8 @@ impl BrowserModule {
         self.closed.store(true, Ordering::SeqCst);
         let mut life = self.life.lock().await;
         self.stop(&mut life, "the Agent Service ends").await;
+        self.note_visit();
+        self.visits().flush(now_ms(), true);
     }
 
     // ------------------------------------------------------------------

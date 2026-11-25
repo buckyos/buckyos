@@ -1,0 +1,15 @@
+{
+  "schema": "buckyos.site.source/1",
+  "id": "news-yahoo-co-jp",
+  "title": "Yahoo!ニュース",
+  "home_url": "https://news.yahoo.co.jp/",
+  "match": [{ "host": "news.yahoo.co.jp" }],
+  "lang": "ja",
+  "kind": "news",
+  "needs": "http",
+  "every_secs": 1800,
+  "max_new": 20,
+  "keep_days": 30,
+  "comments": 10,
+  "check": { "min_chars": 200, "median_ratio": 0.3, "max_replacement": 0.01 }
+}

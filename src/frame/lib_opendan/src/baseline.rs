@@ -87,6 +87,7 @@ pub const STANDARD_TOOLS: &[BaselineTool] = &[
     tool("materialize_resource", ToolCategory::BuckyosService, AGENT_TOOLS_SOURCE),
     tool("reflow", ToolCategory::BuckyosService, AGENT_TOOLS_SOURCE),
     tool("resume_aicc_task", ToolCategory::BuckyosService, AGENT_TOOLS_SOURCE),
+    tool("site", ToolCategory::BuckyosService, AGENT_TOOLS_SOURCE),
     helper("llm_understand_media", ToolCategory::Media, AGENT_TOOL_SOURCE, "agent_tool"),
     tool("caption_image", ToolCategory::Media, AGENT_TOOLS_SOURCE),
     tool("detect_image", ToolCategory::Media, AGENT_TOOLS_SOURCE),
@@ -697,8 +698,14 @@ fn run_deno_command(root: &Path, name: &str, args: &[std::ffi::OsString], env: V
     cmd.arg("run")
         .arg("--config")
         .arg(tool.join("deno.json"))
-        .args(["--allow-net", "--allow-read", "--allow-write", "--allow-env", "--unsafely-ignore-certificate-errors"])
-        .arg(tool.join("aicc-tool.ts"));
+        .args(["--allow-net", "--allow-read", "--allow-write", "--allow-env", "--unsafely-ignore-certificate-errors"]);
+    // `site` scales pictures with ext-core's `magick`: the one program these commands may start, when the host has it.
+    let path = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.into()).or_else(|| std::env::var_os("PATH"));
+    let magick = format!("magick{}", std::env::consts::EXE_SUFFIX);
+    if let Some(magick) = path.and_then(|p| std::env::split_paths(&p).map(|d| d.join(&magick)).find(|p| p.is_file())) {
+        cmd.arg(format!("--allow-run={}", magick.display()));
+    }
+    cmd.arg(tool.join("aicc-tool.ts"));
     if name != "aicc-tool" {
         cmd.arg(name);
     }

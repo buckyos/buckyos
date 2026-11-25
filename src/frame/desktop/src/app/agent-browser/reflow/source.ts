@@ -1,6 +1,6 @@
-/* Where the reflow library and its pages are: on a Zone, the user's bucket and the host `reflow.<zone>` (Agent
- * Browser Protocol §5.1, §5.4); in the mock runtime, mock/reflow.ts. Everything above this file is the same code
- * in both. */
+/* Where the user's reflow bucket and its pages are (the personal site, the pages tidied one by one): on a Zone, the
+ * bucket and the host `reflow.<zone>` (Agent Browser Protocol §5.1, §5.4); in the mock runtime, mock/reflow.ts.
+ * Everything above this file is the same code in both. */
 
 import { bucket, buckyos } from 'buckyos'
 import { fetchCurrentAccount } from '../../../api/account'
@@ -18,7 +18,7 @@ export interface ReflowSource {
   library(): Promise<Library>
   /** The origin reflow pages are served from: the only one whose messages the App takes (§5.5). */
   readonly origin: string
-  /** Signs the user in on that origin for `view` (a path of §5.3); each load of the frame goes through it again. */
+  /** Signs the user in on that origin for `view` (a path of §5.3, or `?<route>` of the personal site); each load of the frame goes through it again. */
   openPage(view: string): Promise<PageLoad>
 }
 

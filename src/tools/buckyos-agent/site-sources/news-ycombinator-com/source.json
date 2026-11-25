@@ -1,0 +1,15 @@
+{
+  "schema": "buckyos.site.source/1",
+  "id": "news-ycombinator-com",
+  "title": "Hacker News",
+  "home_url": "https://news.ycombinator.com/",
+  "match": [{ "host": "news.ycombinator.com" }],
+  "lang": "en",
+  "kind": "forum",
+  "needs": "http",
+  "every_secs": 3600,
+  "max_new": 10,
+  "keep_days": 30,
+  "comments": 10,
+  "check": { "min_chars": 400 }
+}

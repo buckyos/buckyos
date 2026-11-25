@@ -138,15 +138,27 @@ function useDidErrorText(code: string): string | null {
   return t('sso.login.didError.failed', 'DID sign-in did not complete. Try again.')
 }
 
+/** The system service whose pages live on the origin of `address`, when the Zone login can hand its own session
+ * over to it: an AI Workspace on `aiws-<id>.<zone>`, the personal site and reflow pages nfs-server serves on
+ * `reflow.<zone>` (Personal Site Protocol §7). */
+function handoffService(address: string): 'aiworkspace' | 'nfs-server' | null {
+  if (isZoneWorkspaceUrl(address)) return 'aiworkspace'
+  if (!URL.canParse(address)) return null
+  const url = new URL(address)
+  const { protocol, host } = window.location
+  const reflow = url.host === `reflow.${host}` || url.host === `reflow-${host}`
+  return reflow && url.protocol === protocol && !url.username && !url.password ? 'nfs-server' : null
+}
+
 /** On failure, the DID callback wraps its original return page in another /login URL. */
 function loginDestination(params: URLSearchParams): string {
   const destination = params.get('redirect_url') ?? ''
   if (params.has('did_error') && URL.canParse(destination)) {
     const back = new URL(destination)
-    const workspace = back.searchParams.get('redirect_url')
+    const page = back.searchParams.get('redirect_url')
     if (back.origin === window.location.origin && back.pathname === '/login'
-      && back.searchParams.get('did_return') === '1' && workspace && isZoneWorkspaceUrl(workspace)) {
-      return workspace
+      && back.searchParams.get('did_return') === '1' && page && handoffService(page)) {
+      return page
     }
   }
   return destination
@@ -161,7 +173,7 @@ const LoginPage = () => {
   )
   const didErrorText = useDidErrorText(searchParams.get('did_error') ?? '')
   const didReturned = searchParams.get('did_return') === '1'
-  const workspaceTarget = isZoneWorkspaceUrl(redirectUrl)
+  const service = handoffService(redirectUrl)
   const zone = useZonePresentation()
 
   const [requester, setRequester] = useState<{ url: string; name: string } | null>(null)
@@ -207,10 +219,10 @@ const LoginPage = () => {
     return () => { live = false }
   }, [redirectUrl])
 
-  // A page on a Workspace's own origin (`aiws-<id>.<zone>`, AI Workspace T4-8) sent its visitor here: someone
-  // already signed in on this host is handed over through the Control Panel's launch — the one-time callback on
-  // that origin signs them in there — without seeing the form. Anyone else signs in as usual.
-  const [handoff, setHandoff] = useState(workspaceTarget && !didErrorText)
+  // A page on a Workspace's own origin (`aiws-<id>.<zone>`, AI Workspace T4-8) or on `reflow.<zone>` sent its
+  // visitor here: someone already signed in on this host is handed over through the Control Panel's launch — the
+  // one-time callback on that origin signs them in there — without seeing the form. Anyone else signs in as usual.
+  const [handoff, setHandoff] = useState(service !== null && !didErrorText)
   const [handoffFailed, setHandoffFailed] = useState(false)
   useEffect(() => {
     if (!handoff) return
@@ -218,16 +230,16 @@ const LoginPage = () => {
     void (async () => {
       const identity = await loadCurrentIdentity().catch(() => ANONYMOUS_IDENTITY)
       if (!live) return
-      const launch = identity.kind === 'anonymous' ? null : await requestServiceLaunch('aiworkspace', redirectUrl).catch(() => null)
+      const launch = identity.kind === 'anonymous' || !service ? null : await requestServiceLaunch(service, redirectUrl).catch(() => null)
       if (!live) return
       if (launch?.status === 'ready') window.location.replace(launch.callback_url)
       else {
-        setHandoffFailed(didReturned || identity.kind !== 'anonymous')
+        setHandoffFailed(service === 'aiworkspace' && (didReturned || identity.kind !== 'anonymous'))
         setHandoff(false)
       }
     })()
     return () => { live = false }
-  }, [handoff, redirectUrl, didReturned])
+  }, [handoff, service, redirectUrl, didReturned])
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -265,9 +277,9 @@ const LoginPage = () => {
   )
 
   const disabled = submitting
-  // Federation sets the Zone root's cookie. Resume here to launch a Workspace on its own host.
+  // Federation sets the Zone root's cookie. Resume here to launch the page on its own host.
   let didRedirectUrl = redirectUrl || new URL('/', window.location.origin).href
-  if (workspaceTarget) {
+  if (service) {
     const didReturn = new URL('/login', window.location.origin)
     didReturn.searchParams.set('redirect_url', redirectUrl)
     didReturn.searchParams.set('did_return', '1')

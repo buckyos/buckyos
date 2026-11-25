@@ -69,7 +69,8 @@ Deno 是当前标准 TS 工具的运行依赖，但 `deno` 这个命令名不在
 | `ai_provider` | 查询 provider、模型清单及模型健康状态；子命令包括 `list`、`models`、`health`。 |
 | `ai_quota` | 查询影响当前身份或指定 App 的 AI 配额。 |
 | `materialize_resource` | 将对象、URL 等资源保存为当前执行端的本地文件。 |
-| `reflow` | 读写用户的重排库（Agent 浏览器）：`match`、`ls`、`get`、`put`、`rm`、`result put`、`refresh`；规则见 [Agent Browser Protocol](protocol/Agent%20Browser%20Protocol.md) §5。 |
+| `reflow` | 用户重排库里的兜底页（“只整理这一页”）：`match`、`ls`、`rm`、`result put`；规则见 [Agent Browser Protocol](protocol/Agent%20Browser%20Protocol.md) §5。 |
+| `site` | 用户的个人重排站：`init`、`status`、`match`、`config`、`source`、`try`、`sync`、`template`、`preview`、`upgrade`、`events`、`supplement`、`reading`；契约见 [Personal Site Protocol](protocol/Personal%20Site%20Protocol.md)。 |
 | `resume_aicc_task` | 查询/继续等待已有 AICC 任务并取得结果，避免重复提交生成请求。 |
 | `ai_provider_test` | 当前清单中的测试入口；不是可用的产品 CLI，不应用它做 provider 健康检查，见 §2.3。 |
 

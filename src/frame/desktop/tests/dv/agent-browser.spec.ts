@@ -210,6 +210,8 @@ async function openBrowser(page: Page) {
   await expect(root).toBeVisible()
   if ((await root.getAttribute('data-agent')) !== AGENT) await page.getByTestId(`ab-agent-${AGENT}`).click()
   await expect(root).toHaveAttribute('data-agent', AGENT)
+  // The App opens at home, which does not connect the browser's screen.
+  await page.getByTestId('ab-mode-page').click()
   await expect(page.getByTestId('ab-screen')).toHaveAttribute('data-status', 'open', { timeout: 40_000 })
   // What an earlier run left waiting.
   await page.waitForTimeout(800)
@@ -435,6 +437,7 @@ test('files: from the Zone and from this device into the page; a download saved 
     await page.reload()
     await expect(page.getByRole('button', { name: 'BuckyOS' }).first()).toBeVisible({ timeout: 40_000 })
     await openFromAllApps(page, 'agent-browser')
+    await page.getByTestId('ab-mode-page').click()
     await expect(page.getByTestId('ab-file-chooser')).toBeVisible({ timeout: 40_000 })
     await page.waitForTimeout(1500)
     await expect(picker).toHaveCount(0)

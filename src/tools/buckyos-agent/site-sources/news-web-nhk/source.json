@@ -1,0 +1,15 @@
+{
+  "schema": "buckyos.site.source/1",
+  "id": "news-web-nhk",
+  "title": "NHKニュース",
+  "home_url": "https://news.web.nhk/newsweb/",
+  "match": [{ "host": "news.web.nhk" }, { "host": "www3.nhk.or.jp", "path": "/news/*" }],
+  "lang": "ja",
+  "kind": "news",
+  "needs": "http",
+  "every_secs": 1800,
+  "max_new": 20,
+  "keep_days": 30,
+  "comments": 0,
+  "check": { "min_chars": 40 }
+}

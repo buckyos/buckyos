@@ -6,7 +6,7 @@ import { useAgentBrowser, useAgentBrowserStore } from '../store/context'
 import { ThingConversation } from './ThingConversation'
 
 /**
- * The conversation pulled up over the page (original page and reflow modes), closed by default: from the bottom on
+ * The conversation pulled up over the stage (home and original page modes), closed by default: from the bottom on
  * a phone, at the side of a wide window. The page stays usable beside it; the phone's Back puts it away.
  */
 export function ConversationSheet() {

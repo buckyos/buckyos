@@ -2,7 +2,7 @@
   "schema_version": 1,
   "did": "did:bns:ext-core.buckyos",
   "name": "ext-core",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "owner": "did:bns:buckyos",
   "author": "did:bns:buckyos",
   "show_name": "BuckyOS core extension tools",

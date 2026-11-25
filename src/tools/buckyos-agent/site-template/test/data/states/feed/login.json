@@ -1,0 +1,33 @@
+{
+  "schema": "buckyos.site.feed/1",
+  "source": "login",
+  "status": {
+    "state": "needs_login",
+    "checked_at": 1764001800000,
+    "published_at": 1764001800000,
+    "error": {
+      "kind": "auth",
+      "message": "HTTP 403 from the article list",
+      "at": 1764001800000
+    },
+    "pending": null,
+    "login_url": "https://login.example.com/account/sign-in"
+  },
+  "items": [
+    {
+      "id": "2d799fe800000000",
+      "object_id": "cyfeed:0000000000000000000000000000000000000000000000000000000000000000",
+      "url": "https://login.example.com/a/0",
+      "title": "An article of login",
+      "summary": "A summary that says what the article is about.",
+      "image": null,
+      "tags": [
+        "Tech"
+      ],
+      "published_at": 1764000000000,
+      "fetched_at": 1764001700000,
+      "rev": 1
+    }
+  ],
+  "updated_at": 1764001800000
+}

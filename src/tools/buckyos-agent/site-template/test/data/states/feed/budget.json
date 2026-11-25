@@ -1,0 +1,33 @@
+{
+  "schema": "buckyos.site.feed/1",
+  "source": "budget",
+  "status": {
+    "state": "ok",
+    "checked_at": 1764001800000,
+    "published_at": 1764001800000,
+    "error": null,
+    "pending": {
+      "count": 2,
+      "reason": "translate_budget",
+      "message": ""
+    },
+    "login_url": null
+  },
+  "items": [
+    {
+      "id": "082760f300000000",
+      "object_id": "cyfeed:0000000000000000000000000000000000000000000000000000000000000000",
+      "url": "https://budget.example.com/a/0",
+      "title": "An article of budget",
+      "summary": "A summary that says what the article is about.",
+      "image": null,
+      "tags": [
+        "Tech"
+      ],
+      "published_at": 1764000000000,
+      "fetched_at": 1764001700000,
+      "rev": 1
+    }
+  ],
+  "updated_at": 1764001800000
+}

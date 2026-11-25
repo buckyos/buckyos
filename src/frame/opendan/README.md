@@ -16,7 +16,7 @@
 | `service.rs` | Agent State kRPC 服务、Session 观测、三个操作、Loader 状态 |
 | `home.rs` | 首页用的数据：Agent 资料卡、按模型的 token 用量、UI Session 对应的会话、Agent State 登记的 Workspace 展示 |
 | `objects.rs` | 产物出站：报告与回复的文件存进 named store 并绑进本 Agent 的 `artifacts` 桶，`obj://bucket/...` 引用复制进该桶（见下文“产物”） |
-| `browser/` | Agent 的常驻浏览器（见下文“浏览器”）：`process.rs` 进程的启动、停止和回收，`cdp.rs` DevTools 协议客户端，`groups.rs` 分组、标签页、租约和操作方，`sessions.rs` 会话到组的换算与写给会话的记录，`rpc.rs` kRPC `browser.*`，`http.rs` 屏幕和上传的入口，`screen.rs` 一条屏幕连接（握手、状态、截屏流的节奏），`input.rs` 用户的输入换成 DevTools 的输入命令，`requests.rs` 页面之外的界面（下拉框、弹框、文件选择、下载、权限、焦点）和注入的脚本 `screen_page.js`、`screen_permissions.js`，`transfer.rs` 上传和下载，`reflow.rs` 重排库和刷新，`mod.rs` 模块本体 |
+| `browser/` | Agent 的常驻浏览器（见下文“浏览器”）：`process.rs` 进程的启动、停止和回收，`cdp.rs` DevTools 协议客户端，`groups.rs` 分组、标签页、租约和操作方，`sessions.rs` 会话到组的换算与写给会话的记录，`rpc.rs` kRPC `browser.*`，`http.rs` 屏幕和上传的入口，`screen.rs` 一条屏幕连接（握手、状态、截屏流的节奏），`input.rs` 用户的输入换成 DevTools 的输入命令，`requests.rs` 页面之外的界面（下拉框、弹框、文件选择、下载、权限、焦点）和注入的脚本 `screen_page.js`、`screen_permissions.js`，`transfer.rs` 上传和下载，`reflow.rs` 重排库里一个网址有什么，`background.rs` 后台任务（`browser.background_run`），`hint.rs` 页面提示和它在页面里数数的脚本 `hint_page.js`，`visits.rs` 浏览记录，`mod.rs` 模块本体 |
 | `web/` | WebUI：首页（资料卡、工作概况、Session 列表，按手机屏幕设计）+ 观测页（Sessions / Agent State / Loader，`#/sessions` 起），数据全部来自 kRPC |
 
 ## Agent 与它的 Owner
@@ -343,11 +343,13 @@ Agent 的常驻浏览器：一个无头 Chromium，跑在 Agent Service 所在�
 | `browser.clear_profile` | `{}` | 停掉浏览器，清空登录状态和缓存 | owner |
 | `browser.upload` | `{request_id, zone_path, done?}` | 回应屏幕上的一个 `file_chooser` 请求：用调用者的令牌从 Zone 读 `zone_path`（nfs-server 的 `stat` 加 `/nfs/v1/read`），存到 `<浏览器目录>/uploads/<request_id>/`；带 `done` 时把这个请求收到的文件一起交给页面的输入框。`{}` | owner |
 | `browser.download_export` | `{download_id}` | 把一个下载好的文件登记成命名对象（绑进 `artifacts` 桶，并交给调用者），供 App 存进 Zone：`{obj_id, name, size}` | owner |
-| `browser.reflow_state` | `{url}` | 重排库里这个网址有什么：`{url, site, page, package, result, fallback, refresh: {status: idle \| running \| failed, error, at_ms}, view}`（协议 §5.3）。只读桶，不需要浏览器：模块关着、节点没装 ext-core 或浏览器还没下载好时照常返回 | owner、Agent |
-| `browser.reflow_refresh` | `{url}` | 按匹配的包在后台标签页里重新制作这一页的结果；立刻返回，结构同上，`refresh.status` 是 `running`。没有匹配的包时 `reflow_no_package` | owner、Agent |
-| `browser.reflow_action` | `{url, selector}` | 先在原网页上点一下 `selector`，再按包刷新这一页；返回同上 | owner |
+| `browser.reflow_state` | `{url}` | 重排库里这个网址有什么：`{url, site, page, fallback, view}`，`view` 是兜底页（没有时为 `null`）。只读桶，不需要浏览器：模块关着、节点没装 ext-core 或浏览器还没下载好时照常返回 | owner、Agent |
+| `browser.background_run` | `{script_path, url?, args?, timeout_s?}` | 在浏览器的一个后台标签页里跑一段脚本（`.mjs`，默认导出 `async ({ page, request, save, url, args }) => data`），同步返回 `{data}`；不取租约，同一时刻只跑一个，其余排队（协议 §7.1） | owner、Agent |
+| `browser.page_hint` | `{}` | 当前标签页是用来读的还是用来办事的：`{hint: reading \| task \| unknown, url, title}`，不用模型；不启动浏览器（协议 §7.2） | owner、Agent |
+| `browser.visits` | `{since_ms?}` | 主人看过的网址：`{enabled, visits: [{url, title, first_at_ms, last_at_ms, dwell_ms, count}]}`，新的在前，至多 500 条（协议 §7.3）。不需要浏览器 | owner、这个 Agent 自己 |
+| `browser.visits_set_enabled` / `browser.visits_clear` | `{enabled}` / `{}` | 开关浏览记录 `{enabled}`；清除 `{}`。不需要浏览器 | owner |
 
-- 权限：“owner”的方法在 `is_owner_only` 里，任何 Agent 的 App 身份（含本 Agent 自己）调不通；“Agent”的方法本 Agent 的 App 身份不论对 owner 目录是只读还是读写都调得通。
+- 权限：“owner”的方法在 `is_owner_only` 里，任何 Agent 的 App 身份（含本 Agent 自己）调不通；“Agent”的方法本 Agent 的 App 身份不论对 owner 目录是只读还是读写都调得通。`browser.visits` 另有一条（`is_own_only`）：主人名下别的 Agent 不论权限都调不通，只有 owner 和这个 Agent 自己。
 - 错误的 JSON 在 `kind`、`message` 之外带 `code`（`browser_unavailable`、`user_in_control`、`lease_lost`、`no_such_group`、`no_such_tab`、`no_such_request`、`no_such_download`、`too_many_tabs`、`upload_too_large`、`invalid_argument` 等）。`browser_unavailable` 在原因是模块关着、节点没装 ext-core、浏览器还没下载好时另带 `unavailable_code`（取值同 `browser.status`）；屏幕握手的 `error` 和上传的 503 正文也带。
 - 浏览器在不在是每次调用现查的（`process.rs` 的 `find_chromium`），不记“不可用”的结论：ext-core 装好、浏览器下载好之后，下一次 `browser.status`、`ensure`、`acquire` 就可用，不用重启 Agent Service。`loader.status` 的 `modules` 里 `browser` 那一项是服务启动时看到的情况，之后不更新，当前状态看 `browser.status`。
 - 屏幕：`GET <挂载路径>/browser/screen` 升级成 WebSocket（协议 §3）。连上后 5 秒内的第一条消息是 `hello {token, group_id, viewport}`，按 owner 校验（和 kRPC 同一个 `caller`，方法名 `browser.screen`：Agent 自己的 App 身份连不上），通过后回 `ready`。一条连接看一个组：组的状态一变就收到全量的 `state`；当前标签页的画面是 JPEG 帧（`Page.startScreencast`），最多一帧没确认、只留最新、每秒最多 15 帧；用户的触摸、鼠标、按键、文字和输入法组字换成 DevTools 的输入命令送进页面，操作方是 Agent 时被丢弃（回 `agent_in_control`）。视口跟着连接：手机按手机模拟（尺寸、触屏、手机 UA），可以切桌面版。几条连接看同一个标签页时，标签页用最近设置视口的那一条的；它断开或不再看这个标签页，就换成剩下的连接里最近设置的那个，不重新加载；每条连接的 `state.viewport` 报的是生效的那个。Agent 的 Playwright 截图会让页面上的设备模拟失效，所以操作方从 Agent 回到用户时（租约释放、过期、被接手）给正在看的标签页重套一次视口，不重新加载。浏览器启动时关掉了光标闪烁（`--disable-blink-features=CaretBlinking`），有焦点的输入框不会每半秒出一帧。浏览器没在运行时连上会启动它；浏览器重启后连接自己换到新的标签页。客户端 30 秒不说话就断开。
@@ -355,8 +357,10 @@ Agent 的常驻浏览器：一个无头 Chromium，跑在 Agent Service 所在�
 - 本机文件上传：`PUT <挂载路径>/browser/upload/<request_id>?name=<文件名>[&done=1]`，`Authorization: Bearer <令牌>`，请求体边收边写盘，单个文件上限 100 MiB（413 `upload_too_large`），失败时正文是 `{code, message}`（协议 §4）。
 - 下载：浏览器的下载落在 `<浏览器目录>/downloads/<download_id>`；模块记着最近 64 个、每个 24 小时，过了连文件一起删，服务重启后不认以前的 `download_id`。
 - 进程环境里的 `OPENDAN_BROWSER_RPC`（`http://127.0.0.1:<服务端口>/kapi/<agent_id>`）是会话里的命令（`agent-browser`）找到这组方法的地方；私有 runtime 的会话继承它，其他节点上的会话没有，也就没有常驻浏览器。
-- 重排（`browser/reflow.rs`，规则见协议 §5）：重排库是 owner 的桶 `user/control-panel/<owner>/reflow`，经 nfs-server 的 `/bucket/v1` 读写，带的是调用者的令牌（调用者没带令牌时用服务自己的）。所以只读权限的 Agent 能发起刷新，但结果写不进去：状态是 `failed`，`error` 里是桶的原话。刷新由 `agent-browser reflow-run` 执行，可执行文件是 `OPENDAN_AGENT_BROWSER`，否则是工具目录里的 `agent-browser`（ext-core 提供），找不到时 `browser_unavailable`。这个子进程不继承服务的环境：只留 `PATH`、语言环境和指到临时目录（`<浏览器目录>/reflow/<page>/`，刷新结束就删）里的 `HOME`、`TMPDIR`，服务的会话令牌到不了包的 `refresh.mjs` 手里。同一时刻只跑一个刷新，其余排队；刷新进行中算浏览器在用，不会被空闲回收。刷新状态只在内存里，服务重启后回到 `idle`。
-- 配置 `agent.toml` 的 `[loader.browser]`：`enabled`（默认 `true`）、`idle_stop_secs`（默认 600：没人看、没有租约这么久就停掉，标签页存进 `<AgentRoot>/state/browser/groups.json`，下次启动重开）、`max_tabs`（默认 12）。浏览器的可执行文件是 `OPENDAN_CHROMIUM`（调试和测试用，设了就不看在线项），否则是工具目录里的 `chromium` 启动器（ext-core 提供）。浏览器本体是 ext-core 的在线项，不随包分发，包装好以后由节点下载到 `$BUCKYOS_ROOT/tools/online/chromium/`（容器里 `/opt/buckyos/tools/online/chromium/`），记录在旁边的 `chromium.json`；启动器按自己的位置找它。没有启动器（`no_package`）或记录没到 `ready`（`not_downloaded`：还没下载、正在下载、下载失败）时模块报不可用，其他功能照常。目录是 `OPENDAN_BROWSER_DIR`（容器里是 `/opt/buckyos/instance/browser`），否则 `<AgentRoot>/.cache/browser`。
+- 重排（`browser/reflow.rs`，规则见协议 §5）：重排库是 owner 的桶 `user/control-panel/<owner>/reflow`，服务只读它：`browser.reflow_state` 经 nfs-server 的 `/bucket/v1` 读 `<site>/fallback/<page>.json`，带的是调用者的令牌（调用者没带令牌时用服务自己的），被拒时错误里是桶的原话。服务不再制作页面：没有包的刷新，也不读写 `manifest.json`、`results/`。
+- 后台任务（`browser/background.rs`，协议 §7.1）：`browser.background_run` 由 `agent-browser background-run` 执行，可执行文件是 `OPENDAN_AGENT_BROWSER`，否则是工具目录里的 `agent-browser`（ext-core 提供），找不到时 `browser_unavailable`。这个子进程不继承服务的环境：只留 `PATH`、语言环境和指到临时目录（`<浏览器目录>/job/`，任务结束就删）里的 `HOME`、`TMPDIR`，服务的会话令牌到不了脚本手里。它开的标签页归 `_job` 组（不出现在 `status` 里、不落盘、不计入 `max_tabs`）。同一时刻只跑一个，其余排队；任务进行中算浏览器在用，不会被空闲回收。浏览器只为后台任务启动时不重开存下来的标签页，任务跑完 `background_idle_stop_secs` 后就停；有人来看或 Agent 取了租约就补开标签页、按平常的规则。
+- 浏览记录（`browser/visits.rs`，协议 §7.3）：有人在看屏幕、操作方是用户、不在密码交接期间时，`default` 组当前标签页的网址去掉查询串和片段后记进 `<AgentRoot>/state/browser/visits.jsonl`（一行一条，90 天、至多 5000 条）；开关在同目录的 `visits.json`，没有这个文件时取配置的 `visits`。
+- 配置 `agent.toml` 的 `[loader.browser]`：`enabled`（默认 `true`）、`idle_stop_secs`（默认 600：没人看、没有租约这么久就停掉，标签页存进 `<AgentRoot>/state/browser/groups.json`，下次启动重开）、`max_tabs`（默认 12）、`visits`（默认 `true`：浏览记录的缺省开关，主人改过之后以改的为准）、`background_idle_stop_secs`（默认 60：只为后台任务启动的浏览器，任务跑完这么久就停）。浏览器的可执行文件是 `OPENDAN_CHROMIUM`（调试和测试用，设了就不看在线项），否则是工具目录里的 `chromium` 启动器（ext-core 提供）。浏览器本体是 ext-core 的在线项，不随包分发，包装好以后由节点下载到 `$BUCKYOS_ROOT/tools/online/chromium/`（容器里 `/opt/buckyos/tools/online/chromium/`），记录在旁边的 `chromium.json`；启动器按自己的位置找它。没有启动器（`no_package`）或记录没到 `ready`（`not_downloaded`：还没下载、正在下载、下载失败）时模块报不可用，其他功能照常。目录是 `OPENDAN_BROWSER_DIR`（容器里是 `/opt/buckyos/instance/browser`），否则 `<AgentRoot>/.cache/browser`。
 
 ### Loader 状态
 
@@ -427,10 +431,11 @@ OPENDAN_CHROMIUM=<chrome 可执行文件> cargo test -p opendan --lib browser::t
 # OPENDAN_TEST_FRAMES=<目录> 时把几帧存下来（看之前先 magick x.jpg x.png）。
 OPENDAN_CHROMIUM=<chrome 可执行文件> cargo test -p opendan --lib browser::screen_tests::real -- --ignored --test-threads=1
 
-# 重排刷新对着真的 `agent-browser reflow-run`、真的 Chromium 和进程内的 nfs-server（平时的用例用假的 agent-browser 和假的桶）。
-# 启动器是装好的 ext-core 里的 agent-browser；对着源码时写一个脚本：
+# 后台任务对着真的 `agent-browser background-run` 和真的 Chromium（平时的用例用假的 agent-browser）：用户在操作、
+# Agent 持租约、浏览器停着三种情况都能跑，互不影响；只为它启动的浏览器不重开标签页、很快停掉。
+# 启动器是装好的 ext-core（1.3.4 起）里的 agent-browser；对着源码时写一个脚本：
 #   NODE_PATH=<装了 playwright-core 的目录>/node_modules exec node publish/exttool/ext-core/browser/agent-browser.mjs "$@"
-OPENDAN_CHROMIUM=<chrome 可执行文件> OPENDAN_AGENT_BROWSER=<启动器> cargo test -p opendan --lib browser::reflow -- --ignored --test-threads=1
+OPENDAN_CHROMIUM=<chrome 可执行文件> OPENDAN_AGENT_BROWSER=<启动器> cargo test -p opendan --lib browser::background -- --ignored --test-threads=1
 
 # 真实 zone（DV 环境）：登录、Loader 状态、一次对话往返、经 Loader 观察 Session
 # Agent：BUCKYOS_TEST_AGENT_CREATE=<名字>（没有就创建）| BUCKYOS_TEST_AGENT_ID=<agent_id> | 当前用户第一个 ready 的

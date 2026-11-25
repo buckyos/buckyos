@@ -1,0 +1,14 @@
+{
+  "schema": "buckyos.site.source/1",
+  "id": "dv-members",
+  "title": "会员专栏",
+  "home_url": "http://172.17.0.1:18741/members",
+  "match": [{ "host": "172.17.0.1", "path": "/members*" }],
+  "lang": "zh-CN",
+  "kind": "blog",
+  "needs": "login",
+  "every_secs": 21600,
+  "max_new": 10,
+  "keep_days": 30,
+  "comments": 0
+}

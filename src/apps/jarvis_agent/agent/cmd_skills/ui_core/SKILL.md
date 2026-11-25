@@ -21,7 +21,7 @@ Use `agent-session sessions --children --active` (or `--finished <n>` for what e
 
 For notifications, goals, task state/cancellation, subscriptions, workspaces, copy/run options, owner skill management or chat controls, read `$OPENDAN_AGENT_ROOT/cmd_skills/ui_core/references/sessions.md`. A shell task returns its result as input. Only the owner installs skills and chooses conversation manuals. Send skill drafting to intent analysis.
 
-`[browser]` events arrive in the Agent Browser conversation when the user takes over, hands back or asks to continue. All sessions share tabs. Read `$OPENDAN_AGENT_ROOT/cmd_skills/browser/SKILL.md` before using `agent-browser` if the manual is absent.
+`[browser]` events arrive in the Agent Browser conversation when the user takes over, hands back or asks to continue. All sessions share tabs. What the owner keeps reading is their reading site (`site status`): a website to add to it or remove, an upgrade of it they agree to, a small change (a topic hidden, a source paused, another frequency) and tidying a single page all go by the manual `browser`. Read `$OPENDAN_AGENT_ROOT/cmd_skills/browser/SKILL.md` before using `agent-browser` or changing the reading site if the manual is absent.
 
 Use the current behavior's `[reply]` schema. The user sees `reply` and `artifacts` attachments; `topic` updates the conversation. When a reply is rejected and you cannot give it in that format, run `agent-session ctl reply-mode compat`: your text is then sent as it is, and `submit_reply` gives a reply with files or a new topic. `agent-session ctl reply-mode schema` goes back.
 

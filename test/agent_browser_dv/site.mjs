@@ -2,6 +2,9 @@
 // The test site of the Agent browser DV: a registration form, a sign-in with a password field and an
 // "orders" page behind it, an old-style news page to reflow, a /leak address nothing should ever ask for,
 // and the diagnostic pages under /diag (diag_site.mjs; not logged).
+// For the reading site: /live, a news section that exists only after its script ran, and /members, a column
+// behind the sign-in. /__markup?v=1|2|3 changes the markup of both: 1 the original, 2 the same pages with other
+// class names (the site changed a little), 3 other pages at other addresses (the site changed completely).
 // Every request is appended to <log dir>/requests.jsonl, so the DV can check what the Agent's browser really sent.
 //
 //   node site.mjs <port> <log dir> [--user dvuser --password <password>]
@@ -90,6 +93,114 @@ function newsPage(id) {
 <tr><td colspan="3" align="center" bgcolor="#ddd">版权所有 城事老站 | 关于我们 | 联系方式 | 网站地图</td></tr></table>`)
 }
 
+// ── /live and /members: what a reading site's sources are made for ───────────────────────────────────────────
+
+let markup = 1
+
+const STORIES = [
+  { id: 1, title: '环城公交 12 路下月起改走滨江大道', at: '2026-11-20T08:30:00+08:00', by: '记者 周衡', paragraphs: [
+    '市公交公司 20 日公布，环城公交 12 路将从 12 月 1 日起改走滨江大道，不再绕行老城南门。调整后全程缩短 3.2 公里，高峰时段单程预计节省 11 分钟。',
+    '公司运营部说，改线的直接原因是南门一带的道路施工要持续到明年夏天。过去两个月里，12 路在这一段的平均晚点时间达到 9 分钟，是全线最高的。',
+    '原来在南门、粮库街、染坊巷三站上下车的乘客，可以改乘新增的 12 路区间车，区间车每 15 分钟一班，首末班时间和干线相同，换乘不另收费。',
+  ] },
+  { id: 2, title: '城北湿地公园观鸟季开放夜间导览', at: '2026-11-21T19:05:00+08:00', by: '记者 林也', paragraphs: [
+    '城北湿地公园从本周六起在观鸟季增开夜间导览，每晚两场，每场限 20 人，需要提前一天在公园公众号预约，导览全程约 90 分钟。',
+    '公园管理处介绍，今年记录到的越冬候鸟比去年多出 14 种，其中包括 3 种近十年没有在本市出现过的鹬类。夜间导览只使用红光手电，不允许闪光拍照。',
+    '导览路线避开了核心栖息区，全程在木栈道上进行。遇到大风、降雨或者气温低于零下 5 摄氏度时当晚取消，已经预约的游客可以改期或者退订。',
+  ] },
+  { id: 3, title: '老纺织厂旧址改造方案公示 保留三座锯齿形厂房', at: '2026-11-23T10:15:00+08:00', by: '记者 何芮', paragraphs: [
+    '老纺织厂旧址的改造方案 23 日起公示 30 天。方案保留了三座建于上世纪五十年代的锯齿形厂房和一座水塔，其余建筑拆除后建设社区图书馆和体育场地。',
+    '设计单位说，三座厂房的屋架检测结果好于预期，只需要更换约两成的木檩条。厂房内部将分别改作市民工坊、展览厅和一处可以容纳 300 人的小剧场。',
+    '公示期间，市民可以在旧址东门的展板前留言，也可以把意见寄到规划部门。方案中新增的 180 个停车位全部设在地下，地面不再安排机动车通行。',
+  ] },
+]
+
+const POSTS = [
+  { id: 1, slug: 'night-market', title: '会员专栏：夜市摊位抽签的三个变化', at: '2026-11-18T09:00:00+08:00', by: '专栏作者 沈未', paragraphs: [
+    '今年冬季夜市的摊位抽签有三个变化：报名改到线上，老摊主不再保留原位，食品类摊位必须先通过卫生培训。主办方说，这是五年来改动最大的一次。',
+    '线上报名减少了排队，却让不少年纪大的摊主犯了难。街道办为此在三个社区服务站安排了志愿者，帮他们填表、上传证件，每个工作日下午都有人值守。',
+    '取消保留原位之后，位置好坏全凭抽签。有人担心老主顾找不到自己，主办方的回应是在入口处增设一块摊位索引牌，按品类和摊主的名字都可以查到。',
+  ] },
+  { id: 2, slug: 'heating-notes', title: '会员专栏：供暖第一周的十二条读者来信', at: '2026-11-22T09:00:00+08:00', by: '专栏作者 沈未', paragraphs: [
+    '供暖开始的第一周，专栏收到了十二封读者来信，其中七封是说家里不热的，三封是说太热的，还有两封问的是费用怎么算。我们把这些问题带到了热力公司。',
+    '热力公司解释，不热的住户多数在管网末端，前三天的水温本来就是分步升上来的。如果一周之后室温仍然低于 18 摄氏度，可以要求上门测温，并按天数退费。',
+    '关于费用，今年仍然按建筑面积计算，阁楼和地下室减半。安装了分户热表的小区可以自愿选择按用热量结算，但是选定之后在一个采暖季内不能更改。',
+  ] },
+  { id: 3, slug: 'library-cards', title: '会员专栏：一张借书证能办多少件事', at: '2026-11-24T09:00:00+08:00', by: '专栏作者 沈未', paragraphs: [
+    '很少有人注意到，市图书馆的借书证早就不只是用来借书的了。凭这张证可以预约自习座位，借用工具图书馆里的电钻和梯子，还能免费使用三台三维打印机。',
+    '工具图书馆是去年秋天开的，现在有 240 多件工具，借期七天。管理员说，借得最多的不是电钻，而是一把可以伸到四米的修枝剪，每到周末都要排队等候。',
+    '这些服务没有额外的押金，但是逾期的规则比图书严格：工具每逾期一天停借三天。想第一次使用三维打印机的读者，需要先参加每周三晚上的入门讲解。',
+  ] },
+]
+
+const day = (iso) => `${Number(iso.slice(5, 7))} 月 ${Number(iso.slice(8, 10))} 日`
+
+// The script of /live: it has the stories and draws them; without it the pages are empty. `window.__MARKUP`
+// (set by the page) says which of the three sites it draws.
+const LIVE_SCRIPT = `const DATA = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(${JSON.stringify(Buffer.from(JSON.stringify(STORIES.map((s) => ({ ...s, day: day(s.at) })))).toString('base64'))}), (c) => c.charCodeAt(0))));
+const el = (tag, attrs, ...children) => {
+  const node = document.createElement(tag);
+  for (const [name, value] of Object.entries(attrs ?? {})) node.setAttribute(name, value);
+  node.append(...children);
+  return node;
+};
+const app = document.getElementById('app');
+const version = window.__MARKUP;
+const id = version === 3 ? Number(new URLSearchParams(location.search).get('id')) : Number((/^\\/live\\/story\\/(\\d+)$/.exec(location.pathname) ?? [])[1]);
+const story = DATA.find((item) => item.id === id);
+const article = version === 3 ? location.pathname === '/live/read' : location.pathname !== '/live';
+if (article && !story) {
+  app.append(el('p', { class: 'gone' }, '这个页面不在了。'));
+} else if (version === 1) {
+  if (story) {
+    app.append(el('main', { class: 'live' }, el('article', { class: 'story-body' },
+      el('h1', { class: 'story-title' }, story.title),
+      el('p', { class: 'byline' }, el('span', { class: 'author' }, story.by), ' · ', el('time', { datetime: story.at }, story.day)),
+      el('div', { class: 'story-text' }, ...story.paragraphs.map((text) => el('p', null, text)))), el('p', null, el('a', { href: '/live' }, '返回快讯'))));
+  } else {
+    app.append(el('main', { class: 'live' }, el('h1', null, '城事快讯'), el('ul', { class: 'stories' }, ...DATA.map((item) =>
+      el('li', { class: 'story' }, el('a', { class: 'story-link', href: '/live/story/' + item.id }, item.title), ' ', el('time', { class: 'story-time', datetime: item.at }, item.day))))));
+  }
+} else if (version === 2) {
+  if (story) {
+    app.append(el('main', { class: 'live' }, el('article', { class: 'post' },
+      el('h1', { class: 'post__title' }, story.title),
+      el('p', { class: 'post__meta' }, el('span', { class: 'by' }, story.by), ' · ', el('time', { datetime: story.at }, story.day)),
+      el('div', { class: 'post__content' }, ...story.paragraphs.map((text) => el('p', null, text)))), el('p', null, el('a', { href: '/live' }, '返回快讯'))));
+  } else {
+    app.append(el('main', { class: 'live' }, el('h1', null, '城事快讯'), el('ul', { class: 'feed' }, ...DATA.map((item) =>
+      el('li', { class: 'feed-item' }, el('a', { class: 'feed-item__title', href: '/live/story/' + item.id }, item.title), ' ', el('time', { datetime: item.at }, item.day))))));
+  }
+} else if (story) {
+  app.append(el('div', { class: 'reader' }, el('header', null, el('h2', null, story.title), el('small', null, story.by + '　' + story.day)),
+    el('div', { class: 'reader-body' }, ...story.paragraphs.map((text) => el('div', { class: 'line' }, text)))));
+} else {
+  const grid = el('section', { class: 'grid' }, ...DATA.map((item) => {
+    const card = el('div', { class: 'card', role: 'link', tabindex: '0', 'data-id': String(item.id) }, el('h3', null, item.title), el('small', null, item.day));
+    card.addEventListener('click', () => { location.href = '/live/read?id=' + item.id; });
+    return card;
+  }));
+  app.append(el('h1', null, '城事快讯'), grid);
+}
+document.documentElement.dataset.rendered = '1';
+`
+
+function livePage() {
+  return html('城事快讯', `<div id="app"></div><noscript><p>本页需要 JavaScript。</p></noscript><script>window.__MARKUP = ${markup}</script><script src="/live/app.js"></script>`)
+}
+
+const paragraphs = (post) => post.paragraphs.map((p) => `<p>${esc(p)}</p>`).join('')
+function membersPage() {
+  if (markup === 1) return html('会员专栏', `<main><h1>会员专栏</h1><p>你好，${esc(USER)}。</p><ul class="posts">${POSTS.map((p) => `<li class="post"><a class="post-link" href="/members/post/${p.id}">${esc(p.title)}</a> <time datetime="${p.at}">${day(p.at)}</time></li>`).join('')}</ul></main>`)
+  if (markup === 2) return html('会员专栏', `<main><h1>会员专栏</h1><p>你好，${esc(USER)}。</p><ul class="entries">${POSTS.map((p) => `<li class="entry"><a class="entry__title" href="/members/post/${p.id}">${esc(p.title)}</a> <time datetime="${p.at}">${day(p.at)}</time></li>`).join('')}</ul></main>`)
+  return html('会员专栏', `<table class="index" cellpadding="6"><caption>会员专栏　${esc(USER)}</caption>${POSTS.map((p) => `<tr><td>${day(p.at)}</td><td><a href="/members/read/${p.slug}">${esc(p.title)}</a></td></tr>`).join('')}</table>`)
+}
+function memberPost(post) {
+  if (markup === 1) return html(post.title, `<main><article class="member-post"><h1 class="post-title">${esc(post.title)}</h1><p class="post-meta"><span class="author">${esc(post.by)}</span> · <time datetime="${post.at}">${day(post.at)}</time></p><div class="post-body">${paragraphs(post)}</div></article><p><a href="/members">返回专栏</a></p></main>`)
+  if (markup === 2) return html(post.title, `<main><article class="entry-full"><h1 class="entry-full__title">${esc(post.title)}</h1><p class="entry-full__meta"><span class="by">${esc(post.by)}</span> · <time datetime="${post.at}">${day(post.at)}</time></p><div class="entry-full__text">${paragraphs(post)}</div></article><p><a href="/members">返回专栏</a></p></main>`)
+  return html(post.title, `<div class="sheet"><h2>${esc(post.title)}</h2><div class="sheet-info">${esc(post.by)}　${day(post.at)}</div>${post.paragraphs.map((p) => `<div class="sheet-line">${esc(p)}</div>`).join('')}</div>`)
+}
+
 const PIXEL = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
 
 function cookies(req) {
@@ -118,7 +229,7 @@ const server = createServer(async (req, res) => {
   const path = url.pathname
   if (diagRoute(req, res, url, raw)) return
 
-  if (path === '/') return send(200, html('DV 测试站点', '<main><h1>DV 测试站点</h1><ul><li><a href="/register">体检预约登记</a></li><li><a href="/login">会员登录</a></li><li><a href="/orders">我的订单</a></li><li><a href="/news">城事老站</a></li></ul></main>'))
+  if (path === '/') return send(200, html('DV 测试站点', '<main><h1>DV 测试站点</h1><ul><li><a href="/register">体检预约登记</a></li><li><a href="/login">会员登录</a></li><li><a href="/orders">我的订单</a></li><li><a href="/news">城事老站</a></li><li><a href="/live">城事快讯</a></li><li><a href="/members">会员专栏</a></li></ul></main>'))
   if (path === '/register' && req.method === 'GET') return send(200, registerPage())
   if (path === '/register' && req.method === 'POST') {
     const errors = []
@@ -150,6 +261,22 @@ const server = createServer(async (req, res) => {
   if (path === '/news') return send(200, html('城事老站', `<main><h1>城事老站</h1><ul>${Object.entries(NEWS).map(([id, n]) => `<li><a href="/news/${id}">${esc(n.title)}</a>（${n.date}）</li>`).join('')}</ul></main>`))
   const news = /^\/news\/(\d+)$/.exec(path)
   if (news && NEWS[news[1]]) return send(200, newsPage(Number(news[1])))
+  if (path === '/__markup') {
+    const v = Number(url.searchParams.get('v'))
+    if ([1, 2, 3].includes(v)) markup = v
+    record.markup = markup
+    return send(200, `markup ${markup}\n`, { 'Content-Type': 'text/plain' })
+  }
+  if (path === '/live/app.js') return send(200, LIVE_SCRIPT, { 'Content-Type': 'text/javascript; charset=utf-8' })
+  if (path === '/live' || (markup === 3 ? path === '/live/read' : /^\/live\/story\/\d+$/.test(path))) return send(200, livePage())
+  if (path === '/members' || path.startsWith('/members/')) {
+    if (!signedIn(req)) return redirect('/login')
+    if (path === '/members') return send(200, membersPage())
+    const post = markup === 3
+      ? POSTS.find((p) => path === `/members/read/${p.slug}`)
+      : POSTS.find((p) => path === `/members/post/${p.id}`)
+    if (post) return send(200, memberPost(post))
+  }
   if (path === '/pixel.png') return send(200, PIXEL, { 'Content-Type': 'image/png' })
   if (path.startsWith('/leak')) return send(200, 'leaked', { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' })
   return send(404, html('404', '<main><h1>404</h1></main>'))

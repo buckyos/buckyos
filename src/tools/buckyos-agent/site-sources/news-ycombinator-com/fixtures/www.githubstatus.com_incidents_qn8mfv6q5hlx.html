@@ -1,0 +1,1309 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    
+
+    <meta charset="utf-8">
+    <title>GitHub Status - Investigating degraded experiences across GitHub products</title>
+    <meta name="description" content="GitHub&#39;s Status Page - Investigating degraded experiences across GitHub products.">
+
+    
+    <meta name="HandheldFriendly" content="True">
+    <meta name="MobileOptimized" content="320">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0">
+
+    
+    <meta name="issued" content="1795625384">
+
+    
+    <meta http-equiv="cleartype" content="on">
+
+      
+
+
+
+
+    
+
+
+      
+
+    
+
+    
+    
+
+      
+      
+
+    <meta name="_globalsign-domain-verification" content="y_VzfckMy4iePo5oDJNivyYIjh8LffYa4jzUndm_bZ"/>
+
+
+    
+
+    
+    
+    
+
+    
+
+    
+    
+
+
+    
+        
+
+      
+        
+
+    
+
+
+      <meta name="twitter:card" content="summary">
+  <meta name="twitter:site">
+  <meta name="twitter:creator">
+  <meta name="robots" content="noindex,nofollow">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://www.githubstatus.com/incidents/qn8mfv6q5hlx">
+  <meta property="og:image" content="https://dka575ofm4ao0.cloudfront.net/pages-twitter_logos/original/36420/GitHub-Mark-120px-plus.png">
+  <meta property="og:title" content="Investigating degraded experiences across GitHub products">
+  <meta property="og:description">
+
+  </head>
+
+
+  <body class="status incident status-none sp-a11y-status-focus-visibility a11y-focus-indicators">
+
+    
+
+
+
+
+<div class="layout-content status status-incident">
+    <div class="custom-header-container">
+    
+
+
+
+
+
+<div
+  class="header d-md-flex flex-md-justify-between flex-md-items-center px-4 py-3 text-center text-md-left bg-white box-shadow-large">
+  <a href="/">
+    
+  </a>
+
+  <nav class="f4 list-style-none py-2 mt-2 mt-md-0">
+    <a class="mr-3 mr-lg-4 py-2" href="https://help.github.com">Help</a>
+    <a class="mr-3 mr-lg-4 py-2" href="https://github.community">Community</a>
+    <a class="mr-3 py-2 text-gray " href="/">Status</a>
+  </nav>
+
+  <nav class="f4 list-style-none py-2 text-md-right">
+    <a class="py-2" href="https://github.com">GitHub.com</a>
+    <div class="d-inline py-2 ml-3 ml-lg-4">
+      <div id="replace-with-subscribe"></div>
+    </div>
+  </nav>
+</div>
+
+<img src="https://user-images.githubusercontent.com/19292210/60553863-044dd200-9cea-11e9-987e-7db84449f215.png"
+  class="illo-desktop-header" alt="GitHub header">
+
+<img src="https://user-images.githubusercontent.com/19292210/60553865-044dd200-9cea-11e9-859c-d6f266e2f01f.png"
+  class="illo-mobile-header" alt="GitHub header">
+      
+  <div class="updates-dropdown-container">
+    <a href="#" id="show-updates-dropdown" class="show-updates-dropdown" role="button">
+      <span class="subscribe-text-full">Subscribe to Updates</span><span class="subscribe-text-short">Subscribe</span>
+    </a>
+
+
+    <div class="updates-dropdown" id="updates-dropdown" role="dialog">
+      <div class="updates-dropdown-nav nav-items-7" role="tablist">
+          <a href="#updates-dropdown-email" role="tab" id="updates-dropdown-email-btn">
+            <span class="icon-container email">
+          </a>
+          <a href="#updates-dropdown-sms" role="tab" id="updates-dropdown-sms-btn">
+            <span class="icon-container sms">
+          </a>
+          <a href="#updates-dropdown-slack" role="tab" id="updates-dropdown-slack-btn">
+            <span class="icon-container slack">
+          </a>
+          <a href="#updates-dropdown-webhook" role="tab" id="updates-dropdown-webhook-btn">
+            <span class="icon-container webhook">
+          </a>
+          <a href="#updates-dropdown-support" role="tab" id="updates-dropdown-support-btn">
+            <span class="icon-container support">
+          </a>
+          <a href="#updates-dropdown-atom" role="tab" id="updates-dropdown-atom-btn">
+            <span class="icon-container rss">
+          </a>
+        <button id="updates-dropdown-close-btn">
+          x
+        </button>
+      </div>
+      <div class="updates-dropdown-sections-container">
+          <div class="updates-dropdown-section email" id="updates-dropdown-email" role="tabpanel">
+            <div class="directions">
+              Get email notifications whenever GitHub <strong>creates</strong>,  <strong>updates</strong> or <strong>resolves</strong> an incident.
+            </div>
+            <form id="subscribe-form-email" action="/subscriptions/new-email" accept-charset="UTF-8" method="post"><input type="hidden" name="authenticity_token" value="f1w2F8zeZ6BnRS77WQlTS-DWczooug5VyaUJQC4f6UW0Kz7iZWJ2k2RUHYpxmo8rloJC1UPTeDjS3S6uRstbXg" autocomplete="off" />
+              <input type="hidden" name="email_otp_verify_flow" id="email_otp_verify_flow" value="false" autocomplete="off" />
+                
+                <label for="email">Email address:</label>
+                <input name="email" id="email" type="text" class="full-width" autocomplete="email">
+                <input name="email_otp_auth_token" type='hidden' id="email-otp-token-field">
+                <div class="opt-container-section" id="email-otp-container", >
+                  <label for="email-otp">Enter OTP:</label>
+                  <input name="otp" id="email-otp" type="text" value="" class="prepend full-width">
+                  <p id="email-otp-timer">Resend OTP in: <span id="email-otp-countdown"></span> seconds </p>
+                  <p id="resend-email-otp">
+                    Didn't receive the OTP?
+                    <a href="#" id="resend-email-otp-btn" >Resend OTP </a>
+                  </p>
+                </div>
+                  <input type="hidden" name="captcha_error" id="captcha_error" value="false" autocomplete="off" />
+                  <input type="submit" value="Subscribe via Email" class="flat-button full-width g-recaptcha" id="subscribe-btn-email" data-sitekey=6LdTS8AUAAAAAOIbCKoCAP4LQku1olYGrywPTaZz >
+                  <div class="terms_and_privacy_information bottom small"><div class="privacy_policy_information small">By subscribing you agree to our <a target="_blank" rel="noopener" class="accessible-link" href="https://help.github.com/articles/github-privacy-statement/">Privacy Policy</a>.</div> This site is protected by reCAPTCHA and the Google <a target="_blank" rel="noopener" class="accessible-link" href="https://policies.google.com/privacy">Privacy Policy</a> and <a target="_blank" rel="noopener" class="accessible-link" href="https://policies.google.com/terms">Terms of Service</a> apply.</div>
+</form>          </div>
+
+          <div class="updates-dropdown-section phone" id="updates-dropdown-sms" role="tabpanel">
+            <div class="directions">
+                Get text message notifications whenever GitHub <strong>creates</strong> or <strong>resolves</strong> an incident.
+            </div>
+            <form id="subscribe-form-sms" action="/subscriptions/new-sms" accept-charset="UTF-8" method="post"><input type="hidden" name="authenticity_token" value="4n5Qdkxl5K8vQWtwe6ezCuH78IOMzqIlBTXFaEy4bkspCViD5dn1nCxQWAFTNG9ql6_BbOen1EgeTeKGJGzcUA" autocomplete="off" />
+              <input type="hidden" name="otp_verify_flow" id="otp_verify_flow" value="false" autocomplete="off" />
+              <input type="hidden" name="subscriber_code" id="subscriber_code" value="" autocomplete="off" />
+              <div class="control-group">
+                <div class="controls externalities-sms-container">
+                  
+                  <label for="phone-country">Country code:</label>
+                  <div id="phone-number-country-code" class="phone-country-wrapper"
+                     >
+                      <select name="phone_country" id="phone-country" class="phone-country"><option value="af" >Afghanistan (+93)</option>
+<option value="al" >Albania (+355)</option>
+<option value="dz" >Algeria (+213)</option>
+<option value="as" >American Samoa (+1)</option>
+<option value="ad" >Andorra (+376)</option>
+<option value="ao" >Angola (+244)</option>
+<option value="ai" >Anguilla (+1)</option>
+<option value="ag" >Antigua and Barbuda (+1)</option>
+<option value="ar" >Argentina (+54)</option>
+<option value="am" >Armenia (+374)</option>
+<option value="aw" >Aruba (+297)</option>
+<option value="au" >Australia/Cocos/Christmas Island (+61)</option>
+<option value="at" >Austria (+43)</option>
+<option value="az" >Azerbaijan (+994)</option>
+<option value="bs" >Bahamas (+1)</option>
+<option value="bh" >Bahrain (+973)</option>
+<option value="bd" >Bangladesh (+880)</option>
+<option value="bb" >Barbados (+1)</option>
+<option value="by" >Belarus (+375)</option>
+<option value="be" >Belgium (+32)</option>
+<option value="bz" >Belize (+501)</option>
+<option value="bj" >Benin (+229)</option>
+<option value="bm" >Bermuda (+1)</option>
+<option value="bo" >Bolivia (+591)</option>
+<option value="ba" >Bosnia and Herzegovina (+387)</option>
+<option value="bw" >Botswana (+267)</option>
+<option value="br" >Brazil (+55)</option>
+<option value="bn" >Brunei (+673)</option>
+<option value="bg" >Bulgaria (+359)</option>
+<option value="bf" >Burkina Faso (+226)</option>
+<option value="bi" >Burundi (+257)</option>
+<option value="kh" >Cambodia (+855)</option>
+<option value="cm" >Cameroon (+237)</option>
+<option value="ca" >Canada (+1)</option>
+<option value="cv" >Cape Verde (+238)</option>
+<option value="ky" >Cayman Islands (+1)</option>
+<option value="cf" >Central Africa (+236)</option>
+<option value="td" >Chad (+235)</option>
+<option value="cl" >Chile (+56)</option>
+<option value="cn" >China (+86)</option>
+<option value="co" >Colombia (+57)</option>
+<option value="km" >Comoros (+269)</option>
+<option value="cg" >Congo (+242)</option>
+<option value="cd" >Congo, Dem Rep (+243)</option>
+<option value="cr" >Costa Rica (+506)</option>
+<option value="hr" >Croatia (+385)</option>
+<option value="cy" >Cyprus (+357)</option>
+<option value="cz" >Czech Republic (+420)</option>
+<option value="dk" >Denmark (+45)</option>
+<option value="dj" >Djibouti (+253)</option>
+<option value="dm" >Dominica (+1)</option>
+<option value="do" >Dominican Republic (+1)</option>
+<option value="eg" >Egypt (+20)</option>
+<option value="sv" >El Salvador (+503)</option>
+<option value="gq" >Equatorial Guinea (+240)</option>
+<option value="ee" >Estonia (+372)</option>
+<option value="et" >Ethiopia (+251)</option>
+<option value="fo" >Faroe Islands (+298)</option>
+<option value="fj" >Fiji (+679)</option>
+<option value="fi" >Finland/Aland Islands (+358)</option>
+<option value="fr" >France (+33)</option>
+<option value="gf" >French Guiana (+594)</option>
+<option value="pf" >French Polynesia (+689)</option>
+<option value="ga" >Gabon (+241)</option>
+<option value="gm" >Gambia (+220)</option>
+<option value="ge" >Georgia (+995)</option>
+<option value="de" >Germany (+49)</option>
+<option value="gh" >Ghana (+233)</option>
+<option value="gi" >Gibraltar (+350)</option>
+<option value="gr" >Greece (+30)</option>
+<option value="gl" >Greenland (+299)</option>
+<option value="gd" >Grenada (+1)</option>
+<option value="gp" >Guadeloupe (+590)</option>
+<option value="gu" >Guam (+1)</option>
+<option value="gt" >Guatemala (+502)</option>
+<option value="gn" >Guinea (+224)</option>
+<option value="gy" >Guyana (+592)</option>
+<option value="ht" >Haiti (+509)</option>
+<option value="hn" >Honduras (+504)</option>
+<option value="hk" >Hong Kong (+852)</option>
+<option value="hu" >Hungary (+36)</option>
+<option value="is" >Iceland (+354)</option>
+<option value="in" >India (+91)</option>
+<option value="id" >Indonesia (+62)</option>
+<option value="iq" >Iraq (+964)</option>
+<option value="ie" >Ireland (+353)</option>
+<option value="il" >Israel (+972)</option>
+<option value="it" >Italy (+39)</option>
+<option value="jm" >Jamaica (+1)</option>
+<option value="jp" >Japan (+81)</option>
+<option value="jo" >Jordan (+962)</option>
+<option value="ke" >Kenya (+254)</option>
+<option value="kr" >Korea, Republic of (+82)</option>
+<option value="xk" >Kosovo (+383)</option>
+<option value="kw" >Kuwait (+965)</option>
+<option value="kg" >Kyrgyzstan (+996)</option>
+<option value="la" >Laos (+856)</option>
+<option value="lv" >Latvia (+371)</option>
+<option value="lb" >Lebanon (+961)</option>
+<option value="ls" >Lesotho (+266)</option>
+<option value="lr" >Liberia (+231)</option>
+<option value="ly" >Libya (+218)</option>
+<option value="li" >Liechtenstein (+423)</option>
+<option value="lt" >Lithuania (+370)</option>
+<option value="lu" >Luxembourg (+352)</option>
+<option value="mo" >Macao (+853)</option>
+<option value="mk" >Macedonia (+389)</option>
+<option value="mg" >Madagascar (+261)</option>
+<option value="mw" >Malawi (+265)</option>
+<option value="my" >Malaysia (+60)</option>
+<option value="mv" >Maldives (+960)</option>
+<option value="ml" >Mali (+223)</option>
+<option value="mt" >Malta (+356)</option>
+<option value="mq" >Martinique (+596)</option>
+<option value="mr" >Mauritania (+222)</option>
+<option value="mu" >Mauritius (+230)</option>
+<option value="mx" >Mexico (+52)</option>
+<option value="mc" >Monaco (+377)</option>
+<option value="mn" >Mongolia (+976)</option>
+<option value="me" >Montenegro (+382)</option>
+<option value="ms" >Montserrat (+1)</option>
+<option value="ma" >Morocco/Western Sahara (+212)</option>
+<option value="mz" >Mozambique (+258)</option>
+<option value="na" >Namibia (+264)</option>
+<option value="np" >Nepal (+977)</option>
+<option value="nl" >Netherlands (+31)</option>
+<option value="nz" >New Zealand (+64)</option>
+<option value="ni" >Nicaragua (+505)</option>
+<option value="ne" >Niger (+227)</option>
+<option value="ng" >Nigeria (+234)</option>
+<option value="no" >Norway (+47)</option>
+<option value="om" >Oman (+968)</option>
+<option value="pk" >Pakistan (+92)</option>
+<option value="ps" >Palestinian Territory (+970)</option>
+<option value="pa" >Panama (+507)</option>
+<option value="py" >Paraguay (+595)</option>
+<option value="pe" >Peru (+51)</option>
+<option value="ph" >Philippines (+63)</option>
+<option value="pl" >Poland (+48)</option>
+<option value="pt" >Portugal (+351)</option>
+<option value="pr" >Puerto Rico (+1)</option>
+<option value="qa" >Qatar (+974)</option>
+<option value="re" >Reunion/Mayotte (+262)</option>
+<option value="ro" >Romania (+40)</option>
+<option value="ru" >Russia/Kazakhstan (+7)</option>
+<option value="rw" >Rwanda (+250)</option>
+<option value="ws" >Samoa (+685)</option>
+<option value="sm" >San Marino (+378)</option>
+<option value="sa" >Saudi Arabia (+966)</option>
+<option value="sn" >Senegal (+221)</option>
+<option value="rs" >Serbia (+381)</option>
+<option value="sc" >Seychelles (+248)</option>
+<option value="sl" >Sierra Leone (+232)</option>
+<option value="sg" >Singapore (+65)</option>
+<option value="sk" >Slovakia (+421)</option>
+<option value="si" >Slovenia (+386)</option>
+<option value="za" >South Africa (+27)</option>
+<option value="es" >Spain (+34)</option>
+<option value="lk" >Sri Lanka (+94)</option>
+<option value="kn" >St Kitts and Nevis (+1)</option>
+<option value="lc" >St Lucia (+1)</option>
+<option value="vc" >St Vincent Grenadines (+1)</option>
+<option value="sd" >Sudan (+249)</option>
+<option value="sr" >Suriname (+597)</option>
+<option value="sz" >Swaziland (+268)</option>
+<option value="se" >Sweden (+46)</option>
+<option value="ch" >Switzerland (+41)</option>
+<option value="tw" >Taiwan (+886)</option>
+<option value="tj" >Tajikistan (+992)</option>
+<option value="tz" >Tanzania (+255)</option>
+<option value="th" >Thailand (+66)</option>
+<option value="tg" >Togo (+228)</option>
+<option value="to" >Tonga (+676)</option>
+<option value="tt" >Trinidad and Tobago (+1)</option>
+<option value="tn" >Tunisia (+216)</option>
+<option value="tr" >Turkey (+90)</option>
+<option value="tc" >Turks and Caicos Islands (+1)</option>
+<option value="ug" >Uganda (+256)</option>
+<option value="ua" >Ukraine (+380)</option>
+<option value="ae" >United Arab Emirates (+971)</option>
+<option value="gb" >United Kingdom (+44)</option>
+<option value="us" selected>United States (+1)</option>
+<option value="uy" >Uruguay (+598)</option>
+<option value="uz" >Uzbekistan (+998)</option>
+<option value="ve" >Venezuela (+58)</option>
+<option value="vn" >Vietnam (+84)</option>
+<option value="vg" >Virgin Islands, British (+1)</option>
+<option value="vi" >Virgin Islands, U.S. (+1)</option>
+<option value="ye" >Yemen (+967)</option>
+<option value="zm" >Zambia (+260)</option>
+<option value="zw" >Zimbabwe (+263)</option></select>
+                  </div>
+                  <label for="phone-number">Phone number:</label>
+                  <input name="phone_number" id="phone-number" type="text" class="prepend full-width">
+                  <div class="sms-atl-error" id="sms-atl-error"></div>
+                  <div class="clearfix"></div>
+                  <div class="opt-container-section" id="otp-container">
+                    <a href="#" id="btn-subcriber-change-number">Change number</a>
+                    <label for="otp">Enter OTP:</label>
+                    <input name="otp" id="otp" type="text" class="prepend full-width">
+                    <p id="timer">Resend OTP in: <span id="countdown">30</span> seconds </p>
+                    <p id="resend">
+                      Didn't receive the OTP?
+                      <a href="#" id="resend-otp-btn" >Resend OTP </a>
+                    </p>
+                    </div>
+                </div>
+              </div>
+
+                <input type="hidden" name="captcha_error" id="captcha_error" value="false" autocomplete="off" />
+                <input type="submit" value="Subscribe via Text Message" class="flat-button full-width g-recaptcha" id="subscribe-btn-sms" data-sitekey=6LcH-b0UAAAAACVQtMb14LBhflMA9y0Nmu7l_W6d>
+              <div class="terms_and_privacy_information bottom small">Message and data rates may apply. By subscribing you agree to our <a target="_blank" rel="noopener" class="accessible-link" href="https://help.github.com/articles/github-privacy-statement/">Privacy Policy</a>, the Atlassian <a target="_blank" rel="noopener" class="accessible-link" href="https://www.atlassian.com/legal/product-specific-terms#statuspage-specific-terms">Terms of Service</a>, and the Atlassian <a target="_blank" rel="noopener" class="accessible-link" href="https://www.atlassian.com/legal/privacy-policy">Privacy Policy</a>. This site is protected by reCAPTCHA and the Google <a target="_blank" rel="noopener" class="accessible-link" href="https://policies.google.com/privacy">Privacy Policy</a> and <a target="_blank" rel="noopener" class="accessible-link" href="https://policies.google.com/terms">Terms of Service</a> apply.</div>
+</form>          </div>
+
+          <div class="updates-dropdown-section slack" id="updates-dropdown-slack" role="tabpanel">
+            <div class="directions">
+              Get incident updates and maintenance status messages in Slack.
+            </div>
+            <a value="Subscribe via Slack" class="flat-button full-width" id="subscribe-btn-slack" href="https://subscriptions.statuspage.io/slack_authentication/kickoff?page_code=kctbh9vrtdwd">Subscribe via Slack</a>
+            <div class="terms_and_privacy_information bottom small">By subscribing you acknowledge our <a target="_blank" rel="noopener" class="accessible-link" href="https://help.github.com/articles/github-privacy-statement/">Privacy Policy</a>. In addition, you agree to the Atlassian <a target="_blank" rel="noopener" class="accessible-link" href="https://www.atlassian.com/legal/cloud-terms-of-service">Cloud Terms of Service</a> and acknowledge Atlassian's <a target="_blank" rel="noopener" class="accessible-link" href="https://www.atlassian.com/legal/privacy-policy">Privacy Policy</a>.</div>
+          </div>
+
+
+          <div class="updates-dropdown-section webhook" id="updates-dropdown-webhook" role="tabpanel">
+            <div class="directions">
+              Get webhook notifications whenever GitHub <strong>creates</strong> an incident, <strong>updates</strong> an incident, <strong>resolves</strong> an incident or <strong>changes</strong> a component status.
+            </div>
+            <form id="subscribe-form-webhook" action="/subscriptions/webhook.json" accept-charset="UTF-8" method="post"><input type="hidden" name="authenticity_token" value="KWvuORnmq1ogn2kQTY1Op7HmEsAz4RG6HHju0KM19RziHObMsFq6aSOOWmFlHpLHx7IjL1iIZ9cHAMk-y-FHBw" autocomplete="off" />
+              <div class="control-group">
+                <div class="controls">
+                  <label for="endpoint-webhooks">Webhook URL:</label>
+                  <input type="text" name="endpoint" id="endpoint-webhooks" class="full-width" />
+                  <p class="help-block" id="url-help-block">The URL we should send the webhooks to</p>
+                </div>
+              </div>
+
+              <div class="control-group">
+                <div class="controls">
+                  <label for="email-webhooks">Email address:</label>
+                  <input type="text" name="email" id="email-webhooks" class="full-width" />
+                  <p class="help-block" id="email-help-block">We'll send you email if your endpoint fails</p>
+                </div>
+              </div>
+
+                <input type="hidden" name="captcha_error" id="captcha_error" value="false" autocomplete="off" />
+                <input type="submit" value=Subscribe To Notifications class="flat-button full-width g-recaptcha" id="subscribe-btn-webhook" data-sitekey=6LcQ-b0UAAAAAJjfdwO_-ozGC-CzWDj4Pm1kJ2Ah>
+                <div class="terms_and_privacy_information bottom small"><div class="privacy_policy_information small">By subscribing you agree to our <a target="_blank" rel="noopener" class="accessible-link" href="https://help.github.com/articles/github-privacy-statement/">Privacy Policy</a>.</div> This site is protected by reCAPTCHA and the Google <a target="_blank" rel="noopener" class="accessible-link" href="https://policies.google.com/privacy">Privacy Policy</a> and <a target="_blank" rel="noopener" class="accessible-link" href="https://policies.google.com/terms">Terms of Service</a> apply.</div>
+
+</form>          </div>
+
+
+          <div class="updates-dropdown-section support" id="updates-dropdown-support" role="tabpanel">
+            Visit our <a href="https://github.com/support">support site</a>.
+          </div>
+
+          <div class="updates-dropdown-section atom" id="updates-dropdown-atom" role="tabpanel">
+            Get the <a href="https://www.githubstatus.com/history.atom" target="_blank">Atom Feed</a> or <a href="https://www.githubstatus.com/history.rss" target="_blank">RSS Feed</a>.
+          </div>
+      </div>
+    </div>
+  </div>
+
+
+
+  </div>
+
+
+  <div class="container">
+    <div class="page-title">
+      <h1 class="color-primary incident-name whitespace-pre-wrap impact-critical">Investigating degraded experiences across GitHub products</h1>
+      <div class="font-largest color-secondary subheader ">
+            Incident
+
+          Report for <a class="color-secondary" href="/">GitHub</a>
+      </div>
+        <a role="button" id="btn-subscribe-modal-qn8mfv6q5hlx" class="flat-button subscribe-button" href="#subscribe-modal-qn8mfv6q5hlx">Subscribe to Updates</a>
+    </div>
+
+    <div class="incident-updates-container">
+      
+
+      
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">The degradation has been mitigated. We are monitoring to ensure stability.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:48</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">The degradation has been mitigated. We are monitoring to ensure stability.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:47</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">The degradation has been mitigated. We are monitoring to ensure stability.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:45</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">The degradation has been mitigated. We are monitoring to ensure stability.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:44</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Monitoring
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">The degradation affecting Actions, Packages, Pull Requests and Webhooks has been mitigated. We are monitoring to ensure stability.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:36</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">The degradation affecting API Requests has been mitigated. We are monitoring to ensure stability.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:33</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">The degradation affecting Issues has been mitigated. We are monitoring to ensure stability.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:32</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Pull Requests is experiencing degraded availability. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:31</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Issues is experiencing degraded performance. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:28</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">The degradation affecting Pages has been mitigated. We are monitoring to ensure stability.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:28</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">We’ve updated our database load distribution and are starting to see recovery. We are continuing to monitor.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:25</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">The degradation affecting Git Operations has been mitigated. We are monitoring to ensure stability.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:25</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">API Requests is experiencing degraded performance. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:21</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">We are investigating increased failures due to high database load and are working on mitigations to reduce load and restore service.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:14</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Pages is experiencing degraded availability. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:11</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Pull Requests is experiencing degraded availability. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:10</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Git Operations is experiencing degraded performance. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:08</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Packages is experiencing degraded availability. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:08</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Issues is experiencing degraded availability. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:07</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Actions is experiencing degraded availability. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:07</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Pull Requests is experiencing degraded availability. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:05</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Git Operations is experiencing degraded availability. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>16:05</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Issues is experiencing degraded performance. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>15:58</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Issues is experiencing degraded availability. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>15:58</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Pages is experiencing degraded performance. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>15:57</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Update
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">Pull Requests is experiencing degraded performance. We are continuing to investigate.</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>15:56</var> UTC
+            </div>
+          </div>
+        </div>
+        <div class="row update-row">
+          <h2 class="update-title span3 font-large">
+            Investigating
+          </h2>
+          <div class="update-container span9">
+            <div class="update-body font-regular">
+              <span class="whitespace-pre-wrap">We are investigating reports of degraded performance for Actions and Webhooks</span>
+            </div>
+            <div class="update-timestamp font-small color-secondary">
+              Posted <span class="ago"></span>Nov <var data-var='date'>25</var>, <var data-var='year'>2026</var> - <var data-var='time'>15:55</var> UTC
+            </div>
+          </div>
+        </div>
+
+      
+        <div class="components-affected font-small color-secondary border-color">
+          This incident affects: Git Operations, Webhooks, API Requests, Issues, Pull Requests, Actions, Packages, and Pages.
+        </div>
+    </div>
+
+    <div class="page-footer border-color font-small">
+      <a href="/"><span>&larr;</span> Current Status</a>
+      <span class="color-secondary powered-by"><a class="color-secondary" target="_blank" rel="noopener noreferrer nofollow" href="https://www.atlassian.com/software/statuspage?utm_campaign=www.githubstatus.com&amp;utm_content=SP-notifications&amp;utm_medium=powered-by&amp;utm_source=inapp">Powered by Atlassian Statuspage</a></span>
+    </div>
+  </div>
+
+    <div class="custom-footer-container">
+    <div class="footer mt-6 border-top" role="contentinfo">
+  <img src="https://user-images.githubusercontent.com/19292210/60553864-044dd200-9cea-11e9-996a-a7a316ec3a35.png"
+    class="illo-mobile-footer" alt="GitHub footer">
+
+  <div class="container-lg p-responsive">
+    <div class="d-flex flex-wrap py-5 mb-5">
+      <section class="col-12 col-lg-4 mb-5">
+        <a href="https://github.com/" class="text-gray-dark"
+         >
+          
+        </a>
+
+        <h3 class="h5 mt-4 mb-0" id="subscribe-to-newsletter">Subscribe to our developer newsletter</h3>
+        <p class="f5 color-fg-muted mb-3">Get tips, technical guides, and best practices. Twice a month. Right in your
+          inbox.</p>
+        <a href="https://resources.github.com/newsletter/" class="btn btn-muted mb-4">Subscribe</a>
+      </section>
+
+      <nav class="col-6 col-sm-3 col-lg-2 mb-6 mb-md-2 pr-3 pr-lg-0 pl-lg-4">
+        <h3 class="h5 mb-3 text-mono color-fg-muted text-normal" id="footer-title-product">Product</h3>
+        <ul class="list-style-none color-fg-muted f5">
+          <li class="lh-condensed mb-3"><a href="https://github.com/features"
+              class="link-gray">Features</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.com/enterprise"
+              class="link-gray">Enterprise</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.com/features/copilot"
+              class="link-gray">Copilot</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.com/security"
+              class="link-gray">Security</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.com/pricing"
+              class="link-gray">Pricing</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.com/team"
+              class="link-gray">Team</a></li>
+          <li class="lh-condensed mb-3"><a href="https://resources.github.com"
+              class="link-gray">Resources</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.com/github/roadmap"
+              class="link-gray">Roadmap</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.com/resources/articles/devops-tools-comparison"
+              class="link-gray">Compare GitHub</a></li>
+        </ul>
+      </nav>
+
+      <nav class="col-6 col-sm-3 col-lg-2 mb-6 mb-md-2 pr-3 pr-md-0 pl-md-4">
+        <h3 class="h5 mb-3 text-mono color-fg-muted text-normal" id="footer-title-platform">Platform</h3>
+        <ul class="list-style-none f5">
+          <li class="lh-condensed mb-3"><a
+              href="https://docs.github.com/get-started/exploring-integrations/about-building-integrations"
+              class="link-gray">Developer API</a></li>
+          <li class="lh-condensed mb-3"><a href="https://partner.github.com"
+              class="link-gray">Partners</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.com/edu"
+              class="link-gray">Education</a></li>
+          <li class="lh-condensed mb-3"><a href="https://cli.github.com"
+              class="link-gray">GitHub CLI</a></li>
+          <li class="lh-condensed mb-3"><a href="https://desktop.github.com"
+              class="link-gray">GitHub Desktop</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.com/mobile"
+              class="link-gray">GitHub Mobile</a></li>
+        </ul>
+      </nav>
+
+      <nav class="col-6 col-sm-3 col-lg-2 mb-6 mb-md-2 pr-3 pr-md-0 pl-md-4">
+        <h3 class="h5 mb-3 text-mono color-fg-muted text-normal" id="footer-title-support">Support</h3>
+        <ul class="list-style-none f5">
+          <li class="lh-condensed mb-3"><a href="https://docs.github.com"
+              class="link-gray">Docs</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.community"
+              class="link-gray">Community Forum</a></li>
+          <li class="lh-condensed mb-3"><a href="https://services.github.com"
+              class="link-gray">Professional Services</a></li>
+          <li class="lh-condensed mb-3"><a href="https://skills.github.com"
+              class="link-gray">Skills</a></li>
+          <li class="lh-condensed mb-3"><a href="https://support.github.com?tags=dotcom-footer"
+              class="link-gray">Contact GitHub</a></li>
+        </ul>
+      </nav>
+
+      <nav class="col-6 col-sm-3 col-lg-2 mb-6 mb-md-2 pr-3 pr-md-0 pl-md-4">
+        <h3 class="h5 mb-3 text-mono color-fg-muted text-normal" id="footer-title-company">Company</h3>
+        <ul class="list-style-none f5">
+          <li class="lh-condensed mb-3"><a href="https://github.com/about/"
+              class="link-gray">About</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.com/customer-stories?type=enterprise"
+              class="link-gray">Customer
+              stories</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.blog/"
+              class="link-gray">Blog</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.com/readme"
+              class="link-gray">The ReadME Project</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.careers/"
+              class="link-gray">Careers</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.com/newsroom"
+              class="link-gray">Newsroom</a></li>
+          <li class="lh-condensed mb-3"><a href="https://github.com/about/diversity"
+              class="link-gray">Inclusion</a></li>
+          <li class="lh-condensed mb-3"><a href="https://socialimpact.github.com/"
+              class="link-gray">Social Impact</a></li>
+          <li class="lh-condensed mb-3"><a href="https://shop.github.com/"
+              class="link-gray">Shop</a></li>
+        </ul>
+      </nav>
+    </div>
+  </div>
+
+  <div class="color-bg-subtle">
+    <div class="container-lg p-responsive f6 py-4 d-md-flex flex-justify-between flex-items-center">
+      <nav>
+        <ul class="list-style-none d-flex flex-wrap text-gray">
+          <li class="mr-3">&copy;
+             GitHub, Inc.
+          </li>
+          <li class="mr-3"><a href="https://docs.github.com/site-policy/github-terms/github-terms-of-service/"
+              class="link-gray">Terms</a></li>
+          <li class="mr-3"><a href="https://help.github.com/articles/github-privacy-statement/"
+              class="link-gray">Privacy</a> (<a
+              href="https://github.com/github/site-policy/pull/582" class="link-gray">Updated <time
+                datetime="2022-08">08/2022</time></a>)</li>
+        </ul>
+      </nav>
+
+      <nav class="mt-3 mt-md-0">
+        <ul class="list-style-none d-flex flex-wrap">
+          <li class="mr-3"><a href="https://x.com/github"
+             >
+              
+            </a></li>
+          <li class="mr-3"><a href="https://www.facebook.com/GitHub"
+             
+             >
+              
+            </a></li>
+          <li class="mr-3"><a href="https://www.linkedin.com/company/github"
+             
+             >
+              
+            </a></li>
+          <li class="mr-3"><a href="https://www.youtube.com/github"
+             >
+              
+            </a></li>
+          <li class="mr-3"><a href="https://www.twitch.tv/github"
+             >
+              
+            </a></li>
+          <li class="mr-3"><a href="https://www.tiktok.com/@github"
+             >
+              
+            </a></li>
+          <li class="mr-3"><a href="https://github.com/github"
+             >
+              
+            </a></li>
+        </ul>
+      </nav>
+    </div>
+  </div>
+</div>
+
+
+  </div>
+
+</div>
+
+
+
+  <div class="modal hide fade modal-open-incident-subscribe" id="subscribe-modal-qn8mfv6q5hlx"
+       role="dialog"
+      >
+    <form class="modal-content" id="subscribe-form-qn8mfv6q5hlx" action="/subscriptions/incident.json" accept-charset="UTF-8" method="post"><input type="hidden" name="authenticity_token" value="nHc6p6yEFhpIz940-p-xnkV6R9Ap9PjbkBZcOxzHmkfvAvFI-w9kaVJ3BLNoVzxVv1iiFYo7NTZNZ-IJRL6-ag" autocomplete="off" />
+      <input type="hidden" name="incident_code" id="incident_code" value="qn8mfv6q5hlx" autocomplete="off" />
+      <div class="modal-header">
+        <a href="#" class="close" role="button">×</a>
+<h1 id="incident-subscription-dialog-header"> Subscribe to Incident </h1>
+      </div>
+      <div class="modal-body">
+        <p id="incident-subscription-dialog-description">
+          Subscribe to updates for <strong>Investigating degraded experiences across GitHub products</strong> via email and/or text message. You'll receive email notifications when incidents are updated, and text message notifications whenever GitHub <strong>creates</strong> or <strong>resolves</strong> an incident.
+        </p>
+          <div class="control-group">
+            <label for="email-qn8mfv6q5hlx">VIA EMAIL:</label>
+              <div class="controls">
+                  <input type="text" name="email" id="email-qn8mfv6q5hlx" class="full-width" />
+              </div>
+          </div>
+
+          <div class="control-group">
+            <label class="phone-country-code" for=phone-country-qn8mfv6q5hlx>VIA SMS:</label>
+            <div class="controls phone-number">
+              <div class="row">
+                <div id='phone-number-code-qn8mfv6q5hlx' class="phone-country-wrapper">
+                  <select name="phone_country" id="phone-country-qn8mfv6q5hlx" class="span6 phone-country-dropdown"><option value="af" >Afghanistan (+93)</option>
+<option value="al" >Albania (+355)</option>
+<option value="dz" >Algeria (+213)</option>
+<option value="as" >American Samoa (+1)</option>
+<option value="ad" >Andorra (+376)</option>
+<option value="ao" >Angola (+244)</option>
+<option value="ai" >Anguilla (+1)</option>
+<option value="ag" >Antigua and Barbuda (+1)</option>
+<option value="ar" >Argentina (+54)</option>
+<option value="am" >Armenia (+374)</option>
+<option value="aw" >Aruba (+297)</option>
+<option value="au" >Australia/Cocos/Christmas Island (+61)</option>
+<option value="at" >Austria (+43)</option>
+<option value="az" >Azerbaijan (+994)</option>
+<option value="bs" >Bahamas (+1)</option>
+<option value="bh" >Bahrain (+973)</option>
+<option value="bd" >Bangladesh (+880)</option>
+<option value="bb" >Barbados (+1)</option>
+<option value="by" >Belarus (+375)</option>
+<option value="be" >Belgium (+32)</option>
+<option value="bz" >Belize (+501)</option>
+<option value="bj" >Benin (+229)</option>
+<option value="bm" >Bermuda (+1)</option>
+<option value="bo" >Bolivia (+591)</option>
+<option value="ba" >Bosnia and Herzegovina (+387)</option>
+<option value="bw" >Botswana (+267)</option>
+<option value="br" >Brazil (+55)</option>
+<option value="bn" >Brunei (+673)</option>
+<option value="bg" >Bulgaria (+359)</option>
+<option value="bf" >Burkina Faso (+226)</option>
+<option value="bi" >Burundi (+257)</option>
+<option value="kh" >Cambodia (+855)</option>
+<option value="cm" >Cameroon (+237)</option>
+<option value="ca" >Canada (+1)</option>
+<option value="cv" >Cape Verde (+238)</option>
+<option value="ky" >Cayman Islands (+1)</option>
+<option value="cf" >Central Africa (+236)</option>
+<option value="td" >Chad (+235)</option>
+<option value="cl" >Chile (+56)</option>
+<option value="cn" >China (+86)</option>
+<option value="co" >Colombia (+57)</option>
+<option value="km" >Comoros (+269)</option>
+<option value="cg" >Congo (+242)</option>
+<option value="cd" >Congo, Dem Rep (+243)</option>
+<option value="cr" >Costa Rica (+506)</option>
+<option value="hr" >Croatia (+385)</option>
+<option value="cy" >Cyprus (+357)</option>
+<option value="cz" >Czech Republic (+420)</option>
+<option value="dk" >Denmark (+45)</option>
+<option value="dj" >Djibouti (+253)</option>
+<option value="dm" >Dominica (+1)</option>
+<option value="do" >Dominican Republic (+1)</option>
+<option value="eg" >Egypt (+20)</option>
+<option value="sv" >El Salvador (+503)</option>
+<option value="gq" >Equatorial Guinea (+240)</option>
+<option value="ee" >Estonia (+372)</option>
+<option value="et" >Ethiopia (+251)</option>
+<option value="fo" >Faroe Islands (+298)</option>
+<option value="fj" >Fiji (+679)</option>
+<option value="fi" >Finland/Aland Islands (+358)</option>
+<option value="fr" >France (+33)</option>
+<option value="gf" >French Guiana (+594)</option>
+<option value="pf" >French Polynesia (+689)</option>
+<option value="ga" >Gabon (+241)</option>
+<option value="gm" >Gambia (+220)</option>
+<option value="ge" >Georgia (+995)</option>
+<option value="de" >Germany (+49)</option>
+<option value="gh" >Ghana (+233)</option>
+<option value="gi" >Gibraltar (+350)</option>
+<option value="gr" >Greece (+30)</option>
+<option value="gl" >Greenland (+299)</option>
+<option value="gd" >Grenada (+1)</option>
+<option value="gp" >Guadeloupe (+590)</option>
+<option value="gu" >Guam (+1)</option>
+<option value="gt" >Guatemala (+502)</option>
+<option value="gn" >Guinea (+224)</option>
+<option value="gy" >Guyana (+592)</option>
+<option value="ht" >Haiti (+509)</option>
+<option value="hn" >Honduras (+504)</option>
+<option value="hk" >Hong Kong (+852)</option>
+<option value="hu" >Hungary (+36)</option>
+<option value="is" >Iceland (+354)</option>
+<option value="in" >India (+91)</option>
+<option value="id" >Indonesia (+62)</option>
+<option value="iq" >Iraq (+964)</option>
+<option value="ie" >Ireland (+353)</option>
+<option value="il" >Israel (+972)</option>
+<option value="it" >Italy (+39)</option>
+<option value="jm" >Jamaica (+1)</option>
+<option value="jp" >Japan (+81)</option>
+<option value="jo" >Jordan (+962)</option>
+<option value="ke" >Kenya (+254)</option>
+<option value="kr" >Korea, Republic of (+82)</option>
+<option value="xk" >Kosovo (+383)</option>
+<option value="kw" >Kuwait (+965)</option>
+<option value="kg" >Kyrgyzstan (+996)</option>
+<option value="la" >Laos (+856)</option>
+<option value="lv" >Latvia (+371)</option>
+<option value="lb" >Lebanon (+961)</option>
+<option value="ls" >Lesotho (+266)</option>
+<option value="lr" >Liberia (+231)</option>
+<option value="ly" >Libya (+218)</option>
+<option value="li" >Liechtenstein (+423)</option>
+<option value="lt" >Lithuania (+370)</option>
+<option value="lu" >Luxembourg (+352)</option>
+<option value="mo" >Macao (+853)</option>
+<option value="mk" >Macedonia (+389)</option>
+<option value="mg" >Madagascar (+261)</option>
+<option value="mw" >Malawi (+265)</option>
+<option value="my" >Malaysia (+60)</option>
+<option value="mv" >Maldives (+960)</option>
+<option value="ml" >Mali (+223)</option>
+<option value="mt" >Malta (+356)</option>
+<option value="mq" >Martinique (+596)</option>
+<option value="mr" >Mauritania (+222)</option>
+<option value="mu" >Mauritius (+230)</option>
+<option value="mx" >Mexico (+52)</option>
+<option value="mc" >Monaco (+377)</option>
+<option value="mn" >Mongolia (+976)</option>
+<option value="me" >Montenegro (+382)</option>
+<option value="ms" >Montserrat (+1)</option>
+<option value="ma" >Morocco/Western Sahara (+212)</option>
+<option value="mz" >Mozambique (+258)</option>
+<option value="na" >Namibia (+264)</option>
+<option value="np" >Nepal (+977)</option>
+<option value="nl" >Netherlands (+31)</option>
+<option value="nz" >New Zealand (+64)</option>
+<option value="ni" >Nicaragua (+505)</option>
+<option value="ne" >Niger (+227)</option>
+<option value="ng" >Nigeria (+234)</option>
+<option value="no" >Norway (+47)</option>
+<option value="om" >Oman (+968)</option>
+<option value="pk" >Pakistan (+92)</option>
+<option value="ps" >Palestinian Territory (+970)</option>
+<option value="pa" >Panama (+507)</option>
+<option value="py" >Paraguay (+595)</option>
+<option value="pe" >Peru (+51)</option>
+<option value="ph" >Philippines (+63)</option>
+<option value="pl" >Poland (+48)</option>
+<option value="pt" >Portugal (+351)</option>
+<option value="pr" >Puerto Rico (+1)</option>
+<option value="qa" >Qatar (+974)</option>
+<option value="re" >Reunion/Mayotte (+262)</option>
+<option value="ro" >Romania (+40)</option>
+<option value="ru" >Russia/Kazakhstan (+7)</option>
+<option value="rw" >Rwanda (+250)</option>
+<option value="ws" >Samoa (+685)</option>
+<option value="sm" >San Marino (+378)</option>
+<option value="sa" >Saudi Arabia (+966)</option>
+<option value="sn" >Senegal (+221)</option>
+<option value="rs" >Serbia (+381)</option>
+<option value="sc" >Seychelles (+248)</option>
+<option value="sl" >Sierra Leone (+232)</option>
+<option value="sg" >Singapore (+65)</option>
+<option value="sk" >Slovakia (+421)</option>
+<option value="si" >Slovenia (+386)</option>
+<option value="za" >South Africa (+27)</option>
+<option value="es" >Spain (+34)</option>
+<option value="lk" >Sri Lanka (+94)</option>
+<option value="kn" >St Kitts and Nevis (+1)</option>
+<option value="lc" >St Lucia (+1)</option>
+<option value="vc" >St Vincent Grenadines (+1)</option>
+<option value="sd" >Sudan (+249)</option>
+<option value="sr" >Suriname (+597)</option>
+<option value="sz" >Swaziland (+268)</option>
+<option value="se" >Sweden (+46)</option>
+<option value="ch" >Switzerland (+41)</option>
+<option value="tw" >Taiwan (+886)</option>
+<option value="tj" >Tajikistan (+992)</option>
+<option value="tz" >Tanzania (+255)</option>
+<option value="th" >Thailand (+66)</option>
+<option value="tg" >Togo (+228)</option>
+<option value="to" >Tonga (+676)</option>
+<option value="tt" >Trinidad and Tobago (+1)</option>
+<option value="tn" >Tunisia (+216)</option>
+<option value="tr" >Turkey (+90)</option>
+<option value="tc" >Turks and Caicos Islands (+1)</option>
+<option value="ug" >Uganda (+256)</option>
+<option value="ua" >Ukraine (+380)</option>
+<option value="ae" >United Arab Emirates (+971)</option>
+<option value="gb" >United Kingdom (+44)</option>
+<option value="us" selected>United States (+1)</option>
+<option value="uy" >Uruguay (+598)</option>
+<option value="uz" >Uzbekistan (+998)</option>
+<option value="ve" >Venezuela (+58)</option>
+<option value="vn" >Vietnam (+84)</option>
+<option value="vg" >Virgin Islands, British (+1)</option>
+<option value="vi" >Virgin Islands, U.S. (+1)</option>
+<option value="ye" >Yemen (+967)</option>
+<option value="zm" >Zambia (+260)</option>
+<option value="zw" >Zimbabwe (+263)</option></select>
+                </div>
+              </div>
+            </div>
+            <label class="sub-label" for="phone-number-qn8mfv6q5hlx">Enter mobile number</label>
+            <div class="controls phone-number">
+              <div class="flex-container">
+                <input type="text" name="phone_number" id="phone-number-qn8mfv6q5hlx" />
+                <input type="hidden" name="incident-code-qn8mfv6q5hlx" id="incident-code-qn8mfv6q5hlx" value="qn8mfv6q5hlx" autocomplete="off" />
+                <a class="btn-change-number-incident" id="btn-change-number-incident-qn8mfv6q5hlx" href="#">
+                  Edit number
+</a>                <a class="btn-subcriber-send-otp" id="btn-subcriber-send-otp-qn8mfv6q5hlx" href="#">
+                  Send OTP
+</a>              </div>
+            </div>
+            <div class="sms-atl-error" id='sms-atl-error-qn8mfv6q5hlx'></div>
+            <div class="opt-container-section" id='otp-container-incident-qn8mfv6q5hlx'>
+              <label class="sub-label" for="otp">Enter the OTP sent</label>
+              <div class="flex-container">
+                <input name="otp" id='otp-field-qn8mfv6q5hlx' type="text" class="prepend" disabled>
+                <a class="resend-otp" id="resend-otp-qn8mfv6q5hlx" href="#">
+                  Resend OTP
+</a>                <span class="timer-incident" id='timer-incident-qn8mfv6q5hlx'>&nbsp;in <span id='countdown-incident-qn8mfv6q5hlx'>30</span> seconds</span>
+              </div>
+              <div class="info-row flex-container">
+                <div class="info-icon">
+</div>
+                <div>To receive SMS updates, please verify your number. To proceed with just email click ‘Subscribe’ </div>
+              </div>
+            </div>
+          </div>
+      </div>
+
+      <div class="modal-footer incident-subscribe">
+        
+          <button name="button" type="submit" class="flat-button cpt-button incident-subscribe-btn-captcha" id="subscribe-btn-qn8mfv6q5hlx" onclick="submitCaptchaIncidentSubscribe(event)">Subscribe to Incident</button>
+          <input type="hidden" name="captcha_error" id="captcha_error" value="false" autocomplete="off" />
+          <input type="hidden" name="g-recaptcha-response" id="g-recaptcha-response" value="false" autocomplete="off" />
+          <div class="terms_and_privacy_information left small">Message and data rates may apply. By subscribing you agree to our <a target="_blank" rel="noopener" class="accessible-link" href="https://help.github.com/articles/github-privacy-statement/">Privacy Policy</a>, the Atlassian <a target="_blank" rel="noopener" class="accessible-link" href="https://www.atlassian.com/legal/product-specific-terms#statuspage-specific-terms">Terms of Service</a>, and the Atlassian <a target="_blank" rel="noopener" class="accessible-link" href="https://www.atlassian.com/legal/privacy-policy">Privacy Policy</a>. This site is protected by reCAPTCHA and the Google <a target="_blank" rel="noopener" class="accessible-link" href="https://policies.google.com/privacy">Privacy Policy</a> and <a target="_blank" rel="noopener" class="accessible-link" href="https://policies.google.com/terms">Terms of Service</a> apply.</div>
+      </div>
+</form>  </div>
+
+
+
+
+
+
+
+
+    
+    <div id="cpt-notification-container" role="status"></div>
+    
+
+
+
+
+    
+      
+
+  
+  
+
+      
+
+  
+
+
+      
+
+
+
+
+    
+  
+  
+
+    
+    
+    
+
+
+    
+
+    
+
+
+
+
+
+    
+
+
+
+
+
+  </body>
+</html>

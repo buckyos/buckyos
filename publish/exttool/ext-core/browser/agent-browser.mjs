@@ -57,7 +57,7 @@ Calls the script's default export once and prints what it returns as JSON:
   page     the browser's current tab (a new one when there is none)
   pages    all tabs of the browser, page among them
   context  the browser context; context.newPage() opens a tab. context.pages() can also have a background tab
-           of a reflow refresh: leave that alone, use pages
+           the Agent Service runs a script in: leave that alone, use pages
   args     the --arg values, as strings
 
 The lease is renewed while the script runs. If the user takes over, the service closes the connection at once and
@@ -67,7 +67,8 @@ The viewport follows the user's device: do not change it.
 page.screenshot() needs the tab in front of its window: call page.bringToFront() first. Pass scale: 'css': the
 screen may be painting the tab at twice its pixels for a viewer, and a screenshot would follow.
 Dialogs (alert, confirm, prompt): handle them with page.on('dialog', ...). A dialog the script does not handle is
-dismissed (a beforeunload dialog is accepted) and reported on stderr. Dialogs in a background tab of a reflow refresh are left open.`,
+dismissed (a beforeunload dialog is accepted) and reported on stderr. Dialogs in a background tab of the Agent
+Service are left open.`,
 
   open: `agent-browser open <url>
 
@@ -112,11 +113,22 @@ Use it for that project's commands only, for example: ( eval "$(agent-browser en
 Prints the version of the browser the package drives and of its playwright-core. The browser itself is downloaded
 by the node: \`agent-browser status\` says whether it is there.`,
 
-  'reflow-run': `agent-browser reflow-run --cdp <cdp_url> --url <url> --package <dir> --out <file> [--click <selector>] [--timeout <seconds>]
+  'background-run': `agent-browser background-run --cdp <cdp_url> --script <file.mjs> --out <file> [--url <url>] [--args <file.json>] [--timeout <seconds>]
 
-Internal: run by the Agent Service to refresh a reflow result. Opens the address in a new tab, runs
-<dir>/refresh.mjs, writes what it returns to <file> as JSON and closes the tab. --timeout (default 60) bounds the
-whole run; an action of the script waits a third of it, 15 seconds at most, unless the script says otherwise.`,
+Internal: run by the Agent Service for browser.background_run. Opens a tab of its own (at --url when given), calls
+the script's default export once, writes what it returns to <file> as JSON and closes the tab:
+
+  export default async ({ page, request, save, url, args }) => data;
+
+  page     the tab, a Playwright page: the one tab the script works in
+  request  page.context().request: requests with the browser's cookies, without rendering a page
+  save     save.image(url): the image fetched with the browser's cookies and scaled down, as a data: URL
+  url      --url (undefined without it)
+  args     what the --args file holds ({} without it)
+
+--timeout (default 60) bounds the whole run; an action of the script waits a third of it, 15 seconds at most, unless
+the script says otherwise. A script that finds the user has to sign in throws an error with code "auth"
+(throw Object.assign(new Error('...'), { code: 'auth' })): the last line on stderr then starts with "auth: ".`,
 };
 
 function print(text) {
@@ -253,7 +265,7 @@ async function connect(cdpUrl, timeout) {
   }
 }
 
-// The connection sees every tab of the browser, a reflow refresh's background tab among them, and the user may be watching one. This
+// The connection sees every tab of the browser, a background run's tab among them, and the user may be watching one. This
 // keeps what it does to the tabs that are ours (`tabIds`, those opened here, and their popups):
 // - Playwright closes within milliseconds every dialog nobody listens for. One listener on the context keeps them all
 //   open; ours are then closed here unless the script handles them, the others stay for the user.
@@ -563,25 +575,9 @@ async function saveImage(page, source) {
   );
 }
 
-async function reflowRun(argv) {
-  const { values } = parse(argv, {
-    cdp: { type: 'string' },
-    url: { type: 'string' },
-    package: { type: 'string' },
-    out: { type: 'string' },
-    click: { type: 'string' },
-    timeout: { type: 'string', default: '60' },
-  });
-  for (const name of ['cdp', 'url', 'package', 'out']) {
-    if (!values[name]) throw usage(`reflow-run needs --${name}`);
-  }
-  const timeout = number(values.timeout, '--timeout', { min: 1 }) * 1000;
-  const script = path.join(path.resolve(values.package), 'refresh.mjs');
-  if (!fs.existsSync(script)) throw new CliError(`no refresh script: ${script}`);
-  const refresh = (await import(pathToFileURL(script).href)).default;
-  if (typeof refresh !== 'function') throw new CliError(`${script}: the default export is not a function`);
-
-  const browser = await connect(values.cdp, timeout);
+// Connects, opens a tab of its own, gives it to `work` and closes it. `timeout` bounds all of it.
+async function inOwnTab(cdpUrl, timeout, work) {
+  const browser = await connect(cdpUrl, timeout);
   let page;
   try {
     const running = (async () => {
@@ -590,28 +586,14 @@ async function reflowRun(argv) {
       // An action that finds nothing fails well before the run does, so that the reason names what was missing.
       page.setDefaultTimeout(Math.min(15_000, Math.max(1000, Math.floor(timeout / 3))));
       page.setDefaultNavigationTimeout(timeout);
-      await page.goto(values.url);
-      if (values.click) {
-        await page.locator(values.click).first().click();
-        // The click may navigate or fetch: give that a moment to start, then wait for it to finish.
-        await sleep(500);
-        await page.waitForLoadState('load');
-        await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
-      }
-      const data = await refresh({ page, url: values.url, save: { image: (source) => saveImage(page, source) } });
-      const text = JSON.stringify(data);
-      if (text === undefined) throw new Error('refresh.mjs returned nothing');
-      fs.writeFileSync(values.out, text);
+      return work(page);
     })();
     running.catch(() => {});
     const expired = sleep(timeout).then(() => {
       throw new Error(`timed out after ${timeout / 1000} seconds`);
     });
     expired.catch(() => {});
-    await Promise.race([running, expired]);
-  } catch (e) {
-    process.stderr.write(`${e?.stack ?? e}\n`);
-    throw new CliError(`reflow failed: ${firstLine(e?.message ?? e)}`);
+    return await Promise.race([running, expired]);
   } finally {
     const closing = (async () => {
       await page?.close().catch(() => {});
@@ -619,6 +601,50 @@ async function reflowRun(argv) {
     })();
     await Promise.race([closing, sleep(5000)]);
   }
+}
+
+async function backgroundRun(argv) {
+  const { values } = parse(argv, {
+    cdp: { type: 'string' },
+    script: { type: 'string' },
+    out: { type: 'string' },
+    url: { type: 'string' },
+    args: { type: 'string' },
+    timeout: { type: 'string', default: '60' },
+  });
+  for (const name of ['cdp', 'script', 'out']) {
+    if (!values[name]) throw usage(`background-run needs --${name}`);
+  }
+  const timeout = number(values.timeout, '--timeout', { min: 1 }) * 1000;
+  const file = path.resolve(values.script);
+  if (!fs.existsSync(file)) throw new CliError(`no such script: ${file}`);
+  let args = {};
+  if (values.args) {
+    try {
+      args = JSON.parse(fs.readFileSync(values.args, 'utf8'));
+    } catch (e) {
+      throw new CliError(`--args: ${values.args} is not a JSON file: ${e.message}`);
+    }
+  }
+  const script = (await import(pathToFileURL(file).href)).default;
+  if (typeof script !== 'function') throw new CliError(`${file}: the default export is not a function`);
+
+  try {
+    await inOwnTab(values.cdp, timeout, async (page) => {
+      if (values.url) await page.goto(values.url);
+      const save = { image: (source) => saveImage(page, source) };
+      const data = await script({ page, request: page.context().request, save, url: values.url, args });
+      fs.writeFileSync(values.out, JSON.stringify(data) ?? 'null');
+    });
+  } catch (e) {
+    if (e instanceof CliError) throw e;
+    process.stderr.write(`${e?.stack ?? e}\n`);
+    if (e?.code !== 'auth') throw new CliError(`background run failed: ${firstLine(e?.message ?? e)}`);
+    // The line the Agent Service passes on: its caller takes it for "the user has to sign in".
+    process.stderr.write(`auth: ${firstLine(e.message)}\n`);
+    return 1;
+  }
+  return 0;
 }
 
 const COMMANDS = {
@@ -633,7 +659,7 @@ const COMMANDS = {
   stuck: (argv) => report('stuck', argv),
   env,
   version,
-  'reflow-run': reflowRun,
+  'background-run': backgroundRun,
 };
 
 main('agent-browser', async () => {

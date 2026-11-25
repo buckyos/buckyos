@@ -63,7 +63,7 @@ fn cookie_rank(name: &str) -> u8 {
 const PAGE_SESSION_KEY: &str = "system:nfs-server";
 
 /// A user's sign-in on `reflow.<zone>` (bucket::reflow). That origin runs page code, so the session opens its
-/// pages and none of the file, bucket and upload APIs.
+/// pages, reports reading records there (`POST /_read`) and reaches none of the file, bucket and upload APIs.
 pub(crate) fn is_page_session(claims: &buckyos_api::NfsSessionClaims) -> bool {
     claims.principal_kind == TokenPrincipalKind::User && claims.authorization_key == PAGE_SESSION_KEY
 }

@@ -1,12 +1,11 @@
 {
-  "about": "Reflow rules of Agent Browser Protocol §5.1 and §5.2. normalize: url -> normalized URL, site, page, and view (the page shown when the site has a package and a result). invalid: URLs that have no reflow page. match: whether a package whose manifest has this `match` applies to the URL.",
+  "about": "Reflow rules of Agent Browser Protocol §5.1. normalize: url -> normalized URL, site and page (a fallback page is <site>/fallback/<page>.html; an article of the personal site has the page as its id). invalid: URLs that have no reflow page. match: whether a source of the personal site whose `match` is `manifest_match` covers the URL (the field keeps its phase-1 name).",
   "normalize": [
     {
       "url": "https://www.example.com/news/1?a=1&b=2#top",
       "normalized": "https://www.example.com/news/1?a=1&b=2",
       "site": "www-example-com",
       "page": "c9d4e04ee8f8f40c",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%2Fnews%2F1%3Fa%3D1%26b%3D2&page=c9d4e04ee8f8f40c",
       "note": "the fragment goes, the query stays as it is"
     },
     {
@@ -14,7 +13,6 @@
       "normalized": "https://www.example.com/News/1",
       "site": "www-example-com",
       "page": "673df0596e4946d8",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%2FNews%2F1&page=673df0596e4946d8",
       "note": "scheme and host in lower case, the path keeps its case"
     },
     {
@@ -22,7 +20,6 @@
       "normalized": "http://www.example.com/",
       "site": "www-example-com",
       "page": "14b570acce514512",
-      "view": "www-example-com/?url=http%3A%2F%2Fwww.example.com%2F&page=14b570acce514512",
       "note": "default port of http"
     },
     {
@@ -30,7 +27,6 @@
       "normalized": "https://www.example.com/",
       "site": "www-example-com",
       "page": "49365e2b6b265ccb",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%2F&page=49365e2b6b265ccb",
       "note": "default port of https, empty path"
     },
     {
@@ -38,7 +34,6 @@
       "normalized": "https://www.example.com/",
       "site": "www-example-com",
       "page": "49365e2b6b265ccb",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%2F&page=49365e2b6b265ccb",
       "note": "empty path"
     },
     {
@@ -46,7 +41,6 @@
       "normalized": "https://www.example.com/",
       "site": "www-example-com",
       "page": "49365e2b6b265ccb",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%2F&page=49365e2b6b265ccb",
       "note": "empty fragment"
     },
     {
@@ -54,7 +48,6 @@
       "normalized": "https://www.example.com:8443/a",
       "site": "www-example-com",
       "page": "93ae8f8dc239c26c",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%3A8443%2Fa&page=93ae8f8dc239c26c",
       "note": "another port stays in the URL, not in the site"
     },
     {
@@ -62,7 +55,6 @@
       "normalized": "http://www.example.com:443/a",
       "site": "www-example-com",
       "page": "7804554b90ba16a4",
-      "view": "www-example-com/?url=http%3A%2F%2Fwww.example.com%3A443%2Fa&page=7804554b90ba16a4",
       "note": "443 is not the default port of http"
     },
     {
@@ -70,7 +62,6 @@
       "normalized": "https://www.example.com/?",
       "site": "www-example-com",
       "page": "0864543e781b0684",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%2F%3F&page=0864543e781b0684",
       "note": "an empty query stays"
     },
     {
@@ -78,7 +69,6 @@
       "normalized": "https://www.example.com/?q=a%20b&x=%7E",
       "site": "www-example-com",
       "page": "f835cb96273b273f",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%2F%3Fq%3Da%2520b%26x%3D%257E&page=f835cb96273b273f",
       "note": "the parser encodes the space; %7E is not decoded"
     },
     {
@@ -86,7 +76,6 @@
       "normalized": "https://www.example.com/?b=2&a=1",
       "site": "www-example-com",
       "page": "f608675aad187460",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%2F%3Fb%3D2%26a%3D1&page=f608675aad187460",
       "note": "query parameters keep their order"
     },
     {
@@ -94,7 +83,6 @@
       "normalized": "https://www.example.com/b/c",
       "site": "www-example-com",
       "page": "dc5570838a2d462b",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%2Fb%2Fc&page=dc5570838a2d462b",
       "note": "dot segments"
     },
     {
@@ -102,7 +90,6 @@
       "normalized": "https://www.example.com/a%20b/%E4%B8%AD",
       "site": "www-example-com",
       "page": "f0b225dbcc4f9177",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%2Fa%2520b%2F%25E4%25B8%25AD&page=f0b225dbcc4f9177",
       "note": "an encoded path stays encoded"
     },
     {
@@ -110,7 +97,6 @@
       "normalized": "https://www.example.com/%E6%96%B0%E9%97%BB/1?%E6%A0%87%E9%A2%98=%E4%B8%80",
       "site": "www-example-com",
       "page": "0bdb30021d7a8816",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%2F%25E6%2596%25B0%25E9%2597%25BB%2F1%3F%25E6%25A0%2587%25E9%25A2%2598%3D%25E4%25B8%2580&page=0bdb30021d7a8816",
       "note": "non-ASCII path and query are encoded"
     },
     {
@@ -118,7 +104,6 @@
       "normalized": "https://www.example.com/x",
       "site": "www-example-com",
       "page": "44c236b9b16471c0",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%2Fx&page=44c236b9b16471c0",
       "note": "credentials go"
     },
     {
@@ -126,7 +111,6 @@
       "normalized": "https://www.example.com/trim",
       "site": "www-example-com",
       "page": "5c2cecfca6090f05",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com%2Ftrim&page=5c2cecfca6090f05",
       "note": "surrounding spaces"
     },
     {
@@ -134,7 +118,6 @@
       "normalized": "https://www.example.com./x",
       "site": "www-example-com",
       "page": "5af26eb216f25877",
-      "view": "www-example-com/?url=https%3A%2F%2Fwww.example.com.%2Fx&page=5af26eb216f25877",
       "note": "a trailing dot stays in the URL, not in the site"
     },
     {
@@ -142,7 +125,6 @@
       "normalized": "https://www.facebook.com/",
       "site": "www-facebook-com",
       "page": "0b2df0f635584f42",
-      "view": "www-facebook-com/?url=https%3A%2F%2Fwww.facebook.com%2F&page=0b2df0f635584f42",
       "note": "the example of the design"
     },
     {
@@ -150,7 +132,6 @@
       "normalized": "http://localhost:3000/",
       "site": "localhost-host",
       "page": "f960fc983a2bc719",
-      "view": "localhost-host/?url=http%3A%2F%2Flocalhost%3A3000%2F&page=f960fc983a2bc719",
       "note": "single-label host"
     },
     {
@@ -158,7 +139,6 @@
       "normalized": "http://intranet/wiki",
       "site": "intranet-host",
       "page": "6a8a5a09c67bf579",
-      "view": "intranet-host/?url=http%3A%2F%2Fintranet%2Fwiki&page=6a8a5a09c67bf579",
       "note": "single-label host"
     },
     {
@@ -166,7 +146,6 @@
       "normalized": "https://my_host/",
       "site": "my_host-host",
       "page": "74d570682b9c8193",
-      "view": "my_host-host/?url=https%3A%2F%2Fmy_host%2F&page=74d570682b9c8193",
       "note": "an underscore is not a dash"
     },
     {
@@ -174,7 +153,6 @@
       "normalized": "https://a-b.com/",
       "site": "a-b-com",
       "page": "ac1a280aa5b06254",
-      "view": "a-b-com/?url=https%3A%2F%2Fa-b.com%2F&page=ac1a280aa5b06254",
       "note": "a-b.com and a.b.com share a site"
     },
     {
@@ -182,7 +160,6 @@
       "normalized": "https://a.b.com/",
       "site": "a-b-com",
       "page": "dfb7874edd87c5d7",
-      "view": "a-b-com/?url=https%3A%2F%2Fa.b.com%2F&page=dfb7874edd87c5d7",
       "note": "a-b.com and a.b.com share a site"
     },
     {
@@ -190,7 +167,6 @@
       "normalized": "http://192.168.1.10:8080/admin",
       "site": "192-168-1-10",
       "page": "89b536ddaa1095bf",
-      "view": "192-168-1-10/?url=http%3A%2F%2F192.168.1.10%3A8080%2Fadmin&page=89b536ddaa1095bf",
       "note": "IPv4 address"
     },
     {
@@ -198,7 +174,6 @@
       "normalized": "https://xn--r8jz45g.jp/",
       "site": "xn--r8jz45g-jp",
       "page": "7e57d8064f1968ed",
-      "view": "xn--r8jz45g-jp/?url=https%3A%2F%2Fxn--r8jz45g.jp%2F&page=7e57d8064f1968ed",
       "note": "IDN host in its ASCII form"
     }
   ],

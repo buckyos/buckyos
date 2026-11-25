@@ -1,0 +1,419 @@
+{
+  "schema": "buckyos.site/1",
+  "title": "States",
+  "language": "en",
+  "owner_did": "did:bns:alice",
+  "topics": [
+    "Tech"
+  ],
+  "template": {
+    "version": "t1",
+    "params": {
+      "home_order": "time",
+      "per_column": 3,
+      "hide_topics": [],
+      "collapsed": []
+    }
+  },
+  "columns": [
+    {
+      "id": "all",
+      "title": "Everything",
+      "sources": [
+        "fine",
+        "paused",
+        "upgrade",
+        "preparing",
+        "setup-failed",
+        "no-feed",
+        "login",
+        "broken",
+        "flaky",
+        "budget",
+        "model",
+        "retry",
+        "slow",
+        "images",
+        "other"
+      ]
+    }
+  ],
+  "sources": [
+    {
+      "id": "fine",
+      "title": "Fine",
+      "home_url": "https://fine.example.com/",
+      "match": [
+        {
+          "host": "fine.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-fine",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "paused",
+      "title": "Paused Daily",
+      "home_url": "https://paused.example.com/",
+      "match": [
+        {
+          "host": "paused.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-paused",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "paused",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "upgrade",
+      "title": "Upgrade Times",
+      "home_url": "https://upgrade.example.com/",
+      "match": [
+        {
+          "host": "upgrade.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-upgrade",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "preparing",
+      "title": "Preparing Post",
+      "home_url": "https://preparing.example.com/",
+      "match": [
+        {
+          "host": "preparing.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-preparing",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "preparing",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "setup-failed",
+      "title": "Setup Failed News",
+      "home_url": "https://setup-failed.example.com/",
+      "match": [
+        {
+          "host": "setup-failed.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-setup-failed",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "failed",
+      "note": "The text needs a subscription",
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "no-feed",
+      "title": "No Feed Yet",
+      "home_url": "https://no-feed.example.com/",
+      "match": [
+        {
+          "host": "no-feed.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-no-feed",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "login",
+      "title": "Login Journal",
+      "home_url": "https://login.example.com/",
+      "match": [
+        {
+          "host": "login.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-login",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "broken",
+      "title": "Broken Herald",
+      "home_url": "https://broken.example.com/",
+      "match": [
+        {
+          "host": "broken.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-broken",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "flaky",
+      "title": "Flaky Wire",
+      "home_url": "https://flaky.example.com/",
+      "match": [
+        {
+          "host": "flaky.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-flaky",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "budget",
+      "title": "Budget Weekly",
+      "home_url": "https://budget.example.com/",
+      "match": [
+        {
+          "host": "budget.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-budget",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "model",
+      "title": "Model Review",
+      "home_url": "https://model.example.com/",
+      "match": [
+        {
+          "host": "model.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-model",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "retry",
+      "title": "Retry Courier",
+      "home_url": "https://retry.example.com/",
+      "match": [
+        {
+          "host": "retry.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-retry",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "slow",
+      "title": "Slow Gazette",
+      "home_url": "https://slow.example.com/",
+      "match": [
+        {
+          "host": "slow.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-slow",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "images",
+      "title": "Images Tribune",
+      "home_url": "https://images.example.com/",
+      "match": [
+        {
+          "host": "images.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-images",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    },
+    {
+      "id": "other",
+      "title": "Other Reason",
+      "home_url": "https://other.example.com/",
+      "match": [
+        {
+          "host": "other.example.com"
+        }
+      ],
+      "lang": "en",
+      "kind": "news",
+      "needs": "http",
+      "job": "src-other",
+      "version": "s1",
+      "every_secs": 1800,
+      "max_new": 20,
+      "keep_days": 30,
+      "comments": 10,
+      "state": "active",
+      "note": null,
+      "added_at": 1763913600000,
+      "added_by": "work:ws-20261123T010203-0a1b2c3d"
+    }
+  ],
+  "upgrades": [
+    {
+      "id": "u1",
+      "source": "upgrade",
+      "title": "The site moved its articles",
+      "summary": "The list is now loaded by script. It has to be read with the browser.",
+      "file": "upgrades/u1.md",
+      "goal_id": "g-1",
+      "opened_at": 1763999400000,
+      "state": "open"
+    },
+    {
+      "id": "u2",
+      "source": "fine",
+      "title": "A closed request",
+      "summary": "Not shown.",
+      "file": "upgrades/u2.md",
+      "goal_id": "g-1",
+      "opened_at": 1763999400000,
+      "state": "closed"
+    }
+  ],
+  "reading": {
+    "enabled": true
+  },
+  "limits": {
+    "translate_tokens_per_day": 1000000
+  },
+  "maintainer": null,
+  "updated_at": 1764000000000,
+  "updated_by": "did:bns:jarvis.alice"
+}

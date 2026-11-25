@@ -522,13 +522,16 @@ impl Groups {
     // ---- stop, start, the file ----
 
     /// The browser stopped: its tabs are gone; what they showed is kept to
-    /// be opened again. Leases end with it.
+    /// be opened again, after what was kept and not opened while it ran (a
+    /// browser started for background work only). Leases end with it.
     pub fn suspend(&mut self) {
         let tabs = std::mem::take(&mut self.tabs);
         for (id, group) in self.groups.iter_mut() {
             if !group.tabs.is_empty() && !is_internal(id) {
-                group.saved_active = group.active.as_ref().and_then(|a| group.tabs.iter().position(|t| t == a));
-                group.saved = group.tabs.iter().filter_map(|t| tabs.get(t)).filter_map(saved_tab).collect();
+                if group.saved.is_empty() {
+                    group.saved_active = group.active.as_ref().and_then(|a| group.tabs.iter().position(|t| t == a));
+                }
+                group.saved.extend(group.tabs.iter().filter_map(|t| tabs.get(t)).filter_map(saved_tab));
             }
             group.tabs.clear();
             group.active = None;
@@ -555,16 +558,16 @@ impl Groups {
                 .iter()
                 .filter(|(id, _)| !is_internal(id))
                 .map(|(id, g)| {
-                    let live: Vec<SavedTab> = g.tabs.iter().filter_map(|t| self.tabs.get(t)).filter_map(saved_tab).collect();
-                    let running = !g.tabs.is_empty();
+                    // What waits to be opened again, then what is open.
+                    let live = g.tabs.iter().filter_map(|t| self.tabs.get(t)).filter_map(saved_tab);
                     SavedGroup {
                         group_id: id.clone(),
-                        active: if running {
+                        active: if g.saved.is_empty() {
                             g.active.as_ref().and_then(|a| g.tabs.iter().position(|t| t == a))
                         } else {
                             g.saved_active
                         },
-                        tabs: if running { live } else { g.saved.clone() },
+                        tabs: g.saved.iter().cloned().chain(live).collect(),
                         user_hold: g.user_hold,
                         handover: g.handover.clone(),
                     }
@@ -717,15 +720,15 @@ mod tests {
     fn a_new_tab_goes_to_its_openers_group_then_the_one_it_is_opened_for_then_the_default_one() {
         let mut g = Groups::new(3);
         assert_eq!(g.place(None, None), DEFAULT_GROUP);
-        assert!(g.tab_seen("r1", "_reflow", "https://r.example/", "R"));
+        assert!(g.tab_seen("r1", "_job", "https://r.example/", "R"));
         assert!(g.tab_seen("t1", DEFAULT_GROUP, "https://a.example/", "A"));
         assert!(!g.tab_seen("t1", DEFAULT_GROUP, "https://a.example/x", ""));
         assert_eq!(g.tab("t1").unwrap().url, "https://a.example/x");
         // A page opened by a page.
-        assert_eq!(g.place(Some("r1"), None), "_reflow");
-        assert_eq!(g.place(Some("t1"), Some("_reflow")), DEFAULT_GROUP);
+        assert_eq!(g.place(Some("r1"), None), "_job");
+        assert_eq!(g.place(Some("t1"), Some("_job")), DEFAULT_GROUP);
         // A tab the module opens for one of its own groups.
-        assert_eq!(g.place(None, Some("_reflow")), "_reflow");
+        assert_eq!(g.place(None, Some("_job")), "_job");
         // A lease changes nothing: every session works in the one group.
         g.acquire(DEFAULT_GROUP, "ui-9", T0).unwrap();
         assert_eq!(g.place(None, None), DEFAULT_GROUP);
@@ -743,13 +746,13 @@ mod tests {
         // The limit counts the tabs the user sees.
         assert!(g.tab_seen("t3", DEFAULT_GROUP, "about:blank", ""));
         assert!(g.has_room());
-        assert!(g.tab_seen("t4", "_reflow", "about:blank", ""));
+        assert!(g.tab_seen("t4", "_job", "about:blank", ""));
         assert!(g.has_room());
         assert!(g.tab_seen("t5", DEFAULT_GROUP, "about:blank", ""));
         assert!(!g.has_room());
         // A tab the module opened for another group than the one it was first seen in moves there.
-        assert!(!g.tab_seen("t5", "_reflow", "", ""));
-        assert_eq!(g.tab("t5").unwrap().group_id, "_reflow");
+        assert!(!g.tab_seen("t5", "_job", "", ""));
+        assert_eq!(g.tab("t5").unwrap().group_id, "_job");
         assert_eq!(g.group(DEFAULT_GROUP, T0).tabs.len(), 2);
     }
 
@@ -760,7 +763,7 @@ mod tests {
         let mut g = Groups::new(12);
         g.tab_seen("t1", DEFAULT_GROUP, "https://a.example/", "A");
         g.tab_seen("t2", DEFAULT_GROUP, "https://b.example/", "B");
-        g.tab_seen("t4", "_reflow", "https://d.example/", "D");
+        g.tab_seen("t4", "_job", "https://d.example/", "D");
         g.activate("t1").unwrap();
         g.take_over(DEFAULT_GROUP);
         let running = g.to_json();
@@ -792,6 +795,38 @@ mod tests {
         let saved = again.take_saved();
         assert_eq!(saved.iter().map(|(id, tabs, _)| (id.as_str(), tabs.len())).collect::<Vec<_>>(), vec![(DEFAULT_GROUP, 1)]);
         assert!(!again.group(DEFAULT_GROUP, T0).user_hold);
+    }
+
+    /// A browser that runs for background work only leaves the tabs it
+    /// had closed: they stay what is kept, whatever opens beside them.
+    #[test]
+    fn tabs_that_were_not_opened_again_are_still_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("groups.json");
+        let mut g = Groups::new(12);
+        g.tab_seen("t1", DEFAULT_GROUP, "https://a.example/", "A");
+        g.tab_seen("t2", DEFAULT_GROUP, "https://b.example/", "B");
+        g.activate("t1").unwrap();
+        g.suspend();
+        let kept = g.to_json();
+        std::fs::write(&path, &kept).unwrap();
+
+        // Started without them: only a tab of the module's own is open.
+        let mut again = Groups::new(12);
+        again.load(&path);
+        again.tab_seen("j1", "_job", "https://job.example/", "");
+        assert_eq!(again.to_json(), kept);
+        assert!(again.group(DEFAULT_GROUP, T0).tabs.is_empty(), "they are not open");
+        again.suspend();
+        assert_eq!(again.to_json(), kept);
+        // A tab that did open beside them is kept after them.
+        again.tab_seen("t9", DEFAULT_GROUP, "https://c.example/", "C");
+        let both = again.to_json();
+        again.suspend();
+        assert_eq!(again.to_json(), both);
+        let saved = again.take_saved();
+        assert_eq!(saved[0].1.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), vec!["https://a.example/", "https://b.example/", "https://c.example/"]);
+        assert_eq!(saved[0].2, Some(0), "the current tab is the one that was");
     }
 
     #[test]

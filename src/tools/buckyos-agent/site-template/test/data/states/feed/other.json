@@ -1,0 +1,33 @@
+{
+  "schema": "buckyos.site.feed/1",
+  "source": "other",
+  "status": {
+    "state": "ok",
+    "checked_at": 1764001800000,
+    "published_at": 1764001800000,
+    "error": null,
+    "pending": {
+      "count": 2,
+      "reason": "quota",
+      "message": "a reason this template does not know"
+    },
+    "login_url": null
+  },
+  "items": [
+    {
+      "id": "eee9faef00000000",
+      "object_id": "cyfeed:0000000000000000000000000000000000000000000000000000000000000000",
+      "url": "https://other.example.com/a/0",
+      "title": "An article of other",
+      "summary": "A summary that says what the article is about.",
+      "image": null,
+      "tags": [
+        "Tech"
+      ],
+      "published_at": 1764000000000,
+      "fetched_at": 1764001700000,
+      "rev": 1
+    }
+  ],
+  "updated_at": 1764001800000
+}

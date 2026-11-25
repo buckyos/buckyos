@@ -77,6 +77,7 @@ async function enterAgent(page: Page) {
   await openFromAllApps(page, 'agent-browser')
   await page.getByTestId(`ab-agent-${AGENT}`).click()
   await expect(page.getByTestId('agent-browser')).toHaveAttribute('data-agent', AGENT)
+  await page.getByTestId('ab-mode-page').click()
   await expect(page.getByTestId('ab-screen')).toHaveAttribute('data-status', 'open')
 }
 
@@ -318,8 +319,9 @@ test.describe('in a window', () => {
     await page.goto(`/?scenario=normal&agent_browser=${AGENT}`)
     const app = page.getByTestId('agent-browser')
     await expect(app).toHaveAttribute('data-agent', AGENT)
-    await expect(app).toHaveAttribute('data-mode', 'page')
+    await expect(app).toHaveAttribute('data-mode', 'home')
     await expect(page.getByTestId('ab-agent-picker')).toHaveCount(0)
+    await page.getByTestId('ab-mode-page').click()
     await expect(page.getByTestId('ab-screen')).toHaveAttribute('data-status', 'open')
     // The link is consumed: a reload does not open the App again.
     expect(new URL(page.url()).search).toBe('?scenario=normal')
@@ -461,6 +463,7 @@ test.describe('on a phone', () => {
     await expect(page.getByTestId('mobile-taskbar')).toBeAttached()
     await openFromAllApps(page, 'agent-browser')
     await page.getByTestId(`ab-agent-${AGENT}`).tap()
+    await page.getByTestId('ab-mode-page').tap()
     await expect(page.getByTestId('ab-screen')).toHaveAttribute('data-status', 'open')
     const address = page.getByTestId('ab-address-input')
     await address.tap()

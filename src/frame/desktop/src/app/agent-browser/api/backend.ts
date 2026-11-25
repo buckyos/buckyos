@@ -15,6 +15,8 @@ export interface BrowserAgent {
   agentDid: string
   name: string
   avatar?: string
+  /** A read-only Agent cannot write the owner's buckets, so it cannot maintain the personal site. */
+  readOnly: boolean
 }
 
 export interface BrowserBackend {
@@ -30,7 +32,7 @@ export interface BrowserBackend {
 
 export function toBrowserAgent(entry: AgentEntry): BrowserAgent {
   const avatar = usableImageUrl(entry.profile?.avatar)
-  return { agentId: entry.agent_id, agentDid: entry.agent_did, name: agentDisplayName(entry), ...(avatar ? { avatar } : {}) }
+  return { agentId: entry.agent_id, agentDid: entry.agent_did, name: agentDisplayName(entry), readOnly: entry.permission_mode === 'read_only', ...(avatar ? { avatar } : {}) }
 }
 
 export async function ownReadyAgents(): Promise<AgentEntry[]> {

@@ -7,6 +7,7 @@ import { LinkifiedText } from '../../../components/conversation/history/MessageM
 import { messageObjId } from '../../../components/conversation/history/relations'
 import type { NotifyMessageData, NotifyStatus } from 'buckyos'
 import type { MessageObject } from '../../../components/conversation/model/msgobj'
+import { openAgentBrowserLink } from '../../agent-browser/launch'
 import { committedApp, isNotifyClosed, promptOptions, promptTextInput, resultOption, resultText, type NotifyAnswer, type NotifyView } from './model'
 import { getNotifyWatch, useNotifyEntry } from './index'
 
@@ -122,7 +123,7 @@ export function NotifyCard({ message, data, className, style, footer }: { messag
       </div>
       {prompt.title ? <p className="mt-2 break-words text-[15px] font-medium leading-snug" data-testid="notify-title">{prompt.title}</p> : null}
       {prompt.message ? <p className="mt-1 whitespace-pre-wrap break-words text-[14px] leading-[1.45]" data-testid="notify-message"><LinkifiedText text={prompt.message} /></p> : null}
-      {link ? <a className="mt-1.5 inline-flex items-center gap-1 text-[13px] underline underline-offset-2" style={{ color: 'var(--cp-accent)' }} href={link} target={link.startsWith('/') ? undefined : '_blank'} rel="noreferrer" data-testid="notify-link"><ExternalLink size={13} aria-hidden />{t('messagehub.notify.openLink')}</a> : null}
+      {link ? <a className="mt-1.5 inline-flex items-center gap-1 text-[13px] underline underline-offset-2" style={{ color: 'var(--cp-accent)' }} href={link} target={link.startsWith('/') ? undefined : '_blank'} rel="noreferrer" onClick={event => { if (openAgentBrowserLink(link)) event.preventDefault() }} data-testid="notify-link"><ExternalLink size={13} aria-hidden />{t('messagehub.notify.openLink')}</a> : null}
 
       {canAct && kind === 'input' ? (
         <div className="mt-3 flex flex-col gap-1.5" data-testid="notify-controls" data-no-details>

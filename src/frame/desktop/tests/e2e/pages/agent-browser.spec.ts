@@ -63,9 +63,11 @@ async function openApp(page: Page) {
   await expect(page.getByTestId('agent-browser')).toBeVisible()
 }
 
+/** Picks the Agent and goes to its browser's screen: the App opens in home mode, which does not connect it. */
 async function enterAgent(page: Page, agentId = AGENT) {
   await page.getByTestId(`ab-agent-${agentId}`).click()
   await expect(page.getByTestId('agent-browser')).toHaveAttribute('data-agent', agentId)
+  await page.getByTestId('ab-mode-page').click()
   await expect(page.getByTestId('ab-screen')).toHaveAttribute('data-status', 'open')
 }
 
@@ -109,9 +111,20 @@ test('opens from All apps, asks whose browser, and shows the page of the address
   const picker = page.getByTestId('ab-agent-picker')
   await expect(picker.getByRole('button')).toHaveCount(2)
   await expect(picker.getByTestId('ab-agent-assistant.alice')).toContainText('BuckyOS Assistant')
-  await enterAgent(page)
+  await page.getByTestId(`ab-agent-${AGENT}`).click()
+
+  // The App opens at home, which needs no browser: the screen is not connected and the browser is not started.
+  await expect(page.getByTestId('agent-browser')).toHaveAttribute('data-mode', 'home')
+  await expect(page.getByTestId('ab-home')).toHaveAttribute('data-status', 'absent')
+  await expect(page.getByTestId('ab-status')).toHaveAttribute('data-controller', 'user')
+  expect(await rpcCalls(page, 'browser.status')).not.toHaveLength(0)
+  expect(await rpcCalls(page, 'browser.ensure')).toHaveLength(0)
+  expect(await received(page, 'hello')).toHaveLength(0)
+  await expect(page.getByTestId('ab-screen')).toHaveCount(0)
 
   // The Agent's browser in original page mode, an empty address, no tab yet; nothing lists tasks or conversations.
+  await page.getByTestId('ab-mode-page').click()
+  await expect(page.getByTestId('ab-screen')).toHaveAttribute('data-status', 'open')
   await expect(page.getByTestId('agent-browser')).toHaveAttribute('data-mode', 'page')
   await expect(page.getByTestId('ab-agent-name')).toHaveText('CodeAssistant')
   await expect(page.getByTestId('ab-identity').getByRole('button')).toHaveCount(0)
@@ -377,13 +390,14 @@ test('who operates: the page is view only while the Agent operates; take over, h
   await expect(page.getByTestId('agent-browser')).toHaveAttribute('data-mode', 'page')
 })
 
-test('the three modes switch; reflow and chat leave the stage to their panels', async ({ page }) => {
+test('the three modes switch; home and chat leave the stage to their panels', async ({ page }) => {
   await openBrowser(page)
+  await expect(page.getByRole('tab').first()).toHaveText('Home')
   await expect(page.getByRole('tab', { name: 'Page' })).toHaveAttribute('aria-selected', 'true')
-  await page.getByTestId('ab-mode-reflow').click()
-  await expect(page.getByTestId('ab-reflow-panel')).toBeVisible()
+  await page.getByTestId('ab-mode-home').click()
+  await expect(page.getByTestId('ab-home')).toBeVisible()
   await expect(page.getByTestId('ab-screen')).toHaveCount(0)
-  // Reflow does not need the screen; who operates still shows, from `browser.status`.
+  // Home does not need the screen; who operates still shows, from `browser.status`.
   await expect(page.getByTestId('ab-status')).toHaveAttribute('data-controller', 'user')
   await agentSide(page, 'agentAcquire')
   await expect(page.getByTestId('ab-status')).toHaveAttribute('data-controller', 'agent', { timeout: 10_000 })
@@ -491,6 +505,9 @@ test('a browser that is turned off or missing is explained, and comes back witho
   await openApp(page)
   await page.evaluate((agent) => (window as unknown as MockWindow).__agentBrowserMock.setAvailability(agent, { available: false, unavailable: 'chromium was not found in /opt/buckyos/tools' }), AGENT)
   await page.getByTestId(`ab-agent-${AGENT}`).click()
+  // Home is there without a browser; the screen of the original page says why there is none.
+  await expect(page.getByTestId('ab-site-start')).toBeVisible()
+  await page.getByTestId('ab-mode-page').click()
   const notice = page.getByTestId('ab-unavailable')
   await expect(notice).toHaveAttribute('data-reason', 'no_package')
   await expect(notice).toContainText('The browser is not available on CodeAssistant')
@@ -526,7 +543,7 @@ test('the App’s text follows the language', async ({ page }) => {
   await page.addInitScript(() => window.localStorage.setItem('buckyos.prototype.locale.v1', 'zh-CN'))
   await openBrowser(page)
   await expect(page.getByTestId('window-agent-browser')).toContainText('Agent 浏览器')
-  await expect(page.getByRole('tab')).toHaveText(['原始页面', '重排', '对话'])
+  await expect(page.getByRole('tab')).toHaveText(['首页', '原始页面', '对话'])
   await expect(page.getByTestId('ab-status-operator')).toHaveText('你在操作')
   await expect(page.getByTestId('ab-hand-to-agent')).toHaveText('交给 Agent')
   await agentSide(page, 'agentAcquire')

@@ -58,6 +58,7 @@ export function HandoverBar() {
   const pending = useAgentBrowser((snapshot) => snapshot.pending)
   // Where the conversation is: `stage` in conversation mode, else pulled up over the page (`open`) or put away.
   const chat = useAgentBrowser((snapshot) => (snapshot.mode === 'chat' ? 'stage' : snapshot.chatOpen ? 'open' : 'closed'))
+  const home = useAgentBrowser((snapshot) => snapshot.mode === 'home')
   const talks = useAgentBrowser((snapshot) => snapshot.conversations === 'ready')
   const [asking, setAsking] = useState<'hand_back' | 'hand_to_agent' | null>(null)
   if (!group) {
@@ -69,12 +70,16 @@ export function HandoverBar() {
   const handToAgent = () => { if (talks) setAsking('hand_to_agent'); else void store.handToAgent() }
   // The Agent's question is answered in the conversation: while that is put away, the one action is the way to it.
   const answering = group.controller !== 'agent' && !group.user_hold && group.agent_state === 'waiting_answer'
+  // At home no page is in front for anyone to operate: the strip says what the Agent is doing.
+  const resting = home && group.controller !== 'agent' && !group.user_hold
   return (
     <div className="ab-handover" data-testid="ab-status" data-controller={group.controller} data-agent-state={group.agent_state} data-user-hold={group.user_hold ? 'true' : 'false'} data-tone={tone}>
       <span className="ab-handover-dot" aria-hidden />
       <div className="ab-handover-text" role="status">
-        <p className="ab-handover-main" data-testid="ab-status-operator">{operatorText(t, group, name)}</p>
-        <p className="ab-handover-sub" data-testid="ab-status-agent">{agentText(t, group, name)}</p>
+        {resting ? <p className="ab-handover-main" data-testid="ab-status-agent">{agentText(t, group, name)}</p> : <>
+          <p className="ab-handover-main" data-testid="ab-status-operator">{operatorText(t, group, name)}</p>
+          <p className="ab-handover-sub" data-testid="ab-status-agent">{agentText(t, group, name)}</p>
+        </>}
       </div>
       {chat === 'stage' || (answering && chat === 'closed') ? null : <ChatToggle />}
       {group.controller === 'agent' ? (
@@ -83,6 +88,9 @@ export function HandoverBar() {
         <button type="button" className="ab-button ab-button-primary" disabled={busy} data-testid="ab-hand-back" onClick={handBack}>{t('agentBrowser.action.handBack', 'Hand back')}</button>
       ) : answering ? (
         chat === 'closed' ? <button type="button" className="ab-button ab-button-primary" data-testid="ab-answer" onClick={() => store.setChatOpen(true)}>{t('agentBrowser.action.answer', 'Answer')}</button> : null
+      ) : home ? (
+        // No page is in front in home mode: a task is given in the conversation, which comes up over the site.
+        chat === 'closed' ? <button type="button" className="ab-button" disabled={!talks} data-testid="ab-give-task" onClick={() => store.setChatOpen(true)}>{t('agentBrowser.action.giveTask', 'Give a task')}</button> : null
       ) : (
         <button type="button" className="ab-button" disabled={busy} data-testid="ab-hand-to-agent" onClick={handToAgent}>{t('agentBrowser.action.handToAgent', 'Hand to Agent')}</button>
       )}

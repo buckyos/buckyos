@@ -1,0 +1,663 @@
+
+
+
+
+  
+
+<!DOCTYPE html>
+<html
+  lang="en"
+  
+ 
+ 
+ 
+  >
+
+
+
+
+  <head>
+    <meta charset="utf-8">
+  
+  
+  
+  
+  
+  
+
+
+<meta name="react-profiling" content="0" />
+<meta name="react-import-map" content="react,react-dom,react-dom/client,react-dom/profiling,react-is,react/compiler-runtime,react/jsx-dev-runtime,react/jsx-runtime,scheduler@b8488ee2c322" />
+
+
+
+
+
+
+
+
+  
+
+
+  
+
+  
+
+    
+    
+    
+    
+  
+
+
+  
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  <title>GitHub - xoxorwr/pw-loudness-eq: Windows Loudness Equalization, reverse-engineered and ported to PipeWire · GitHub</title>
+
+
+
+  <meta name="route-pattern" content="/:user_id/:repository" data-turbo-transient>
+  <meta name="route-controller" content="files" data-turbo-transient>
+  <meta name="route-action" content="disambiguate" data-turbo-transient>
+  <meta name="fetch-nonce" content="v2:0147a027-aec5-f675-e741-420d980edc16">
+
+    
+  <meta name="current-catalog-service-hash" content="f3abb0cc802f3d7b95fc8762b94bdcb13bf39634c40c357301c4aa1d67a256fb">
+
+
+  <meta name="request-id" content="8452:1AC6F4:A1B903:1F5E70B:6B0711B3"/><meta name="html-safe-nonce" content="638017d28a88554dadd04c0e1d1b3e69d2a4ee50ba0deafd2473d9fba6673079"/><meta name="visitor-payload" content="eyJyZWZlcnJlciI6IiIsInJlcXVlc3RfaWQiOiI4NDUyOjFBQzZGNDpBMUI5MDM6MUY1RTcwQjo2QjA3MTFCMyIsInZpc2l0b3JfaWQiOiIzODQ1ODAwMzkxMDc0MDU4Njc1IiwicmVnaW9uX2VkZ2UiOiJ3ZXN0dXMzIiwicmVnaW9uX3JlbmRlciI6Indlc3R1czMifQ=="/><meta name="visitor-hmac" content="483e83eb60dfdd6fdda601e0f229ba483c259d53c392b8b5bb7c333dac379149"/>
+
+
+    <meta name="hovercard-subject-tag" content="repository:1467478160" data-turbo-transient>
+
+
+  <meta name="github-keyboard-shortcuts" content="repository,copilot" />
+  
+
+  <meta name="selected-link" value="repo_source" data-turbo-transient>
+  
+
+    <meta name="google-site-verification" content="Apib7-x98H0j5cPqHWwSMm6dNU4GmODRoqxLiDzdx9I">
+
+<meta name="octolytics-url" content="https://collector.github.com/github/collect" />
+
+
+
+
+
+  <meta name="analytics-location" content="/&lt;user-name&gt;/&lt;repo-name&gt;" />
+
+  
+
+
+
+
+    <meta name="user-login" content="">
+
+  
+
+    <meta name="viewport" content="width=device-width">
+
+    
+
+      <meta name="description" content="Windows Loudness Equalization, reverse-engineered and ported to PipeWire - xoxorwr/pw-loudness-eq">
+
+      
+
+    
+    <meta property="fb:app_id" content="1401488693436528">
+    <meta name="apple-itunes-app" content="app-id=1477376905, app-argument=https://github.com/xoxorwr/pw-loudness-eq" />
+
+      <meta name="twitter:image" content="https://opengraph.githubassets.com/d7823d7b77c9d0e05d10a2975bc7de9a640e8aff9de39765844b069acafd87c1/xoxorwr/pw-loudness-eq" /><meta name="twitter:site" content="@github" /><meta name="twitter:card" content="summary_large_image" /><meta name="twitter:title" content="GitHub - xoxorwr/pw-loudness-eq: Windows Loudness Equalization, reverse-engineered and ported to PipeWire" /><meta name="twitter:description" content="Windows Loudness Equalization, reverse-engineered and ported to PipeWire - xoxorwr/pw-loudness-eq" />
+  <meta property="og:image" content="https://opengraph.githubassets.com/d7823d7b77c9d0e05d10a2975bc7de9a640e8aff9de39765844b069acafd87c1/xoxorwr/pw-loudness-eq" /><meta property="og:image:alt" content="Windows Loudness Equalization, reverse-engineered and ported to PipeWire - xoxorwr/pw-loudness-eq" /><meta property="og:image:width" content="1200" /><meta property="og:image:height" content="600" /><meta property="og:site_name" content="GitHub" /><meta property="og:type" content="object" /><meta property="og:title" content="GitHub - xoxorwr/pw-loudness-eq: Windows Loudness Equalization, reverse-engineered and ported to PipeWire" /><meta property="og:url" content="https://github.com/xoxorwr/pw-loudness-eq" /><meta property="og:description" content="Windows Loudness Equalization, reverse-engineered and ported to PipeWire - xoxorwr/pw-loudness-eq" />
+  
+
+
+
+      <meta name="hostname" content="github.com">
+
+
+
+        <meta name="expected-hostname" content="github.com">
+
+
+  <meta http-equiv="x-pjax-version" content="8f0f0540ce0b5db036d68820a5c53c0ff34c5307f69d700c2f955372e7e52ac1">
+  <meta http-equiv="x-pjax-csp-version" content="adddfd507de4c4b0b130ff1dbf3c31681ba97e7a45dc69da056946fc5370dfd4">
+  <meta http-equiv="x-pjax-css-version" content="965d37e4f14c714b83113f72ac2eaeb62573839533abec322e1f4e981fa4bf41">
+  <meta http-equiv="x-pjax-js-version" content="9aaa1abe1aaef39a8543ab08df7a776c3243275815d741d29afa7b02148ca05e">
+
+  <meta name="turbo-cache-control" content="no-preview">
+
+      <meta name="turbo-cache-control" content="no-cache" data-turbo-transient>
+
+    <meta>
+
+  <meta name="go-import" content="github.com/xoxorwr/pw-loudness-eq git https://github.com/xoxorwr/pw-loudness-eq.git">
+
+  <meta name="octolytics-dimension-user_id" content="212222387" /><meta name="octolytics-dimension-user_login" content="xoxorwr" /><meta name="octolytics-dimension-repository_id" content="1467478160" /><meta name="octolytics-dimension-repository_nwo" content="xoxorwr/pw-loudness-eq" /><meta name="octolytics-dimension-repository_public" content="true" /><meta name="octolytics-dimension-repository_is_fork" content="false" /><meta name="octolytics-dimension-repository_network_root_id" content="1467478160" /><meta name="octolytics-dimension-repository_network_root_nwo" content="xoxorwr/pw-loudness-eq" />
+  
+
+
+
+    
+
+    <meta name="turbo-body-classes" content="logged-out env-production page-responsive">
+  <meta name="disable-turbo" content="false">
+
+
+  <meta name="browser-stats-url" content="https://api.github.com/_private/browser/stats">
+
+
+  <meta name="browser-errors-url" content="https://api.github.com/_private/browser/errors">
+
+  <meta name="release" content="44c43783771de038e2c401dd343799000e8d1253">
+  <meta name="ui-target" content="full">
+
+  
+  
+  
+
+<meta name="theme-color" content="#1e2327">
+<meta name="color-scheme" content="light dark" />
+
+
+  
+
+  </head>
+
+  <body class="logged-out env-production page-responsive" >
+    <div data-turbo-body class="logged-out env-production page-responsive" >
+      <div id="__primerPortalRoot__" data-turbo-permanent></div>
+      
+
+    <div class="position-relative header-wrapper js-header-wrapper ">
+      <a href="#start-of-content" class="px-2 tmp-py-4 color-bg-accent-emphasis color-fg-on-emphasis show-on-focus js-skip-to-content">Skip to content</a>
+
+      <span class="progress-pjax-loader Progress position-fixed width-full">
+    <span class="Progress-item progress-pjax-loader-bar left-0 top-0 color-bg-accent-emphasis"></span>
+</span>      
+      
+
+
+<react-partial
+  partial-name="keyboard-shortcuts-dialog"
+ 
+ 
+ 
+>
+  
+  
+  <div></div>
+</react-partial>
+
+
+
+
+
+      
+
+        
+            
+
+
+<react-partial
+  partial-name="app-install-banner-partial"
+ 
+ 
+ 
+>
+  
+  
+  <div></div>
+</react-partial>
+
+
+            
+
+                
+
+
+
+
+
+
+<react-partial
+  partial-name="marketing-header"
+ 
+ 
+ 
+>
+  
+  
+  <div><div><header class="root__q6pgdo HeaderMktg header-logged-out fullWidth__R5BAbe" role="banner"><h2 class="visuallyHidden__TIbnmb">Navigation Menu</h2><button type="button" class="backdrop__rMNFxs"></button><div class="bar__cF4m1O"><div class="topRow__-dqkhM"><div class="toggleSlot__-ODxSX"><button type="button" class="toggle__kPg75-"></button></div><div class="LogoSlot__mHAmXE"><a href="/" class="logo__bX9RKh"></a></div><div class="MobileAuthAction__GzTYIn"><a class="Primer_Brand__Button-module__Button___scH9Z Primer_Brand__Button-module__Button--subtle___F7pEE Primer_Brand__Button-module__Button--size-small___zQrEw cta__xkenoh" href="/login?return_to=https%3A%2F%2Fgithub.com%2Fxoxorwr%2Fpw-loudness-eq"><span class="Primer_Brand__Button-module__Button__text___ED0bX"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--mona-sans___a8XJD Primer_Brand__Text-module__Text--default___GhPh_ Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ Primer_Brand__Button-module__Button--label___qrkyz Primer_Brand__Button-module__Button--label-subtle___8ndWH"><span class="visually-hidden">Sign in</span></span></span></a></div></div><div class="menu__2EHTkB"><div class="menuWrapper__Vmk5KX"><nav class="Nav__rJ6HZw"><ul class="List__Rak7Mk"><li><div class="Container__emC4mW"><button type="button" class="Button__wfsCbG">Products</button><div id="_R_nd_" class="Dropdown__mIjZVL"><div class="Panel__x1katk featuredFirst__wlyFSS"><ul class="Groups__weN4wF"><li class="GroupCell__3rf5gs featured__8zdr8E"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX visually-hidden" id="_R_5knd_">Platform</span><ul class="LinkList__vQ9yLT IconList__WlH-sM"><li><a href="https://github.com/platform" class="Link__Q0qcrF Card__w-iBF7"><span class="Thumbnail__vqvSAN"><img src="https://github.githubassets.com/assets/platform-025c223913033b6d.webp" alt="" width="240" height="150" class="LightImage__i9mM_d"/><img src="https://github.githubassets.com/assets/platform-dark-5652b3fee35ced8b.webp" alt="" width="240" height="150" class="DarkImage__B4rswp"/></span><span class="Icon__xpGsPX"></span><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">GitHub</span></span><span class="Subtitle__DzvloX">Repository hosting, code review, and collaboration</span></span></a></li><li><a href="https://github.com/features/copilot" class="Link__Q0qcrF Card__w-iBF7"><span class="Thumbnail__vqvSAN"><img src="https://github.githubassets.com/assets/copilot-200a1ebea10c78ed.webp" alt="" width="240" height="150" class="LightImage__i9mM_d"/><img src="https://github.githubassets.com/assets/copilot-dark-16171b0d3080e70f.webp" alt="" width="240" height="150" class="DarkImage__B4rswp"/></span><span class="Icon__xpGsPX"></span><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Copilot</span></span><span class="Subtitle__DzvloX">AI coding agent for tasks, projects, and automated work</span></span></a></li></ul></div></li><li class="GroupCell__3rf5gs"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX" id="_R_9knd_">Build &amp; Ship</span><ul class="LinkList__vQ9yLT IconList__WlH-sM"><li><a href="https://github.com/features/actions" class="Link__Q0qcrF"><span class="Icon__xpGsPX"></span><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Actions</span></span><span class="Subtitle__DzvloX">CI/CD and automation</span></span></a></li><li><a href="https://github.com/features/code-quality" class="Link__Q0qcrF"><span class="Icon__xpGsPX"></span><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Code Quality</span></span><span class="Subtitle__DzvloX">Quality analysis, fixes, and enforcement</span></span></a></li><li><a href="https://github.com/features/codespaces" class="Link__Q0qcrF"><span class="Icon__xpGsPX"></span><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Codespaces</span></span><span class="Subtitle__DzvloX">Cloud development environments</span></span></a></li></ul></div></li><li class="GroupCell__3rf5gs"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX" id="_R_dknd_">Secure</span><ul class="LinkList__vQ9yLT IconList__WlH-sM"><li><a href="https://github.com/security/advanced-security/code-security" class="Link__Q0qcrF"><span class="Icon__xpGsPX"></span><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Code Security</span></span><span class="Subtitle__DzvloX">Vulnerability detection and remediation</span></span></a></li><li><a href="https://github.com/security/advanced-security/secret-protection" class="Link__Q0qcrF"><span class="Icon__xpGsPX"></span><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Secret Protection</span></span><span class="Subtitle__DzvloX">Secret scanning and leak prevention</span></span></a></li></ul></div></li></ul><div class="Footer__yLWpl0"><a href="https://github.com/features" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">All Features</span></span></span></a></div></div></div></div></li><li><div class="Container__emC4mW"><button type="button" class="Button__wfsCbG">Developers</button><div id="_R_17d_" class="Dropdown__mIjZVL"><div class="Panel__x1katk"><ul class="Groups__weN4wF"><li class="GroupCell__3rf5gs"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX" id="_R_5l7d_">Learn</span><ul class="LinkList__vQ9yLT"><li><a href="https://docs.github.com/en" target="_blank" rel="noreferrer" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Documentation</span></span></span></a></li><li><a href="https://learn.github.com/skills" target="_blank" rel="noreferrer" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Training</span></span></span></a></li><li><a href="https://learn.github.com/credentials" target="_blank" rel="noreferrer" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Certifications</span></span></span></a></li></ul></div></li><li class="GroupCell__3rf5gs"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX" id="_R_9l7d_">Build</span><ul class="LinkList__vQ9yLT"><li><a href="https://github.com/features/ai" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Build with Copilot</span></span></span></a></li><li><a href="https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-copilot-overview" target="_blank" rel="noreferrer" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Customize Copilot</span></span></span></a></li><li><a href="https://github.com/marketplace" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Integrations</span></span></span></a></li></ul></div></li><li class="GroupCell__3rf5gs"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX" id="_R_dl7d_">Explore</span><ul class="LinkList__vQ9yLT"><li><a href="https://github.com/trending" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Trending repos</span></span></span></a></li><li><a href="https://github.com/open-source/sponsors" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">GitHub Sponsors</span></span></span></a></li><li><a href="https://github.com/resources/articles" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Developer articles</span></span></span></a></li></ul></div></li><li class="GroupCell__3rf5gs featured__8zdr8E"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX visually-hidden" id="_R_hl7d_">Changelog</span><ul class="LinkList__vQ9yLT IconList__WlH-sM"><li><a href="https://github.blog/changelog/" target="_blank" rel="noreferrer" class="Link__Q0qcrF Card__w-iBF7"><span class="Thumbnail__vqvSAN"><img src="https://github.githubassets.com/assets/changelog-f3cfe2d3a6b4818b.webp" alt="" width="240" height="150" class="LightImage__i9mM_d"/><img src="https://github.githubassets.com/assets/changelog-dark-8aa733db00350e61.webp" alt="" width="240" height="150" class="DarkImage__B4rswp"/></span><span class="Icon__xpGsPX"></span><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Changelog</span></span><span class="Subtitle__DzvloX">Your source for the latest features, improvements, and fixes across GitHub products, all in one place.</span></span></a></li></ul></div></li></ul></div></div></div></li><li><div class="Container__emC4mW"><button type="button" class="Button__wfsCbG">Businesses</button><div id="_R_1nd_" class="Dropdown__mIjZVL"><div class="Panel__x1katk"><ul class="Groups__weN4wF"><li class="GroupCell__3rf5gs"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX" id="_R_5lnd_">By Stage</span><ul class="LinkList__vQ9yLT"><li><a href="https://github.com/enterprise" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Enterprises</span></span></span></a></li><li><a href="https://github.com/team" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Team</span></span></span></a></li><li><a href="https://github.com/enterprise/startups" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Startups</span></span></span></a></li><li><a href="https://github.com/solutions/industry/nonprofits" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Nonprofits</span></span></span></a></li></ul></div></li><li class="GroupCell__3rf5gs"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX" id="_R_9lnd_">By Industry</span><ul class="LinkList__vQ9yLT"><li><a href="https://github.com/solutions/industry/healthcare" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Healthcare</span></span></span></a></li><li><a href="https://github.com/solutions/industry/financial-services" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Financial services</span></span></span></a></li><li><a href="https://github.com/solutions/industry/manufacturing" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Manufacturing</span></span></span></a></li><li><a href="https://github.com/solutions/industry/government" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Government</span></span></span></a></li><li><a href="https://github.com/solutions/industry" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">See all industries</span></span></span></a></li></ul></div></li><li class="GroupCell__3rf5gs"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX" id="_R_dlnd_">Evaluate GitHub</span><ul class="LinkList__vQ9yLT"><li><a href="https://github.com/why-github" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Why GitHub</span></span></span></a></li><li><a href="https://github.com/customer-stories" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Customer Stories</span></span></span></a></li><li><a href="https://github.com/solutions/executive-insights" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Business insights</span></span></span></a></li><li><a href="https://github.com/trust-center" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Trust Center</span></span></span></a></li></ul></div></li><li class="GroupCell__3rf5gs separated__bzFSt-"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX" id="_R_hlnd_">Add-ons</span><ul class="LinkList__vQ9yLT IconList__WlH-sM"><li><a href="https://github.com/security/advanced-security" class="Link__Q0qcrF"><span class="Icon__xpGsPX"></span><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">GitHub Advanced Security</span></span><span class="Subtitle__DzvloX">Enterprise-grade code security</span></span></a></li><li><a href="https://github.com/features/copilot/copilot-business" class="Link__Q0qcrF"><span class="Icon__xpGsPX"></span><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Copilot for business</span></span><span class="Subtitle__DzvloX">Enterprise-grade AI features</span></span></a></li><li><a href="https://github.com/enterprise/premium-support" class="Link__Q0qcrF"><span class="Icon__xpGsPX"></span><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Premium Support</span></span><span class="Subtitle__DzvloX">Enterprise-grade 24/7 support</span></span></a></li></ul></div></li></ul></div></div></div></li><li><div class="Container__emC4mW"><button type="button" class="Button__wfsCbG">Resources</button><div id="_R_27d_" class="Dropdown__mIjZVL"><div class="Panel__x1katk"><ul class="Groups__weN4wF"><li class="GroupCell__3rf5gs"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX" id="_R_5m7d_">Learn &amp; Connect</span><ul class="LinkList__vQ9yLT"><li><a href="https://docs.github.com/en" target="_blank" rel="noreferrer" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Documentation</span></span></span></a></li><li><a href="https://github.com/resources" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Resource center</span></span></span></a></li><li><a href="https://github.blog/" target="_blank" rel="noreferrer" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Blog</span></span></span></a></li><li><a href="https://github.com/resources/events" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Events &amp; webinars</span></span></span></a></li><li><a href="https://github.com/orgs/community/discussions" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Community Forum</span></span></span></a></li><li><a href="https://github.com/customer-stories" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Customer Stories</span></span></span></a></li><li><a href="https://github.com/marketplace" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Integrations</span></span></span></a></li></ul></div></li><li class="GroupCell__3rf5gs"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX" id="_R_9m7d_">Support</span><ul class="LinkList__vQ9yLT"><li><a href="https://help.github.com/" target="_blank" rel="noreferrer" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Customer support</span></span></span></a></li><li><a href="https://learn.github.com/skills" target="_blank" rel="noreferrer" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Training</span></span></span></a></li><li><a href="https://www.githubstatus.com/" target="_blank" rel="noreferrer" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">GitHub Status</span></span></span></a></li></ul></div></li><li class="GroupCell__3rf5gs"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX" id="_R_dm7d_">Company</span><ul class="LinkList__vQ9yLT"><li><a href="https://github.com/about" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">About</span></span></span></a></li><li><a href="https://github.com/partners" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Partners</span></span></span></a></li><li><a href="https://github.blog/changelog/" target="_blank" rel="noreferrer" class="Link__Q0qcrF"><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">Changelog</span></span></span></a></li></ul></div></li><li class="GroupCell__3rf5gs featured__8zdr8E"><div class="Group__brYvQ7"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--monospace___QXHDQ Primer_Brand__Text-module__Text--muted___rE6mh Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ GroupTitle__PxvdbX visually-hidden" id="_R_hm7d_">GitHub Universe</span><ul class="LinkList__vQ9yLT IconList__WlH-sM"><li><a href="https://githubuniverse.com/" target="_blank" rel="noreferrer" class="Link__Q0qcrF Card__w-iBF7"><span class="Thumbnail__vqvSAN"><img src="https://github.githubassets.com/assets/universe-9af583553ea01049.webp" alt="" width="240" height="150" class="LightImage__i9mM_d"/><img src="https://github.githubassets.com/assets/universe-9af583553ea01049.webp" alt="" width="240" height="150" class="DarkImage__B4rswp"/></span><span class="Icon__xpGsPX"></span><span class="Copy__CMyHbK"><span class="LinkTitle__B7iBkM"><span class="LinkText__Lw-n5M">GitHub Universe</span></span><span class="Subtitle__DzvloX">The event for developers, by developers — talks, workshops, and what’s next for GitHub.</span></span></a></li></ul></div></li></ul></div></div></div></li><li><a href="https://github.com/pricing" class="NavLink__zcO0BA">Pricing</a></li></ul></nav><div class="ctaContainer__XiXTge"><div class="searchSlot__PLyIP2"><button class="Primer_Brand__Button-module__Button___scH9Z Primer_Brand__Button-module__Button--subtle___F7pEE Primer_Brand__Button-module__Button--size-small___zQrEw trigger__A07fH5" type="button"><span class="Primer_Brand__Button-module__Button__text___ED0bX"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--mona-sans___a8XJD Primer_Brand__Text-module__Text--default___GhPh_ Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ Primer_Brand__Button-module__Button--label___qrkyz Primer_Brand__Button-module__Button--label-subtle___8ndWH"><span class="content__-QV4lC"><span class="label__Axw9pp">Search</span><kbd class="kbd__-xAXYz">/</kbd></span></span></span></button><div class="d-none"></div></div><div class="AuthActions__J52IGi"><div class="signInWrap___-hg2x"><a class="Primer_Brand__Button-module__Button___scH9Z Primer_Brand__Button-module__Button--subtle___F7pEE Primer_Brand__Button-module__Button--size-small___zQrEw cta__xkenoh desktopActionGap__qkQEsb hiddenBelowLg__f0ML96" href="/login?return_to=https%3A%2F%2Fgithub.com%2Fxoxorwr%2Fpw-loudness-eq"><span class="Primer_Brand__Button-module__Button__text___ED0bX"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--mona-sans___a8XJD Primer_Brand__Text-module__Text--default___GhPh_ Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ Primer_Brand__Button-module__Button--label___qrkyz Primer_Brand__Button-module__Button--label-subtle___8ndWH">Sign in</span></span></a></div><a class="Primer_Brand__Button-module__Button___scH9Z Primer_Brand__Button-module__Button--primary___MSbnU Primer_Brand__Button-module__Button--size-small___zQrEw cta__xkenoh" href="/signup?ref_cta=Sign+up&amp;ref_loc=header+logged+out&amp;ref_page=%2F%3Cuser-name%3E%2F%3Crepo-name%3E&amp;source=header-repo&amp;source_repo=xoxorwr%2Fpw-loudness-eq"><span class="Primer_Brand__Button-module__Button__text___ED0bX"><span class="Primer_Brand__Text-module__Text___XeGJJ Primer_Brand__Text-module__Text-font--mona-sans___a8XJD Primer_Brand__Text-module__Text--default___GhPh_ Primer_Brand__Text-module__Text--100___B2ueX Primer_Brand__Text-module__Text--weight-medium___qJKf_ Primer_Brand__Button-module__Button--label___qrkyz Primer_Brand__Button-module__Button--label-primary___QX1u5">Sign up</span></span></a><button class="Primer_Brand__Button-module__Button___scH9Z Primer_Brand__Button-module__Button--subtle___F7pEE Primer_Brand__Button-module__Button--size-small___zQrEw trigger__VWDtQ2" type="button"><span class="Primer_Brand__Button-module__Button__leading-visual___jjtTe"></span></button><div class="Primer_Brand__Tooltip-module__Tooltip___0Eipx" id="_R_fbd_">Appearance settings</div></div></div></div></div></div><div class="bottomBorder__38-D2c"></div></header></div></div>
+</react-partial>
+
+
+
+
+      
+        <div hidden="hidden" class="js-stale-session-flash stale-session-flash flash flash-warn flash-full">
+  
+          
+          <span class="js-stale-session-flash-signed-in" hidden>You signed in with another tab or window. <a class="Link--inTextBlock" href="">Reload</a> to refresh your session.</span>
+          <span class="js-stale-session-flash-signed-out" hidden>You signed out in another tab or window. <a class="Link--inTextBlock" href="">Reload</a> to refresh your session.</span>
+          <span class="js-stale-session-flash-switched" hidden>You switched accounts on another tab or window. <a class="Link--inTextBlock" href="">Reload</a> to refresh your session.</span>
+
+    <button id="icon-button-a1793789-4753-45ee-b017-38adb8dea795" type="button" class="Button Button--iconOnly Button--invisible Button--medium flash-close js-flash-close">  
+</button><tool-tip id="tooltip-3f46ee65-d038-4f20-a1b8-f30c3d7387b0" for="icon-button-a1793789-4753-45ee-b017-38adb8dea795" popover="manual" class="sr-only position-absolute">Dismiss alert</tool-tip>
+
+
+  
+</div>
+    </div>
+
+  <div id="start-of-content" class="show-on-focus"></div>
+
+
+
+
+
+
+
+
+    <div id="js-flash-container" class="flash-container" data-turbo-replace>
+
+
+
+
+
+  <template class="js-flash-template">
+    
+<div class="flash flash-full   {{ className }}">
+  <div >
+    <button autofocus class="flash-close js-flash-close" type="button">
+      
+    </button>
+    <div role="alert" class="js-flash-alert">
+      
+      <div>{{ message }}</div>
+
+    </div>
+  </div>
+</div>
+  </template>
+</div>
+
+
+    
+
+
+
+
+
+
+  <div
+    class="application-main "
+    
+    data-commit-hovercards-enabled
+    data-discussion-hovercards-enabled
+    data-issue-and-pr-hovercards-enabled
+    data-project-hovercards-enabled
+  >
+        <div itemscope itemtype="http://schema.org/SoftwareSourceCode" class="">
+    <main id="js-repo-pjax-container" >
+      
+      
+
+
+
+
+
+
+
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+<react-partial
+  partial-name="global-nav-bar"
+ 
+ 
+ 
+>
+  
+  
+  <div><header class="GlobalNav appHeader__6OmbvL prc-Stack-Stack-UQ9k6"><div class="prc-Stack-Stack-UQ9k6"><div class="center__f1ujjY withLocalNavigation__FzpnU6 loggedOut__--dPuC prc-Stack-Stack-UQ9k6"><nav class="contextRegion__Wb1-GR prc-Breadcrumbs-BreadcrumbsBase-3Gb-B"><ol class="prc-Breadcrumbs-BreadcrumbsList-BKjpe"><li class="prc-Breadcrumbs-ItemWrapper-k0NLn"><a class="contextCrumb__Q8nET8 prc-Breadcrumbs-Item-jcraJ" href="/xoxorwr"><span class="">xoxorwr</span></a></li><li class="prc-Breadcrumbs-ItemWrapper-k0NLn"><a class="contextCrumb__Q8nET8 prc-Breadcrumbs-Item-jcraJ" href="/xoxorwr/pw-loudness-eq"><span class="contextCrumbLast__l2P28s">pw-loudness-eq</span></a></li></ol></nav></div><div class="right__5m36ST withLocalNavigation__FzpnU6 rightWithResponsiveCreateButton__JePGAt prc-Stack-Stack-UQ9k6"></div></div><h2 class="prc-src-InternalVisuallyHidden-2YaI6">Repository navigation</h2><nav class="prc-components-UnderlineWrapper-eT-Yj prc-UnderlineNav-UnderlineWrapper-GWONT LocalNavigation__QHRW7C"><ul class="prc-UnderlineNav-ItemsList-oj8gN prc-components-UnderlineItemList-xKlKC" role="list"><li role="presentation" class="prc-UnderlineNav-WrapSpacer--aLgz"></li><li class="prc-UnderlineNav-UnderlineNavItem-syRjR"><a class="prc-components-UnderlineItem-7fP-n" href="/xoxorwr/pw-loudness-eq"><span></span><span>Code</span></a></li><li class="prc-UnderlineNav-UnderlineNavItem-syRjR"><a class="prc-components-UnderlineItem-7fP-n" href="/xoxorwr/pw-loudness-eq/issues"><span></span><span>Issues</span><span><span class="prc-CounterLabel-CounterLabel-X-kRU">1</span><span class="prc-VisuallyHidden-VisuallyHidden-Q0qSB"> (1)</span></span></a></li><li class="prc-UnderlineNav-UnderlineNavItem-syRjR"><a class="prc-components-UnderlineItem-7fP-n" href="/xoxorwr/pw-loudness-eq/pulls"><span></span><span>Pull requests</span></a></li><li class="prc-UnderlineNav-UnderlineNavItem-syRjR"><a class="prc-components-UnderlineItem-7fP-n" href="/xoxorwr/pw-loudness-eq/actions"><span></span><span>Actions</span></a></li><li class="prc-UnderlineNav-UnderlineNavItem-syRjR"><a class="prc-components-UnderlineItem-7fP-n" href="/xoxorwr/pw-loudness-eq/projects"><span></span><span>Projects</span></a></li><li class="prc-UnderlineNav-UnderlineNavItem-syRjR"><a class="prc-components-UnderlineItem-7fP-n" href="/xoxorwr/pw-loudness-eq/security"><span></span><span>Security and quality</span></a></li><li class="prc-UnderlineNav-UnderlineNavItem-syRjR"><a class="prc-components-UnderlineItem-7fP-n" href="/xoxorwr/pw-loudness-eq/pulse"><span></span><span>Insights</span></a></li></ul><div class="prc-UnderlineNav-MoreButtonContainer-Dnrq6"><div class="prc-UnderlineNav-MoreButtonDivider-dN0a-"></div><button type="button" tabindex="0" class="prc-Button-ButtonBase-9n-Xk prc-UnderlineNav-MoreButton-Y8soj" id="_R_2ktp_"><span class="prc-Button-ButtonContent-Iohp5"><span class="prc-Button-Label-FWkx3"><span>More<span class="prc-src-InternalVisuallyHidden-2YaI6"> items</span></span></span></span><span class="prc-Button-Visual-YNt2F prc-Button-VisualWrap-E4cnq"></span></button></div></nav><div class="d-none"></div></header></div>
+</react-partial>
+
+
+  
+
+
+
+<turbo-frame id="repo-content-turbo-frame" target="_top" class="">
+    <div id="repo-content-pjax-container" class="repository-content " >
+    
+
+
+
+    
+      
+    
+
+
+
+
+
+
+
+
+<react-app
+  app-name="code-view"
+  initial-path="/xoxorwr/pw-loudness-eq"
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+>
+  
+  
+  <div><meta name="github-code-view-meta-stats" id="github-code-view-meta-stats"/>  <a hidden="" id="code-view-repo-link" href="/xoxorwr/pw-loudness-eq"></a> <div class="d-none"></div><div><div class="prc-PageLayout-PageLayoutRoot--KH-d"><div class="prc-PageLayout-PageLayoutWrapper-2BhU2"><div class="prc-PageLayout-PageLayoutContent-BneH9"><div class="prc-PageLayout-ContentWrapper-gR9eG"><div class="prc-PageLayout-Content-xWL-A"><div class="content__cw9d2I" id="repos-split-pane-content" tabindex="0"><div class="prc-PageLayout-PageLayoutRoot--KH-d container-xl"><div class="prc-PageLayout-PageLayoutWrapper-2BhU2"><header class="prc-PageLayout-Header-0of-R tmp-px-3 tmp-px-lg-5"><div class="prc-PageLayout-HeaderContent-gdFfN"><div class="tmp-pt-3 tmp-pb-3 border-bottom color-border-muted"><div class="d-flex flex-wrap flex-items-center gapx-3 gapy-1"><div class="TitleWrapper__4f5JPQ"><div id="repo-title-component"><div class="d-flex flex-items-center f3 text-normal min-width-0"><img class="mr-2 flex-shrink-0 prc-Avatar-Avatar-0xaUi" alt="xoxorwr" width="24" height="24" src="https://avatars.githubusercontent.com/u/212222387?s=60&amp;v=4"/><div itemProp="name" class="mr-2 prc-Truncate-Truncate-2G1eo" title="pw-loudness-eq"><strong><a class="color-fg-default prc-Link-Link-9ZwDx" href="/xoxorwr/pw-loudness-eq">pw-loudness-eq</a></strong></div><span class="mr-1 v-align-middle prc-Label-Label-qG-Zu">Public</span></div></div></div><div><ul class="list-style-none d-flex flex-shrink-0 flex-wrap flex-items-center gap-2 py-1 Actions__zFJ2t2"><li><a type="button" href="/login?return_to=%2Fxoxorwr%2Fpw-loudness-eq" rel="nofollow" class="prc-Button-ButtonBase-9n-Xk"><span class="prc-Button-ButtonContent-Iohp5"><span class="prc-Button-Visual-YNt2F prc-Button-LeadingVisual-UySKu prc-Button-VisualWrap-E4cnq"></span><span class="prc-Button-Label-FWkx3">Notifications</span></span></a><span class="prc-TooltipV2-Tooltip-tLeuB" role="tooltip" id="_R_7abahlik5_">You must be signed in to change notification settings</span></li><li><a type="button" href="/login?return_to=%2Fxoxorwr%2Fpw-loudness-eq" class="prc-Button-ButtonBase-9n-Xk"><span class="prc-Button-ButtonContent-Iohp5"><span class="prc-Button-Visual-YNt2F prc-Button-LeadingVisual-UySKu prc-Button-VisualWrap-E4cnq"></span><span class="prc-Button-Label-FWkx3">Fork<span class="ml-1 prc-CounterLabel-CounterLabel-X-kRU"><span>3</span></span><span class="prc-VisuallyHidden-VisuallyHidden-Q0qSB"> (<span>3</span>)</span></span></span></a></li><li><a type="button" href="/login?return_to=%2Fxoxorwr%2Fpw-loudness-eq" class="prc-Button-ButtonBase-9n-Xk IconOnlyWhenNarrow__FbBSx0"><span class="prc-Button-ButtonContent-Iohp5"><span class="prc-Button-Visual-YNt2F prc-Button-LeadingVisual-UySKu prc-Button-VisualWrap-E4cnq"></span><span class="prc-Button-Label-FWkx3">Star<span class="ml-1 prc-CounterLabel-CounterLabel-X-kRU"><span>106</span></span><span class="prc-VisuallyHidden-VisuallyHidden-Q0qSB"> (<span>106</span>)</span></span></span></a><span class="prc-TooltipV2-Tooltip-tLeuB" role="tooltip" id="_R_babahlik5_">You must be signed in to star a repository</span></li></ul></div></div></div><div class="NarrowOnly__KfauzV border-bottom color-border-muted"><div class="sidebarSection__oqw6Y8 border-0"><h2 class="sectionHeading__4n11uG prc-Heading-Heading-MtWFE"><span>About</span></h2><p class="description__ej4leF prc-Text-Text-9mHv3">Windows Loudness Equalization, reverse-engineered and ported to PipeWire</p><h3 class="sr-only prc-Heading-Heading-MtWFE"><span>Resources</span></h3><div class="mt-2"><a class="prc-Link-Link-9ZwDx" href="#readme-ov-file"><span>Readme</span></a></div><div class="insights__9SON7y"><div class="insightLinks__Vv5-fu"><div class="mt-2"><a class="prc-Link-Link-9ZwDx" href="/xoxorwr/pw-loudness-eq/activity"><span>Activity</span></a></div></div><div class="insightStats__Z3jICr"><h3 class="sr-only prc-Heading-Heading-MtWFE"><span>Stars</span></h3><div class="mt-2 insightItem__0CLkke"><span class="socialStat__OaJfGy"><strong>106</strong> stars</span></div><h3 class="sr-only prc-Heading-Heading-MtWFE"><span>Watchers</span></h3><div class="mt-2 insightItem__0CLkke"><span class="socialStat__OaJfGy"><strong>0</strong> watching</span></div><h3 class="sr-only prc-Heading-Heading-MtWFE"><span>Forks</span></h3><div class="mt-2 insightItem__0CLkke"><a class="prc-Link-Link-9ZwDx" href="/xoxorwr/pw-loudness-eq/forks"><span><strong>3</strong></span><span> forks</span></a></div></div></div><div class="mt-2"><a class="prc-Link-Link-9ZwDx" href="/contact/report-content?content_url=https%3A%2F%2Fgithub.com%2Fxoxorwr%2Fpw-loudness-eq&amp;report=xoxorwr+%28user%29"><span>Report repository</span></a></div></div></div></div><div class="prc-PageLayout-HorizontalDivider-JLVqp prc-PageLayout-HeaderHorizontalDivider-odAHl"></div></header><div class="prc-PageLayout-PageLayoutContent-BneH9"><div class="prc-PageLayout-ContentWrapper-gR9eG"><div class="prc-PageLayout-Content-xWL-A"><div class="Box__PalQtd tmp-pl-lg-3 mt-0"><div class="Box__uA826a"></div><div class="Box_1__424Y1a"><div class="Box_2__ya9av3"><div class="Box_3__YmizrJ"><button type="button" tabindex="0" class="prc-Button-ButtonBase-9n-Xk overview-ref-selector width-full RefSelectorOverlayBtn__KrS-QJ" id="ref-picker-repos-header-ref-selector"><span class="prc-Button-ButtonContent-Iohp5"><span class="prc-Button-Visual-YNt2F prc-Button-LeadingVisual-UySKu prc-Button-VisualWrap-E4cnq"></span><span class="prc-Button-Label-FWkx3"><div class="RefSelectorOverlayContainer__do_QsK"><div class="ref-selector-button-text-container RefSelectorBtnTextContainer__U9K7hH"><span class="RefSelectorText__DKi677">master</span></div></div></span><span class="prc-Button-Visual-YNt2F prc-Button-VisualWrap-E4cnq"></span></span></button><div class="d-none"></div></div><div class="Box_4__lMmroC"><a type="button" href="/xoxorwr/pw-loudness-eq/branches" class="prc-Button-ButtonBase-9n-Xk Button__AyoG5z"><span class="prc-Button-ButtonContent-Iohp5"><span class="prc-Button-Visual-YNt2F prc-Button-LeadingVisual-UySKu prc-Button-VisualWrap-E4cnq"></span><span class="prc-Button-Label-FWkx3">Branches</span></span></a><a type="button" href="/xoxorwr/pw-loudness-eq/tags" class="prc-Button-ButtonBase-9n-Xk Button__AyoG5z"><span class="prc-Button-ButtonContent-Iohp5"><span class="prc-Button-Visual-YNt2F prc-Button-LeadingVisual-UySKu prc-Button-VisualWrap-E4cnq"></span><span class="prc-Button-Label-FWkx3">Tags</span></span></a></div><div class="Box_5__ylF4xv"><a type="button" href="/xoxorwr/pw-loudness-eq/branches" class="prc-Button-ButtonBase-9n-Xk Button_1__fgoRfX"></a><a type="button" href="/xoxorwr/pw-loudness-eq/tags" class="prc-Button-ButtonBase-9n-Xk Button_1__fgoRfX"></a></div></div><div class="Box_6__yyTyGl"><div class="Box_7___EeUQ3"><div class="d-none"></div><div class="Box_8__HUWALD"><div class="FileResultsList__pEF5yB"><span class="d-flex FilesSearchBox__bU3lGO TextInput-wrapper prc-components-TextInputWrapper-Hpdqi prc-components-TextInputBaseWrapper-wY-n0"><span class="TextInput-icon" id="_R_2hidahlik5_"></span><input type="text" role="combobox" autoCorrect="off" spellCheck="false" placeholder="Go to file" class="prc-components-Input-IwWrt" value=""/><span class="TextInput-icon" id="_R_2hidahlik5H1_"></span></span></div></div><div class="Box_9__oco6tt"><button type="button" class="prc-Button-ButtonBase-9n-Xk"><span class="prc-Button-ButtonContent-Iohp5"><span class="prc-Button-Label-FWkx3">Go to file</span></span></button></div></div><button type="button" tabindex="0" class="prc-Button-ButtonBase-9n-Xk" id="_R_3idahlik5_"><span class="prc-Button-ButtonContent-Iohp5"><span class="prc-Button-Visual-YNt2F prc-Button-LeadingVisual-UySKu prc-Button-VisualWrap-E4cnq"></span><span class="prc-Button-Label-FWkx3">Code</span><span class="prc-Button-Visual-YNt2F prc-Button-VisualWrap-E4cnq"></span></span></button><div class="Box_10__Oxn5mw"><button type="button" tabindex="0" class="prc-Button-ButtonBase-9n-Xk prc-Button-IconButton-fyge7" id="_R_4idahlik5_"></button><span class="prc-TooltipV2-Tooltip-tLeuB" id="_R_3sidahlik5_">Open more actions menu</span></div></div></div><div class="Box_11__e1F7PX"><div containertiming="hpc"><div class="d-none"></div><div class="Box_3__eg9tXU bgColor-muted p-1 border rounded-top-2"><div class="Box__B2eZet"><h2 class="sr-only userSelectNone__I6NSfK prc-Heading-Heading-MtWFE">Latest commit</h2><div class="Skeleton Skeleton--text"> </div><div class="d-flex flex-shrink-0 gap-2"><div class="d-none d-sm-flex flex-items-center"></div><div class="d-flex gap-2"><h2 class="sr-only userSelectNone__I6NSfK prc-Heading-Heading-MtWFE">History</h2><a href="/xoxorwr/pw-loudness-eq/commits/master/" class="prc-Button-ButtonBase-9n-Xk d-none d-lg-flex linkButton__rBg5F1 flex-items-center fgColor-default"><span class="prc-Button-ButtonContent-Iohp5"><span class="prc-Button-Visual-YNt2F prc-Button-LeadingVisual-UySKu prc-Button-VisualWrap-E4cnq"></span><span class="prc-Button-Label-FWkx3"><span class="fgColor-default">6 Commits</span></span></span></a><div class="d-sm-none"></div><div class="d-flex d-lg-none"><a href="/xoxorwr/pw-loudness-eq/commits/master/" class="prc-Button-ButtonBase-9n-Xk linkButton__rBg5F1 flex-items-center fgColor-default"><span class="prc-Button-ButtonContent-Iohp5"><span class="prc-Button-Visual-YNt2F prc-Button-LeadingVisual-UySKu prc-Button-VisualWrap-E4cnq"></span></span></a><span class="prc-TooltipV2-Tooltip-tLeuB" role="tooltip" id="_R_2bacdahlik5_">6 Commits</span></div></div></div></div></div><h2 class="sr-only userSelectNone__I6NSfK prc-Heading-Heading-MtWFE" id="folders-and-files">Folders and files</h2><div class=""><table class="Box__0K17vj OverviewTable__rPbUfl"><thead class="OverviewHeaderRow__Z_ScMh Box_1__wW_V7a"><tr class="Box_2__2RzMbJ"><th colSpan="2" class="Box__l3IzCz"><span class="text-bold">Name</span></th><th colSpan="1" class="Box_1__vRncVq"><span class="text-bold">Name</span></th><th class="hide-sm"><div class="width-fit prc-Truncate-Truncate-2G1eo" title="Last commit message"><span class="text-bold">Last commit message</span></div></th><th colSpan="1" class="Box_2__Sojj6x"><div class="width-fit prc-Truncate-Truncate-2G1eo" title="Last commit date"><span class="text-bold">Last commit date</span></div></th></tr></thead><tbody class="OverviewTableBody__ZmULK8"><tr class="react-directory-row undefined" id="folder-row-0"><td class="react-directory-row-name-cell-small-screen" colSpan="2"><div class="react-directory-filename-column"><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="app" class="Link--primary" href="/xoxorwr/pw-loudness-eq/tree/master/app">app</a></div></div></div></div></td><td class="react-directory-row-name-cell-large-screen" colSpan="1"><div class="react-directory-filename-column"><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="app" class="Link--primary" href="/xoxorwr/pw-loudness-eq/tree/master/app">app</a></div></div></div></div></td><td class="react-directory-row-commit-cell"><div class="Skeleton Skeleton--text"> </div></td><td><div class="react-directory-commit-age"><div class="Skeleton Skeleton--text"> </div></div></td></tr><tr class="react-directory-row undefined" id="folder-row-1"><td class="react-directory-row-name-cell-small-screen" colSpan="2"><div class="react-directory-filename-column"><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="docs" class="Link--primary" href="/xoxorwr/pw-loudness-eq/tree/master/docs">docs</a></div></div></div></div></td><td class="react-directory-row-name-cell-large-screen" colSpan="1"><div class="react-directory-filename-column"><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="docs" class="Link--primary" href="/xoxorwr/pw-loudness-eq/tree/master/docs">docs</a></div></div></div></div></td><td class="react-directory-row-commit-cell"><div class="Skeleton Skeleton--text"> </div></td><td><div class="react-directory-commit-age"><div class="Skeleton Skeleton--text"> </div></div></td></tr><tr class="react-directory-row undefined" id="folder-row-2"><td class="react-directory-row-name-cell-small-screen" colSpan="2"><div class="react-directory-filename-column"><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="modules" class="Link--primary" href="/xoxorwr/pw-loudness-eq/tree/master/modules">modules</a></div></div></div></div></td><td class="react-directory-row-name-cell-large-screen" colSpan="1"><div class="react-directory-filename-column"><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="modules" class="Link--primary" href="/xoxorwr/pw-loudness-eq/tree/master/modules">modules</a></div></div></div></div></td><td class="react-directory-row-commit-cell"><div class="Skeleton Skeleton--text"> </div></td><td><div class="react-directory-commit-age"><div class="Skeleton Skeleton--text"> </div></div></td></tr><tr class="react-directory-row undefined" id="folder-row-3"><td class="react-directory-row-name-cell-small-screen" colSpan="2"><div class="react-directory-filename-column"><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title=".gitignore" class="Link--primary" href="/xoxorwr/pw-loudness-eq/blob/master/.gitignore">.gitignore</a></div></div></div></div></td><td class="react-directory-row-name-cell-large-screen" colSpan="1"><div class="react-directory-filename-column"><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title=".gitignore" class="Link--primary" href="/xoxorwr/pw-loudness-eq/blob/master/.gitignore">.gitignore</a></div></div></div></div></td><td class="react-directory-row-commit-cell"><div class="Skeleton Skeleton--text"> </div></td><td><div class="react-directory-commit-age"><div class="Skeleton Skeleton--text"> </div></div></td></tr><tr class="react-directory-row undefined" id="folder-row-4"><td class="react-directory-row-name-cell-small-screen" colSpan="2"><div class="react-directory-filename-column"><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="Makefile" class="Link--primary" href="/xoxorwr/pw-loudness-eq/blob/master/Makefile">Makefile</a></div></div></div></div></td><td class="react-directory-row-name-cell-large-screen" colSpan="1"><div class="react-directory-filename-column"><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="Makefile" class="Link--primary" href="/xoxorwr/pw-loudness-eq/blob/master/Makefile">Makefile</a></div></div></div></div></td><td class="react-directory-row-commit-cell"><div class="Skeleton Skeleton--text"> </div></td><td><div class="react-directory-commit-age"><div class="Skeleton Skeleton--text"> </div></div></td></tr><tr class="react-directory-row undefined" id="folder-row-5"><td class="react-directory-row-name-cell-small-screen" colSpan="2"><div class="react-directory-filename-column"><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="README.md" class="Link--primary" href="/xoxorwr/pw-loudness-eq/blob/master/README.md">README.md</a></div></div></div></div></td><td class="react-directory-row-name-cell-large-screen" colSpan="1"><div class="react-directory-filename-column"><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="README.md" class="Link--primary" href="/xoxorwr/pw-loudness-eq/blob/master/README.md">README.md</a></div></div></div></div></td><td class="react-directory-row-commit-cell"><div class="Skeleton Skeleton--text"> </div></td><td><div class="react-directory-commit-age"><div class="Skeleton Skeleton--text"> </div></div></td></tr><tr class="d-none Box_4__B4qtNd"><td colSpan="3" class="Box_5__pr2sgM"><div><button class="prc-Link-Link-9ZwDx">View all files</button></div></td></tr></tbody></table></div></div><div class="Box_1__CzsAnb"><div class="Box_2__zaRucd"><div itemScope="" itemType="https://schema.org/abstract" class="Box_3__Na7qEQ"><h2 class="prc-src-InternalVisuallyHidden-2YaI6">Repository files navigation</h2><nav class="prc-components-UnderlineWrapper-eT-Yj prc-UnderlineNav-UnderlineWrapper-GWONT UnderlineNav__9sm8Cc"><ul class="prc-UnderlineNav-ItemsList-oj8gN prc-components-UnderlineItemList-xKlKC" role="list"><li role="presentation" class="prc-UnderlineNav-WrapSpacer--aLgz"></li><li class="prc-UnderlineNav-UnderlineNavItem-syRjR"><a href="#" class="prc-components-UnderlineItem-7fP-n"><span></span><span>README</span></a></li></ul><div class="prc-UnderlineNav-MoreButtonContainer-Dnrq6"><div class="prc-UnderlineNav-MoreButtonDivider-dN0a-"></div><button type="button" tabindex="0" class="prc-Button-ButtonBase-9n-Xk prc-UnderlineNav-MoreButton-Y8soj" id="_R_1a5kdahlik5_"><span class="prc-Button-ButtonContent-Iohp5"><span class="prc-Button-Label-FWkx3"><span>More<span class="prc-src-InternalVisuallyHidden-2YaI6"> items</span></span></span></span><span class="prc-Button-Visual-YNt2F prc-Button-VisualWrap-E4cnq"></span></button></div></nav><div class="readmeHeaderSlot__EGBTUW"></div><button type="button" tabindex="0" class="prc-Button-ButtonBase-9n-Xk ActionMenu_Button__Q94vxS" id="_R_hkdahlik5_"></button></div><div class="js-snippet-clipboard-copy-unpositioned SharedMarkdownContent__JRRdYK" containertiming="hpc"><article class="markdown-body entry-content container-lg" itemprop="text"><div class="markdown-heading" dir="auto"><h1 tabindex="-1" class="heading-element" dir="auto">pw-loudness-eq</h1><a id="user-content-pw-loudness-eq" class="anchor" href="#pw-loudness-eq"></a></div>
+<p dir="auto">Windows' Loudness Equalization for PipeWire, reverse engineered from <code>WMALFXGFXDSP.dll</code>. It evens out the volume of each application, so quiet and loud parts play at a similar level.</p>
+<p align="center" dir="auto">
+  <a target="_blank" rel="noopener noreferrer" href="/xoxorwr/pw-loudness-eq/blob/master/docs/screenshot.png"><img src="/xoxorwr/pw-loudness-eq/raw/master/docs/screenshot.png" alt="The Loudness Equalization window"></a>
+</p>
+<ul dir="auto">
+<li><strong><a href="/xoxorwr/pw-loudness-eq/blob/master/modules/loudness"><code>modules/loudness/</code></a></strong>: the PipeWire module and the DSP plugin. It processes every app's playback stream.</li>
+<li><strong><a href="/xoxorwr/pw-loudness-eq/blob/master/modules/limiter"><code>modules/limiter/</code></a></strong>: the output limiter of Windows' audio engine (<code>AudioEng.dll</code>), on every playback device. It keeps the boost from clipping.</li>
+<li><strong><a href="/xoxorwr/pw-loudness-eq/blob/master/app"><code>app/</code></a></strong>: an optional window (GTK3) to turn it on or off, globally or per app, and set the release time.</li>
+</ul>
+<div class="markdown-heading" dir="auto"><h2 tabindex="-1" class="heading-element" dir="auto">Install</h2><a id="user-content-install" class="anchor" href="#install"></a></div>
+<p dir="auto">Requires PipeWire ≥ 1.4, and GTK 3 for the window.</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto"><pre><span class="pl-c"><span class="pl-c">#</span> Arch:   sudo pacman -S pipewire gtk3 pkgconf make gcc</span>
+<span class="pl-c"><span class="pl-c">#</span> Debian: sudo apt install libpipewire-0.3-dev libspa-0.2-dev libgtk-3-dev pkg-config make gcc</span>
+make
+sudo make install
+systemctl --user restart pipewire pipewire-pulse wireplumber</pre></div>
+<p dir="auto">To install only one part, use <code>make -C modules/loudness</code>, <code>make -C modules/limiter</code> or <code>make -C app</code>. To uninstall, run <code>sudo make uninstall</code> and restart the same services.</p>
+<div class="markdown-heading" dir="auto"><h2 tabindex="-1" class="heading-element" dir="auto">Usage</h2><a id="user-content-usage" class="anchor" href="#usage"></a></div>
+<p dir="auto">Open <strong>Loudness Equalization</strong> from your application menu, or run <code>pw-loudness-eq</code>.</p>
+<p dir="auto">The settings live in a PipeWire metadata object, so they can also be scripted:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto"><pre>pw-metadata -n loudness-eq 0 enabled <span class="pl-c1">false</span>                               <span class="pl-c"><span class="pl-c">#</span> turn off</span>
+pw-metadata -n loudness-eq 0 release 6                                   <span class="pl-c"><span class="pl-c">#</span> release time, 2 (fast) to 7 (slow)</span>
+pw-metadata -n loudness-eq 0 disabled-apps <span class="pl-s"><span class="pl-pds">'</span>["Discord"]<span class="pl-pds">'</span></span> Spa:String:JSON  <span class="pl-c"><span class="pl-c">#</span> leave these apps alone</span>
+pw-metadata -n loudness-eq                                               <span class="pl-c"><span class="pl-c">#</span> show settings</span></pre></div>
+<p dir="auto">Changes apply immediately and are kept across restarts.</p>
+<div class="markdown-heading" dir="auto"><h2 tabindex="-1" class="heading-element" dir="auto">Configuration</h2><a id="user-content-configuration" class="anchor" href="#configuration"></a></div>
+<p dir="auto">Defaults are in <code>/usr/share/pipewire/pipewire.conf.d/60-loudness-eq.conf</code>. To override them, copy it to <code>~/.config/pipewire/pipewire.conf.d/</code>.</p>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th>Arg</th>
+<th>Default</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td><code>true</code></td>
+<td>Start enabled</td>
+</tr>
+<tr>
+<td><code>release</code></td>
+<td><code>4</code></td>
+<td>Windows "Release Time", 2 (fast) to 7 (slow). 4 is the Windows default</td>
+</tr>
+<tr>
+<td><code>stream.rules</code></td>
+<td></td>
+<td>Never process some apps: <code>[ { matches = [ { application.name = "Discord" } ] actions = { loudness-eq = false } } ]</code></td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p dir="auto">Settings changed at runtime are saved in <code>~/.local/state/pw-loudness-eq/state.conf</code> and take precedence over this file.</p>
+<div class="markdown-heading" dir="auto"><h2 tabindex="-1" class="heading-element" dir="auto">How it works</h2><a id="user-content-how-it-works" class="anchor" href="#how-it-works"></a></div>
+<p dir="auto">The loudness module sets <code>audioconvert.filter-graph.90</code> on each app's playback stream, so the plugin runs inside that stream, before its volume and before mixing, like a Windows stream effect.</p>
+<p dir="auto">The limiter module does what Windows' audio engine does on every playback device: after the mix and the software volume, it runs the output through a look-ahead limiter. It's always on, independent of Loudness Equalization, as on Windows.</p>
+<p dir="auto">Not processed: JACK clients, streams with more than 8 channels, and Flatpak apps that use PipeWire directly (those going through PulseAudio are processed).</p>
+<div class="markdown-heading" dir="auto"><h3 tabindex="-1" class="heading-element" dir="auto">The algorithm</h3><a id="user-content-the-algorithm" class="anchor" href="#the-algorithm"></a></div>
+<p dir="auto">A broadband automatic gain control. Despite the name, it doesn't equalize the spectrum.</p>
+<ol dir="auto">
+<li>Frame size N = 2^⌈log2(fs/100)⌉ (512 at 44.1/48 kHz), with 50% overlap.</li>
+<li>Each channel is windowed with <code>w[n] = 16384·(1 − cos(2π(n+½)/N)) / (N/2)</code> and run through a real FFT to get the power spectrum.</li>
+<li>Power is summed into 25 bands with edges at 100, 200, 300, 400, 510, 630, 770, 920, 1080, 1270, 1480, 1720, 2000, 2320, 2700, 3150, 3700, 4400, 5300, 6400, 7700, 9500, 12000, 15500 and 24000 Hz. Channels are summed together.</li>
+<li>Loudness <code>L = 1.72 · Σ max(E_b − T_b, 1e-32)^0.25</code>, with T = <code>1000, 100, 31.6, 10, 3.16, 2, 1, 1, .316, .316, 1×11, 4, 10, 100, 1000</code>.</li>
+<li>Target gain <code>= min((1300/L)^1.6, 10)</code>, so at most +20 dB.</li>
+<li>When the target is lower than the current gain, the gain jumps to it instantly. Otherwise it moves toward it by <code>w = (N/128)·(44100/fs)·0.1^min(r,3)·0.316^(min(r,7)−min(r,3))</code> per block. At r = 4 that's a time constant of about 4.6 s.</li>
+<li>The gain is crossfaded linearly across each half-frame. Latency is N samples.</li>
+</ol>
+<p dir="auto">The boost can push pure tones such as a whistle well above full scale; the limiter catches that.</p>
+<div class="markdown-heading" dir="auto"><h3 tabindex="-1" class="heading-element" dir="auto">The limiter</h3><a id="user-content-the-limiter" class="anchor" href="#the-limiter"></a></div>
+<p dir="auto">Ported from <code>CAudioLimiter</code> in <code>AudioEng.dll</code>. <code>audiodg.exe</code> puts it on every render device, after its effects, before the device.</p>
+<ol dir="auto">
+<li>The output is delayed by L frames (64 at 44.1/48 kHz; 16, 32 or 128 at other rates) to look ahead. That's the device's added latency.</li>
+<li>When a frame entering the delay peaks above the tracked peak (initially 0.985), the gain ramps down linearly over those L frames to <code>0.985 / peak</code>, reaching it as that frame leaves. All channels share one gain.</li>
+<li>The gain only recovers once the signal peaks at half the tracked peak or less: it rises by <code>e^(2.205/fs)</code> per frame (about 19 dB/s) while the tracked peak decays by the same factor.</li>
+</ol>
+<p dir="auto">On Windows the device's software volume comes before the limiter; in PipeWire it comes after the device's filter graphs. So the plugin gets the volume of each channel (kept in sync by the module), measures peaks on the signal as it will be after the volume, and applies only its gain. Once PipeWire applies the volume, the result is the same as Windows'. Hardware volume comes after the limiter on both.</p>
+<div class="markdown-heading" dir="auto"><h2 tabindex="-1" class="heading-element" dir="auto">Development</h2><a id="user-content-development" class="anchor" href="#development"></a></div>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto"><pre>make check                                              <span class="pl-c"><span class="pl-c">#</span> DSP and plugin tests, both modules</span>
+modules/loudness/build/leq-wav [-r release] in.wav out.wav       <span class="pl-c"><span class="pl-c">#</span> process a file offline</span></pre></div>
+</article></div></div></div></div></div></div></div><div class="prc-PageLayout-PaneWrapper-pHPop pr-2"><div class="prc-PageLayout-HorizontalDivider-JLVqp prc-PageLayout-PaneHorizontalDivider-9tbnE"></div><div class="prc-PageLayout-Pane-AyzHK"><div class="borderGrid__VCnF9i"><div class="sidebarSection__oqw6Y8 HideWhenNarrow__nfGOuR border-0"><h2 class="sectionHeading__4n11uG prc-Heading-Heading-MtWFE"><span>About</span></h2><p class="description__ej4leF prc-Text-Text-9mHv3">Windows Loudness Equalization, reverse-engineered and ported to PipeWire</p><h3 class="sr-only prc-Heading-Heading-MtWFE"><span>Resources</span></h3><div class="mt-2"><a class="prc-Link-Link-9ZwDx" href="#readme-ov-file"><span>Readme</span></a></div><div class="insights__9SON7y"><div class="insightLinks__Vv5-fu"><div class="mt-2"><a class="prc-Link-Link-9ZwDx" href="/xoxorwr/pw-loudness-eq/activity"><span>Activity</span></a></div></div><div class="insightStats__Z3jICr"><h3 class="sr-only prc-Heading-Heading-MtWFE"><span>Stars</span></h3><div class="mt-2 insightItem__0CLkke"><span class="socialStat__OaJfGy"><strong>106</strong> stars</span></div><h3 class="sr-only prc-Heading-Heading-MtWFE"><span>Watchers</span></h3><div class="mt-2 insightItem__0CLkke"><span class="socialStat__OaJfGy"><strong>0</strong> watching</span></div><h3 class="sr-only prc-Heading-Heading-MtWFE"><span>Forks</span></h3><div class="mt-2 insightItem__0CLkke"><a class="prc-Link-Link-9ZwDx" href="/xoxorwr/pw-loudness-eq/forks"><span><strong>3</strong></span><span> forks</span></a></div></div></div><div class="mt-2"><a class="prc-Link-Link-9ZwDx" href="/contact/report-content?content_url=https%3A%2F%2Fgithub.com%2Fxoxorwr%2Fpw-loudness-eq&amp;report=xoxorwr+%28user%29"><span>Report repository</span></a></div></div><template></template><div class="sidebarSection__oqw6Y8"><h2 class="sectionHeading__4n11uG prc-Heading-Heading-MtWFE"><span>Contributors</span></h2><div class="prc-SkeletonText-SkeletonText--DvUT prc-Skeleton-skeleton-Hkezl"></div></div><template></template><div class="sidebarSection__oqw6Y8"><h2 class="sectionHeading__4n11uG prc-Heading-Heading-MtWFE"><span>Languages</span></h2><div class="prc-SkeletonText-SkeletonText--DvUT prc-Skeleton-skeleton-Hkezl"></div></div></div></div><div class="prc-PageLayout-VerticalDivider-9QRmK prc-PageLayout-PaneVerticalDivider-le57g"></div></div></div></div></div></div></div></div></div></div></div><div class="scrollMarksContainer__STmjRv" id="find-result-marks-container"></div><div class="d-none"></div><div class="d-none"></div></div>   </div>
+</react-app>
+
+
+
+
+  </div>
+
+</turbo-frame>
+
+    </main>
+  </div>
+
+  </div>
+
+  
+            <footer class="footer f6 color-fg-muted color-border-subtle tmp-pt-7 tmp-pb-6 p-responsive" role="contentinfo"  >
+  <h2 class='sr-only'>Footer</h2>
+
+  
+
+
+  <div class="d-flex flex-justify-center flex-items-center flex-column-reverse flex-lg-row flex-wrap flex-lg-nowrap">
+    <div class="d-flex flex-items-center flex-shrink-0 mx-2">
+      <a class="footer-octicon mr-2" href="https://github.com">
+        
+</a>
+      <span>
+        &copy; 2026 GitHub,&nbsp;Inc.
+      </span>
+    </div>
+
+    <nav>
+      <h3 class="sr-only" id="sr-footer-heading">Footer navigation</h3>
+
+      <ul class="list-style-none d-flex flex-justify-center flex-wrap mb-2 mb-lg-0">
+
+
+          <li class="mx-2">
+            <a href="https://docs.github.com/site-policy/github-terms/github-terms-of-service" class="Link--secondary Link">Terms</a>
+          </li>
+
+          <li class="mx-2">
+            <a href="https://docs.github.com/site-policy/privacy-policies/github-privacy-statement" class="Link--secondary Link">Privacy</a>
+          </li>
+
+
+            <li class="mx-2">
+              <a href="https://github.com/security" class="Link--secondary Link">Security</a>
+            </li>
+
+            <li class="mx-2">
+              <a href="https://www.githubstatus.com/" class="Link--secondary Link">Status</a>
+            </li>
+
+          <li class="mx-2">
+            <a href="https://github.community/" class="Link--secondary Link">Community</a>
+          </li>
+
+          <li class="mx-2">
+            <a href="https://docs.github.com/" class="Link--secondary Link">Docs</a>
+          </li>
+
+          <li class="mx-2">
+            <a href="https://support.github.com?tags=dotcom-footer" class="Link--secondary Link">Contact</a>
+          </li>
+
+          
+<li class="mx-2" >
+  <cookie-consent-link>
+    <button
+      type="button"
+      class="Link--secondary underline-on-hover border-0 p-0 color-bg-transparent"
+     
+     
+    >
+      Manage cookies
+    </button>
+  </cookie-consent-link>
+</li>
+
+  <li class="mx-2">
+    <cookie-consent-link>
+      <button
+        type="button"
+        class="Link--secondary underline-on-hover border-0 p-0 color-bg-transparent text-left"
+       
+       
+      >
+        Do not share my personal information
+      </button>
+    </cookie-consent-link>
+  </li>
+
+      </ul>
+    </nav>
+  </div>
+</footer>
+
+
+
+    <ghcc-consent id="ghcc" class="position-fixed bottom-0 left-0"
+     
+     
+     
+    ></ghcc-consent>
+
+
+
+
+  <div id="ajax-error-message" class="ajax-error-message flash flash-error" hidden>
+    
+    <button type="button" class="flash-close js-ajax-error-dismiss">
+      
+    </button>
+    You can’t perform that action at this time.
+  </div>
+
+    <template id="site-details-dialog">
+  <details class="details-reset details-overlay details-overlay-dark lh-default color-fg-default hx_rsm" open>
+    <summary role="button"></summary>
+    <details-dialog class="Box Box--overlay d-flex flex-column anim-fade-in fast hx_rsm-dialog hx_rsm-modal">
+      <button class="Box-btn-octicon m-0 btn-octicon position-absolute right-0 top-0" type="button" data-close-dialog>
+        
+      </button>
+      <div class="octocat-spinner tmp-my-6 js-details-dialog-spinner"></div>
+    </details-dialog>
+  </details>
+</template>
+
+    <div class="Popover js-hovercard-content position-absolute">
+  <div class="Popover-message Popover-message--bottom-left Popover-message--large Box color-shadow-large">
+  </div>
+</div>
+
+    <template id="snippet-clipboard-copy-button">
+  <div class="zeroclipboard-container position-absolute right-0 top-0">
+    <clipboard-copy class="ClipboardButton btn js-clipboard-copy m-2 p-0">
+      
+      
+    </clipboard-copy>
+  </div>
+</template>
+<template id="snippet-clipboard-copy-button-unpositioned">
+  <div class="zeroclipboard-container">
+    <clipboard-copy class="ClipboardButton btn btn-invisible js-clipboard-copy m-2 p-0 d-flex flex-justify-center flex-items-center">
+      
+      
+    </clipboard-copy>
+  </div>
+</template>
+
+
+
+
+    </div>
+    <div id="js-global-screen-reader-notice" class="sr-only mt-n1" ></div>
+    <div id="js-global-screen-reader-notice-assertive" class="sr-only mt-n1"></div>
+  </body>
+</html>
+

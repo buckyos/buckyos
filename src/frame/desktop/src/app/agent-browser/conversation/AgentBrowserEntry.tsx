@@ -40,7 +40,8 @@ export function AgentBrowserEntry({ agentDid, agentName, sessionId, hintTaskId, 
   const value = browser.value
   const own = value?.status.default_session_id === sessionId
   if (!value || (!own && !operating(value.status))) return null
-  const open = () => { openAgentBrowser({ agent: value.agent.agentId }) }
+  // What the Agent is doing is on the original page; otherwise the App opens at home.
+  const open = () => { openAgentBrowser({ agent: value.agent.agentId, ...(operating(value.status) ? { mode: 'page' as const } : {}) }) }
   return (
     <div className="flex items-center gap-2 rounded-xl bg-[color:color-mix(in_srgb,var(--cp-accent)_10%,transparent)] px-3 py-2 text-[13px]" role="status" data-testid="agent-browser-entry" data-state={own ? 'session' : 'working'}>
       <Globe size={15} className="shrink-0 text-[color:var(--cp-accent)]" aria-hidden />

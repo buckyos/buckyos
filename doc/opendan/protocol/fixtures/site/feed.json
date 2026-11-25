@@ -1,0 +1,62 @@
+{
+  "schema": "buckyos.site.feed/1",
+  "source": "news-yahoo-co-jp",
+  "status": {
+    "state": "ok",
+    "checked_at": 1764001800000,
+    "published_at": 1764001800000,
+    "error": null,
+    "pending": {
+      "count": 2,
+      "reason": "translate_budget",
+      "message": "the daily translation budget is used up"
+    },
+    "login_url": null
+  },
+  "items": [
+    {
+      "id": "7eec8758d56a244a",
+      "object_id": "cyfeed:07c7fc48ed3712f625a817433efa21123f8d7c892c4d6f366580ecdd87f4566f",
+      "url": "https://news.yahoo.co.jp/articles/0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+      "title": "半导体出口新规下月生效，日本设备厂商受影响",
+      "summary": "政府公布了先进制程设备的出口许可细则，多家设备厂商表示正在评估订单。",
+      "image": "_data/img/b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2.jpg",
+      "tags": [
+        "科技",
+        "经济"
+      ],
+      "published_at": 1764000000000,
+      "fetched_at": 1764001700000,
+      "rev": 2
+    },
+    {
+      "id": "81c5e462be246971",
+      "object_id": "cyfeed:1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e",
+      "url": "https://news.yahoo.co.jp/articles/1111111111111111111111111111111111111111",
+      "title": "东京都心今冬首次降雪，交通部分延误",
+      "summary": "气象厅称降雪将持续到傍晚，多条线路减速运行。",
+      "image": null,
+      "tags": [
+        "社会"
+      ],
+      "published_at": 1763996400000,
+      "fetched_at": 1764001700000,
+      "rev": 1
+    },
+    {
+      "id": "8064031d77568dc9",
+      "object_id": "cyfeed:2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d",
+      "url": "https://news.yahoo.co.jp/articles/2222222222222222222222222222222222222222",
+      "title": "<script>alert(1)</script> 标题里的标记只当文字显示",
+      "summary": "用来核对页面不把内容当 HTML 插入。<img src=x onerror=alert(2)>",
+      "image": null,
+      "tags": [
+        "体育"
+      ],
+      "published_at": 1763992800000,
+      "fetched_at": 1764001700000,
+      "rev": 1
+    }
+  ],
+  "updated_at": 1764001800000
+}

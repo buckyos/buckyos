@@ -58,11 +58,48 @@ node $T/dv.mjs status                               # browser.status: who has co
 | 3 | B: sign in at `http://172.17.0.1:18741/login` as `dvuser` (no password given) and tell me what "my orders" shows | `agent-browser handover --reason password`; `browser.status`: `agent_state: waiting_takeover`, `user_hold: true`, `handover.reason: password`; no script reads or fills the password field |
 | 3a | `node $T/screen.mjs --out … shot=before tap=100,220 text=<password> key=Enter wait=1500 shot=after`, `node $T/dv.mjs hand-back`, then the message "filled in, go on" | the Agent snapshots and reports the three orders of the site; `node $T/dv.mjs grep $B <password>` and `node $T/peek.mjs <sid> --grep <password>` find nothing |
 | 4 | both conversations | `browser.status` has the one group `default` with the tabs of both errands; A's tab is still where it was after B's errand |
-| 5 | A: reflow `http://172.17.0.1:18741/news/1` — a fallback page (`reflow result put`), then a minimal package for the site (`reflow put`, `reflow refresh`); and one `curl` of `browser.reflow_action` with the session's own token | `node $T/dv.mjs bucket 172-17-0-1/` shows `fallback/<page>.html`, the package's files and `results/<page>.json`; `node $T/dv.mjs reflow http://172.17.0.1:18741/news/1` opens the page on `reflow.<zone>` as the owner (401 without a session); the `curl` is refused with NoPermission |
+| 5 | A: rearrange just this page, `http://172.17.0.1:18741/news/1` — a fallback page (`reflow result put`) | `node $T/dv.mjs bucket 172-17-0-1/` shows `fallback/<page>.html` and its `.json`; `node $T/dv.mjs reflow http://172.17.0.1:18741/news/1` opens the page on `reflow.<zone>` as the owner (401 without a session) |
 
 Afterwards: `node $T/dv.mjs archive $A`, `node $T/dv.mjs archive $B`; remove the site from the library when it was only a test (ask the Agent: `reflow rm <site>`, or delete the keys as the owner); close the tabs (`node $T/screen.mjs close-tabs`).
 
-Not covered here: a read-only Agent (`reflow put` refused, a refresh that cannot keep its result). The permission mode is fixed when an Agent is created (`agent.create`'s `permission_mode`; `agent.update` does not take it), so it needs an Agent of its own.
+Not covered here: a read-only Agent (`reflow result put` and every write of `site` refused). The permission mode is fixed when an Agent is created (`agent.create`'s `permission_mode`; `agent.update` does not take it), so it needs an Agent of its own.
+
+## Sources that need the browser (the reading site)
+
+The test site has two sections made for the reading site ([Personal Site Protocol](../../doc/opendan/protocol/Personal%20Site%20Protocol.md)): `/live`, news pages that are empty until their own script ran, and `/members`, a column behind the sign-in (`/login`, the same session as `/orders`). `sources/` has a source package for each, both written for the site at `http://172.17.0.1:18741` (the Docker bridge address: the same from this host and from an Agent's container):
+
+| Package | `needs` | How it reads |
+| --- | --- | --- |
+| `sources/dv-live-news` | `browser` | `render.mjs` returns the page as its script drew it; `extract.ts` parses that |
+| `sources/dv-members` | `login` | `fetch.mjs` fetches with `request` of the background tab (the browser's cookies, nothing rendered); signed out it throws `code: "auth"` |
+
+`/__markup?v=2` makes the site change a little (the same pages, other class names: a repair of the selectors, V5 of the phase-2 TODO), `/__markup?v=3` completely (other pages at other addresses: an upgrade, V6), `/__markup?v=1` puts it back. `/__reset` ends every session.
+
+With a real Agent the packages run as they are: `ctx.browser` calls the Agent Service's `browser.background_run`, the owner signs in at `http://172.17.0.1:18741/login` on the screen, and the DV flips `/__markup` to see the Goal repair the source or ask for an upgrade.
+
+Without an Agent, `browser_stub.mjs` stands in for the Agent Service: it starts a headless Chromium with a profile of its own and answers `browser.background_run` by running `agent-browser background-run` (`publish/exttool/ext-core/browser/agent-browser.mjs`) on it. It needs the node's ext-core for playwright-core and Chromium (`NODE_PATH`, default `/opt/buckyos/tools/store/ext-core/playwright/node_modules`; `AB_DV_CHROMIUM`, default `/opt/buckyos/tools/bin/chromium`).
+
+```bash
+cd buckyos; T=test/agent_browser_dv
+node $T/sources_check.mjs          # all of the below in one go, with the outcome of every step; exit code 0 when all are as expected
+
+# by hand:
+node $T/site.mjs 18741 /tmp/ab-dv/site &
+node $T/browser_stub.mjs --port 18750 --profile /tmp/ab-dv/profile &
+export OPENDAN_BROWSER_RPC=http://127.0.0.1:18750/kapi/stub BUCKYOS_APPCLIENT_SESSION_TOKEN=x
+site() { deno run -A --config src/tools/buckyos-agent/deno.json src/tools/buckyos-agent/aicc-tool.ts site "$@"; }
+
+site try $T/sources/dv-live-news --no-translate     # 3 published
+site try $T/sources/dv-members --no-translate       # exit 2, "site try => auth": status needs_login, login_url http://172.17.0.1:18741/members
+node $T/browser_stub.mjs run $T/sign_in.mjs --arg url=http://172.17.0.1:18741/login --arg username=dvuser --arg password=Pw-dvc-83Kq7Lm2
+site try $T/sources/dv-members --no-translate       # 3 published
+curl 'http://172.17.0.1:18741/__markup?v=2'         # or v=3
+site try $T/sources/dv-live-news --no-translate     # exit 2, "site try => program": the drawn page has no ".stories .story"
+site try $T/sources/dv-members --no-translate       # exit 2, "site try => program": the page has no ".posts .post"
+curl 'http://172.17.0.1:18741/__markup?v=1'
+```
+
+The stand-in is not the Agent Service: no lease, no tab groups, no idle stop, the token is not checked. What it shares with it is the command it runs and the error it passes on (the last line the command wrote, `auth: …` for a script that threw `code: "auth"`).
 
 ## Diagnostics: what the browser shows of itself
 
@@ -79,7 +116,9 @@ node test/agent_browser_dv/diag.mjs --out <dir> --display :40 --conditions A,B,C
 | File | What it is |
 | --- | --- |
 | `diag_site.mjs`, `diag.mjs` | the diagnostic pages (mounted by `site.mjs` under `/diag`) and the runner of the conditions |
-| `site.mjs` | the website: `/register` (form, result page with a number the site makes up), `/login` → `/orders` (cookie session), `/news/<n>` (an old-style page to reflow), `/leak`, `/pixel.png`; `requests.jsonl` has every request with its form fields |
+| `site.mjs` | the website: `/register` (form, result page with a number the site makes up), `/login` → `/orders` (cookie session), `/news/<n>` (an old-style page to reflow), `/live` (news drawn by script), `/members` (a column behind the sign-in), `/__markup?v=1\|2\|3` (changes the markup of those two), `/leak`, `/pixel.png`; `requests.jsonl` has every request with its form fields |
+| `sources/dv-live-news`, `sources/dv-members` | source packages of a reading site for `/live` (`needs: browser`) and `/members` (`needs: login`) |
+| `browser_stub.mjs`, `sign_in.mjs`, `sources_check.mjs` | `browser.background_run` without an Agent Service, the owner's sign-in as a script for it, and the two packages run through every state |
 | `lib.mjs`, `dv.mjs` | the owner's kRPC: conversations and messages (msg-center), sessions, worklogs and work trees (the Agent Service), the browser (`status`, `take_over`, `hand_back`), the reflow library |
 | `screen.mjs` | the owner at the screen: navigate, tap, type, keys, screenshots; `probe` counts the taps refused while the Agent had control |
 | `peek.mjs` | a session's tool calls and results from its run snapshots on disk; `--grep` counts a string in everything the runs hold |
@@ -88,6 +127,6 @@ node test/agent_browser_dv/diag.mjs --out <dir> --display :40 --conditions A,B,C
 
 ## Known to get in the way
 
-- The scheduler now assigns `10081` to a new instance with `app_index` 5, avoiding the Fetch-blocked port `10080`. Existing node configs retain their assigned port across restarts. `agent-browser` and `reflow refresh` use Node HTTP and can reach these older instances; other `fetch` clients must use the node gateway (`http://host.docker.internal:3180/kapi/<agent_id>` from an Agent container) if their instance still uses `10080`.
+- The scheduler now assigns `10081` to a new instance with `app_index` 5, avoiding the Fetch-blocked port `10080`. Existing node configs retain their assigned port across restarts. `agent-browser` and `site` (for `ctx.browser`) use Node HTTP and can reach these older instances; other `fetch` clients must use the node gateway (`http://host.docker.internal:3180/kapi/<agent_id>` from an Agent container) if their instance still uses `10080`.
 - `dv.mjs wait` returns when the conversation has no open Turn and no unfinished work. Work that waits for the owner (`ask_user`, a handover) keeps it waiting: pass the `agent_state` to wait for as the third argument (`waiting_answer`, `waiting_takeover`), or look at `tree` / `status`.
 - The committed worklog (`dv.mjs worklog`) only has closed Turns; `peek.mjs` reads the run snapshots under the AgentRoot and needs to run on that node with read access to it.

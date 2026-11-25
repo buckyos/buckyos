@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:nhknews="http://news.web.nhk/rss/rss2.0/modules/nhknews/" version="2.0">
+  <channel>
+    <title>NHKONEニュース</title>
+    <description>日本放送協会 NHKONEニュース</description>
+    <link>https://news.web.nhk/newsweb/</link>
+    <item>
+      <title>NY株式市場 ナスダック 一時4％超の下落 ハイテク株売りが再び</title>
+      <link>https://news.web.nhk/newsweb/na/nd-20261126de81556</link>
+      <guid isPermaLink="true">https://news.web.nhk/newsweb/na/nd-20261126de81556</guid>
+      <description>25日のニューヨーク株式市場では、AIの先行きに対する不透明感が強まるなかで、半導体をはじめ幅広い銘柄に売り注文が広がり、ハイテク株の比率が高いナスダックの株価指数は前日と比べて一時、4％を超える大幅…</description>
+      <pubDate>Thu, 26 Nov 2026 00:45:44 +0900</pubDate>
+      <nhknews:new>false</nhknews:new>
+    </item>
+    <item>
+      <title>米 過剰生産で日本などに追加関税 既存税率含め日本最大15％に</title>
+      <link>https://news.web.nhk/newsweb/na/nd-20261126de81560</link>
+      <guid isPermaLink="true">https://news.web.nhk/newsweb/na/nd-20261126de81560</guid>
+      <description>USTR＝アメリカ通商代表部は、過剰に製品を生産して輸出し、アメリカの産業に打撃を及ぼしているとして、通商法301条に基づき、日本などに新たな追加関税を課す方針を明らかにしました。
+
+このうち日本から…</description>
+      <pubDate>Thu, 26 Nov 2026 01:21:46 +0900</pubDate>
+      <nhknews:new>false</nhknews:new>
+    </item>
+    <item>
+      <title>PayPayでシステム障害 カード連携サービスで決済できず</title>
+      <link>https://news.web.nhk/newsweb/na/nd-20261125de81532</link>
+      <guid isPermaLink="true">https://news.web.nhk/newsweb/na/nd-20261125de81532</guid>
+      <description>スマホ決済大手のPayPayは、システム障害によって25日午後8時過ぎから、クレジットカードと連携したサービスで決済ができなくなっているということです。
+
+会社では原因を調べていますが、復旧のめどは立…</description>
+      <pubDate>Wed, 25 Nov 2026 23:16:00 +0900</pubDate>
+      <nhknews:new>false</nhknews:new>
+    </item>
+  </channel>
+</rss>

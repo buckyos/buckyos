@@ -8,9 +8,11 @@ import { getMockEntityDid } from '../../messagehub/mock/data'
 import { ownReadyAgents, toBrowserAgent, type BrowserAgent, type BrowserBackend } from '../api/backend'
 import type { ScreenSocket } from '../api/channel'
 import { DEFAULT_GROUP, VIEWPORT_MAX, VIEWPORT_MIN } from '../api/types'
-import type { AgentState, BrowserGroup, BrowserStatus, BrowserTab, HandoverReason, RequestResult, ScreenDownstream, ScreenInput, ScreenRequest, ScreenState, ScreenUpstream, UnavailableCode, Viewport } from '../api/types'
+import type { AgentState, BrowserGroup, BrowserStatus, BrowserTab, HandoverReason, PageHint, RequestResult, ScreenDownstream, ScreenInput, ScreenRequest, ScreenState, ScreenUpstream, UnavailableCode, Viewport } from '../api/types'
 import { MOCK_PAGE_HEIGHT, mockElementAt, mockPageRects, mockSelectOptions, newMockPage, renderMockPage, type MockElement, type MockPage } from './page'
-import { mockReflowCall, mockReflowControl } from './reflow'
+import { mockManageCall, mockManageControl } from './manage'
+import { mockReflowControl, mockReflowState } from './reflow'
+import { mockSeed } from './site'
 
 const TOKEN = 'mock-session-token'
 const MAX_TABS = 12
@@ -18,7 +20,7 @@ const LATENCY_MS = 4
 const NAV_MS = 120
 
 /** The MessageHub mock's own Agent: the one its Agent panel belongs to. `agent.list` of the mock control panel does not list it. */
-export const MOCK_HUB_AGENT: BrowserAgent = { agentId: 'codeassistant', agentDid: getMockEntityDid('agent-coder'), name: 'CodeAssistant' }
+export const MOCK_HUB_AGENT: BrowserAgent = { agentId: 'codeassistant', agentDid: getMockEntityDid('agent-coder'), name: 'CodeAssistant', readOnly: mockSeed.readOnly?.includes('codeassistant') ?? false }
 
 interface MockTab { id: string; history: string[]; cursor: number; loading: boolean; page: MockPage }
 
@@ -527,6 +529,16 @@ function requireUsable(agentId: string) {
   return browser
 }
 
+/** `browser.page_hint` (§7.2): the mock page has no content to count, so the address stands for it — a sign-in or a form is a task, a story is reading. */
+function pageHint(agentId: string): PageHint {
+  const browser = browserOf(agentId)
+  const tab = browser.running ? activeTab(groupOf(agentId, DEFAULT_GROUP)) : null
+  if (!tab || !/^https?:/.test(tab.page.url)) return { hint: 'unknown', url: null, title: null }
+  const url = new URL(tab.page.url)
+  const hint = mockSeed.hints?.[url.hostname] ?? (/login|signin|form|apply/.test(url.pathname) ? 'task' : /^news\.|\/(story|articles?)\//.test(url.hostname + url.pathname) ? 'reading' : 'unknown')
+  return { hint, url: tab.page.url, title: tab.page.title }
+}
+
 function chooserOf(agentId: string, requestId: string): { group: MockGroup; request: Extract<ScreenRequest, { kind: 'file_chooser' }> } {
   for (const group of browserOf(agentId).groups.values()) {
     const request = group.requests.get(requestId)
@@ -590,12 +602,15 @@ function call(agentId: string, method: string, params: Record<string, unknown>):
       for (const group of browser.groups.values()) repaint(agentId, group.id)
       return {}
     }
+    case 'browser.page_hint':
+      return pageHint(agentId)
     case 'browser.reflow_state':
-    case 'browser.reflow_refresh':
-    case 'browser.reflow_action':
-      return mockReflowCall(method, params, { enabled: browserOf(agentId).enabled, available: browserThere(browserOf(agentId)) })
-    default:
-      throw new MockError('invalid_argument', `unknown method ${method}`)
+      return mockReflowState(params)
+    default: {
+      const answer = mockManageCall(agentId, method, params)
+      if (answer === undefined) throw new MockError('invalid_argument', `unknown method ${method}`)
+      return answer
+    }
   }
 }
 
@@ -627,6 +642,10 @@ const control = {
   network,
   rects: mockPageRects,
   reflow: mockReflowControl,
+  /** The personal site's data, as whoever maintains it reads and writes it (mock/site.ts). */
+  site: { read: mockReflowControl.read, put: mockReflowControl.put },
+  /** The jobs of the site's maintenance Goal and the record of browsed pages (mock/manage.ts). */
+  manage: mockManageControl,
   page(agentId: string) {
     const tab = activeTab(groupOf(agentId, DEFAULT_GROUP))
     return tab ? { ...tab.page, signedIn: browserOf(agentId).signedIn } : null

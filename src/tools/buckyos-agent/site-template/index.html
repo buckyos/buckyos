@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="data:,">
+<title></title>
+<style>
+html { background: #fdfdfc; color: #1b1b1a; font: 16px/1.5 system-ui, sans-serif; }
+@media (prefers-color-scheme: dark) { html { background: #141415; color: #ededed; } }
+body { margin: 0; }
+#boot { padding: 30vh 24px 0; text-align: center; opacity: .7; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+const TEXT = {
+  en: ['There is no reading site here yet.', 'This page could not be loaded. Reload to try again.'],
+  'zh-CN': ['这里还没有建站。', '页面没能加载，请重新加载再试。'],
+  'zh-TW': ['這裡還沒有建站。', '頁面沒能載入，請重新載入再試。'],
+  ja: ['まだサイトがありません。', 'ページを読み込めませんでした。再読み込みしてください。'],
+  ko: ['아직 읽기 사이트가 없습니다.', '페이지를 불러오지 못했습니다. 새로 고쳐 다시 시도하세요.'],
+  fr: ['Il n’y a pas encore de site de lecture ici.', 'La page n’a pas pu être chargée. Rechargez pour réessayer.'],
+  de: ['Hier gibt es noch keine Leseseite.', 'Die Seite konnte nicht geladen werden. Neu laden, um es erneut zu versuchen.'],
+  es: ['Aquí todavía no hay un sitio de lectura.', 'No se pudo cargar la página. Recarga para intentarlo de nuevo.'],
+  ru: ['Здесь пока нет сайта для чтения.', 'Не удалось загрузить страницу. Обновите её, чтобы попробовать снова.'],
+  ar: ['لا يوجد موقع قراءة هنا بعد.', 'تعذّر تحميل الصفحة. أعد التحميل للمحاولة مرة أخرى.'],
+}
+const mount = document.getElementById('app')
+const embedded = window.parent !== window
+let signedOut = false
+const retried = {
+  get() { try { return sessionStorage.getItem('site.boot') } catch { return '1' } },
+  set(value) { try { value ? sessionStorage.setItem('site.boot', value) : sessionStorage.removeItem('site.boot') } catch { /* no storage in this frame */ } },
+}
+
+function say(which) {
+  const tag = navigator.language ?? 'en'
+  const zh = /^zh\b/i.test(tag) ? (/tw|hk|mo|hant/i.test(tag) ? 'zh-TW' : 'zh-CN') : null
+  const line = document.createElement('p')
+  line.id = 'boot'
+  line.textContent = (TEXT[zh ?? tag.split('-')[0]] ?? TEXT.en)[which]
+  mount.replaceChildren(line)
+  if (embedded && !signedOut) window.parent.postMessage({ type: 'site.ready' }, '*')
+}
+
+function reload() {
+  location.reload()
+  return new Promise(() => {})
+}
+
+async function get(url, init) {
+  let response = await fetch(url, init)
+  if (response.status !== 401) return response
+  await fetch('/sso_refresh', { method: 'POST' }).catch(() => {})
+  response = await fetch(url, init)
+  if (response.status !== 401) return response
+  if (!embedded) return reload()
+  // Inside the App the frame is the App's to sign in again.
+  signedOut = true
+  window.parent.postMessage({ type: 'site.session' }, '*')
+  throw new Error(`${url}: 401`)
+}
+
+async function boot() {
+  const response = await get('/_data/site.json', { cache: 'no-cache' })
+  if (response.status === 404) return say(0)
+  if (!response.ok) throw new Error(`site.json: ${response.status}`)
+  const site = await response.json()
+  const version = site.template?.version
+  if (!/^t\d+$/.test(version ?? '')) throw new Error('site.json: template.version')
+  const base = `/_app/${version}/`
+  await new Promise((done) => {
+    const link = document.createElement('link')
+    link.rel = 'stylesheet'
+    link.href = `${base}app.css`
+    link.onload = link.onerror = done
+    document.head.append(link)
+  })
+  let app
+  try {
+    app = await import(`${base}app.js`)
+  } catch (error) {
+    // A module that failed to load stays failed in this document: after the session is renewed only a reload gets it.
+    const probe = await get(`${base}app.js`)
+    if (!probe.ok || retried.get()) throw error
+    retried.set('1')
+    return reload()
+  }
+  retried.set('')
+  await app.default({ site, mount })
+}
+
+boot().catch((error) => {
+  console.error(error)
+  say(1)
+})
+</script>
+</body>
+</html>

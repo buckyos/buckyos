@@ -1,6 +1,6 @@
 /* The App's state: the user's Agents, the Agent being looked at, the screen of its browser, its browser
  * conversation, and the requests the page raised outside itself. One screen channel at a time; while there is none
- * (reflow mode, browser unavailable) the browser's state comes from `browser.status`. */
+ * (home mode, browser unavailable) the browser's state comes from `browser.status`, which does not start it. */
 
 import type { LocalFile, SelectedContent, ZoneContent } from 'buckyos/content'
 import { getMessageHubStore, type MessageHubStore } from '../../messagehub/store'
@@ -12,6 +12,7 @@ import type { BrowserGroup, BrowserStatus, RequestResult, ScreenFocus, ScreenFra
 import { subscribeBrowserSession } from '../conversation/session'
 import { agentBrowserExtensions, type ConversationContext } from '../extensions'
 import type { AgentBrowserLaunch, BrowserMode } from '../launch'
+import { normalizeUrl } from '../reflow/library'
 import { rememberedQuality, rememberQuality, type QualityChoice, type TierName } from '../screen/quality'
 import { viewportFor, type Size } from '../screen/viewport'
 import { toNavigableUrl } from '../shell/address'
@@ -32,7 +33,7 @@ export interface AgentBrowserSnapshot {
   conversations: 'loading' | 'ready' | 'unavailable'
   /** The browser conversation as MessageHub has it: the bound one (`default_session_id`), or the one found for it since. */
   session: Session | null
-  /** The browser conversation is pulled up over the page (original page and reflow modes). */
+  /** The browser conversation is pulled up over the stage (home and original page modes). */
   chatOpen: boolean
   mode: BrowserMode
   desktopSite: boolean
@@ -61,6 +62,13 @@ const VIEWPORT_DEBOUNCE_MS = 120
 const NOTICE_MS = 2600
 /** How long a stopped browser is given to come back by itself (the service restarts one that crashed) before the App starts it. */
 const RESTART_MS = 2500
+/** How long the conversation side is given to come up after the App opened. */
+const CONVERSATION_WAIT_MS = 6000
+
+function sameAddress(a: string, b: string): boolean {
+  if (a === b) return true
+  try { return normalizeUrl(a).url === normalizeUrl(b).url } catch { return false }
+}
 
 function remembered(key: string): string | null {
   try { return window.localStorage.getItem(key) } catch { return null }
@@ -79,7 +87,7 @@ export const canOperate = (snapshot: AgentBrowserSnapshot): boolean => snapshot.
 
 export class AgentBrowserStore {
   private snapshot: AgentBrowserSnapshot = {
-    phase: 'loading', agents: [], agent: null, browser: null, browserError: false, conversations: 'loading', session: null, chatOpen: false, mode: 'page',
+    phase: 'loading', agents: [], agent: null, browser: null, browserError: false, conversations: 'loading', session: null, chatOpen: false, mode: 'home',
     desktopSite: remembered(DESKTOP_SITE_KEY) === '1', screenQuality: rememberedQuality(), screenTier: null, screenStatus: 'idle', screenFailure: null, screenAttempts: 0, state: null,
     group: null, pageFocus: null, restartFailed: false, requests: [], notice: null, pending: null,
   }
@@ -100,6 +108,10 @@ export class AgentBrowserStore {
   private restartTimer = 0
   private noticeId = 0
   private pressedAt = -Infinity
+  /** Where the launch asked to open, until the personal site took it. */
+  private launch: AgentBrowserLaunch | null = null
+  /** The address original page mode was entered for, until the screen is connected and takes it. */
+  private pendingUrl: string | null = null
   private epoch = 0
   private run = 0
   private disposed = false
@@ -122,6 +134,7 @@ export class AgentBrowserStore {
   async start(launch?: AgentBrowserLaunch) {
     const run = ++this.run
     this.disposed = false
+    this.launch = launch ?? null
     this.update({ phase: 'loading' })
     try {
       this.backend = await getBrowserBackend()
@@ -130,7 +143,7 @@ export class AgentBrowserStore {
       if (agents.length === 0) { this.update({ phase: 'empty', agents }); return }
       const wanted = launch?.agent ?? remembered(AGENT_KEY)
       const agent = agents.find((item) => item.agentId === wanted || item.agentDid === wanted) ?? (agents.length === 1 ? agents[0] : null)
-      this.update({ agents, ...(launch?.mode ? { mode: launch.mode } : {}) })
+      this.update({ agents, mode: launch?.mode ?? 'home' })
       if (agent) this.enter(agent)
       else this.update({ phase: 'pick' })
     } catch {
@@ -139,7 +152,14 @@ export class AgentBrowserStore {
   }
 
   retry() {
-    void this.start()
+    void this.start(this.launch ?? undefined)
+  }
+
+  /** The page of the personal site a launch names (`route`, `url`, `upgrade`), once. */
+  takeLaunch(): Pick<AgentBrowserLaunch, 'route' | 'url' | 'upgrade'> {
+    const launch = this.launch
+    this.launch = null
+    return launch ? { route: launch.route, url: launch.url, upgrade: launch.upgrade } : {}
   }
 
   selectAgent(agentId: string) {
@@ -163,6 +183,7 @@ export class AgentBrowserStore {
     this.stopHub = null
     this.hubContext = null
     this.sessionId = null
+    this.pendingUrl = null
     this.update({ browser: null, browserError: false, conversations: 'loading', session: null, chatOpen: false, state: null, group: null, pageFocus: null, restartFailed: false, requests: [], pending: null })
   }
 
@@ -170,6 +191,11 @@ export class AgentBrowserStore {
     this.leave()
     remember(AGENT_KEY, agent.agentId)
     this.update({ phase: 'agent', agent })
+    // A launch into original page mode with an address is the browser's to open (a sign-in page a notification links to).
+    if (this.launch?.mode === 'page' && this.launch.url) {
+      this.pendingUrl = this.launch.url
+      this.launch = null
+    }
     void this.refreshStatus()
     void this.enterHub()
   }
@@ -214,6 +240,19 @@ export class AgentBrowserStore {
     return agent && this.hub && this.hubContext ? { agent, hub: this.hub, context: this.hubContext } : null
   }
 
+  /** The conversation side, which comes up a moment after the App opens; null when it does not. */
+  whenConversation(): Promise<ConversationContext | null> {
+    const started = Date.now()
+    return new Promise((resolve) => {
+      const look = () => {
+        const context = this.conversationContext()
+        if (context || this.snapshot.conversations === 'unavailable' || Date.now() - started >= CONVERSATION_WAIT_MS) resolve(context)
+        else window.setTimeout(look, 200)
+      }
+      look()
+    })
+  }
+
   private refreshSession() {
     const context = this.conversationContext()
     if (!context) return
@@ -246,8 +285,24 @@ export class AgentBrowserStore {
 
   setMode(mode: BrowserMode) {
     if (mode === this.snapshot.mode) return
+    if (mode !== 'page') this.pendingUrl = null
     this.update({ mode, ...(mode === 'chat' ? { chatOpen: false } : {}) })
     this.syncChannel()
+  }
+
+  /** Original page mode with the browser on `url`: the address is sent once the screen is connected. */
+  openInPage(url: string) {
+    this.pendingUrl = url
+    this.setMode('page')
+    this.openPending()
+  }
+
+  private openPending() {
+    const url = this.pendingUrl
+    const { mode, screenStatus, state } = this.snapshot
+    if (!url || mode !== 'page' || screenStatus !== 'open' || !state) return
+    this.pendingUrl = null
+    if (!sameAddress(state.url, url)) this.navigate(url)
   }
 
   /** Pulls the browser conversation up over the page, or puts it away; in conversation mode it is the stage already. */
@@ -300,7 +355,7 @@ export class AgentBrowserStore {
     const { phase, agent, mode, desktopSite } = this.snapshot
     const backend = this.backend
     const size = this.screenSize ?? this.stageSize
-    const wanted = phase === 'agent' && !!agent && !!backend && browserUsable(this.snapshot) && mode !== 'reflow' && !!size && size.width > 0 && size.height > 0
+    const wanted = phase === 'agent' && !!agent && !!backend && browserUsable(this.snapshot) && mode !== 'home' && !!size && size.width > 0 && size.height > 0
     if (!wanted || !agent || !backend || !size) {
       this.closeChannel()
       this.syncPolling()
@@ -330,11 +385,13 @@ export class AgentBrowserStore {
         // A new connection is told again what the pages are waiting for; the notices it is not told again stay.
         const requests = status === 'open' ? this.snapshot.requests.filter((item) => item.kind === 'download') : this.snapshot.requests
         this.update({ screenStatus: status, screenFailure: failure, screenAttempts: attempts, requests })
+        this.openPending()
         if (status === 'failed' && failure?.code === 'browser_unavailable') void this.refreshStatus()
       },
       onState: (state) => {
         if (this.channel !== channel) return
         this.update({ state, group: state.group, ...(state.running ? { restartFailed: false } : {}) })
+        this.openPending()
         this.watchRunning(state.running)
       },
       onFrame: (frame) => { if (this.channel === channel) for (const listener of [...this.frameListeners]) listener(frame) },

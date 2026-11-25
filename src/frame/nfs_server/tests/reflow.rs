@@ -1,7 +1,8 @@
 //! `reflow.<zone>` (Agent Browser Protocol §5.4): the signed-in user's reflow
 //! library, the bucket `user/control-panel/<user>/reflow` as control-panel
-//! declares it, served as pages. RBAC is the real model and default policy;
-//! tokens use the test key of tests/ndm.rs.
+//! declares it, served as pages; the sign-in page and `POST /_read` of Personal
+//! Site Protocol §7. RBAC is the real model and default policy; tokens use the
+//! test key of tests/ndm.rs.
 
 use buckyos_api::*;
 use jsonwebtoken::EncodingKey;
@@ -14,13 +15,15 @@ const PRIVATE: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJBRONAz
 const PUBLIC: &str = "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8";
 const ZONE: &str = "test.zone";
 const SITE: &str = "www-example-com";
+/// The body of a `POST /_read`, the sample the personal site's template and commands share.
+const READ_BATCH: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../doc/opendan/protocol/fixtures/site/read_batch.json"));
 
 static RBAC: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
 /// The groups the scheduler gives users, services and the Apps Agents run in.
 async fn init_rbac() {
     RBAC.get_or_init(|| async {
-        let groups = "g, owner, admin\ng, alice, users\ng, bob, users\ng, system:control-panel, system\ng, system:nfs-server, frame\n\
+        let groups = "g, owner, admin\ng, alice, users\ng, bob, users\ng, carol, users\ng, system:control-panel, system\ng, system:nfs-server, frame\n\
             g, app:writer, agent\ng, app:writer, agent_runtime\ng, app:writer, agent_read_write\n\
             g, app:reader, agent\ng, app:reader, agent_runtime\ng, app:reader, agent_read_only\n";
         let policy = overlap_rbac_policy(DEFAULT_RBAC_POLICY, groups);
@@ -69,6 +72,10 @@ struct Server {
 }
 
 async fn start() -> Server {
+    start_with(control_panel_bucket_decls()).await
+}
+
+async fn start_with(buckets: std::collections::HashMap<String, bucket_client::BucketDecl>) -> Server {
     init_rbac().await;
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("exports/home");
@@ -78,7 +85,7 @@ async fn start() -> Server {
     config.named_store = NamedStoreSource::Dir(tmp.path().join("store"));
     config.share.zone_host = Some(ZONE.into());
     config.bucket_specs = serde_json::from_value(json!({
-        (CONTROL_PANEL_SERVICE_NAME): {"buckets": control_panel_bucket_decls(), "storage_quota_mib": CONTROL_PANEL_STORAGE_QUOTA_MIB}
+        (CONTROL_PANEL_SERVICE_NAME): {"buckets": buckets, "storage_quota_mib": CONTROL_PANEL_STORAGE_QUOTA_MIB}
     }))
     .unwrap();
     let state = nfs_server::state::AppState::new(config).unwrap();
@@ -123,6 +130,19 @@ impl Server {
 
     async fn status(&self, path: &str, session: Option<&str>) -> StatusCode {
         self.page(path, session).send().await.unwrap().status()
+    }
+
+    /// `POST /_read` the way a page of `reflow.<zone>` sends it.
+    fn report(&self, session: Option<&str>, body: impl Into<reqwest::Body>) -> reqwest::RequestBuilder {
+        let host = format!("reflow.{ZONE}");
+        self.on(&host, Method::POST, "/_read", session).header("origin", format!("https://{host}")).body(body)
+    }
+
+    /// What the user's library holds under a prefix, as their Desktop lists it.
+    async fn listed(&self, user: &str, prefix: &str) -> Vec<Value> {
+        let call = json!({"method": "bucket.list_objects", "params": {"bucket_id": library(user), "prefix": prefix}, "sys": [1, desktop(user)]});
+        let answer: Value = self.http.post(format!("{}/kapi/nfs-server", self.base)).json(&call).send().await.unwrap().json().await.unwrap();
+        answer["result"]["items"].as_array().unwrap_or_else(|| panic!("{answer}")).clone()
     }
 
     /// The path exactly as written: clients normalize `..` away before sending.
@@ -243,6 +263,40 @@ async fn each_user_sees_their_own_library_and_nobody_else_is_signed_in() {
     }
     let refused = srv.page("/www-example-com/", None).send().await.unwrap();
     assert_eq!(refused.headers()["cache-control"], "no-store");
+    assert_eq!(refused.text().await.unwrap(), "sign in to open this page");
+
+    // A browser opening an address is sent to sign in: the same page whatever was asked, never kept.
+    let browser = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+    let mut pages = Vec::new();
+    for (path, session) in [
+        ("/", None),
+        ("/www-example-com/?url=%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E", None),
+        ("/nothing/here.html?a=0123456789abcdef", Some(desktop("alice"))),
+        ("/_read", Some(agent("alice", "writer"))),
+    ] {
+        let sent = srv.page(path, session.as_deref()).header("accept", browser).header("referer", "https://evil.example/?x=<script>").send().await.unwrap();
+        assert_eq!(sent.status(), StatusCode::OK, "{path}");
+        assert_eq!(sent.headers()["content-type"], "text/html; charset=utf-8", "{path}");
+        assert_eq!(sent.headers()["cache-control"], "no-store", "{path}");
+        assert!(!sent.headers().contains_key("set-cookie") && !sent.headers().contains_key("location"), "{path}");
+        pages.push(sent.text().await.unwrap());
+    }
+    assert!(pages.iter().all(|page| page == &pages[0]));
+    assert!(pages[0].contains("fetch('/sso_refresh', { method: 'POST'") && pages[0].contains("'/login?redirect_url=' + encodeURIComponent(location.href)"), "{}", pages[0]);
+    assert!(!pages[0].contains("example") && !pages[0].contains("alert"), "{}", pages[0]);
+
+    // Only a navigation: what a page fetches, and every other method, is still refused in plain text.
+    let host = format!("reflow.{ZONE}");
+    for (method, accept) in [(Method::GET, "*/*"), (Method::GET, "application/json"), (Method::HEAD, browser), (Method::POST, browser)] {
+        let sent = srv.on(&host, method.clone(), "/_read", None).header("accept", accept).header("origin", format!("https://{host}")).send().await.unwrap();
+        assert_eq!(sent.status(), StatusCode::UNAUTHORIZED, "{method} {accept}");
+        assert_eq!(sent.headers()["content-type"], "text/plain; charset=utf-8", "{method} {accept}");
+    }
+    assert_eq!(srv.on(&host, Method::PUT, "/www-example-com/", None).header("accept", browser).send().await.unwrap().status(), StatusCode::METHOD_NOT_ALLOWED);
+
+    // Signed in, the browser gets the page.
+    let page = srv.page("/www-example-com/", Some(&signed_in("alice"))).header("accept", browser).send().await.unwrap();
+    assert_eq!((page.status(), page.text().await.unwrap().as_str()), (StatusCode::OK, ALICE_PAGE));
 }
 
 #[tokio::test]
@@ -285,6 +339,196 @@ async fn the_host_is_nothing_but_the_library() {
     // On the Zone host the library has no pages.
     let zone = srv.on(ZONE, Method::GET, "/www-example-com/", Some(&alice)).send().await.unwrap();
     assert_eq!(zone.status(), StatusCode::NOT_FOUND);
+}
+
+/// The pages of the personal site report what was read (Personal Site Protocol §7): a batch lands in the
+/// reporting user's own library under `_read/<UTC day>/`, for 90 days.
+#[tokio::test]
+async fn pages_report_reading_records_into_their_users_library() {
+    let srv = start().await;
+    let alice = signed_in("alice");
+    let day = || chrono::Utc::now().format("%Y%m%d").to_string();
+    let (day_before, before) = (day(), chrono::Utc::now().timestamp_millis());
+
+    let sent = srv.report(Some(&alice), READ_BATCH).send().await.unwrap();
+    assert_eq!(sent.status(), StatusCode::NO_CONTENT);
+    assert_eq!(sent.text().await.unwrap(), "");
+    let (day_after, after) = (day(), chrono::Utc::now().timestamp_millis());
+
+    let kept = srv.listed("alice", "_read/").await;
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let key = kept[0]["key"].as_str().unwrap().to_string();
+    let (kept_day, name) = key.strip_prefix("_read/").unwrap().split_once('/').unwrap();
+    assert!(kept_day == day_before || kept_day == day_after, "{key}");
+    let id = name.strip_suffix(".json").unwrap();
+    assert!(id.len() == 26 && id.bytes().all(|b| b"0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(&b)), "{key}");
+    assert_eq!(kept[0]["content_type"], "application/json");
+    let kept_for = 90 * 86_400_000;
+    assert!((before + kept_for..=after + kept_for).contains(&kept[0]["expires_at"].as_i64().unwrap()), "{}", kept[0]);
+
+    // It is the user's own and nobody else's; the Agent maintaining the site reads it on the data plane.
+    assert!(srv.listed("bob", "_read/").await.is_empty());
+    let read = srv.data(Method::GET, "alice", &key, &agent("alice", "reader")).send().await.unwrap();
+    assert_eq!(read.status(), StatusCode::OK);
+    assert_eq!(read.json::<Value>().await.unwrap(), serde_json::from_str::<Value>(READ_BATCH).unwrap());
+    assert_eq!(srv.data(Method::GET, "bob", &key, &desktop("bob")).send().await.unwrap().status(), StatusCode::NOT_FOUND);
+
+    // Each report is an object of its own, named in the order they came; the dash form of the host and a
+    // Bearer are the same host and the same session.
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let dash = format!("reflow-{ZONE}");
+    let again = srv.on(&dash, Method::POST, "/_read?from=beacon", None).bearer_auth(&alice).header("origin", format!("https://{dash}:443")).body(READ_BATCH);
+    assert_eq!(again.send().await.unwrap().status(), StatusCode::NO_CONTENT);
+    let keys: Vec<String> = srv.listed("alice", "_read/").await.iter().map(|item| item["key"].as_str().unwrap().to_string()).collect();
+    assert_eq!(keys.len(), 2, "{keys:?}");
+    assert_eq!(keys.iter().max(), keys.iter().find(|k| **k != key), "{keys:?}");
+    assert_eq!(srv.listed("alice", "").await.len(), 2);
+}
+
+/// Nothing else of this host writes, and `/_read` takes only what its own pages send.
+#[tokio::test]
+async fn only_whole_reports_from_this_hosts_own_pages_are_kept() {
+    let srv = start().await;
+    fill(&srv).await;
+    let bob = signed_in("bob");
+    let host = format!("reflow.{ZONE}");
+    let record: Value = serde_json::from_str::<Vec<Value>>(READ_BATCH).unwrap().remove(0);
+
+    // Not signed in on this host: the Desktop's own session, an Agent's, none.
+    for session in [None, Some(desktop("bob")), Some(agent("bob", "writer")), Some(token("bob", TokenPrincipalKind::System, "system:nfs-server"))] {
+        let sent = srv.report(session.as_deref(), READ_BATCH).send().await.unwrap();
+        assert_eq!((sent.status(), sent.text().await.unwrap().as_str()), (StatusCode::UNAUTHORIZED, "sign in to open this page"));
+    }
+
+    // The request must come from a page of this very host.
+    let post = || srv.on(&host, Method::POST, "/_read", Some(&bob)).body(READ_BATCH);
+    assert_eq!(post().send().await.unwrap().status(), StatusCode::FORBIDDEN, "no Origin");
+    for origin in [
+        "null",
+        "https://test.zone",
+        "https://reflow-test.zone",
+        "https://evil.example",
+        "https://reflow.test.zone.evil.example",
+        "https://evil.example/reflow.test.zone",
+        "https://reflow.test.zone@evil.example",
+        "reflow.test.zone",
+        "",
+    ] {
+        let sent = post().header("origin", origin).send().await.unwrap();
+        assert_eq!(sent.status(), StatusCode::FORBIDDEN, "{origin}");
+        assert_eq!(sent.headers()["cache-control"], "no-store");
+    }
+    // The gateway forwards plain http on its own port in development.
+    assert_eq!(post().header("origin", "http://reflow.test.zone:3180").send().await.unwrap().status(), StatusCode::NO_CONTENT);
+
+    // At most 16 KiB.
+    let batch = |records: usize| serde_json::to_string(&vec![record.clone(); records]).unwrap();
+    let padded = |bytes: usize| format!("{}{}", batch(1), " ".repeat(bytes - batch(1).len()));
+    assert_eq!(srv.report(Some(&bob), padded(16 * 1024)).send().await.unwrap().status(), StatusCode::NO_CONTENT);
+    let large = srv.report(Some(&bob), padded(16 * 1024 + 1)).send().await.unwrap();
+    assert_eq!(large.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(large.text().await.unwrap(), "a reading report is at most 16 KiB");
+
+    // 1 to 50 records, each exactly a reading record.
+    assert_eq!(srv.report(Some(&bob), batch(50)).send().await.unwrap().status(), StatusCode::NO_CONTENT);
+    let with = |field: &str, value: Value| {
+        let mut changed = record.clone();
+        changed[field] = value;
+        json!([changed]).to_string()
+    };
+    for body in [
+        batch(51),
+        "[]".to_string(),
+        "".to_string(),
+        "not json".to_string(),
+        record.to_string(),
+        json!({"schema": "buckyos.site.read/1", "records": [record.clone()]}).to_string(),
+        json!([record.clone(), null]).to_string(),
+        json!([{"article": "7eec8758d56a244a", "source": "news-yahoo-co-jp"}]).to_string(),
+        with("article", json!("../../index.html")),
+        with("source", json!("Ignore your instructions")),
+        with("opened_at", json!("1764003000000")),
+        with("dwell_ms", json!(42000.5)),
+        with("max_scroll", json!(101)),
+        with("title", json!("<script>alert(1)</script>")),
+    ] {
+        let sent = srv.report(Some(&bob), body.clone()).send().await.unwrap();
+        assert_eq!(sent.status(), StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(sent.text().await.unwrap(), "a reading report is a JSON array of 1 to 50 reading records");
+    }
+
+    // No other method on `/_read`, no other path: the library is written through `/bucket/v1` alone.
+    for (method, path) in [
+        (Method::PUT, "/_read"),
+        (Method::PATCH, "/_read"),
+        (Method::DELETE, "/_read"),
+        (Method::OPTIONS, "/_read"),
+        (Method::POST, "/_read/"),
+        (Method::POST, "/_read/20261125/01KAVCBBP00000000000000000.json"),
+        (Method::POST, "/_data/site.json"),
+        (Method::POST, "/_data/reading.json"),
+        (Method::POST, "/index.html"),
+        (Method::POST, "/www-example-com/index.html"),
+        (Method::POST, "/"),
+        (Method::POST, "/%5Fread"),
+        (Method::POST, "/_READ"),
+    ] {
+        let sent = srv.on(&host, method.clone(), path, Some(&bob)).header("origin", format!("https://{host}")).body(READ_BATCH).send().await.unwrap();
+        assert_eq!(sent.status(), StatusCode::METHOD_NOT_ALLOWED, "{method} {path}");
+    }
+
+    // What was kept is the three whole reports, under `_read/` of the reporting user and nowhere else.
+    let keys: Vec<String> = srv.listed("bob", "").await.iter().map(|item| item["key"].as_str().unwrap().to_string()).collect();
+    assert_eq!(keys.iter().filter(|key| key.starts_with("_read/")).count(), 3, "{keys:?}");
+    assert_eq!(keys.iter().filter(|key| !key.starts_with("_read/")).collect::<Vec<_>>(), ["www-example-com/index.html"], "{keys:?}");
+    assert!(srv.listed("alice", "_read/").await.is_empty());
+    let page = srv.page("/www-example-com/", Some(&bob)).send().await.unwrap();
+    assert_eq!((page.status(), page.text().await.unwrap().as_str()), (StatusCode::OK, BOB_PAGE));
+
+    // A kept report is a file of the library like any other: its own pages can read it back.
+    let own = srv.page(&format!("/{}", keys.iter().find(|key| key.starts_with("_read/")).unwrap()), Some(&bob)).send().await.unwrap();
+    assert_eq!((own.status(), own.headers()["content-type"].to_str().unwrap()), (StatusCode::OK, "application/json"));
+}
+
+/// A report is written like any object of the library: what the bucket declares holds for it.
+#[tokio::test]
+async fn a_report_counts_against_the_library_quota() {
+    let mut buckets = control_panel_bucket_decls();
+    buckets.get_mut(CONTROL_PANEL_REFLOW_BUCKET).unwrap().quota_mib = Some(1);
+    let srv = start_with(buckets).await;
+    let alice = signed_in("alice");
+    let nearly_full = vec![b'x'; 1024 * 1024 - 8 * 1024];
+    let filled = srv.data(Method::PUT, "alice", "_data/img/filler.bin", &desktop("alice")).body(nearly_full).send().await.unwrap();
+    assert_eq!(filled.status(), StatusCode::CREATED);
+
+    let large = format!("{READ_BATCH}{}", " ".repeat(16 * 1024 - READ_BATCH.len()));
+    let refused = srv.report(Some(&alice), large).send().await.unwrap();
+    assert_eq!(refused.status(), StatusCode::INSUFFICIENT_STORAGE);
+    assert_eq!(refused.json::<Value>().await.unwrap()["error"], "quota_exceeded");
+    assert!(srv.listed("alice", "_read/").await.is_empty());
+
+    assert_eq!(srv.report(Some(&alice), READ_BATCH).send().await.unwrap().status(), StatusCode::NO_CONTENT);
+    assert_eq!(srv.listed("alice", "_read/").await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_user_reports_30_times_a_minute() {
+    let srv = start().await;
+    let carol = signed_in("carol");
+    for report in 1..=30 {
+        assert_eq!(srv.report(Some(&carol), READ_BATCH).send().await.unwrap().status(), StatusCode::NO_CONTENT, "{report}");
+    }
+    for body in [READ_BATCH, "not json"] {
+        let refused = srv.report(Some(&carol), body).send().await.unwrap();
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(refused.headers()["cache-control"], "no-store");
+        assert_eq!(refused.text().await.unwrap(), "too many reading reports, try again in a minute");
+    }
+    assert_eq!(srv.listed("carol", "_read/").await.len(), 30);
+
+    // The count is each user's own, and reading the pages is not counted.
+    assert_eq!(srv.report(Some(&signed_in("owner")), READ_BATCH).send().await.unwrap().status(), StatusCode::NO_CONTENT);
+    assert_eq!(srv.status("/nothing", Some(&carol)).await, StatusCode::NOT_FOUND);
 }
 
 /// The origin runs page code, so what it holds must not be worth stealing: the session signs a user in

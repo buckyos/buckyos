@@ -17,7 +17,7 @@ export default async ({ page, args }) => {
 agent-browser run fill.mjs --arg url=https://www.example.com/form --arg name="Li Lei" --arg city=Shanghai
 ```
 
-`page` is the current tab (created if needed), `pages` contains visible tabs, `args` are strings. Open tabs with `context.newPage()` and close your own when finished to stay within the tab limit. Use `pages` instead of `context.pages()`, which includes internal refresh tabs. Do not attach to the debugging port or start another browser on this profile. Leave the viewport, user agent, device emulation and navigator values as the owner set them.
+`page` is the current tab (created if needed), `pages` contains visible tabs, `args` are strings. Open tabs with `context.newPage()` and close your own when finished to stay within the tab limit. Use `pages` instead of `context.pages()`, which can include a background tab the Agent Service works in (a source of the reading site being fetched). Do not attach to the debugging port or start another browser on this profile. Leave the viewport, user agent, device emulation and navigator values as the owner set them.
 
 For a screenshot in a script, `await page.bringToFront()` before `page.screenshot({ scale: 'css' })`. Handle an alert or confirm with `page.on('dialog', …)` if its answer matters. Unhandled dialogs are dismissed. Native permission and passkey prompts require the user on a headed display. Headless macOS/Windows refuses them.
 
@@ -34,6 +34,6 @@ Use `agent-browser --help` or `agent-browser <command> --help` for syntax. Exit 
 | Switched off for this agent | Owner set `[loader.browser] enabled = false`. |
 | Cannot reach the Agent Service | Service unavailable. Report this and stop. |
 
-Sources: `$BUCKYOS_ROOT/tools/store/ext-core/browser/agent-browser.mjs`, buckyos-agent's `commands/reflow.ts` and `lib/reflow.ts`, and repository `doc/opendan/protocol/Agent Browser Protocol.md`.
+Sources: `$BUCKYOS_ROOT/tools/store/ext-core/browser/agent-browser.mjs`, buckyos-agent's `commands/reflow.ts` and `commands/site.ts` with `lib/reflow.ts` and `lib/site/`, and the repository's `doc/opendan/protocol/Agent Browser Protocol.md` and `Personal Site Protocol.md`.
 
 Previous verification (ext-core 1.3.0, 2026-11-15): script against Chromium with a stand-in service, form, missing-field question, password handover and reflow against a Zone. Chromium's pre-download message was checked on the payload. Node download was untested. Shared tabs and browser conversation had Agent Service tests only.

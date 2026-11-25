@@ -12,6 +12,9 @@ if [ ! -f "$sdk" ]; then
   exit 1
 fi
 
+# `site` scales pictures with ext-core's `magick`: the one program these commands may start, when the node has it.
+magick="$(command -v magick || true)"
+
 if [ "$launcher" = "aicc-tool" ]; then
   exec "$deno" run \
     --config "$tool_root/deno.json" \
@@ -19,6 +22,7 @@ if [ "$launcher" = "aicc-tool" ]; then
     --allow-read \
     --allow-write \
     --allow-env \
+    ${magick:+"--allow-run=$magick"} \
     --unsafely-ignore-certificate-errors \
     "$tool_root/aicc-tool.ts" "$@"
 fi
@@ -29,5 +33,6 @@ exec "$deno" run \
   --allow-read \
   --allow-write \
   --allow-env \
+  ${magick:+"--allow-run=$magick"} \
   --unsafely-ignore-certificate-errors \
   "$tool_root/aicc-tool.ts" "$launcher" "$@"

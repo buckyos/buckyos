@@ -352,8 +352,7 @@ export async function startSite() {
 </form>
 <p id="result"></p></html>`,
     '/article': `<!doctype html><html lang="zh"><meta charset="utf-8"><title>\u65e7\u7f51\u7ad9</title>
-<h1 id="headline">\u539f\u6807\u9898</h1><img id="photo" src="/big.png">
-<button id="more" onclick="headline.textContent = '\u70b9\u8fc7\u4e4b\u540e\u7684\u6807\u9898'">\u66f4\u591a</button></html>`,
+<h1 id="headline">\u539f\u6807\u9898</h1><img id="photo" src="/big.png"></html>`,
     '/blank': '<!doctype html><title>blank</title>',
   };
   const picture = png(2000, 500, [200, 30, 30]);
@@ -372,6 +371,8 @@ export async function startSite() {
       response.setHeader('content-type', 'image/png');
       return response.end(picture);
     }
+    // What the request came with: a script tells from it whether the browser's cookies went along.
+    if (url.pathname === '/cookies') return response.end(request.headers.cookie ?? '');
     if (!pages[url.pathname]) {
       response.statusCode = 404;
       return response.end('not found');

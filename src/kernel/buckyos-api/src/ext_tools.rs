@@ -398,7 +398,7 @@ pub const EXT_TOOLS_RESERVED_COMMANDS: &[&str] = &[
     "agent-session", "agent_tool", "ai_provider", "ai_provider_test", "ai_quota", "aicc-tool", "ask_user", "buckyos",
     "caption_image", "detect_image", "edit_image", "edit_video", "enhance_audio", "extend_video", "gen_image", "gen_music",
     "gen_video", "import_office", "import_table", "inpaint_image", "llm_understand_media", "materialize_resource",
-    "ocr_image", "reflow", "remove_bg", "resume_aicc_task", "segment_image", "speech_to_text", "text_to_speech",
+    "ocr_image", "reflow", "remove_bg", "resume_aicc_task", "segment_image", "site", "speech_to_text", "text_to_speech",
     "upscale_image", "upscale_video", "xagent",
 ];
 

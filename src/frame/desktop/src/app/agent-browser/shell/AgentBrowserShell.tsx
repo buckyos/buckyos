@@ -1,7 +1,7 @@
 /* The App's frame, designed for a phone: the Agent and the mode on top, the address under them, the stage (the
- * screen, or the reflow / conversation panel), and the strip that says who operates. On a desktop the top is one
- * row — the Agent, the address, the mode, the tabs, the menu — unless the window is too narrow for it. Before
- * that: choosing one of the user's own Agents (D10). */
+ * personal site of home mode, the screen, or the conversation), and the strip that says who operates. On a desktop
+ * the top is one row — the Agent, the address, the mode, the tabs, the menu — unless the window is too narrow for
+ * it. Before that: choosing one of the user's own Agents (D10). */
 
 import { useMediaQuery } from '@mui/material'
 import { EllipsisVertical, MonitorOff } from 'lucide-react'
@@ -17,10 +17,11 @@ import { openSettings } from '../../settings/launch'
 import { ConversationSheet } from '../conversation/ConversationSheet'
 import { browserModes } from '../launch'
 import { ConversationPanel } from '../panels/ConversationPanel'
-import { ReflowPanel } from '../panels/ReflowPanel'
-import { ReflowAddressBar } from '../reflow/ReflowAddressBar'
+import { HomePanel } from '../panels/HomePanel'
 import { RequestLayer } from '../requests/RequestLayer'
 import { ScreenView } from '../screen/ScreenView'
+import { HomeAddressBar } from '../site/HomeAddressBar'
+import { useSiteController } from '../site/useSite'
 import { useAgentBrowser, useAgentBrowserStore } from '../store/context'
 import { browserUsable, canOperate } from '../store/store'
 import { AddressBar, TabsButton } from './AddressBar'
@@ -127,6 +128,14 @@ function BrowserFrame() {
   const desktop = useMediaQuery('(min-width: 769px)')
   const [roomy, setRoomy] = useState(true)
   const [sheet, setSheet] = useState<SheetName | null>(null)
+  // Home is kept once it was shown, so what was being read is where it was after a look at the page or the conversation.
+  const [homeSeen, setHomeSeen] = useState(mode === 'home')
+  if (mode === 'home' && !homeSeen) setHomeSeen(true)
+  const site = useSiteController()
+  useEffect(() => {
+    site.attach()
+    return () => site.detach()
+  }, [site])
   const stageRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const stage = stageRef.current
@@ -141,7 +150,7 @@ function BrowserFrame() {
   const close = () => setSheet(null)
   const openTabs = () => setSheet('tabs')
   const oneRow = desktop && roomy
-  const address = mode === 'chat' ? null : mode === 'reflow' ? <ReflowAddressBar /> : <AddressBar onOpenTabs={oneRow ? undefined : openTabs} />
+  const address = mode === 'chat' ? null : mode === 'home' ? <HomeAddressBar /> : <AddressBar onOpenTabs={oneRow ? undefined : openTabs} />
   return (
     <div className="ab-root" data-testid="agent-browser" data-mode={mode} data-agent={agent?.agentId} data-operable={operable ? 'true' : 'false'}>
       <div className="ab-top" data-layout={oneRow ? 'row' : 'stacked'} data-testid="ab-top">
@@ -164,8 +173,9 @@ function BrowserFrame() {
       {oneRow ? null : address}
       <div className="ab-progress" data-active={loading && mode === 'page' ? 'true' : 'false'} aria-hidden />
       <div ref={stageRef} className="ab-stage" data-testid="ab-stage" role="tabpanel">
-        {mode === 'reflow' ? <ReflowPanel /> : mode === 'chat' ? <ConversationPanel /> : usable ? <ScreenView /> : <Unavailable />}
-        {usable && mode !== 'reflow' ? <RequestLayer /> : null}
+        {homeSeen ? <HomePanel hidden={mode !== 'home'} /> : null}
+        {mode === 'home' ? null : mode === 'chat' ? <ConversationPanel /> : usable ? <ScreenView /> : <Unavailable />}
+        {usable && mode !== 'home' ? <RequestLayer /> : null}
         {mode === 'chat' ? null : <ConversationSheet />}
         <Toast />
       </div>

@@ -54,7 +54,7 @@ pub fn control_panel_bucket_decls() -> HashMap<String, crate::bucket_client::Buc
         ),
         (
             CONTROL_PANEL_REFLOW_BUCKET.to_string(),
-            decl(BucketKind::Data, DataPolicy::AppData, BucketScope::User, Some(1024), None),
+            decl(BucketKind::Data, DataPolicy::AppData, BucketScope::User, Some(8192), None),
         ),
         (
             CONTROL_PANEL_AGENT_TEMPLATES_BUCKET.to_string(),
@@ -734,7 +734,7 @@ mod bucket_decl_tests {
         let reflow = &decls[CONTROL_PANEL_REFLOW_BUCKET];
         assert_eq!(
             (reflow.kind, reflow.data_policy, reflow.scope, reflow.quota_mib),
-            (BucketKind::Data, DataPolicy::AppData, BucketScope::User, Some(1024))
+            (BucketKind::Data, DataPolicy::AppData, BucketScope::User, Some(8192))
         );
         assert_eq!(
             crate::validate_app_buckets(&decls, Some(CONTROL_PANEL_STORAGE_QUOTA_MIB)),

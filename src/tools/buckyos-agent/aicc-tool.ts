@@ -35,6 +35,7 @@ import * as import_table from "./commands/import_table.ts";
 import * as import_office from "./commands/import_office.ts";
 import * as ask_user from "./commands/ask_user.ts";
 import * as reflow from "./commands/reflow.ts";
+import * as site from "./commands/site.ts";
 
 interface Command {
   run: (argv: string[]) => Promise<never>;
@@ -67,6 +68,7 @@ const COMMANDS: Record<string, Command> = {
   import_office,
   ask_user,
   reflow,
+  site,
 };
 
 function topLevelHelp(): string {

@@ -17,8 +17,8 @@ export const agentBrowserEn: Record<string, string> = {
   'agentBrowser.agent.create': 'Create an Agent',
 
   'agentBrowser.mode.label': 'View',
+  'agentBrowser.mode.home': 'Home',
   'agentBrowser.mode.page': 'Page',
-  'agentBrowser.mode.reflow': 'Reflow',
   'agentBrowser.mode.chat': 'Chat',
 
   'agentBrowser.address.label': 'Address',
@@ -67,6 +67,7 @@ export const agentBrowserEn: Record<string, string> = {
   'agentBrowser.action.takeOver': 'Take over',
   'agentBrowser.action.handBack': 'Hand back',
   'agentBrowser.action.handToAgent': 'Hand to Agent',
+  'agentBrowser.action.giveTask': 'Give a task',
   'agentBrowser.action.answer': 'Answer',
 
   'agentBrowser.dialog.title': '{{host}} says',
@@ -133,7 +134,6 @@ export const agentBrowserEn: Record<string, string> = {
   'agentBrowser.error.no_such_download': 'That download is no longer available.',
   'agentBrowser.error.too_many_tabs': 'Too many tabs are open. Close one first.',
   'agentBrowser.error.upload_too_large': 'That file is too large to upload.',
-
 }
 
 export const agentBrowserZh: Record<string, string> = {
@@ -153,8 +153,8 @@ export const agentBrowserZh: Record<string, string> = {
   'agentBrowser.agent.create': '创建 Agent',
 
   'agentBrowser.mode.label': '视图',
+  'agentBrowser.mode.home': '首页',
   'agentBrowser.mode.page': '原始页面',
-  'agentBrowser.mode.reflow': '重排',
   'agentBrowser.mode.chat': '对话',
 
   'agentBrowser.address.label': '地址',
@@ -203,6 +203,7 @@ export const agentBrowserZh: Record<string, string> = {
   'agentBrowser.action.takeOver': '接手',
   'agentBrowser.action.handBack': '交还',
   'agentBrowser.action.handToAgent': '交给 Agent',
+  'agentBrowser.action.giveTask': '交代任务',
   'agentBrowser.action.answer': '去回答',
 
   'agentBrowser.dialog.title': '{{host}} 显示',
@@ -269,5 +270,4 @@ export const agentBrowserZh: Record<string, string> = {
   'agentBrowser.error.no_such_download': '这个下载已经不在了。',
   'agentBrowser.error.too_many_tabs': '打开的标签页太多了，先关掉一个。',
   'agentBrowser.error.upload_too_large': '这个文件太大，不能上传。',
-
 }

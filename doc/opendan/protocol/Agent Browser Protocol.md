@@ -1,6 +1,6 @@
 # Agent Browser Protocol
 
-Agent Service（opendan）的浏览器模块对外的接口：kRPC `browser.*`、屏幕 WebSocket、本机文件上传、`agent-browser` 的入口、重排库的规则。设计依据见 [Agent 浏览器实施 TODO](<../../../notepads/agent-runtime-browser-todo.md>) §5。
+Agent Service（opendan）的浏览器模块对外的接口：kRPC `browser.*`、屏幕 WebSocket、本机文件上传、`agent-browser` 的入口、重排库里兜底页的规则（个人重排站另见 [Personal Site Protocol](<Personal Site Protocol.md>)）。设计依据见 [Agent 浏览器实施 TODO](<../../../notepads/agent-runtime-browser-todo.md>) §5。
 
 消费方：Desktop 的「Agent 浏览器」App（`src/frame/desktop/src/app/agent-browser/`）、`agent-browser` 命令（`publish/exttool/ext-core/browser/`）、`reflow` 命令（`src/tools/buckyos-agent/commands/reflow.ts`）、nfs-server 的 `reflow.<zone>` 主机。
 
@@ -23,7 +23,7 @@ Agent Service（opendan）的浏览器模块对外的接口：kRPC `browser.*`�
 
 反过来，浏览器会话的 UI Session 是：回复去向是 owner、`to_session` 等于 `default_session_id`、还没结束的 UI Session 里最新的一个。UI Session 在第一条消息到达时才创建，所以绑定了也可以还没有。
 
-`group_id` 以 `_` 开头的组留给服务端自己用（重排刷新时开的后台标签页这一类）：不出现在 `browser.status` 里，不落盘，不计入 `max_tabs`，`take_over`、`hand_back`、`hand_to_agent` 引用它回 `no_such_group`。
+`group_id` 以 `_` 开头的组留给服务端自己用（后台任务（§7.1）开的标签页这一类，它的组是 `_job`）：不出现在 `browser.status` 里，不落盘，不计入 `max_tabs`，`take_over`、`hand_back`、`hand_to_agent` 引用它回 `no_such_group`。
 
 新出现的标签页归哪个组，按顺序：有 opener 的归 opener 的组；服务端正在为某个组开标签页时归那个组；其他都归 `default`。
 
@@ -129,9 +129,12 @@ not_downloaded  the browser is not downloaded on this node yet (the online item 
 | `browser.upload` | `{request_id, zone_path, done?}` | `{}` | owner |
 | `browser.download_export` | `{download_id}` | `{obj_id, name, size}` | owner |
 | `browser.clear_profile` | `{}` | `{}` | owner |
-| `browser.reflow_state` | `{url}` | 见 §5.3 | owner、Agent |
-| `browser.reflow_refresh` | `{url}` | 见 §5.3 | owner、Agent |
-| `browser.reflow_action` | `{url, selector}` | 见 §5.3 | owner |
+| `browser.reflow_state` | `{url}` | `{url, site, page, fallback, view}`，见 §5.3 | owner、Agent |
+| `browser.background_run` | `{script_path, url?, args?, timeout_s?}` | `{data}`，见 §7.1 | owner、Agent |
+| `browser.page_hint` | `{}` | `{hint, url, title}`，见 §7.2 | owner、Agent |
+| `browser.visits` | `{since_ms?}` | `{enabled, visits}`，见 §7.3 | owner、这个 Agent 自己 |
+| `browser.visits_set_enabled` | `{enabled}` | `{enabled}` | owner |
+| `browser.visits_clear` | `{}` | `{}` | owner |
 
 - `status` 不启动浏览器。`ensure` 没在运行就启动。`acquire` 也会启动（等于先 `ensure`）；用户接手着的时候先回 `user_in_control`，不为此启动浏览器。
 - `cdp_url` 给 `chromium.connectOverCDP` 用，是这个服务上这个租约的入口：`<OPENDAN_BROWSER_RPC>/browser/cdp/<lease_id>`（§2.5）。Playwright 先读它的 `json/version`，再连上它给的 WebSocket（`…/browser/cdp/<lease_id>/devtools/browser`），服务端把消息原样转给浏览器。`json/list` 原样转发浏览器自己的标签页列表（`agent-browser` 连不上时用它找出因为弹框没人回应而卡住的标签页；列表里的地址是浏览器自己的端口，只用于这种诊断）。只收本机回环地址上的连接；租约无效时回 `lease_lost`。租约一结束（`release`、过期、`take_over`、`request_handover`、浏览器停掉），这个租约的连接立刻被服务端关掉：正在执行的命令马上失败，之后的命令到不了浏览器，用户接手时不用等 Agent 停手。服务端没有 `OPENDAN_BROWSER_RPC` 时（测试）`cdp_url` 是浏览器自己的 `http://127.0.0.1:<端口>`。这只是让交接干净，不是安全边界：同一个运行环境里自己去找浏览器端口的进程拦不住。
@@ -143,7 +146,7 @@ not_downloaded  the browser is not downloaded on this node yet (the online item 
 - `groups.json` 只存 `default` 一组。加载时别的组（每个会话一组时的旧文件）的标签页和接手状态都不恢复。
 - `clear_profile` 停掉浏览器，删除用户数据目录和缓存目录（下载目录不动）。标签页还在，下次启动时重开，登录状态没有了。它不重新启动浏览器：App 清除之后接着调 `browser.ensure`。
 - 没人处理的 JS 弹框由服务端立刻关掉：弹框所在的组没有人在看、操作方也不是 Agent 时，`beforeunload` 按“离开”处理，其他按取消处理。有人在看的留给屏幕（§3.4）；操作方是 Agent 的留给 Agent 的 Playwright，租约结束时还开着的照上面关掉。开着的弹框会卡住它的页面，也会卡住任何一个 `connectOverCDP`，不分组。
-- “owner”一列的方法在 `is_owner_only` 里（屏幕的握手和上传按同样的规则校验，方法名是 `browser.screen`、`browser.upload`）。“Agent”一列的方法 owner 也能调；Agent 自己的 App 身份不论对 owner 目录是只读还是读写都调得通。
+- “owner”一列的方法在 `is_owner_only` 里（屏幕的握手和上传按同样的规则校验，方法名是 `browser.screen`、`browser.upload`）。“Agent”一列的方法 owner 也能调；Agent 自己的 App 身份不论对 owner 目录是只读还是读写都调得通。主人名下别的 Agent 按 Agent Service 通用的规则：读写权限的都能调，只读权限的只能调 `status`、`reflow_state`、`page_hint`。`browser.visits` 例外（`is_own_only`）：别的 Agent 不论权限都被拒，只有 owner 和这个 Agent 自己调得通。
 
 ### 2.3 错误
 
@@ -158,8 +161,7 @@ not_downloaded  the browser is not downloaded on this node yet (the online item 
 | `no_such_group`、`no_such_tab`、`no_such_request`、`no_such_download` | 引用的对象不存在 |
 | `too_many_tabs` | 超过 `max_tabs` |
 | `upload_too_large` | 上传超过上限 |
-| `reflow_no_package` | 这个网址没有匹配的重排包 |
-| `other` | 上面都不是的失败。重排库（桶）的读写被拒或失败时是它：`message` 是 `reflow library: <bucket_id>/<key>: <桶的错误码>: <说明>`，桶的错误码照原样（`permission_denied`、`bucket_not_found`、`token_invalid` 等），连不上 nfs-server 时是连接的错误（§5.3） |
+| `other` | 上面都不是的失败。重排库（桶）读不了时是它：`message` 是 `reflow library: <bucket_id>/<key>: <桶的错误码>: <说明>`，桶的错误码照原样（`permission_denied`、`bucket_not_found`、`token_invalid` 等），连不上 nfs-server 时是连接的错误（§5.3） |
 
 ### 2.4 写给会话的记录
 
@@ -393,60 +395,36 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 
 ## 5. 重排
 
+重排有两样东西，都在用户的重排桶里、都在 `reflow.<zone>` 上显示：
+
+- **个人重排站**：主人长期阅读的网站，由来源程序定时取回、翻译，在首页连读。数据、来源包、`site` 命令、模板页面、页面和 App 的消息、阅读记录的上报见 [Personal Site Protocol](<Personal Site Protocol.md>)。
+- **兜底页**（“只整理这一页”）：Agent 为一个网址做的一张一次性的页面。本节说的是它，以及两者共用的桶、网址规则和主机。
+
+一期按网址的**包**（`manifest.json`、`refresh.mjs`、`index.html`、`results/<page>.json`、`preference.json`，`reflow put / get / refresh`，`browser.reflow_refresh`、`browser.reflow_action`，页面消息 `reflow.action`、`reflow.refresh`、`reflow.updated`）在二期删掉了，由个人重排站接替。桶里已有的这些对象没有人再读，`reflow rm <site>` 会连它们一起删。
+
 ### 5.1 桶和 key
 
-桶 `user/control-panel/<用户>/reflow`，由 control-panel 声明（`buckyos_api::CONTROL_PANEL_REFLOW_BUCKET`：用户桶、`app_data`、配额 1024 MiB、不开版本）。key：
+桶 `user/control-panel/<用户>/reflow`，由 control-panel 声明（`buckyos_api::CONTROL_PANEL_REFLOW_BUCKET`：用户桶、`app_data`、配额 8192 MiB、不开版本）。声明只在激活时写进 system-config，已有的 Zone 要手工补：把 `services/control-panel/spec` 里的 `spec_config.buckets.reflow.quota_mib` 改成 `8192`（没有这一项就加 `"reflow": {"kind":"data","data_policy":"app_data","quota_mib":8192}`）；nfs-server 60 秒内重读，下次访问这个用户的桶时生效，不用重启。
 
 | key | 内容 |
 | --- | --- |
-| `<site>/manifest.json` | 包的声明 |
-| `<site>/refresh.mjs` | 刷新脚本 |
-| `<site>/index.html` 和它引用的文件 | 页面代码 |
-| `<site>/results/<page>.json` | 一个页面最近一次制作的结果 |
-| `<site>/fallback/<page>.html`、`<site>/fallback/<page>.json` | 兜底重排的页面和它的元信息 |
-| `<site>/preference.json` | 站点还没有包时用户对它的偏好（有包时偏好在 `manifest.json` 里，见 §5.2） |
+| `<site>/fallback/<page>.html`、`<site>/fallback/<page>.json` | 兜底页和它的元信息 |
+| `index.html`、`_app/**`、`_data/**`、`_read/**`、`_src/**` | 个人重排站（Personal Site Protocol §2） |
 
 - 只有 `http`、`https` 的网址有重排。别的 scheme、解析不了的网址、主机名里有 `a-z`、`0-9`、`.`、`_`、`-` 以外字符的网址（IPv6 字面量在内）都没有。
 - 规范化网址：按 WHATWG URL 解析后再序列化，去掉片段、用户名和密码。序列化的结果是：scheme 和主机名小写，默认端口去掉，空路径是 `/`，`.` 和 `..` 段折叠，非 ASCII 字符写成百分号编码。查询串原样保留，参数不排序。JS 的 `URL` 和 Rust 的 `url` crate 都这样实现，下面的向量在 Deno 和 `url` 2.5.8 上核对过。
 - `<site>`：规范化网址的主机名（不带端口，去掉末尾的点），点换成短横线；换完不含短横线的加后缀 `-host`。`www.facebook.com` → `www-facebook-com`，`localhost` → `localhost-host`。`<site>` 总带短横线，所以不会和网关按路径分流的前缀（`kapi`、`bucket`、`home` 等）相同。
-- 不同的主机名可能得到同一个 `<site>`（`a-b.com` 和 `a.b.com`）。一个 `<site>` 下只有一个包，它是哪个主机的由 `match[].host` 决定。结果和兜底页按 `<page>` 存，不会混。
+- 不同的主机名可能得到同一个 `<site>`（`a-b.com` 和 `a.b.com`）。兜底页按 `<page>` 存，不会混。
 - `<page>`：规范化网址（UTF-8）的 SHA-256 的前 16 个十六进制字符，小写。
-- 这些算法和 §5.2 的匹配规则有一份共用的测试向量 [`fixtures/reflow_vectors.json`](fixtures/reflow_vectors.json)：`normalize` 是一组 `{url, normalized, site, page, view}`，`invalid` 是没有重排的网址，`match` 是一组 `{manifest_match, url, matches}`。`reflow` 命令（`src/tools/buckyos-agent/lib/reflow.ts`）的测试用它，Agent Service 的实现也用它核对。
+- 匹配规则（个人站 `site.json` 的 `sources[].match` 用它）：`host` 是小写的主机名，不带端口；`path` 以 `/` 开头，是通配：`*` 匹配任意一段字符（含 `/`，也可以是空的），其余字符按原样比较，区分大小写，要从头到尾对上；省略等于 `/*`。比较的是规范化网址的主机名（去掉末尾的点）和序列化之后的路径（百分号编码的形式），不含查询串。
+- 这些算法有一份共用的测试向量 [`fixtures/reflow_vectors.json`](fixtures/reflow_vectors.json)：`normalize` 是一组 `{url, normalized, site, page}`，`invalid` 是没有重排的网址，`match` 是一组 `{manifest_match, url, matches}`（字段名是一期留下的，内容就是上面的匹配规则）。`reflow` 和 `site` 命令（`src/tools/buckyos-agent/lib/reflow.ts`）的测试用它，Agent Service 用 `normalize` 和 `invalid` 核对，Desktop 的 App 也按它实现。
 
-### 5.2 包的格式
+### 5.2 兜底页
 
-`manifest.json`：
-
-```json
-{
-  "schema": "buckyos.reflow/1",
-  "site": "www-example-com",
-  "match": [ { "host": "www.example.com", "path": "/news/*" } ],
-  "preference": "只看标题、日期和正文，手机单栏",
-  "author": { "kind": "agent", "id": "did:bns:jarvis.alice" },
-  "updated_at": 1794600000000,
-  "refresh": { "script": "refresh.mjs", "timeout_s": 60 }
-}
-```
-
-- `site` 等于 key 里的 `<site>`。
-- `match[]` 至少一条。`host` 是小写的主机名，不带端口，它的 `<site>` 必须就是这个包的 `<site>`。`path` 以 `/` 开头，是通配：`*` 匹配任意一段字符（含 `/`，也可以是空的），其余字符按原样比较，区分大小写，要从头到尾对上；省略等于 `/*`。
-- 包适用于一个网址的条件：`match[]` 里有一条，它的 `host` 等于规范化网址的主机名（去掉末尾的点），`path` 匹配规范化网址的路径。比较的是序列化之后的路径（百分号编码的形式），不含查询串。
-- `preference` 可以省略。`author` 是 `{kind: "agent" | "user", id}`。`updated_at` 是放进库的时间（毫秒），由放入的一方写：`reflow put` 会写它，manifest 没有 `author` 时用 Agent 的 DID 补上。
-- `refresh` 可以省略，省略时超时按 60 秒。`script` 第一版固定是 `refresh.mjs`；`timeout_s` 是 1 到 600 的整数。
-- 一个包至少有 `refresh.mjs` 和 `index.html` 之一。只有 `index.html` 的包不能刷新，结果由 Agent 用 `reflow result put` 放进去。写了 `refresh` 就必须有 `refresh.mjs`。`results/`、`fallback/` 是库的数据，不属于包。
-- manifest 不满足上面这些规则时，当作这个站点没有包。
-- 放入一个包是整包替换：先写文件，`manifest.json` 最后写，再删掉新包里没有的旧文件。`results/` 和 `fallback/` 保留。
-- 偏好是用户对一个站点的一句话，由 App 的重排视图读写。站点有合法的包时它是 manifest 的 `preference`：App 改写 `manifest.json` 的这一个字段（清空就去掉这个字段），别的字段不动。没有合法的包时它在 `<site>/preference.json` 里：`{ "schema": "buckyos.reflow.preference/1", "preference", "updated_at" }`，清空就删掉这个文件。
-- `preference.json` 是库的数据，不属于包：包的根下不能有这个名字的文件（校验不过），`reflow get` 不取它，删除站点时连它一起删。
-- 放入包时偏好这样定，`reflow put` 和 App 的导入相同：新包的 manifest 写了 `preference`（空串也算写了）就用它；没写时把站点现有的偏好写进去，站点原来有合法的包时取旧 manifest 的 `preference`，否则取 `preference.json` 里的，都没有就不带这个字段。`manifest.json` 写完之后删掉 `preference.json`，包的 `preference` 接替它。Agent 写包时仍应把用户的偏好写进 manifest：偏好在请求里，`reflow match <网址>` 也会给出站点现有的偏好。
-- App 的管理页也能放入包（导入一个 zip，或 Zone 里的一个包目录），规则同 `reflow put`：同样的校验和文件大小上限，同样的写入顺序，按扩展名带 `Content-Type`，写 `updated_at`，manifest 没有 `author` 时补 `{ "kind": "user", "id": "<用户 id>" }`。`<site>` 取 manifest 的 `site`。任何一段以 `.` 开头的文件不算包的文件；zip 里只有一个顶层目录、`manifest.json` 在它里面时，这个目录就是包。
-- 包里的文件在 `reflow.<zone>` 上按存进桶时声明的类型下发，没有声明或声明成 `application/octet-stream` 时按扩展名。`reflow put` 按扩展名带上 `Content-Type`。
-- `refresh.mjs` 的默认导出：`async ({ page, url, save }) => data`。`page` 是已经打开 `url` 的 Playwright 页面。`save.image(网址)` 把图片取回、压缩，返回 `data:` 引用。返回值必须能序列化成 JSON。
-- 结果 `results/<page>.json`：`{ "schema": "buckyos.reflow.result/1", "source_url", "made_at", "made_by", "data" }`。`made_at` 是毫秒时间戳，`made_by` 是 Agent 的 DID。
-- 结果里依赖原网页的动作这样记：`{ "action": { "selector": "<原网页上的 CSS 选择器>" } }`，放在 `data` 里页面代码认得的位置。
-- 兜底的元信息 `fallback/<page>.json`：`{ "schema": "buckyos.reflow.fallback/1", "source_url", "made_at", "made_by" }`。
-- 页面代码把取回的数据按文本渲染，不当 HTML 插入。
+- 一张自成一体的 `.html`：`reflow result put <网址> <page.html>` 把它存成 `<site>/fallback/<page>.html`（带 `text/html` 的类型），同一个网址原来那张被替换。只读权限的 Agent 写不进桶，回 `permission_denied`。
+- 元信息 `<site>/fallback/<page>.json`：`{ "schema": "buckyos.reflow.fallback/1", "source_url", "made_at", "made_by" }`。`source_url` 是规范化网址，`made_at` 是毫秒时间戳，`made_by` 是 Agent 的 DID。
+- 页面把取回的内容按文本渲染，不当 HTML 插入；不引外部脚本。
+- `reflow match <网址>` 给出 `{url, site, page, fallback, view}`（同 §5.3），`reflow ls` 列出有兜底页的站点，`reflow rm <site>` 删掉 `<site>/` 下的一切。
 
 ### 5.3 kRPC
 
@@ -455,98 +433,50 @@ Agent Service 在自己的进程环境里设 `OPENDAN_BROWSER_RPC`，值是本�
 ```jsonc
 {
   "url": "<规范化网址>", "site": "www-example-com", "page": "0123456789abcdef",
-  "package": null,     // { "updated_at", "author", "preference" }：有匹配的包
-  "result": null,      // { "made_at", "made_by", "source_url" }
-  "fallback": null,    // { "made_at", "made_by", "source_url" }
-  "refresh": { "status": "idle", "error": null, "at_ms": null },   // idle | running | failed
-  "view": null         // 能显示时：重排页相对 reflow.<zone> 的路径
+  "fallback": null,    // { "made_at", "made_by", "source_url" }：有兜底页
+  "view": null         // 有兜底页时是 "<site>/fallback/<page>.html"（相对 reflow.<zone>）
 }
 ```
 
-- `view`：有包也有结果时是 `<site>/?url=<编码后的规范化网址>&page=<page>`；否则有兜底结果时是 `<site>/fallback/<page>.html`；都没有是 `null`。`url` 的值按 `encodeURIComponent` 的规则编码（字母、数字和 `-_.!~*'()` 以外的字节都写成 `%XX`），向量里的 `view` 就是有包有结果时的值。
-- `package`：这个站点的包合规（§5.2）并且适用于这个网址时有值，否则是 `null`。`result`、`fallback` 取自 `results/<page>.json`、`fallback/<page>.json` 里的这三个字段，文件不在或不是 JSON 时是 `null`；有没有 `result` 不看有没有包。
-- `refresh`：这个网址的刷新。`running` 时 `at_ms` 是开始的时间；`failed` 表示最近一次刷新失败了，`error` 是原因，`at_ms` 是失败的时间；`idle` 时两项都是 `null`（没刷新过，或最近一次成功了，制作时间看 `result.made_at`）。这个状态只在 Agent Service 的内存里，服务重启后回到 `idle`。
-- 不需要浏览器：不启动它，模块关着（`enabled = false`）、这个节点没装 ext-core、浏览器还没下载好时也照常返回，已经做好的页面照样能显示。`reflow_refresh`、`reflow_action` 这时回 `browser_unavailable`（带 `unavailable_code`，§2.3）。
-- `refresh` 是读桶之前取的：刷新在读桶期间结束时，这一次返回的仍是 `running`（旁边是结束之前的 `result`），下一次才是 `idle` 和新的 `result`。不会出现 `idle` 而看不到这次结果的情况。
-- 只读 `manifest.json`、`results/<page>.json`、`fallback/<page>.json` 三个 key；`<site>/preference.json`（§5.2）不读，返回里也没有它。
-- 桶的读写用调用者的令牌，走 nfs-server 的 `/bucket/v1`：调用者在重排库里能做什么由 Zone 的权限决定。调用者没带令牌时（本机调试，回环地址上的调用）用 Agent Service 自己的身份。读写被拒或失败时回 `code: other`，`message` 是 `reflow library: <bucket_id>/<key>: <桶的错误码>: <说明>`。
+- `fallback` 取自 `<site>/fallback/<page>.json` 里的这三个字段；文件不在、不是 JSON 或缺字段时是 `null`。只读这一个 key，Agent Service 不往桶里写任何东西。
+- 不需要浏览器：不启动它，模块关着（`enabled = false`）、这个节点没装 ext-core、浏览器还没下载好时也照常返回，已经做好的页面照样能显示。
+- 桶用调用者的令牌读，走 nfs-server 的 `/bucket/v1`。调用者没带令牌时（本机调试，回环地址上的调用）用 Agent Service 自己的身份。读不了时回 `code: other`，`message` 是 `reflow library: <bucket_id>/<key>: <桶的错误码>: <说明>`。
 - `url` 没有重排（§5.1）时回 `invalid_argument`。
 
-`browser.reflow_refresh {url}`：没有匹配的包回 `reflow_no_package`。否则在后台标签页里开始刷新，立刻返回和 `reflow_state` 一样的结构（`refresh.status` 是 `running`）。结束后 `reflow_state` 里能看到新的 `result`，失败时 `refresh.status` 是 `failed`、`error` 有说明。同一个网址同时只跑一个刷新：还在跑的时候再调，返回的是同一次刷新的状态。
-
-- 这个节点上找不到 `agent-browser` 时回 `browser_unavailable`。环境变量 `OPENDAN_AGENT_BROWSER` 可以指定它（调试和测试用），不设时在工具目录里找，规则同 `chromium`（§6）。
-- 一个 Agent 的浏览器里同一时刻只有一个刷新在跑，别的网址的刷新排队，排队期间状态也是 `running`。刷新进行中算浏览器在用，不会被空闲回收。
-- 结果用发起这次刷新的调用者的令牌写进桶。只读权限的 Agent 读得了库、发得起刷新，但结果写不进去：状态是 `failed`，`error` 是桶的原话（`reflow library: …/results/<page>.json: permission_denied: …`）。
-- 包里没有 `refresh.mjs`（只有页面代码的包）时，状态是 `failed`，`error` 说明这个包不能刷新。
-
-`browser.reflow_action {url, selector}`：在后台标签页里打开原网址，点一下 `selector` 指的元素，等页面稳定后按包重新刷新这一页。返回同 `reflow_refresh`。这个网址已经有刷新在跑时，动作不会丢：这一次结束后紧接着再刷新一次，带上这个点击，期间状态一直是 `running`；等待期间又来的动作取代前一个。
-
-刷新由 Agent Service 启动 `agent-browser` 的内部子命令执行：
-
-```
-agent-browser reflow-run --cdp <cdp_url> --url <网址> --package <本地目录> --out <结果文件> [--click <selector>] [--timeout <秒>]
-```
-
-它连上常驻浏览器，在一个新标签页里打开网址，跑 `<本地目录>/refresh.mjs`，把 `data` 写进结果文件（JSON），关掉标签页。成功退出码 0；失败非 0，标准错误的最后一行是原因。Agent Service 负责把包从桶里取到本地目录、把结果写回桶。
-
-- 结果文件的内容就是 `refresh.mjs` 返回值的 JSON，不带 `schema`、`source_url` 这一层。
-- `--timeout` 默认 60，管从连接到写完结果的全过程。
-- 带 `--click` 时：打开网址，点一下选择器匹配到的第一个元素，等页面装载完、网络空闲（最多再等 10 秒），再跑 `refresh.mjs`。传给它的 `url` 仍是 `--url` 的值。
-- 不调 kRPC，不取租约。新标签页开在单独的窗口里（§2.5）。
-- Agent Service 这一侧：本地目录在浏览器目录（§6）下的 `reflow/<page>/`，刷新结束就删掉。取到里面的只有 `manifest.json` 和 `refresh.mjs`，所以 `refresh.mjs` 不能引用包里别的文件。`--url` 是规范化网址，结果的 `source_url` 也是它；`--timeout` 取 manifest 的 `refresh.timeout_s`；`--click` 写成 `--click=<selector>`。`made_at` 是把结果写进桶的时间。
-- Agent Service 等它 `timeout_s` 加 10 秒，到时还没结束就连同它启动的进程一起结束，状态是 `failed`。它失败时 `error` 是它标准错误的最后一行。
-- `refresh.mjs` 里页面动作（定位、等待）的默认超时是 `timeout_s` 的三分之一，最长 15 秒，脚本可以逐次另给；页面跳转的超时是 `timeout_s`。这样页面改版、选择器落空时，`error` 说的是哪一个选择器没等到，而且不用等满整次刷新的时间。
-- 它不继承 Agent Service 的环境。留下的只有 `PATH`、`LANG`、`LC_ALL`、`LC_CTYPE`、`TZ`，外加指到本地目录里的 `HOME`（`home/`）和 `TMPDIR`（`tmp/`）；Windows 上是 `PATH`、`PATHEXT`、`ComSpec`、`SystemRoot`、`SystemDrive`、`windir`、`ProgramData`、`ProgramFiles`、`ProgramFiles(x86)`，外加 `USERPROFILE`、`APPDATA`、`LOCALAPPDATA`、`TEMP`、`TMP`。所以服务的会话令牌（`BUCKYOS_APPCLIENT_SESSION_TOKEN` 等）和 `OPENDAN_BROWSER_RPC` 到不了 `refresh.mjs` 手里：包可能是别的 Agent 或用户写的。它仍以 Agent Service 的系统身份运行。
-- 刷新只读包的 `manifest.json` 和 `refresh.mjs`，只写 `results/<page>.json`，不列目录、不删任何 key：`<site>/preference.json` 和包里别的文件它都不碰。
-- 它开的标签页归 `_reflow` 组（§1）：从它启动到这个标签页出现，新出现的没有 opener 的标签页都归这个组。它结束后 `_reflow` 里还剩下的标签页（它被强行结束时留下的）由 Agent Service 关掉。
-- `save.image(网址)`：相对网址按页面地址解析；带着浏览器上下文的 cookie 和 `Referer` 取回；长边缩到 1280 以内，转成 JPEG（质量 0.8，透明处填白），返回 `data:image/jpeg;base64,…`。SVG 原样转成 `data:`，`data:` 网址原样返回。
-
-### 5.4 重排页
+### 5.4 `reflow.<zone>` 主机
 
 - 地址 `https://reflow.<zone>/<key>`，由 nfs-server 提供（`reflow-<zone>` 这种写法网关也送到同一处）。路径按段做百分号解码后就是登录用户的重排桶里的 key。以 `/` 结尾的路径补 `index.html`；`/<site>` 这样不带斜杠的路径，在 `<site>/index.html` 存在时回 307 到 `/<site>/`。路径里有 `.`、`..`、空段或 `\` 的回 404。
-- 只有 `GET` 和 `HEAD`，其他方法回 405。nfs-server 的其他接口在这个主机上都不应答。网关按路径分流的前缀（`/kapi/*`、`/bucket/*`、`/ndn/*`、`/ndm/*`、`/nfs/v1/*`、`/s3/*`、`/home/*`、`/sso_callback`、`/sso_refresh`、`/sso_logout` 等）在这个主机上照旧先被分走。
-- 响应：`Content-Type` 是文件存进桶时声明的类型（§5.2）；没有 `Content-Disposition`，没有 CSP；有 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer` 和 `ETag`；`Cache-Control` 默认是 `private, no-cache`。支持 `If-None-Match` 和 `Range`。
+- 读用 `GET` 和 `HEAD`；写只有一样，`POST /_read`（个人站的阅读上报，Personal Site Protocol §7）；其他方法回 405。nfs-server 的其他接口在这个主机上都不应答。网关按路径分流的前缀（`/kapi/*`、`/bucket/*`、`/ndn/*`、`/ndm/*`、`/nfs/v1/*`、`/s3/*`、`/home/*`、`/sso_callback`、`/sso_refresh`、`/sso_logout` 等）在这个主机上照旧先被分走。
+- 响应：`Content-Type` 是文件存进桶时声明的类型；没有 `Content-Disposition`，没有 CSP；有 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer` 和 `ETag`；`Cache-Control` 默认是 `private, no-cache`。支持 `If-None-Match` 和 `Range`。
 - 登录：用户是谁由这个主机上的会话决定。App 调 control-panel 的 `auth.prepare_app_launch { service_id: "nfs-server", redirect_url: "https://reflow.<zone>/<view>" }`，得到 `{ status: "ready", callback_url }`，把 iframe 指到 `callback_url`（`https://reflow.<zone>/sso_callback?nonce=…&redirect_url=…`，一次性，60 秒内有效）。control-panel 在这个主机上种下会话 cookie，再跳到 `redirect_url`。
-- nfs-server 在这个主机上只认这种会话：用户会话，目标是 `System(nfs-server)`，放在 cookie 或 `Authorization: Bearer` 里都行。没有、过期，或者是别的会话（Desktop 自己的、App 的、Agent 的），都回 401，正文是纯文本，不跳登录页。读到的总是会话所属用户自己的桶。
-- 会话 cookie 15 分钟过期，刷新令牌 7 天。App 每次给 iframe 换地址都重新走一遍 `prepare_app_launch`。页面自己取文件（如 `results/<page>.json`）遇到 401 时，先 `POST /sso_refresh`（同源，control-panel 会重新种下 cookie），再重试一次。
+- nfs-server 在这个主机上只认这种会话：用户会话，目标是 `System(nfs-server)`，放在 cookie 或 `Authorization: Bearer` 里都行。读到的总是会话所属用户自己的桶。没有、过期，或者是别的会话（Desktop 自己的、App 的、Agent 的）：导航请求（`GET`、`Accept` 含 `text/html`）得到一小段登录用的 HTML，它先试 `POST /sso_refresh`，不成就去 Zone 的登录页再回来（Personal Site Protocol §7）；别的请求回 401 纯文本。
+- 会话 cookie 15 分钟过期，刷新令牌 7 天。App 每次给 iframe 换地址都重新走一遍 `prepare_app_launch`。页面自己取文件遇到 401 时，先 `POST /sso_refresh`（同源，control-panel 会重新种下 cookie），再重试一次。
 - 这种会话只用来打开重排页：在 nfs-server 的文件、桶和上传接口上，带着它的 Bearer 被拒，cookie 按匿名处理。
-- 有包的页面：`https://reflow.<zone>/<site>/?url=<原网址>&page=<page>`。页面代码读同目录下的 `results/<page>.json`。
-- 兜底页面：`https://reflow.<zone>/<site>/fallback/<page>.html`。
+- 个人站：`https://reflow.<zone>/`（路由在查询串里）。兜底页：`https://reflow.<zone>/<site>/fallback/<page>.html`。
 
-### 5.5 页面和 App 的消息
+### 5.5 兜底页和 App 的消息
 
-重排页在 App 的 iframe 里。页面 `window.parent.postMessage(消息, '*')`；App 只收来源是 `https://reflow.<zone>` 的消息。
+兜底页在 App 的 iframe 里。页面 `window.parent.postMessage(消息, '*')`；App 只收自己那个 iframe 的窗口发来、并且来源是 `https://reflow.<zone>` 的消息，两样都校验。个人站页面的消息（`site.*`）见 Personal Site Protocol §6.2。
 
 | 方向 | 消息 | 含义 |
 | --- | --- | --- |
-| 页面 → App | `{ "type": "reflow.ready" }` | 页面画完了 |
-| 页面 → App | `{ "type": "reflow.open", "url": "<网址>" }` | 打开一个链接：App 按重排的触发规则处理 |
-| 页面 → App | `{ "type": "reflow.action", "selector": "<选择器>" }` | 在原网页上执行动作：App 调 `browser.reflow_action` |
-| 页面 → App | `{ "type": "reflow.refresh" }` | 请求刷新 |
+| 页面 → App | `{ "type": "reflow.ready" }` | 页面画完了（可以不发：iframe 的 `load` 事件也算） |
+| 页面 → App | `{ "type": "reflow.open", "url": "<网址>" }` | 打开一个链接 |
 | 页面 → App | `{ "type": "reflow.source" }` | 切回原始页面 |
-| App → 页面 | `{ "type": "reflow.updated" }` | 结果更新了，页面重新读 `results/<page>.json` |
 
-- 有包的页面和兜底页用同一套消息、同一个来源校验。兜底页也可以发 `reflow.ready`、`reflow.open`（以及 `reflow.refresh`、`reflow.source`）；它没有包，不发 `reflow.action`。
-- App 只收自己那个 iframe 的窗口发来、并且来源是 `https://reflow.<zone>` 的消息，两样都校验。App 发给页面的消息以这个来源作 `targetOrigin`。
-- `reflow.ready` 可以不发：iframe 的 `load` 事件也算画完。
-- `reflow.open` 的 `url` 是 `http`、`https` 的网址；相对网址按这一页的原网址解析，别的 scheme 忽略。
-- `reflow.action`：同一时间只执行一个，执行期间进行中的提示由 App 显示，页面不用等回应。成功后 App 发 `reflow.updated`。失败（包括 `reflow_no_package`）时页面收不到消息：App 告诉用户，并把这件事交给 Agent（§5.6）。
-- `reflow.refresh`、`reflow.source` 和 App 自己的“刷新”“原始页面”按钮是同一件事。刷新完成后，有包的页面收到 `reflow.updated`；兜底页不会收到它，内容变了由 App 重新加载 iframe。
+- `reflow.open` 的 `url` 是 `http`、`https` 的网址；相对网址按这一页的原网址解析，别的 scheme 忽略。App 按这个顺序处理：个人站里收录了就打开站内的那一页；有兜底页就显示兜底页；否则在原始页面模式打开原站。不为它请 Agent。
+- `reflow.source`：切到原始页面模式，在浏览器里打开这一页的 `source_url`。
 
-### 5.6 App 的重排视图
+### 5.6 App 里的重排
 
-App 的重排模式不连屏幕，地址栏里是原网址。对当前网址：
+App 有三个模式：`home`（缺省）、`page`（原始页面）、`chat`。
 
-1. 调 `browser.reflow_state {url}`。有 `view` 就在 iframe 里显示（§5.4），旁边显示这一页的制作时间和制作者：有包有结果时取 `result`，否则取 `fallback`。
-2. 没有 `view`、有包：调 `browser.reflow_refresh`，显示“正在制作”，每 2 秒查一次 `reflow_state`。`refresh.status` 已经是 `running` 时不再调，直接等。
-3. 没有 `view`、没有包，或者刷新失败（`refresh.status` 变成 `failed`，或刷新结束了仍然没有 `view`）：往浏览器会话发一条普通消息请 Agent 处理，显示“正在制作”，每 4 秒查一次 `reflow_state`，直到出现 `view`。`browser.reflow_refresh` 这次调用本身出错（刷新没有开始）不算刷新失败：App 只提示，不请 Agent。
-
-- App 发给 Agent 的消息有五种，都带规范化网址：请它做兜底页（带用户对这个站点的偏好）；刷新失败（带 `refresh.error`、`<site>` 和偏好，请它先做兜底页再修包）；用户要求重做一张兜底页；`reflow.action` 失败（带选择器和原因）；用户改了偏好（带新的偏好，请它改包并重做这一页）。
-- 同一个 Agent、同一个网址只请一次（`reflow.action` 的失败按选择器另算），直到这一页显示的内容变了（`view` 变了，或它的 `made_at` 变了）；用户可以明确要求再请一次，改偏好每次都发。
-- `browser.reflow_state` 在浏览器不可用时照常返回（§5.3），已经做好的页面照样显示。`browser.reflow_refresh`、`browser.reflow_action` 回 `browser_unavailable` 时，App 不刷新、不执行动作、不请 Agent，只说明原因。
-- 请 Agent 的消息要等对话一侧就绪才发得出去。等的这段时间里用户已经换了网址的话，请它做兜底页、请它重做这两种消息不再发出。
-- “原始页面”：切到原始页面模式，在浏览器里打开这一页的 `source_url`（还没有结果时是规范化网址）。
-- 进入重排模式时，当前网址取浏览器当前标签页的网址；之后它跟着重排页里的链接和地址栏走，不跟着浏览器走，直到下次进入重排模式时浏览器已经到了别的网址。
+- `home` 不连屏幕，不调 `browser.ensure`：浏览器停着、不可用时照常能看。它在 iframe 里显示个人站（`https://reflow.<zone>/` 加路由）或一张兜底页；外壳上的同步时间、需要登录、升级请求、来源管理读的是桶里的 `_data`（Personal Site Protocol §3），不依赖模板。
+- `page` 模式地址栏旁有“重排”。当前网址已经在个人站里（有 `_data/a/<article>.json`，或属于某个来源的 `match`）时直接切到 `home` 的那一页；有兜底页时切到兜底页；否则弹出三个选择：加入阅读、请 Agent 在这一页办事、只整理这一页。哪一项排在最前由 `browser.page_hint`（§7.2）决定：`task` 时“办事”在前，其他时候“加入阅读”在前。
+- 加入阅读、同意升级、只整理这一页、移除来源，都是 App 往浏览器会话发一条**固定格式的英文消息**（`src/frame/desktop/src/app/agent-browser/site/messages.ts`，不随界面语言；`browser` 手册逐字引用第一行）。只在主人明确按下时发；App 不会因为打开一个网址、点一个链接而自动请 Agent 或启动浏览器。
+- 只整理这一页：发出消息后显示“正在制作”，定时查 `browser.reflow_state`，出现 `view` 就显示。同一个网址只请一次，直到主人明确要求重做。
+- 来源的暂停、恢复、立即同步由 App 用主人的会话直接调 `goals.job_set_enabled`、`goals.job_run`（Agent State Protocol §9.9），不经过 Agent。
+- 启动参数：`agent`、`mode`、`route`（个人站的路由）、`url`、`upgrade`（升级请求的 id）。通知里的链接形如 `/?agent_browser=<agent>&mode=home&upgrade=<id>`。
 
 ## 6. 配置和目录
 
@@ -554,13 +484,15 @@ App 的重排模式不连屏幕，地址栏里是原网址。对当前网址：
 
 | 键 | 默认 | 含义 |
 | --- | --- | --- |
-| `enabled` | `true` | 关掉后所有 `browser.*`（`status`、`reflow_state` 除外）回 `browser_unavailable`（`unavailable_code` 是 `disabled`），进程环境里也不设 `OPENDAN_BROWSER_RPC` |
+| `enabled` | `true` | 关掉后所有 `browser.*`（`status`、`reflow_state` 和浏览记录的 `visits`、`visits_set_enabled`、`visits_clear` 除外）回 `browser_unavailable`（`unavailable_code` 是 `disabled`），进程环境里也不设 `OPENDAN_BROWSER_RPC` |
 | `idle_stop_secs` | `600` | 没有人看、没有租约，超过这个时间停掉浏览器。停之前把各组标签页的网址存下来，下次启动时重开 |
 | `max_tabs` | `12` | 所有组的标签页总数上限。服务端到了上限不再开（`too_many_tabs`）；别处开出来的超出上限的标签页会被立刻关掉 |
 | `display` | `auto` | `virtual`：有窗口地跑在虚拟显示器上；`headless`：无头；`auto`：Linux 上是 `virtual`，其他平台是 `headless`（macOS、Windows 的显示器还没做）。`virtual` 而没有 `Xvnc` 时报 `no_display`，不改成无头 |
 | `device_scale_factor` | `2` | 虚拟显示器的设备像素比（1–3）：浏览器按它画，页面看到的 `devicePixelRatio` 就是它。手机上要清楚就要 2；节点 CPU 紧时可以设 1 |
+| `visits` | `true` | 浏览记录（§7.3）的缺省开关；主人在 App 里改过之后以改的为准 |
+| `background_idle_stop_secs` | `60` | 浏览器只是为后台任务（§7.1）启动的、任务跑完后又没有别的事时，过这么久停掉 |
 
-这个节点上没有浏览器可以启动时，模块报“不可用”（`browser.status` 的 `available: false`，`browser.reflow_state` 照常，其他方法回 `browser_unavailable`），Agent Service 的其他功能照常。分两种，`unavailable_code` 不同（§2.1）：
+这个节点上没有浏览器可以启动时，模块报“不可用”（`browser.status` 的 `available: false`，`browser.reflow_state` 和浏览记录的三个方法（§7.3）照常，其他方法回 `browser_unavailable`），Agent Service 的其他功能照常。分两种，`unavailable_code` 不同（§2.1）：
 
 - 工具目录里没有 `chromium` 启动器（`no_package`）：这个节点没装 ext-core。
 - 启动器在，浏览器本体不在（`not_downloaded`）。浏览器（Chrome for Testing）是 ext-core 的在线项 `chromium`：不随包分发，包装好以后由节点从官方地址下载到工具目录的 `online/chromium/`，状态记在旁边的 `online/chromium.json`（`state`：`downloading`、`ready`、`failed`；没有这个文件就是还没下载）。记录是 `ready` 并且目录在才算下载好。下载失败后不会自动重试，管理员在“设置 > 扩展工具”里再次触发。
@@ -575,9 +507,9 @@ App 的重排模式不连屏幕，地址栏里是原网址。对当前网址：
 | 各组的标签页 | `<AgentRoot>/state/browser/groups.json` | 同左 |
 | 浏览器本体（ext-core 的在线项，节点上只有一份，各 Agent 共用，只读）和它的下载记录 | `/opt/buckyos/tools/online/chromium/`、`/opt/buckyos/tools/online/chromium.json` | `$BUCKYOS_ROOT/tools/online/chromium/`、`$BUCKYOS_ROOT/tools/online/chromium.json` |
 
-环境变量 `OPENDAN_BROWSER_DIR` 可以指定第一行的位置（入口脚本在容器里设它）。`OPENDAN_CHROMIUM` 可以指定浏览器的可执行文件（调试和测试用）：设了就直接启动它，不看在线项；指的文件不存在，按 `no_package` 报。不设时在工具目录（`$BUCKYOS_ROOT/tools/bin`、`$BUCKYOS_ROOT/bin/agent-tools`）里找 `chromium` 启动器，启动的也是它（启动器再去执行 `online/chromium/` 里的浏览器）；在线项按启动器的位置找：`<启动器所在目录>/../online/chromium{,.json}`。`OPENDAN_AGENT_BROWSER` 同样指定 `agent-browser`（重排刷新由它执行，§5.3），不设时在同一组工具目录里找 `agent-browser`；找不到时只有 `reflow_refresh`、`reflow_action` 回 `browser_unavailable`。
+环境变量 `OPENDAN_BROWSER_DIR` 可以指定第一行的位置（入口脚本在容器里设它）。`OPENDAN_CHROMIUM` 可以指定浏览器的可执行文件（调试和测试用）：设了就直接启动它，不看在线项；指的文件不存在，按 `no_package` 报。不设时在工具目录（`$BUCKYOS_ROOT/tools/bin`、`$BUCKYOS_ROOT/bin/agent-tools`）里找 `chromium` 启动器，启动的也是它（启动器再去执行 `online/chromium/` 里的浏览器）；在线项按启动器的位置找：`<启动器所在目录>/../online/chromium{,.json}`。`OPENDAN_AGENT_BROWSER` 同样指定 `agent-browser`（后台任务由它执行，§7.1），不设时在同一组工具目录里找 `agent-browser`；找不到时只有 `browser.background_run` 回 `browser_unavailable`（不带 `unavailable_code`）。
 
-第一行的位置下还有 `chromium.log`：最近一次启动的标准错误，启动失败时它的末尾会进 `unavailable`；以及 `reflow/<page>/`：一次重排刷新的临时目录（取出来的包、结果文件、子进程的 `HOME` 和 `TMPDIR`），刷新结束就删掉。`groups.json` 的格式见 [Agent State Protocol](Agent%20State%20Protocol.md) §1。
+第一行的位置下还有 `chromium.log`：最近一次启动的标准错误，启动失败时它的末尾会进 `unavailable`；以及 `job/`：一次后台任务（§7.1）的临时目录（`args.json`、`result.json`、子进程的 `HOME`（`home/`）和 `TMPDIR`（`tmp/`）），任务结束就删掉。`groups.json` 的格式见 [Agent State Protocol](Agent%20State%20Protocol.md) §1。
 
 进程：
 
@@ -590,3 +522,71 @@ App 的重排模式不连屏幕，地址栏里是原网址。对当前网址：
 - 停止：先发 `Browser.close`，等 5 秒；没退出就给进程组发终止信号，再等 3 秒；最后强杀进程组里剩下的，并回收其中成了 Agent Service 子进程的那些（容器里 Agent Service 是 1 号进程）。Windows 上用 Job Object 结束整棵进程树。
 - Chromium 的崩溃处理进程（`chrome_crashpad_handler`，两个）会脱离浏览器的进程组，父进程变成 1 号进程。浏览器启动时带一个环境变量 `OPENDAN_BROWSER_MARK=<每次启动不同的值>`，它启动的进程都继承；服务端在启动后和停止前按这个变量找出不在进程组里的进程，记下进程号和启动时间，停止或崩溃时一并结束、回收。只回收这两类记下来的进程（进程组里的、带标记的），回收前核对启动时间，不会回收别的子进程。
 - 崩溃或被杀：把当时的标签页存下来，1 秒后重启并重开，连续崩溃时间隔加倍；连续 5 次起不来就不再自动重启，等下一次 `ensure` / `acquire`。
+
+## 7. 后台任务、页面提示、浏览记录
+
+个人重排站（[Personal Site Protocol](<Personal Site Protocol.md>)）用到的三样。
+
+### 7.1 `browser.background_run`
+
+在浏览器的一个后台标签页里跑一段脚本，给需要渲染或需要主人登录态的来源取数用（`site` 命令的 `ctx.browser`）。
+
+```jsonc
+// 参数
+{ "script_path": "/abs/path/fetch.mjs",   // Agent Service 所在运行环境里的绝对路径，.mjs
+  "url": "https://example.com/list",       // 可省略：给了就先在标签页里打开它
+  "args": { },                             // 可省略：原样交给脚本，JSON
+  "timeout_s": 60 }                        // 1–300，缺省 60：从连接到拿到结果
+// 返回
+{ "data": <脚本的返回值> }
+```
+
+- 脚本的默认导出：`async ({ page, request, save, url, args }) => data`。`page` 是 Playwright 页面（给了 `url` 时已经打开它，否则是空白页）；`request` 是带着浏览器上下文 cookie 的请求对象（`page.context().request`），能不渲染取到就不渲染；`save.image(网址)` 把一张图片取回来变成 `data:` 引用。返回值必须能序列化成 JSON，至多 8 MiB。
+- 没给 `url` 时脚本拿到的 `url` 是 `undefined`，没给 `args`（或给的是 `null`）时 `args` 是 `{}`；脚本没有返回值时 `data` 是 `null`。
+- 页面动作（定位、等待）的默认超时是 `timeout_s` 的三分之一，最长 15 秒，脚本可以逐次另给；页面跳转的超时是 `timeout_s`。这样页面改版、选择器落空时，错误说的是哪一个选择器没等到，而且不用等满整次任务的时间。
+- `save.image(网址)`：相对网址按页面地址解析；带着浏览器上下文的 cookie 和 `Referer` 取回；长边缩到 1280 以内，转成 JPEG（质量 0.8，透明处填白），返回 `data:image/jpeg;base64,…`。SVG 原样转成 `data:`，`data:` 网址原样返回。
+- 脚本只用给它的这一个标签页。它自己再开的标签页（`page.context().newPage()`）不归 `_job`：会出现在 `default` 组里，任务结束也不会被关掉。要同时取几个地址用 `request`。
+- 不取租约，不受用户接手和 Agent 租约的影响：它开自己的标签页，归 `_job` 组（§1 里 `_` 开头的组：不出现在 `status` 里、不落盘、不计入 `max_tabs`），结束就关；它被强行结束时留下的标签页由服务端关掉。归组的规则：从命令启动到它的标签页出现，新出现的没有 opener 的标签页都归 `_job`。新标签页开在单独的窗口里（§2.5）。
+- 一个 Agent 的浏览器里同一时刻只跑一个后台任务，后来的排队；任务进行中算浏览器在用，不会被空闲回收；排队的时间不算在 `timeout_s` 里，排队超过 300 秒回 `other`。
+- 浏览器没在运行就启动它。**只为后台任务启动时不重开存下来的标签页**；任务跑完后没有人看、没有租约、没有别的后台任务，过 `background_idle_stop_secs`（缺省 60 秒）就停，不等 `idle_stop_secs`。期间有人来看或 Agent 取了租约，就按平常的规则，并且补开存下来的标签页。
+- 这样启动的浏览器在 `browser.status` 里是 `running: true`、`default` 组没有标签页，`groups.json` 保持原样（存着的标签页还在里面）。“有人用”指 `browser.ensure`、`browser.acquire`、屏幕连上（§3.1）、屏幕开标签页：存下来的标签页在它们返回之前补开好。它崩溃后重启时仍然不重开标签页。
+- 服务端起 `agent-browser background-run --cdp <cdp_url> --script <文件> --out <结果文件> [--url <网址>] [--args <JSON 文件>] [--timeout <秒>]`（内部子命令，ext-core 1.3.4 起；一期的 `reflow-run` 从这一版起没有了），等它 `timeout_s` 加 10 秒，到时还没结束就连同它启动的进程一起结束。它不调 kRPC，不取租约，`--cdp` 是浏览器自己的 `http://127.0.0.1:<端口>`。`--url` 写成 `--url=<网址>`；`--args` 的文件是 `args` 的 JSON，没给 `args` 时不带这一项；工作目录是 §6 的 `job/`。它成功退出码 0，结果文件是脚本返回值的 JSON（没有返回值时是 `null`）；失败退出码 1，标准错误的最后一行是原因：`agent-browser: background run failed: <原因的第一行>`，脚本抛的错带 `code: "auth"` 时是 `auth: <原因的第一行>`；参数不对退出码 2。
+- 这个子进程不继承 Agent Service 的环境。留下的只有 `PATH`、`LANG`、`LC_ALL`、`LC_CTYPE`、`TZ`，外加指到工作目录里的 `HOME`（`home/`）和 `TMPDIR`（`tmp/`）；Windows 上是 `PATH`、`PATHEXT`、`ComSpec`、`SystemRoot`、`SystemDrive`、`windir`、`ProgramData`、`ProgramFiles`、`ProgramFiles(x86)`，外加 `USERPROFILE`、`APPDATA`、`LOCALAPPDATA`、`TEMP`、`TMP`。所以服务的会话令牌（`BUCKYOS_APPCLIENT_SESSION_TOKEN` 等）和 `OPENDAN_BROWSER_RPC` 到不了脚本手里。它仍以 Agent Service 的系统身份运行。
+- 调用是同步的：排队加运行最长约 10 分钟，调用方的请求超时要留够。调用方中途断开，任务照常跑完、关掉标签页，结果丢弃。
+- 错误：脚本抛错、超时回 `other`，`message` 是它标准错误的最后一行；脚本抛的错带 `code: "auth"`（`throw Object.assign(new Error(…), { code: "auth" })`）时，`message` 以 `auth: ` 开头，调用方据此当作需要登录。到 `timeout_s` 加 10 秒被结束时 `message` 是 `the script did not end within <秒数> seconds and was ended`；返回值超过 8 MiB、排队超时也是 `other`。`script_path` 不是绝对路径、不存在或不是 `.mjs` 回 `invalid_argument`，`timeout_s` 不是 1–300 的整数也是；参数在看浏览器之前检查。浏览器不可用回 `browser_unavailable`；节点上没有 `agent-browser`（§6）也是，不带 `unavailable_code`。
+
+### 7.2 `browser.page_hint`
+
+主人点“重排”时，App 用它决定默认选项。不用模型：服务端在当前标签页里数一下。
+
+返回 `{ "hint": "reading" | "task" | "unknown", "url", "title" }`：
+
+| `hint` | 条件（按顺序取第一个成立的） |
+| --- | --- |
+| `task` | 页面上有可见的密码框；或可见的表单字段（`input`（除 hidden、submit、button、search）、`select`、`textarea`）不少于 3 个 |
+| `reading` | 有 `article` 元素、`og:type` 是 `article`、或 `application/ld+json` 里有 `Article` / `NewsArticle` / `BlogPosting`；或正文文字不少于 1500 个字符且链接文字不到一半 |
+| `unknown` | 其他；浏览器没在运行、没有当前标签页时也是它（`url`、`title` 为 `null`） |
+
+不启动浏览器，不取租约，不改页面。
+
+- 看的是 `default` 组的当前标签页，在页面里求值一次，只读。`url`、`title` 是页面自己的（`location.href`、`document.title`）。页面 5 秒内没有回应（开着 JS 弹框）或求值失败时是 `unknown`，`url`、`title` 取标签页记着的。
+- “可见”按 `checkVisibility({ visibilityProperty: true })`：`display: none`、`visibility: hidden` 和它们里面的不算。`input` 的类型按浏览器归一化之后的 `type` 判断。
+- `og:type` 取 `meta[property="og:type"]` 的 `content`，去掉两端空白、不分大小写。`application/ld+json` 看每一块的顶层对象、顶层数组的各项和它们的 `@graph` 各项的 `@type`（可以是数组）；不是 JSON 的块跳过。
+- 正文文字是 `document.body.innerText` 去掉空白之后的字符数；链接文字是各个 `a` 元素的 `innerText` 同样算出来的和。
+- 模块不可用时（§6）和其他方法一样回 `browser_unavailable`。
+
+### 7.3 浏览记录
+
+主人操作浏览器期间看过的网址，给维护个人站的 Agent 了解主人还在读什么。
+
+- 只在这些都成立时累计：有人在看屏幕；操作方是 `user`；不在密码交接期间（`handover.reason` 是 `password`，直到交还）；标签页不属于 `_` 开头的组；网址是 `http(s)`。
+- 网址去掉查询串和片段后合并；记录是 `{ "url", "title", "first_at_ms", "last_at_ms", "dwell_ms", "count" }`：`dwell_ms` 是它作为当前标签页被看着的累计时间，`count` 是到达它的次数。
+- 存在 `<AgentRoot>/state/browser/visits.jsonl`，一行一条（合并后的），保留 90 天、至多 5000 条；开关存在同目录的 `visits.json`（`{ "enabled" }`），没有这个文件时取 `[loader.browser] visits`。
+- `browser.visits {since_ms?}` 返回 `{ "enabled", "visits": [...] }`，按 `last_at_ms` 从新到旧，至多 500 条。`browser.visits` 只有 owner 和这个 Agent 自己能调，主人名下别的 Agent 不论权限都被拒（§2.2）；`browser.visits_set_enabled {enabled}`、`browser.visits_clear {}` 只有 owner 能调。关掉后不再记，已有的留着直到清除。
+- 被记的是 `default` 组的当前标签页；“有人在看屏幕”指有屏幕连接（§3.1）。网址一变就按当时的条件判断；操作方、接手、有人来看或离开、换当前标签页这些变化最迟在下一次整理（1 秒）时生效。
+- `url` 是 WHATWG 序列化之后去掉查询串、片段、用户名和密码的地址（§5.1 的规范化再去掉查询串）；超过 2048 个字符的不记。查询串和片段不落盘。
+- `count`：被看着的页面换成这个地址时加一。同一个地址只换了查询串或片段不算；从别的地址、别的标签页回来，或者条件重新成立（交还之后、有人重新来看）算。`first_at_ms` 是第一次到达的时间，`last_at_ms` 是最后一次被看着的时间。`dwell_ms` 两次判断之间至多算 30 秒（时钟跳变、服务停顿不算成阅读）。
+- `title` 是这个地址最近一次读到的标题，至多 300 个字符，可以是空串。页面没有自己的标题时浏览器拿地址（连同查询串）当标题，这样的标题不记；所以带查询串或片段的网址，标题读起来就是它的地址时留空。页面自己的标题原样记，网站把搜索词写进标题时它会在里面。
+- 文件每 30 秒有变化才重写，服务退出、改开关时也写；保留期按 `last_at_ms` 算，超过 5000 条时去掉最久没看的。`visits_clear` 删掉 `visits.jsonl`，开关不变。`since_ms` 给了就只返回 `last_at_ms` 不早于它的。
+- 这三个方法不需要浏览器：模块关着（`enabled = false`）、节点上没有浏览器时照常。`[loader.browser] enabled = false` 时自然没有新的记录。
+

@@ -552,6 +552,8 @@ for key, value in list(imports.items()):
         imports[key] = "./vendor/" + value[len("../../"):]
 config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
+  # npm imports become bundled modules in vendor/: the image runs them without a package cache
+  "$python_bin" "$SRC_DIR/tools/finish_agent_tools_copy.py" "$output_dir"
 }
 
 prepare_license_materials() {

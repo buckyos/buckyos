@@ -65,6 +65,14 @@ pub struct BrowserSection {
     /// Device pixels per CSS pixel of the virtual display.
     #[serde(default = "default_device_scale_factor")]
     pub device_scale_factor: f64,
+    /// Whether what the owner looks at in the browser is recorded
+    /// (`browser.visits`), until the owner switches it themselves.
+    #[serde(default = "yes")]
+    pub visits: bool,
+    /// A browser started for a background run only is stopped this long
+    /// after the last one, when nothing else uses it.
+    #[serde(default = "default_browser_background_idle")]
+    pub background_idle_stop_secs: u64,
 }
 
 fn default_device_scale_factor() -> f64 {
@@ -73,6 +81,10 @@ fn default_device_scale_factor() -> f64 {
 
 fn default_browser_idle() -> u64 {
     600
+}
+
+fn default_browser_background_idle() -> u64 {
+    60
 }
 
 fn default_max_tabs() -> usize {
@@ -87,6 +99,8 @@ impl Default for BrowserSection {
             max_tabs: default_max_tabs(),
             display: Default::default(),
             device_scale_factor: default_device_scale_factor(),
+            visits: true,
+            background_idle_stop_secs: default_browser_background_idle(),
         }
     }
 }
@@ -249,6 +263,7 @@ mod tests {
         assert!(cfg.loader.goals.enabled);
         let browser = &cfg.loader.browser;
         assert_eq!((browser.enabled, browser.idle_stop_secs, browser.max_tabs), (true, 600, 12));
+        assert_eq!((browser.visits, browser.background_idle_stop_secs), (true, 60));
     }
 
     #[test]
@@ -256,7 +271,10 @@ mod tests {
         let cfg = load("[loader.browser]\nenabled = false\nidle_stop_secs = 30\n").unwrap();
         let browser = &cfg.loader.browser;
         assert_eq!((browser.enabled, browser.idle_stop_secs, browser.max_tabs), (false, 30, 12));
+        assert_eq!((browser.visits, browser.background_idle_stop_secs), (true, 60));
         assert_eq!(load("[loader.browser]\nmax_tabs = 3\n").unwrap().loader.browser.max_tabs, 3);
+        let browser = load("[loader.browser]\nvisits = false\nbackground_idle_stop_secs = 5\n").unwrap().loader.browser;
+        assert_eq!((browser.visits, browser.background_idle_stop_secs), (false, 5));
         assert!(format!("{:#}", load("[loader.browser]\nmax_tab = 3\n").unwrap_err()).contains("unknown field"));
     }
 

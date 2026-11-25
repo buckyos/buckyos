@@ -44,6 +44,13 @@ export interface BrowserStatus {
   groups: BrowserGroup[]
 }
 
+/** `browser.page_hint` (§7.2): what the current tab looks like, counted on the page without a model. */
+export interface PageHint {
+  hint: 'reading' | 'task' | 'unknown'
+  url: string | null
+  title: string | null
+}
+
 export interface Viewport {
   width: number
   height: number

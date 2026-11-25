@@ -40,6 +40,8 @@ async function openUnavailable(page: Page, patch: Availability, tap = false) {
   await setAvailability(page, patch)
   const agent = page.getByTestId(`ab-agent-${AGENT}`)
   await (tap ? agent.tap() : agent.click())
+  const original = page.getByTestId('ab-mode-page')
+  await (tap ? original.tap() : original.click())
   const notice = page.getByTestId('ab-unavailable')
   await expect(notice).toBeVisible()
   return notice
@@ -138,15 +140,15 @@ test('a browser its owner turned off says so, with nothing to download', async (
   await expect(page.getByTestId('ab-ask-admin')).toHaveCount(0)
 })
 
-test('reflow is read while the browser is not downloaded', async ({ page }) => {
+test('what was tidied is read at home while the browser is not downloaded', async ({ page }) => {
   await openUnavailable(page, { download: 'missing' })
-  await page.getByTestId('ab-mode-reflow').click()
-  await expect(page.getByTestId('ab-reflow-blank')).toBeVisible()
+  await page.getByTestId('ab-mode-home').click()
+  await expect(page.getByTestId('ab-site-start')).toBeVisible()
   const input = page.getByTestId('ab-address-input')
   await input.click()
   await input.fill('news.example.com/story/1')
   await input.press('Enter')
-  await expect(page.frameLocator('[data-testid="ab-reflow-frame"]').locator('#title')).toHaveText('Story /story/1')
+  await expect(page.frameLocator('[data-testid="ab-reflow-frame"]').locator('#title')).toHaveText('Story one')
   await page.getByTestId('ab-mode-page').click()
   await expect(page.getByTestId('ab-unavailable')).toHaveAttribute('data-reason', 'not_downloaded')
 })

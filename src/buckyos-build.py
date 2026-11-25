@@ -230,7 +230,11 @@ def _prepare_agent_tools(source: Path | None = None, target: Path | None = None,
         if isinstance(value, str) and value.startswith("../../frame/"):
             imports[key] = "./vendor/" + value[len("../../"):]
     config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return 0
+    command = [sys.executable, str(here / "tools" / "finish_agent_tools_copy.py"), str(target)]
+    deno = os.environ.get("BUCKYOS_SDK_TOOL_DENO") or _find_command("deno")
+    if deno:
+        command.extend(["--deno", deno])
+    return subprocess.run(command).returncode
 
 
 def _prepare_ext_tools(env: dict[str, str]) -> int:

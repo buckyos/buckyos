@@ -1,0 +1,14 @@
+{
+  "schema": "buckyos.site.feed/1",
+  "source": "setup-failed",
+  "status": {
+    "state": "ok",
+    "checked_at": 1764001800000,
+    "published_at": 1764001800000,
+    "error": null,
+    "pending": null,
+    "login_url": null
+  },
+  "items": [],
+  "updated_at": 1764001800000
+}

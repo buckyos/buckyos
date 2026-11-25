@@ -3212,7 +3212,7 @@ async fn the_agents_browser_is_served_over_krpc() {
         ("browser.acquire", json!({}), "invalid_argument"),
         ("browser.release", json!({ "lease_id": "l", "state": "happy" }), "invalid_argument"),
         ("browser.request_handover", json!({ "session_id": "s", "reason": "bored" }), "invalid_argument"),
-        ("browser.take_over", json!({ "group_id": "_reflow" }), "no_such_group"),
+        ("browser.take_over", json!({ "group_id": "_job" }), "no_such_group"),
         ("browser.bind_default", json!({}), "invalid_argument"),
         ("browser.bind_default", json!({ "session_id": "default" }), "invalid_argument"),
         ("browser.renew", json!({ "lease_id": "lease-0" }), "lease_lost"),
@@ -3222,7 +3222,6 @@ async fn the_agents_browser_is_served_over_krpc() {
         ("browser.reflow_state", json!({ "url": "about:blank" }), "invalid_argument"),
         // The reflow library is a bucket of the owner's Zone: this Loader runs outside one.
         ("browser.reflow_state", json!({ "url": "https://example.com" }), "other"),
-        ("browser.reflow_action", json!({ "url": "https://example.com" }), "invalid_argument"),
         ("browser.nope", json!({}), "invalid_argument"),
     ] {
         let error = rpc_wire(port, method, params).await.unwrap_err();
@@ -3410,7 +3409,7 @@ async fn an_agent_without_a_browser_says_why_on_every_entry() {
         ("browser.ensure", json!({})),
         ("browser.acquire", json!({ "session_id": "s" })),
         ("browser.take_over", json!({ "group_id": "default" })),
-        ("browser.reflow_refresh", json!({ "url": "https://example.com" })),
+        ("browser.page_hint", json!({})),
     ] {
         let error = rpc_wire(port, method, params).await.unwrap_err();
         assert_eq!(

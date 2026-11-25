@@ -1316,7 +1316,7 @@ mod tests {
             r#"{"type":"ack","seq":1}"#,
             r#"{"type":"hello","group_id":"thing","viewport":{"width":412,"height":915}}"#,
             r#"{"type":"hello","group_id":"","viewport":{"width":412,"height":915}}"#,
-            r#"{"type":"hello","group_id":"_reflow","viewport":{"width":412,"height":915}}"#,
+            r#"{"type":"hello","group_id":"_job","viewport":{"width":412,"height":915}}"#,
             r#"{"type":"hello","group_id":"default"}"#,
             r#"{"type":"hello","group_id":"default","viewport":{"width":"wide","height":1}}"#,
         ] {

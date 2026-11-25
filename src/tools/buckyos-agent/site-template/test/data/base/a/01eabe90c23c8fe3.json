@@ -1,0 +1,55 @@
+{
+  "schema": "buckyos.site.article/1",
+  "id": "01eabe90c23c8fe3",
+  "source": "_supplement",
+  "url": "https://example.org/blog/chip-export-rules-explained",
+  "lang": "en",
+  "published_at": 1764001000000,
+  "fetched_at": 1764001750000,
+  "rev": 1,
+  "object_id": "cyfeed:3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c",
+  "object": {},
+  "title": {
+    "o": "The new chip export rules, clause by clause",
+    "t": "逐条看半导体出口新规"
+  },
+  "summary": {
+    "o": "",
+    "t": "这篇解读逐条说明了许可适用于哪些设备和哪些买家。"
+  },
+  "byline": "Example Trade Blog",
+  "tags": [
+    "科技"
+  ],
+  "blocks": [
+    {
+      "type": "p",
+      "text": {
+        "o": "The detailed rules run to forty pages. Three clauses decide who needs a licence.",
+        "t": "细则有四十页，其中三条决定了谁需要许可。"
+      }
+    },
+    {
+      "type": "h2",
+      "text": {
+        "o": "Which tools are covered",
+        "t": "涉及哪些设备"
+      }
+    },
+    {
+      "type": "p",
+      "text": {
+        "o": "Lithography, etching and deposition tools for nodes at or below 14 nm are covered, as the announcement said.",
+        "t": "和公告说的一样，涉及 14 纳米及以下制程的光刻、刻蚀和成膜设备。"
+      }
+    }
+  ],
+  "comments": [],
+  "links": [],
+  "images": {},
+  "thumb": null,
+  "supplement": {
+    "event": "e-20261124-chip-export",
+    "adds": "逐条解释了许可的适用范围，原报道没有"
+  }
+}

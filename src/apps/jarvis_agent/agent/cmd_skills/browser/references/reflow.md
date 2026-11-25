@@ -1,10 +1,13 @@
-# Reflow a page
+# A one-off reflow page
 
-Run `reflow match <url>` to get the site, page ID, reading preference and current `view`. Each command returns a `summary` and structured `detail`. The user's library survives Agent removal and can be shared by that user's Agents. The app shows saved results even when the browser is stopped. It chooses a matching package with a result, then a fallback. If a package lacks a result the app starts a refresh. If nothing is available or refresh fails, the app asks in the browser conversation.
+For one address the owner wants tidied once ("this page only"): a single HTML file that stands by itself, kept in the owner's reflow library and shown in Agent Browser whether or not the browser is running. A website the owner keeps reading is not done this way: it becomes a source of their reading site.
 
-#### One address or a failed refresh
+1. `reflow match <url>` gives the site, the page and what is kept for the address: `fallback: none`, or `fallback: made …` with the `view` that shows it. Each command returns a `summary` and structured `detail`.
+2. Read the original: `agent-browser open <url>` and `agent-browser snapshot`; a run script for a page that needs steps or structured extraction.
+3. Write `page.html`: what the owner's `Note` asks for, otherwise title, date, author and the text in one column for a phone.
+4. `reflow result put <url> page.html`, then `reflow match <url>`: report success only when it says `fallback: made …` and names the `view`. A later put for the same address replaces the page.
 
-Open the original URL with `agent-browser open <url>` and read its `snapshot`. For structured extraction use a run script. Keep only the content requested by the user's preference. Write a self-contained HTML file with site text escaped. Include original absolute image URLs only when requested. The frame on `https://reflow.<zone>/` carries the user's sign-in. Never copy site markup, scripts, styles, event attributes or `javascript:` URLs. Allow only HTTP(S) links. Load no external scripts, styles or fonts.
+The page holds text of a third party: write it as text, with `&`, `<` and `>` as entities. Never copy the site's markup, scripts, styles, event attributes or `javascript:` addresses. Links are http(s) only. No script, style or font from another host; the original's pictures by their absolute address, and only when the owner wants them.
 
 ```html
 <!doctype html>
@@ -36,21 +39,15 @@ parent.postMessage({ type: 'reflow.ready' }, '*');
 </html>
 ```
 
-Run `reflow result put <url> fallback.html`, then `reflow match <url>`. Check `fallback: made …` and `view` before reporting success. Only the user's session opens the frame directly.
+The page is shown in a frame of the app: `reflow.ready` says it is drawn, `reflow.open` hands a link to the app, which opens it. Only the owner's own session opens `https://reflow.<zone>/`: check your page with `reflow match`, not by opening it.
 
-#### A recurring site
+`reflow ls` lists the sites that have such pages. `reflow rm <site>` removes everything kept for a site: only when the owner asks.
 
-Read `$OPENDAN_AGENT_ROOT/cmd_skills/browser/references/site-package.md` to build or update a package. For an existing one, start with `reflow get <site> <dir>` into a new/empty directory. If a site changes, give the waiting user a fallback first. Change the manifest preference and code together when requested. Periodic refresh belongs to a goal. Only use `reflow rm <site>` when asked: this deletes the package, preference, results and fallbacks.
-
-#### Errors
-
-| Reason | Action |
+| Result | Meaning and action |
 | --- | --- |
-| `permission_denied` | Read-only Agents may use `match`, `ls`, `get`. Keep the files under `$OPENDAN_AGENT_ROOT`, give their Zone path (`/home/<owner>/agents/<agent_id>/…`) and ask the user to import them in Agent Browser. App-initiated refresh can save results. |
-| `invalid` | Fix each entry in `detail.problems`. |
-| `no_library` | Report the missing Zone library to the owner or administrator. |
-| `no_browser` / `reflow_no_package` | Refresh on the private runtime. When no package matches, add one or save a fallback. |
-| `refresh_failed` | Check the summary and run `try.mjs` from `$OPENDAN_AGENT_ROOT/cmd_skills/browser/references/preview.md` on the failing address. |
-| Exit 4 | Refresh is still running after `--timeout`. Check `reflow match <url>` later. |
+| `permission_denied` | This Agent is read-only: `rm` and `result put` are refused. Keep the page under `$OPENDAN_AGENT_ROOT`, give its Zone path (`/home/<owner>/agents/<agent_id>/…`) and say that it could not be kept. |
+| `invalid` | Not an http(s) address, or not a `.html` file: the summary says which. |
+| `no_library` | This Zone has no reflow library: report it to the owner or the administrator. |
+| `io_failed` (exit 5) | The local file could not be read. |
 
-See `reflow --help` and the repository's `doc/opendan/protocol/Agent Browser Protocol.md` §5.
+Syntax and exit codes: `reflow --help`.

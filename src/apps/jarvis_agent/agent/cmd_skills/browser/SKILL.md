@@ -1,8 +1,8 @@
 ---
 name: browser
-description: Use this Agent's own browser — open and read web pages, fill in and submit forms, get things done on websites for the user — ask the user to take over for a password and go on after they hand it back, and reflow a site (a fallback page, or a package for a site the user reads often). Not for a project's Playwright tests (buckyos_app_dev).
-requires: a session on the Agent's private runtime (other runtimes do not reach its browser) with the ext-core extension package (agent-browser, chromium); writing the reflow library needs read_write Agent permission
-commands: agent-browser, chromium, reflow
+description: Use this Agent's own browser — open and read web pages, fill in and submit forms, get things done on websites for the user — ask the user to take over for a password and go on after they hand it back; and answer what Agent Browser asks about the owner's reading site: add a website to it, go ahead with an upgrade, remove a source, change small things at once, or tidy one page as a one-off reflow page. Not for a project's Playwright tests (buckyos_app_dev).
+requires: a session on the Agent's private runtime (other runtimes do not reach its browser) with the ext-core extension package (agent-browser, chromium); changing the owner's reading site or keeping a reflow page needs read_write Agent permission
+commands: agent-browser, chromium, reflow, site
 scope: ui, work
 baseline: extended
 ---
@@ -26,6 +26,19 @@ Never read or fill a password field, even if you know the password. Hand over wi
 - Exit 4 means the user has control. Exit 5 means they interrupted an active command. Stop and wait for hand-back. Take a fresh snapshot before continuing. On exit 1, check what already happened before retrying.
 - Finish with `agent-browser done --note "<result>"` or `agent-browser stuck --note "<blocker>"`. Relay the result and any reference number in the reply/report. If the user holds control these commands return 4, so report directly.
 
-#### Reflow
+#### The owner's reading site
 
-When the app or user requests a different reading view, run `reflow match <url>`. Read `$OPENDAN_AGENT_ROOT/cmd_skills/browser/references/reflow.md` before writing a one-address fallback (`reflow result put <url> fallback.html`) or a reusable site package (`reflow put <site> <dir>`, then `reflow refresh <url>`). Render site data as text. The reference includes templates, testing and the read-only workflow.
+What the owner keeps reading lives in their reading site: each website is a source, fetched by a program, translated and shown in Agent Browser's home and at `https://reflow.<zone>/`, kept up to date by one goal of this Agent. `site status` shows the site, its sources and its `maintainer` (the goal). A website the owner reads again and again becomes a source, never a page rearranged by hand each time.
+
+Agent Browser writes four fixed messages into the browser conversation, in English whatever the owner's language: the first line below, then `Name: value` lines, a line without a value left out. The same wishes in the owner's own words are treated the same way.
+
+| First line | Lines | What it takes |
+| --- | --- | --- |
+| `Please add this website to my reading site.` | `URL`, `Title`, `Note` | a work session with the manuals `reading_site` and `goal_handover` builds the source; its task ends by setting up, or revising, the goal that keeps the site |
+| `Please go ahead with this upgrade of my reading site.` | `Upgrade`, `File`, `Goal` | the owner agreed: read `File`, a work session with the same manuals does it, then `site upgrade close <Upgrade>` and the goal's revision |
+| `Please tidy this page only: make a one-off reflow page for it (reflow result put), without adding the website to my reading site.` | `URL`, `Title`, `Note` | you make one page: `$OPENDAN_AGENT_ROOT/cmd_skills/browser/references/reflow.md` |
+| `Please remove this website from my reading site.` | `Source`, `Title`, `URL` | you remove it with a few commands: its job, the source, its line in the goal |
+
+Small changes are made at once in the owner's conversation, without a work session: a topic hidden ("no more sports": `site config set template.params.hide_topics '["体育"]'`), a title, the columns, a source paused or resumed, fewer articles, another frequency, what the goal watches or tells. A new source, a source's program, the layout, fetching through the browser or with a sign-in are built by a work session.
+
+Before you act on any of these, read `$OPENDAN_AGENT_ROOT/cmd_skills/browser/references/reading-site.md`: what to settle for intent analysis, the site's workspace, the commands of each small change and their order.

@@ -2,6 +2,8 @@
 
 状态：已实施（2026-11-15），未提交。实施记录、和本文不一致的地方、没做和没验证的在 §12；实施中新出现、等 owner 定的问题在 §9；跨包的接口契约落在 [Agent Browser Protocol](<../doc/opendan/protocol/Agent Browser Protocol.md>)，它比 §5 细，两者不一致时以它为准（§5.8 列了调整）。
 
+后续（2026-11-25）：重排库里按网址的包（`manifest.json`、`refresh.mjs`、`index.html`、`reflow put / get / refresh`、`browser.reflow_refresh`、`browser.reflow_action`、App 的包管理和站点偏好）在二期删掉了，由个人重排站接替（[二期实施 TODO](agent-browser-phase2-todo.md) Q20、CL1，契约见 [Personal Site Protocol](<../doc/opendan/protocol/Personal Site Protocol.md>)）。留下来的是桶、网址规范化的规则和向量、`reflow.<zone>` 主机、兜底页（“只整理这一页”）。本文里和包有关的裁决（D27、D38 等）和实施记录只作历史。
+
 后续（2026-11-16）：用户试用发现 Google 登录被拒；以“像普通浏览器一样使用、保持原生浏览器指纹”为目标的改造见 [普通浏览与登录兼容性 TODO](agent-runtime-browser-compatibility-todo.md)。该文规划后续变更，本文保留第一期裁决与实施记录。
 
 日期：2026-11-14 立项，同日四轮裁决；当晚做了代码落点核对和容器实测，升级为实施 TODO；随后 owner 答复了 Q22–Q26。源码基线：buckyos `3b75db8f1`。

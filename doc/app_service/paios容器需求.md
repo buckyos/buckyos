@@ -279,7 +279,8 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 | `ask_user` | 经 notify 向用户提问 | work / goal 需要人答时 |
 | `import_office`、`import_table` | 把 Office 文档 / 表格导入为对象 | 文档与数据导入、知识整理 |
 | `materialize_resource` | 把对象 / URL 物化成本地文件 | 任何要把 `obj://`、附件落成文件再加工的步骤 |
-| `reflow` | 用户的重排库（桶 `user/control-panel/<user>/reflow`）：按网址查匹配的包、列出、取回、校验并放入包、删除、存结果或兜底页、请常驻浏览器刷新 | Agent 浏览器的重排：`browser` 手册里写包、做兜底重排、提前刷新（[Agent Browser Protocol](../opendan/protocol/Agent%20Browser%20Protocol.md) §5）。只依赖 SDK，不依赖表 B 的浏览器；`reflow refresh` 要常驻浏览器可用 |
+| `reflow` | 用户重排库（桶 `user/control-panel/<user>/reflow`）里的兜底页：按网址查、列出、删除、存一张“只整理这一页”的页面 | Agent 浏览器的 `browser` 手册（[Agent Browser Protocol](../opendan/protocol/Agent%20Browser%20Protocol.md) §5）。只依赖 SDK，不依赖表 B 的浏览器 |
+| `site` | 用户的个人重排站（同一个桶）：建站、来源包的试跑 / 安装 / 同步、模板、升级请求、事件、阅读汇总；`site sync`、`site reading --compact` 也是 Goal 作业跑的程序 | `reading_site`、goal skill `reading_site_ops`、`browser`（[Personal Site Protocol](../opendan/protocol/Personal%20Site%20Protocol.md)）。解析用随命令分发的 `vendor/linkedom.mjs`，不联网下载；缩图用表 B 的 `magick`，没有时存原图；`needs` 为 `browser` / `login` 的来源要常驻浏览器 |
 | `resume_aicc_task` | 续接异步 AICC 任务 | `aigc_*` 的长任务跟进 |
 | `llm_understand_media` | 看图、读文档（PDF…）、听音视频，结果是文本 | `ui_core` 的媒体理解；`aigc_image` 的结果检查 |
 | `caption_image`、`detect_image`、`segment_image`、`ocr_image` | 图像理解：描述、检测、分割、OCR（走 Zone 模型） | 图像类任务的理解步骤；`ocr_image` 是 OCR 的主路径 |

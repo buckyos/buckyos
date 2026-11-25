@@ -352,7 +352,7 @@ test('version, env and help need no Agent Service', async () => {
   const version = await agentBrowser(['version'], none);
   assert.equal(version.code, 0, version.stderr);
   assert.match(version.stdout, /^chromium \d+\.\d+\.\d+\.\d+ \(revision \d+\)\nplaywright-core \d+\.\d+\.\d+\n$/);
-  for (const args of [['--help'], ['run', '--help'], ['reflow-run', '--help']]) {
+  for (const args of [['--help'], ['run', '--help'], ['background-run', '--help']]) {
     const help = await agentBrowser(args, none);
     assert.equal(help.code, 0);
     assert.match(help.stdout, /^agent-browser/);
@@ -387,48 +387,88 @@ test('version, env and help need no Agent Service', async () => {
   }
 });
 
-test('reflow-run opens the address in a new tab, runs refresh.mjs, writes the data and closes the tab', async () => {
-  const pack = path.join(dir, 'pack');
-  fs.mkdirSync(pack);
-  fs.writeFileSync(
-    path.join(pack, 'refresh.mjs'),
-    `export default async ({ page, url, save }) => ({
+test('background-run runs a script in a tab of its own, with the browser\'s cookies, and writes what it returns', async () => {
+  // The user is signed in to the site: a cookie of the browser.
+  const users = await Cdp.open(tab.webSocketDebuggerUrl);
+  await users.send('Runtime.evaluate', { expression: "document.cookie = 'login=alice; path=/'" });
+  users.close();
+  const file = script(
+    'fetch.mjs',
+    `export default async ({ page, request, save, url, args }) => ({
   url,
+  args,
+  at: page.url(),
   headline: await page.locator('#headline').textContent(),
+  cookies: await (await request.get(new URL('/cookies', url).href)).text(),
   photo: await save.image(await page.locator('#photo').getAttribute('src')),
 });
 `,
   );
-  const out = path.join(dir, 'result.json');
-  const reflow = (extra) => node(AGENT_BROWSER, ['reflow-run', '--cdp', chromium.cdpUrl, '--url', `${site.url}/article`, '--package', pack, '--out', out, ...extra]);
-  const plain = await reflow([]);
-  assert.equal(plain.code, 0, plain.stderr);
+  const out = path.join(dir, 'job.json');
+  const argsFile = path.join(dir, 'args.json');
+  fs.writeFileSync(argsFile, JSON.stringify({ limit: 3, tags: ['\u65b0\u95fb'] }));
+  const run = (extra) => node(AGENT_BROWSER, ['background-run', '--cdp', chromium.cdpUrl, '--out', out, ...extra]);
+  const article = `${site.url}/article`;
+  const done = await run(['--script', file, `--url=${article}`, '--args', argsFile]);
+  assert.equal(done.code, 0, done.stderr);
   const data = JSON.parse(fs.readFileSync(out, 'utf8'));
-  assert.equal(data.url, `${site.url}/article`);
-  assert.equal(data.headline, '\u539f\u6807\u9898');
+  // The picture came back with the browser's cookies, scaled down to what a result can carry.
   assert.match(data.photo, /^data:image\/jpeg;base64,/);
   assert.deepEqual(jpegSize(Buffer.from(data.photo.split(',')[1], 'base64')), { width: 1280, height: 320 });
-  assert.deepEqual((await chromium.targets()).map((target) => target.id), [tab.id]);
+  delete data.photo;
+  assert.deepEqual(data, {
+    url: article,
+    args: { limit: 3, tags: ['\u65b0\u95fb'] },
+    at: article,
+    headline: '\u539f\u6807\u9898',
+    cookies: 'login=alice',
+  });
+  // Its tab is gone; the user's tab is where it was.
+  assert.deepEqual((await chromium.targets()).map((target) => [target.id, target.url]), [[tab.id, `${site.url}/blank`]]);
 
-  const clicked = await reflow(['--click', '#more']);
-  assert.equal(clicked.code, 0, clicked.stderr);
-  assert.equal(JSON.parse(fs.readFileSync(out, 'utf8')).headline, '\u70b9\u8fc7\u4e4b\u540e\u7684\u6807\u9898');
+  // Without an address the tab is blank; without arguments they are {}; a script that returns nothing gives null.
+  script('bare.mjs', "export default async ({ page, url, args }) => { if (page.url() !== 'about:blank' || url !== undefined || JSON.stringify(args) !== '{}') throw new Error('not bare'); };\n");
+  const bare = await run(['--script', path.join(dir, 'bare.mjs')]);
+  assert.equal(bare.code, 0, bare.stderr);
+  assert.equal(fs.readFileSync(out, 'utf8'), 'null');
 
-  fs.writeFileSync(path.join(pack, 'refresh.mjs'), "export default async () => { throw new Error('\u9875\u9762\u6539\u7248\u4e86'); };\n");
-  const failed = await reflow([]);
+  // A script that fails: the last line says why. One that needs the user to sign in says so in a line of its own form.
+  script('fails.mjs', "export default async () => { throw new Error('\u9875\u9762\u6539\u7248\u4e86\\nsecond line'); };\n");
+  const failed = await run(['--script', path.join(dir, 'fails.mjs')]);
   assert.equal(failed.code, 1);
-  assert.equal(failed.stderr.trimEnd().split('\n').at(-1), 'agent-browser: reflow failed: \u9875\u9762\u6539\u7248\u4e86');
-  assert.deepEqual((await chromium.targets()).map((target) => target.id), [tab.id]);
+  assert.equal(failed.stderr.trimEnd().split('\n').at(-1), 'agent-browser: background run failed: \u9875\u9762\u6539\u7248\u4e86');
+  script('auth.mjs', "export default async ({ page }) => { throw Object.assign(new Error('the session of ' + page.url() + ' ran out'), { code: 'auth' }); };\n");
+  const auth = await run(['--script', path.join(dir, 'auth.mjs'), `--url=${article}`]);
+  assert.equal(auth.code, 1);
+  assert.equal(auth.stderr.trimEnd().split('\n').at(-1), `auth: the session of ${article} ran out`);
 
   // What a page that changed looks like: the reason names the part that is missing, well before the run is over.
-  fs.writeFileSync(path.join(pack, 'refresh.mjs'), "export default async ({ page }) => page.locator('#gone-after-redesign').innerText();\n");
-  const started = Date.now();
-  const missing = await reflow(['--timeout', '9']);
+  script('gone.mjs', "export default async ({ page }) => page.locator('#gone-after-redesign').innerText();\n");
+  const looked = Date.now();
+  const missing = await run(['--script', path.join(dir, 'gone.mjs'), `--url=${article}`, '--timeout', '9']);
   assert.equal(missing.code, 1);
-  assert.match(missing.stderr.trimEnd().split('\n').at(-1), /^agent-browser: reflow failed: locator\.innerText: Timeout 3000ms exceeded/);
+  assert.match(missing.stderr.trimEnd().split('\n').at(-1), /^agent-browser: background run failed: locator\.innerText: Timeout 3000ms exceeded/);
   assert.match(missing.stderr, /#gone-after-redesign/);
-  assert.ok(Date.now() - started < 8000, 'fails before the run times out');
+  assert.ok(Date.now() - looked < 8000, 'fails before the run times out');
+
+  // A script that does not end is given up, and its tab closed.
+  script('hangs.mjs', 'export default async () => new Promise(() => {});\n');
+  const started = Date.now();
+  const late = await run(['--script', path.join(dir, 'hangs.mjs'), '--timeout', '1']);
+  assert.equal(late.code, 1);
+  assert.equal(late.stderr.trimEnd().split('\n').at(-1), 'agent-browser: background run failed: timed out after 1 seconds');
+  assert.ok(Date.now() - started < 8000, 'ends with the timeout');
   assert.deepEqual((await chromium.targets()).map((target) => target.id), [tab.id]);
+
+  // What it cannot run.
+  assert.equal((await run([])).code, 2);
+  const none = await run(['--script', path.join(dir, 'nowhere.mjs')]);
+  assert.equal(none.code, 1);
+  assert.match(none.stderr, /no such script: .*nowhere\.mjs/);
+  fs.writeFileSync(argsFile, 'not json');
+  const badArgs = await run(['--script', file, '--args', argsFile]);
+  assert.equal(badArgs.code, 1);
+  assert.match(badArgs.stderr, /--args: .*args\.json is not a JSON file/);
 });
 
 test('a tab with an unanswered dialog is named when attaching fails', async () => {
@@ -436,10 +476,8 @@ test('a tab with an unanswered dialog is named when attaching fails', async () =
   await watcher.send('Page.enable');
   watcher.send('Runtime.evaluate', { expression: "alert('nobody answers')" }).catch(() => {});
   await watcher.waitFor('Page.javascriptDialogOpening');
-  const pack = path.join(dir, 'pack-blocked');
-  fs.mkdirSync(pack);
-  fs.writeFileSync(path.join(pack, 'refresh.mjs'), 'export default async () => 1;\n');
-  const result = await node(AGENT_BROWSER, ['reflow-run', '--cdp', chromium.cdpUrl, '--url', `${site.url}/article`, '--package', pack, '--out', path.join(dir, 'never.json'), '--timeout', '3']);
+  const file = script('blocked.mjs', 'export default async () => 1;\n');
+  const result = await node(AGENT_BROWSER, ['background-run', '--cdp', chromium.cdpUrl, '--script', file, '--out', path.join(dir, 'never.json'), '--timeout', '3']);
   assert.equal(result.code, 1);
   assert.match(result.stderr, /cannot attach to the browser: .*these tabs do not answer, probably because of a dialog .*\/blank/);
   await watcher.send('Page.handleJavaScriptDialog', { accept: true });

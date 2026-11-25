@@ -30,6 +30,7 @@ import { ssoEn, ssoZh } from './sso'
 import { agentBrowserEn, agentBrowserZh } from './agent-browser'
 import { agentBrowserConversationEn, agentBrowserConversationZh } from './agent-browser-conversation'
 import { agentBrowserReflowEn, agentBrowserReflowZh } from './agent-browser-reflow'
+import { agentBrowserSiteEn, agentBrowserSiteZh } from './agent-browser-site'
 import type { SupportedLocale } from '../models/ui'
 
 type Dictionary = Record<string, string>
@@ -1699,8 +1700,8 @@ const zhCN: Dictionary = {
 }
 
 export const dictionaries: Record<SupportedLocale, Dictionary> = {
-  en: { ...en, ...workflowEn, ...appUiEn, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...zoneDomainEn, ...trayEn, ...taskCenterEn, ...filePermissionsEn, ...networkEn, ...myNetworkEn, ...sharesEn, ...sysdlgSelectEn, ...fileBrowserFilesEn, ...appLaunchEn, ...ssoEn, ...agentBrowserEn, ...agentBrowserConversationEn, ...agentBrowserReflowEn, ...archiveEn, ...desktopEditEn },
-  'zh-CN': { ...zhCN, ...workflowZh, ...appUiZh, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...zoneDomainZh, ...trayZh, ...taskCenterZh, ...filePermissionsZh, ...networkZh, ...myNetworkZh, ...sharesZh, ...sysdlgSelectZh, ...fileBrowserFilesZh, ...appLaunchZh, ...ssoZh, ...agentBrowserZh, ...agentBrowserConversationZh, ...agentBrowserReflowZh, ...archiveZh, ...desktopEditZh },
+  en: { ...en, ...workflowEn, ...appUiEn, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...zoneDomainEn, ...trayEn, ...taskCenterEn, ...filePermissionsEn, ...networkEn, ...myNetworkEn, ...sharesEn, ...sysdlgSelectEn, ...fileBrowserFilesEn, ...appLaunchEn, ...ssoEn, ...agentBrowserEn, ...agentBrowserConversationEn, ...agentBrowserReflowEn, ...agentBrowserSiteEn, ...archiveEn, ...desktopEditEn },
+  'zh-CN': { ...zhCN, ...workflowZh, ...appUiZh, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...zoneDomainZh, ...trayZh, ...taskCenterZh, ...filePermissionsZh, ...networkZh, ...myNetworkZh, ...sharesZh, ...sysdlgSelectZh, ...fileBrowserFilesZh, ...appLaunchZh, ...ssoZh, ...agentBrowserZh, ...agentBrowserConversationZh, ...agentBrowserReflowZh, ...agentBrowserSiteZh, ...archiveZh, ...desktopEditZh },
   'zh-TW': {},
   ja: {},
   ko: {},

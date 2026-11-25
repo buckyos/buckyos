@@ -1,6 +1,7 @@
 import { ArrowLeft, ArrowRight, Layers, RotateCw, X } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
+import { ReflowButton } from '../site/ReflowButton'
 import { useAgentBrowser, useAgentBrowserStore } from '../store/context'
 import { canOperate } from '../store/store'
 import { displayUrl } from './address'
@@ -17,7 +18,7 @@ export function TabsButton({ onOpen }: { onOpen: () => void }) {
   )
 }
 
-/** Back, forward (when there is somewhere to go), the address with reload / stop, and — given `onOpenTabs` — the tabs. */
+/** Back, forward (when there is somewhere to go), the address with reload / stop, Reflow, and — given `onOpenTabs` — the tabs. */
 export function AddressBar({ onOpenTabs }: { onOpenTabs?: () => void }) {
   const store = useAgentBrowserStore()
   const { t } = useI18n()
@@ -77,6 +78,7 @@ export function AddressBar({ onOpenTabs }: { onOpenTabs?: () => void }) {
           </button>
         ) : null}
       </form>
+      <ReflowButton />
       {onOpenTabs ? <TabsButton onOpen={onOpenTabs} /> : null}
     </div>
   )

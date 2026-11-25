@@ -1,0 +1,117 @@
+{
+  "schema": "buckyos.site.article/1",
+  "id": "8064031d77568dc9",
+  "source": "news-yahoo-co-jp",
+  "url": "https://news.yahoo.co.jp/articles/2222222222222222222222222222222222222222",
+  "lang": "ja",
+  "published_at": 1763992800000,
+  "fetched_at": 1764001700000,
+  "rev": 1,
+  "object_id": "cyfeed:2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d",
+  "object": {},
+  "title": {
+    "o": "<script>window.__xss = 1</script> タイトルのマークアップ",
+    "t": "<script>window.__xss = 1</script> 标题里的标记只当文字显示"
+  },
+  "summary": {
+    "o": "",
+    "t": "<img src=x onerror=\"window.__xss = 2\">"
+  },
+  "byline": "<b onmouseover=\"window.__xss = 3\">byline</b>",
+  "tags": [
+    "体育",
+    "<i>tag</i>"
+  ],
+  "blocks": [
+    {
+      "type": "p",
+      "text": {
+        "o": "<img src=x onerror=\"window.__xss = 4\">",
+        "t": "<img src=x onerror=\"window.__xss = 4\"> 正文里的标记"
+      }
+    },
+    {
+      "type": "code",
+      "text": {
+        "o": "</pre><script>window.__xss = 5</script>",
+        "t": "</pre><script>window.__xss = 5</script>"
+      }
+    },
+    {
+      "type": "img",
+      "src": "javascript:window.__xss = 6",
+      "object": null,
+      "alt": {
+        "o": "\" onload=\"window.__xss = 7",
+        "t": "\" onload=\"window.__xss = 7"
+      },
+      "w": 10,
+      "h": 10
+    },
+    {
+      "type": "img",
+      "src": "https://example.com/tracker.gif",
+      "object": null,
+      "alt": {
+        "o": "outside picture",
+        "t": "outside picture"
+      },
+      "w": 10,
+      "h": 10
+    },
+    {
+      "type": "table",
+      "rows": [
+        [
+          {
+            "o": "<td onclick=\"window.__xss = 8\">cell</td>",
+            "t": "<td onclick=\"window.__xss = 8\">cell</td>"
+          }
+        ]
+      ]
+    },
+    {
+      "type": "embed",
+      "text": {
+        "o": "an unknown block is left out",
+        "t": "an unknown block is left out"
+      }
+    }
+  ],
+  "comments": [
+    {
+      "author": "<script>window.__xss = 9</script>",
+      "at": 1763993000000,
+      "text": {
+        "o": "<svg onload=\"window.__xss = 10\">",
+        "t": "<svg onload=\"window.__xss = 10\">"
+      }
+    }
+  ],
+  "links": [
+    {
+      "url": "javascript:window.__xss = 11",
+      "text": {
+        "o": "javascript link",
+        "t": "javascript link"
+      }
+    },
+    {
+      "url": "data:text/html,<script>window.__xss = 12</script>",
+      "text": {
+        "o": "data link",
+        "t": "data link"
+      }
+    },
+    {
+      "url": "https://example.com/\"onmouseover=\"window.__xss = 13",
+      "text": {
+        "o": "<u>https link</u>",
+        "t": "<u>https link</u>"
+      }
+    }
+  ],
+  "images": {},
+  "thumb": null,
+  "supplement": null
+}

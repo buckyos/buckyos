@@ -1,11 +1,11 @@
 /* The App's own panels: the tabs of the browser, and the settings. */
 
-import { LayoutList, Plus, Trash2, Users, X } from 'lucide-react'
+import { BookOpen, Plus, Trash2, Users, X } from 'lucide-react'
 import { useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
-import { ReflowLibrarySheet } from '../reflow/LibrarySheet'
 import { QualityItem } from '../screen/QualityItem'
 import { useAgentBrowser, useAgentBrowserStore } from '../store/context'
+import { useSiteController } from '../site/useSite'
 import { canOperate } from '../store/store'
 import { displayUrl } from './address'
 import { Sheet } from './Sheet'
@@ -42,9 +42,10 @@ export function TabsSheet({ onClose }: { onClose: () => void }) {
   )
 }
 
-/** Settings: the desktop layout, and clearing the browser's sign-ins (with a confirmation). */
+/** Settings: the desktop layout, the way to managing the personal site, and clearing the browser's sign-ins (with a confirmation). */
 export function MenuSheet({ onClose }: { onClose: () => void }) {
   const store = useAgentBrowserStore()
+  const site = useSiteController()
   const { t } = useI18n()
   const agent = useAgentBrowser((snapshot) => snapshot.agent)
   const agentCount = useAgentBrowser((snapshot) => snapshot.agents.length)
@@ -52,8 +53,6 @@ export function MenuSheet({ onClose }: { onClose: () => void }) {
   const version = useAgentBrowser((snapshot) => snapshot.browser?.version)
   const pending = useAgentBrowser((snapshot) => snapshot.pending)
   const [confirming, setConfirming] = useState(false)
-  const [library, setLibrary] = useState(false)
-  if (library) return <ReflowLibrarySheet onClose={() => setLibrary(false)} />
   if (confirming) {
     return (
       <Sheet
@@ -83,11 +82,11 @@ export function MenuSheet({ onClose }: { onClose: () => void }) {
         </li>
         <li><QualityItem /></li>
         <li>
-          <button type="button" className="ab-list-item" data-testid="ab-reflow-library-open" onClick={() => setLibrary(true)}>
-            <LayoutList size={18} aria-hidden />
+          <button type="button" className="ab-list-item" data-testid="ab-menu-manage" onClick={() => { onClose(); site.openManage('sources') }}>
+            <BookOpen size={18} aria-hidden />
             <span className="ab-list-text">
-              <span className="ab-list-title">{t('agentBrowser.menu.reflowLibrary', 'Reflow library')}</span>
-              <span className="ab-list-detail">{t('agentBrowser.menu.reflowLibraryHint', 'The sites that were reflowed for you: look inside, delete, import a package.')}</span>
+              <span className="ab-list-title">{t('agentBrowser.manage.title', 'Manage my reading')}</span>
+              <span className="ab-list-detail">{t('agentBrowser.menu.manageHint', 'The websites of your reading site, its maintenance, and what is recorded about your reading.')}</span>
             </span>
           </button>
         </li>

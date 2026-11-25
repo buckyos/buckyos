@@ -1,0 +1,42 @@
+{
+  "schema": "buckyos.site.reading/1",
+  "updated_at": 1764003600000,
+  "since": 1756224000000,
+  "articles": {
+    "7eec8758d56a244a": {
+      "source": "news-yahoo-co-jp",
+      "opens": 2,
+      "dwell_ms": 84000,
+      "max_scroll": 100,
+      "last_opened_at": 1764003000000
+    },
+    "81c5e462be246971": {
+      "source": "news-yahoo-co-jp",
+      "opens": 1,
+      "dwell_ms": 9000,
+      "max_scroll": 35,
+      "last_opened_at": 1764003100000
+    }
+  },
+  "sources": {
+    "news-yahoo-co-jp": {
+      "opens": 3,
+      "dwell_ms": 93000,
+      "last_opened_at": 1764003100000
+    }
+  },
+  "tags": {
+    "科技": {
+      "opens": 2,
+      "dwell_ms": 84000
+    },
+    "经济": {
+      "opens": 2,
+      "dwell_ms": 84000
+    },
+    "社会": {
+      "opens": 1,
+      "dwell_ms": 9000
+    }
+  }
+}

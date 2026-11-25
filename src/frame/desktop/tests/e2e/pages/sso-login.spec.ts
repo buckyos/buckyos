@@ -132,6 +132,55 @@ test.describe('login page', () => {
     expect(await page.evaluate(() => sessionStorage.getItem('buckyos.mock.app-launch.count'))).toBeNull()
   })
 
+  test('a signed-in visitor sent here by reflow.<zone> is signed in there without seeing the form', async ({ page, baseURL }) => {
+    for (const label of ['reflow.', 'reflow-']) {
+      const login = new URL('/login', baseURL)
+      login.hostname = 'localhost'
+      const site = new URL('/?a=7eec8758d56a244a#comments', login)
+      site.hostname = label + 'localhost'
+      login.searchParams.set('redirect_url', site.href)
+      const callbacks = await routeAppHost(page, site.origin + '/**', '<p>Personal site</p>')
+      await seedControlPanel(page, { session: { kind: 'account', auth_method: 'password' } })
+      await page.goto(login.href)
+      await expect(page).toHaveURL(site.href)
+      expect(callbacks).toHaveLength(1)
+      expect(new URL(callbacks[0]).origin).toBe(site.origin)
+      expect(new URL(callbacks[0]).searchParams.get('redirect_url')).toBe(site.href)
+    }
+  })
+
+  test('a reflow.<zone> visitor who cannot be handed over signs in with the form', async ({ page, baseURL }) => {
+    const login = new URL('/login', baseURL)
+    login.hostname = 'localhost'
+    const site = new URL('/', login)
+    site.hostname = 'reflow.localhost'
+    login.searchParams.set('redirect_url', site.href)
+    await seedControlPanel(page, { session: { kind: 'anonymous' } })
+    await page.goto(login.href)
+    await expect(page.getByRole('button', { name: 'Sign In', exact: true })).toBeVisible()
+    expect(await page.evaluate(() => sessionStorage.getItem('buckyos.mock.app-launch.count'))).toBeNull()
+
+    // The Zone does not delegate an External DID's session to this host: the form, and nothing about a workspace.
+    await page.evaluate(([session, launch]) => {
+      const state = JSON.parse(localStorage.getItem(session)!)
+      state.session = { kind: 'external', did: 'did:bns:bob', show_name: 'Bob' }
+      localStorage.setItem(session, JSON.stringify(state))
+      localStorage.setItem(launch, 'access_denied')
+    }, [MOCK_CONTROL_PANEL, MOCK_APP_LAUNCH_KEY] as const)
+    await page.goto(login.href)
+    await expect(page.getByRole('button', { name: 'Sign In', exact: true })).toBeVisible()
+    expect(await page.evaluate(() => sessionStorage.getItem('buckyos.mock.app-launch.count'))).toBe('1')
+    await expect(page.getByTestId('login-workspace-error')).toHaveCount(0)
+    await expect(page).toHaveURL(login.href)
+
+    // Another Zone's reflow host is not this Zone's to hand over to.
+    const foreign = new URL('/login', login)
+    foreign.searchParams.set('redirect_url', 'http://reflow.other.example/')
+    await page.goto(foreign.href)
+    await expect(page.getByRole('button', { name: 'Sign In', exact: true })).toBeVisible()
+    expect(await page.evaluate(() => sessionStorage.getItem('buckyos.mock.app-launch.count'))).toBe('1')
+  })
+
   test('hides DID login when the Zone switched it off', async ({ page }) => {
     await seedControlPanel(page, { session: { kind: 'anonymous' }, sso: { settings: { self_register_enabled: true, did_login_enabled: false } } })
     await page.goto('/login?username=acme-c3')

@@ -1,0 +1,28 @@
+{
+  "schema": "buckyos.site/1",
+  "title": "我的阅读",
+  "language": "zh-CN",
+  "owner_did": "did:bns:alice",
+  "topics": [],
+  "template": {
+    "version": "t1",
+    "params": {
+      "home_order": "time",
+      "per_column": 20,
+      "hide_topics": [],
+      "collapsed": []
+    }
+  },
+  "columns": [],
+  "sources": [],
+  "upgrades": [],
+  "reading": {
+    "enabled": true
+  },
+  "limits": {
+    "translate_tokens_per_day": 1000000
+  },
+  "maintainer": null,
+  "updated_at": 1764000000000,
+  "updated_by": "did:bns:alice"
+}

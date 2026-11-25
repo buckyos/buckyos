@@ -1,0 +1,14 @@
+{
+  "schema": "buckyos.site.source/1",
+  "id": "dv-live-news",
+  "title": "城事快讯",
+  "home_url": "http://172.17.0.1:18741/live",
+  "match": [{ "host": "172.17.0.1", "path": "/live*" }],
+  "lang": "zh-CN",
+  "kind": "news",
+  "needs": "browser",
+  "every_secs": 1800,
+  "max_new": 10,
+  "keep_days": 30,
+  "comments": 0
+}

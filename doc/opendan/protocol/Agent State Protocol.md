@@ -32,13 +32,17 @@
   state/workspaces/                         Known Workspace 登记（项目目录可在 AgentRoot 外）
   state/runtimes/<runtime_id>.json          Runtime 登记（§10）
   state/browser/groups.json                 常驻浏览器各组的标签页（Agent Service 的浏览器模块维护，见下）
+  state/browser/visits.jsonl                主人在常驻浏览器里看过的网址（同上，见下）
+  state/browser/visits.json                 浏览记录的开关
   sync/<task_id>/                           同步任务（§11）：task.json program.ts state.json runs.jsonl out.json schedule.json
   .locks/memory_consolidation.lease  .locks/artifact/<aid>.lease  .locks/workspaces.lock  .locks/runtimes.lock
 ```
 
 访问经 `AgentStateClient`：文件版直接读写上述文件（要求能看到 AgentRoot）；kRPC 版与 DFS 版必须对外表现一致（同一组 fixtures）。
 
-`state/browser/groups.json` 不经 `AgentStateClient`：只有 Agent Service（opendan 的浏览器模块）读写，其他方通过 kRPC `browser.status` 看（[Agent Browser Protocol](Agent%20Browser%20Protocol.md)）。内容是 `{"schema": "opendan.browser.groups/1", "default_session_id": <这个 Agent 的浏览器会话（MessageHub 会话）| null>, "groups": [{"group_id": "default", "tabs": [{"url", "title"}], "active": <当前标签页的下标 | null>, "user_hold", "handover"}]}`：每个 Agent 只有一个标签组 `default`（D35），文件里最多这一项。浏览器停掉（空闲回收、崩溃、Agent Service 重启）之后，下次启动按它把标签页重新打开；`user_hold` / `handover` 让“用户接手着”跨重启保持；`default_session_id` 由 `browser.bind_default` 写。没有标签页也没被接手时不列；租约不落盘。登录状态不在这里，在浏览器的用户数据目录（`doc/path_usage.md`）。
+`state/browser/groups.json` 不经 `AgentStateClient`：只有 Agent Service（opendan 的浏览器模块）读写，其他方通过 kRPC `browser.status` 看（[Agent Browser Protocol](Agent%20Browser%20Protocol.md)）。内容是 `{"schema": "opendan.browser.groups/1", "default_session_id": <这个 Agent 的浏览器会话（MessageHub 会话）| null>, "groups": [{"group_id": "default", "tabs": [{"url", "title"}], "active": <当前标签页的下标 | null>, "user_hold", "handover"}]}`：每个 Agent 只有一个标签组 `default`（D35），文件里最多这一项。浏览器停掉（空闲回收、崩溃、Agent Service 重启）之后，下次启动按它把标签页重新打开；`user_hold` / `handover` 让“用户接手着”跨重启保持；`default_session_id` 由 `browser.bind_default` 写。没有标签页也没被接手时不列；租约不落盘。只为后台任务启动的浏览器不重开这些标签页，也不改这个文件（Agent Browser Protocol §7.1）。登录状态不在这里，在浏览器的用户数据目录（`doc/path_usage.md`）。
+
+`state/browser/visits.jsonl`、`state/browser/visits.json` 同样只由浏览器模块读写，其他方通过 kRPC `browser.visits`、`browser.visits_set_enabled`、`browser.visits_clear` 看和改（Agent Browser Protocol §7.3）。`visits.jsonl` 一行一条 `{"url", "title", "first_at_ms", "last_at_ms", "dwell_ms", "count"}`，`url` 不带查询串和片段，按 `last_at_ms` 从新到旧，保留 90 天、至多 5000 条；有变化时至多每 30 秒整个重写一次，清除时删掉这个文件。`visits.json` 是 `{"enabled": <bool>}`，主人改过开关才有；没有时开关取 `agent.toml` 的 `[loader.browser] visits`。
 
 ## 2. 登记表 `state/sessions/<sid>.json`
 

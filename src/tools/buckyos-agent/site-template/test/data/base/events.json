@@ -1,0 +1,30 @@
+{
+  "schema": "buckyos.site.events/1",
+  "events": [
+    {
+      "id": "e-20261124-chip-export",
+      "title": "半导体设备出口新规",
+      "summary": "政府收紧先进制程设备出口，细则下月生效，厂商评估影响。",
+      "articles": [
+        {
+          "id": "7eec8758d56a244a",
+          "adds": "公布了细则和生效日期",
+          "title": "半导体出口新规下月生效，日本设备厂商受影响",
+          "source": "news-yahoo-co-jp",
+          "at": 1764000000000
+        }
+      ],
+      "supplements": [
+        {
+          "article": "01eabe90c23c8fe3",
+          "source_url": "https://example.org/blog/chip-export-rules-explained",
+          "adds": "逐条解释了许可的适用范围，原报道没有",
+          "title": "逐条看半导体出口新规",
+          "at": 1764001000000
+        }
+      ],
+      "updated_at": 1764001800000
+    }
+  ],
+  "updated_at": 1764001800000
+}

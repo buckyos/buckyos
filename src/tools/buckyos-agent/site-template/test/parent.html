@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>parent</title>
+<style>html, body { margin: 0; height: 100%; } iframe { display: block; width: 100%; height: 100%; border: 0; }</style>
+<iframe id="site" title="site"></iframe>
+<script>
+const frame = document.getElementById('site')
+const child = new URLSearchParams(location.search).get('child')
+window.messages = []
+window.addEventListener('message', (event) => {
+  if (event.source === frame.contentWindow) window.messages.push(event.data)
+})
+window.tell = (message) => frame.contentWindow.postMessage(message, new URL(child).origin)
+frame.src = child
+</script>

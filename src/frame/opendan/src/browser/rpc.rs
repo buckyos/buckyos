@@ -102,6 +102,9 @@ impl From<CdpError> for BrowserError {
     }
 }
 
+const BACKGROUND_TIMEOUT_S: u64 = 60;
+const MAX_BACKGROUND_TIMEOUT_S: u64 = 300;
+
 fn param<T: serde::de::DeserializeOwned>(params: &Value, name: &str) -> Result<T, BrowserError> {
     serde_json::from_value(params.get(name).cloned().unwrap_or(Value::Null))
         .map_err(|e| BrowserError::invalid(format!("param `{name}`: {e}")))
@@ -206,10 +209,27 @@ pub async fn call(browser: &Arc<BrowserModule>, who: &str, token: Option<&str>, 
             super::transfer::export(browser, token, &text(params, "download_id")?).await
         }
         "browser.reflow_state" => browser.reflow_state(token, &text(params, "url")?).await,
-        "browser.reflow_refresh" => browser.reflow_refresh(token, &text(params, "url")?, None).await,
-        "browser.reflow_action" => {
-            let selector = text(params, "selector")?;
-            browser.reflow_refresh(token, &text(params, "url")?, Some(selector)).await
+        "browser.background_run" => {
+            let script_path = text(params, "script_path")?;
+            let url = param::<Option<String>>(params, "url")?.filter(|url| !url.trim().is_empty());
+            let timeout_s = param::<Option<u64>>(params, "timeout_s")?.unwrap_or(BACKGROUND_TIMEOUT_S);
+            if !(1..=MAX_BACKGROUND_TIMEOUT_S).contains(&timeout_s) {
+                return Err(BrowserError::invalid(format!("timeout_s is 1 to {MAX_BACKGROUND_TIMEOUT_S}, not {timeout_s}")));
+            }
+            let args = params.get("args").filter(|args| !args.is_null()).cloned();
+            let data = browser.background_run(&script_path, url, args, timeout_s).await?;
+            Ok(json!({ "data": data }))
+        }
+        "browser.page_hint" => browser.page_hint().await,
+        "browser.visits" => Ok(browser.visited(param(params, "since_ms")?)),
+        "browser.visits_set_enabled" => {
+            let enabled = param(params, "enabled")?;
+            browser.visits_set_enabled(enabled)?;
+            Ok(json!({ "enabled": enabled }))
+        }
+        "browser.visits_clear" => {
+            browser.visits_clear()?;
+            Ok(json!({}))
         }
         other => Err(BrowserError::invalid(format!("unknown method `{other}`"))),
     }
