@@ -345,7 +345,7 @@ impl OperationCodec for MiniMaxImmediateCodec {
                     ("response_format".to_string(), json!("url")),
                 ]);
                 if let Some(ratio) = &request.aspect_ratio {
-                    body.insert("aspect_ratio".into(), json!(ratio));
+                    body.insert("aspect_ratio".into(), json!(buckyos_api::normalize_image_aspect_ratio(ratio)));
                 }
                 body.insert(
                     "subject_reference".to_string(),
@@ -1262,6 +1262,31 @@ mod tests {
         let written = body(Some(false), Some("la la"));
         assert_eq!(written["lyrics"], "la la");
         assert!(written.get("lyrics_optimizer").is_none());
+    }
+
+    #[test]
+    fn image_generation_and_edit_normalize_equivalent_ratios() {
+        for ratio in ["16:9", "016:009", "32:18"] {
+            let mut generate = TextToImageInvokeRequest::new("image-01@test", "landscape");
+            generate.aspect_ratio = Some(ratio.into());
+            let mut edit = buckyos_api::ImageToImageRequest::new("image-01@test",
+                vec![ResourceRef::url("https://example.com/source.png".into(), Some("image/png".into()))], "landscape".into());
+            edit.aspect_ratio = Some(ratio.into());
+            for (api_type, canonical_request) in [
+                (ApiType::ImageTextToImage, AiccCall::ImagesGenerate(generate)),
+                (ApiType::ImageImageToImage, AiccCall::ImageToImage(edit)),
+            ] {
+                let codec = MiniMaxImmediateCodec {
+                    descriptor: minimax_media_adapter().0.operations[IMAGE_OPERATION_ID].clone(), api_type,
+                };
+                let input = CodecInput { canonical_request, resolved_parameters: BTreeMap::from([
+                    ("provider_model_id".into(), json!("image-01"))
+                ]) };
+                let wire = codec.encode(&CodecCall { api_type, input: &input, context: &context() }).unwrap();
+                let HttpBody::Json(body) = wire.body else { panic!("expected JSON") };
+                assert_eq!(body["aspect_ratio"], "16:9");
+            }
+        }
     }
 
     #[test]
