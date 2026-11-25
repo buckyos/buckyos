@@ -2074,6 +2074,14 @@ async fn loop_script_cases() -> Vec<Value> {
             )],
         },
         LoopInput {
+            name: "refused_unsupported_operation",
+            source: "aicc unsupported operation recovery",
+            request: base_request(),
+            tools: &["echo"],
+            tool_results: vec![],
+            script: vec![fail(ProviderFailure::Refused { code: REFUSED_UNSUPPORTED_OPERATION.into() }, "quality is unsupported on selected-model")],
+        },
+        LoopInput {
             name: "provider_context_limit",
             source: "xllm tests::provider_context_refusal_compacts_and_continues_the_same_run",
             request: base_request(),
@@ -2386,6 +2394,8 @@ async fn provider_error_cases() -> Vec<Value> {
             "rpc_attribution_unavailable",
             aicc_detailed(C::AttributionUnavailable, false, None),
         ),
+        ("rpc_unsupported_operation", aicc_detailed(C::UnsupportedOperation, false, None)),
+        ("rpc_unsupported_operation_marked_retriable", aicc_detailed(C::UnsupportedOperation, true, None)),
         (
             "rpc_quota_unavailable",
             aicc_detailed(C::QuotaUnavailable, false, None),
@@ -2495,6 +2505,7 @@ async fn provider_error_cases() -> Vec<Value> {
             "aicc_failed_quota_exhausted",
             aicc_failed(Some(aicc_error(C::QuotaExhausted, true))),
         ),
+        ("aicc_failed_unsupported_operation", aicc_failed(Some(aicc_error(C::UnsupportedOperation, true)))),
         (
             "aicc_failed_context_length",
             aicc_failed(Some(aicc_error(C::ContextLengthExceeded, false))),

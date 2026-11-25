@@ -61,15 +61,13 @@ Positional:
 Options:
   --negative <text>
   --n <count>
-  --aspect <1:1|16:9|9:16|4:3|3:4>
-  --size <WxH>
-  --quality <low|medium|high>
+  --aspect <W:H>
+  --size <WxH|resolution|K-preset|auto>
+  --quality <model-supported-quality>
   --seed <int>
   --format <png|jpg|webp>
 ${COMMON_OPTIONS_HELP}${DELIVERY_HELP}`;
 
-const ASPECT = new Set(["1:1", "16:9", "9:16", "4:3", "3:4"]);
-const QUALITY = new Set(["low", "medium", "high"]);
 
 function formatToMime(format: string | undefined): string | undefined {
   if (!format) return undefined;
@@ -103,26 +101,24 @@ export async function run(argv: string[]): Promise<never> {
     const n = flagInt(parsed.flags, "n");
     if (n !== undefined) request.n = n;
     const aspect = requireString(parsed.flags, "aspect");
-    if (aspect !== undefined) {
-      if (!ASPECT.has(aspect)) {
-        throw new ArgError(`--aspect invalid: ${aspect}`);
-      }
-      request.aspect_ratio = aspect;
-    }
     const size = requireString(parsed.flags, "size");
+    if (aspect !== undefined) {
+      const ratio = /^(\d{1,3}):(\d{1,3})$/.exec(aspect);
+      if (!ratio || ratio.slice(1).some((edge) => Number(edge) < 1 || Number(edge) > 100)) {
+        throw new ArgError("--aspect must be W:H with integers in 1..=100");
+      }
+    }
     if (size !== undefined) {
-      if (!/^\d+x\d+$/i.test(size)) {
-        throw new ArgError(`--size must be WxH, got ${size}`);
-      }
-      request.size = size;
+      const dims = /^(\d+)[xX*](\d+)$/.exec(size);
+      const valid = dims
+        ? dims.slice(1).every((edge) => Number(edge) > 0 && Number(edge) <= 0xffffffff)
+        : /^(?:auto|[1-9]\d*(?:\.\d+)?[Kk]|[1-9]\d*)$/.test(size) && (size === "auto" || Number.isFinite(Number(size.replace(/[Kk]$/, ""))));
+      if (!valid) throw new ArgError("--size must be positive WxH, a positive resolution, or a model-supported K preset");
     }
+    if (aspect !== undefined) request.aspect_ratio = aspect;
+    if (size !== undefined) request.size = size;
     const quality = requireString(parsed.flags, "quality");
-    if (quality !== undefined) {
-      if (!QUALITY.has(quality)) {
-        throw new ArgError(`--quality invalid: ${quality}`);
-      }
-      request.quality = quality;
-    }
+    if (quality !== undefined) request.quality = quality;
     const seed = flagInt(parsed.flags, "seed");
     if (seed !== undefined) request.seed = seed;
     const mime = formatToMime(requireString(parsed.flags, "format"));

@@ -35,7 +35,7 @@ export function classified(error: unknown): Error & { code?: string } {
     const failure = error.error.failure
     if (typeof failure === 'object' && failure && 'refused' in failure) {
       const e = new Error(error.message) as Error & { code?: string }
-      e.code = REFUSALS[failure.refused.code] ?? 'AI_QUOTA_EXHAUSTED'
+      e.code = REFUSALS[failure.refused.code] ?? 'AI_UNAVAILABLE'
       return e
     }
   }

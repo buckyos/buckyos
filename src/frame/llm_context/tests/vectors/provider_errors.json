@@ -103,6 +103,47 @@
     },
     {
       "expect": {
+        "failure": {
+          "refused": {
+            "code": "unsupported_operation"
+          }
+        }
+      },
+      "input": {
+        "code": "unsupported_operation",
+        "data": {
+          "code": "unsupported_operation",
+          "message": "aicc unsupported_operation"
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc unsupported_operation (unsupported_operation)"
+      },
+      "name": "rpc_unsupported_operation",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "unsupported_operation"
+          }
+        }
+      },
+      "input": {
+        "code": "unsupported_operation",
+        "data": {
+          "code": "unsupported_operation",
+          "message": "aicc unsupported_operation",
+          "retriable": true
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc unsupported_operation (unsupported_operation)"
+      },
+      "name": "rpc_unsupported_operation_marked_retriable",
+      "ts": true
+    },
+    {
+      "expect": {
         "failure": "transient"
       },
       "input": {
@@ -484,6 +525,30 @@
         }
       },
       "name": "aicc_failed_quota_exhausted",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "unsupported_operation"
+          }
+        }
+      },
+      "input": {
+        "kind": "aicc_response",
+        "response": {
+          "error": {
+            "code": "unsupported_operation",
+            "message": "aicc unsupported_operation",
+            "retriable": true
+          },
+          "event_ref": "event-1",
+          "status": "failed",
+          "task_id": "aicc-task"
+        }
+      },
+      "name": "aicc_failed_unsupported_operation",
       "ts": true
     },
     {

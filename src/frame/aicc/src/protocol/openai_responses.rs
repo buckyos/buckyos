@@ -1319,9 +1319,7 @@ fn openai_image_size(
         if size == "auto" && ratio.is_none() {
             return Ok(Some(size.clone()));
         }
-        let dims = size
-            .split_once('x')
-            .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)));
+        let dims = buckyos_api::parse_image_dimensions(size);
         let supported = dims.is_some_and(|(w, h)| {
             if dynamic {
                 w > 0
@@ -1334,7 +1332,7 @@ fn openai_image_size(
                     && u64::from(w) <= u64::from(h) * 3
                     && u64::from(h) <= u64::from(w) * 3
             } else if fixed {
-                matches!(size.as_str(), "1024x1024" | "1536x1024" | "1024x1536")
+                matches!((w, h), (1024, 1024) | (1536, 1024) | (1024, 1536))
             } else {
                 w > 0 && h > 0
             }
@@ -1344,14 +1342,14 @@ fn openai_image_size(
             &[("size/output.size", !supported)],
         )?;
         if let (Some((w, h)), Some((rw, rh))) = (dims, ratio) {
-            if u64::from(w) * u64::from(rh) != u64::from(h) * u64::from(rw) {
+            if !buckyos_api::image_dimensions_match_aspect(w, h, (rw, rh)) {
                 return Err(ProtocolError::invalid_request(
                     "size/output.size conflicts with aspect_ratio",
                 ));
             }
         }
     }
-    Ok(size)
+    Ok(size.map(|size| buckyos_api::parse_image_dimensions(&size).map(|(w, h)| format!("{w}x{h}")).unwrap_or(size)))
 }
 
 fn image_generation_tool(
@@ -4317,6 +4315,14 @@ mod tests {
             assert_eq!(body["model"], "gpt-image-2");
             assert_eq!(body["size"], "1280x720");
             assert!(body.get("aspect_ratio").is_none());
+            for size in ["1344x768", "1344X768", "1344*768"] {
+                request.size = Some(size.into());
+                input.canonical_request = AiccCall::ImagesGenerate(request.clone());
+                let wire = registry().encode(adapter, OPENAI_IMAGES_GENERATE_OPERATION_ID, ApiType::ImageTextToImage, &input, &context()).unwrap();
+                let GoldenBody::Json(body) = ProtocolContractHarness::default().request(&wire).unwrap().body else { panic!("json") };
+                assert_eq!(body["model"], "gpt-image-2");
+                assert_eq!(body["size"], "1344x768");
+            }
             request.size = Some("1024x1024".into());
             input.canonical_request = AiccCall::ImagesGenerate(request.clone());
             assert!(registry()

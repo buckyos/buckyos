@@ -999,11 +999,11 @@ Request：
   "negative_prompt": "blurry, low quality",
   "n": 1,
   "aspect_ratio": "1:1",
+  "size": "1024x1024",
   "quality": "high",
   "seed": 12345,
   "output": {
-    "media_type": "image/png",
-    "size": "1024x1024"
+    "media_type": "image/png"
   }
 }
 ```
@@ -1030,6 +1030,8 @@ OpenAI 渠道的 operation 由最终解析后的 metadata/Provider Rules 决定�
 - 不得根据模型名、调用方是否传 feature 或 endpoint URL 在 adapter 中临时猜测路径。
 
 Responses 返回的每个 completed `image_generation_call.result` 必须转换为通用图片 artifact，并同时保留对应 OpenAI `ProviderState` 以支持后续多轮编辑。ProviderState 中的 `result` 必须保存同一个 `ResourceRef`，物化后为 `named_object`，不得保留原始字符串；同坐标回放前以 `BytesOnly` 读取对象并恢复为官方要求的 base64 字符串。多个结果全部保留；MIME 根据实际输出格式确定。缺失结果、非法 Base64、tool failed/rejected 必须返回明确 Provider error。
+
+尺寸位于顶层 `size`，与 `helper.text_to_image` 一致；`output` 在此不接受 `size`。图生图的目标尺寸使用 `output.size`。像素尺寸与显式比例允许不超过 5% 的相对误差，具体值仍由选定模型支持范围决定。
 
 ### 8.2 `image.img2img`
 

@@ -513,3 +513,27 @@ Deno.test('image cache cannot use legacy dimensions when current import cannot m
   assertEquals(calls, 1)
   assertEquals(cached.object_id, newId)
 })
+
+Deno.test('image bridge preserves method-specific size placement with common syntax and tolerance', async () => {
+  const sent = []
+  const id = 'cyfile:' + 'a'.repeat(64)
+  const declare = { inputs: {}, ai: { image: { max_calls: 20 } } }
+  const host = createBridgeHost({ tool: async () => ({ status: 'ok', hits: {} }), infer: async () => ({}),
+    aicc: async (method, request) => { sent.push([method, request]); return { status: 'failed', error: { code: 'unsupported_operation', message: 'model-specific size support' } } },
+    importAsset: async () => ({}), budget: { image_max_calls: 20 } })
+  for (const images of [undefined, [id]]) {
+    for (const size of ['3K', '512', 'auto', '1344X768', '1344*768']) {
+      await host.handle('ai.image', { prompt: 'cat', size, images, model: 'model@test', declare: { ...declare, ai: { image: { max_calls: 20, models: ['model@test'] } } } })
+      const [method, request] = sent.at(-1)
+      assertEquals(method, images ? 'image.img2img' : 'helper.text_to_image')
+      assertEquals(images ? request.output.size : request.size, size)
+      assertEquals(images ? request.size : request.output?.size, undefined)
+    }
+  }
+  const before = sent.length
+  for (const size of ['0x1024', 'nonsense', '768x1344']) {
+    const result = await host.handle('ai.image', { prompt: 'cat', size, aspect: '16:9', declare })
+    assert(typeof result.error === 'string')
+  }
+  assertEquals(sent.length, before)
+})

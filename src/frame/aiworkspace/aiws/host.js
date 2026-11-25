@@ -163,12 +163,23 @@ function mediaRequest(kind, req) {
   if (Number.isInteger(req.seed)) out.seed = req.seed
   if (kind === 'image') {
     if (req.aspect) {
-      const ratio = String(req.aspect).match(/^([1-9]\d{0,2}):([1-9]\d{0,2})$/)
-      if (!ratio || Number(ratio[1]) > 100 || Number(ratio[2]) > 100) throw new Error('aiws.ai.image: aspect is W:H with integers in 1..=100')
+      const ratio = String(req.aspect).match(/^(\d{1,3}):(\d{1,3})$/)
+      if (!ratio || Number(ratio[1]) < 1 || Number(ratio[2]) < 1 || Number(ratio[1]) > 100 || Number(ratio[2]) > 100) throw new Error('aiws.ai.image: aspect is W:H with integers in 1..=100')
       out.aspect_ratio = String(req.aspect)
     }
     if (req.size) {
-      if (!/^(?:[1-9]\d*x[1-9]\d*|1K|2K|4K)$/.test(String(req.size))) throw new Error('aiws.ai.image: size is WxH or a model-supported 1K, 2K, 4K preset')
+      const size = String(req.size)
+      const dims = /^(\d+)[xX*](\d+)$/.exec(size)
+      if (dims) {
+        const [w, h] = [Number(dims[1]), Number(dims[2])]
+        if (!(w > 0 && h > 0 && w <= 0xffffffff && h <= 0xffffffff)) throw new Error('aiws.ai.image: size dimensions must be positive 32-bit integers')
+        if (out.aspect_ratio) {
+          const [rw, rh] = out.aspect_ratio.split(':').map(Number)
+          if (Math.abs(w * rh - h * rw) * 20 > h * rw) throw new Error('aiws.ai.image: size conflicts with aspect')
+        }
+      } else if ((!/^(?:auto|[1-9]\d*(?:\.\d+)?[Kk]|[1-9]\d*)$/.test(size) || (size !== 'auto' && !Number.isFinite(Number(size.replace(/[Kk]$/, '')))))) {
+        throw new Error('aiws.ai.image: size is WxH, a positive resolution, or a model-supported K preset')
+      }
       out.size = String(req.size)
     }
     if (req.quality) out.quality = String(req.quality)
@@ -213,7 +224,7 @@ function imageAspectProblem(media, request) {
   if (!request.aspect_ratio) return null
   const [w, h] = request.aspect_ratio.split(':').map(Number)
   if (!(media.width > 0 && media.height > 0)) return { error: `cannot verify requested aspect ${request.aspect_ratio}: image dimensions are missing`, code: 'AI_INVALID_ANSWER' }
-  if (Math.abs(media.width / media.height / (w / h) - 1) > 0.05) return {
+  if (Math.abs(media.width * h - media.height * w) * 20 > media.height * w) return {
     error: `image aspect does not match requested ${request.aspect_ratio}: received ${media.width}x${media.height}`, code: 'AI_INVALID_ANSWER',
   }
   return null

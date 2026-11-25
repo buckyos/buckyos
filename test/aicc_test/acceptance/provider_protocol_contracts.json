@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-11-24.image-contract.2",
+  "revision": "2026-11-25.image-contract.3",
   "checked_at": "2026-11-16",
   "providers": [
     {
@@ -792,10 +792,11 @@
                 "quality": "medium",
                 "output": {
                   "media_type": "image/jpeg"
-                }
+                },
+                "size": "1344X768"
               },
               "expected_body_paths": {
-                "/size": "1280x720",
+                "/size": "1344x768",
                 "/quality": "medium",
                 "/output_format": "jpeg"
               }
@@ -882,14 +883,15 @@
           "image_parameter_probes": {
             "image.img2img": {
               "request": {
-                "aspect_ratio": "16:9",
+                "aspect_ratio": "4:3",
                 "quality": "medium",
                 "output": {
-                  "media_type": "image/jpeg"
+                  "media_type": "image/jpeg",
+                  "size": "1184*864"
                 }
               },
               "expected_body_paths": {
-                "/size": "1280x720",
+                "/size": "1184x864",
                 "/quality": "medium",
                 "/output_format": "jpeg"
               }
@@ -10930,10 +10932,11 @@
                 "quality": "medium",
                 "output": {
                   "media_type": "image/jpeg"
-                }
+                },
+                "size": "1344X768"
               },
               "expected_body_paths": {
-                "/size": "1280x720",
+                "/size": "1344x768",
                 "/quality": "medium",
                 "/output_format": "jpeg"
               }
@@ -11035,14 +11038,15 @@
           "image_parameter_probes": {
             "image.img2img": {
               "request": {
-                "aspect_ratio": "16:9",
+                "aspect_ratio": "4:3",
                 "quality": "medium",
                 "output": {
-                  "media_type": "image/jpeg"
+                  "media_type": "image/jpeg",
+                  "size": "1184*864"
                 }
               },
               "expected_body_paths": {
-                "/size": "1280x720",
+                "/size": "1184x864",
                 "/quality": "medium",
                 "/output_format": "jpeg"
               }

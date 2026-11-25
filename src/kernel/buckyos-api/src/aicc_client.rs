@@ -3413,6 +3413,7 @@ impl TextToImageInvokeRequest {
     }
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        let misplaced_size = value.get("output").and_then(|output| output.get("size")).is_some();
         let request: Self = serde_json::from_value(value).map_err(|error| {
             RPCErrors::ParseRequestError(format!(
                 "Failed to parse TextToImageInvokeRequest: {}",
@@ -3420,6 +3421,9 @@ impl TextToImageInvokeRequest {
             ))
         })?;
         validate_exact_model_name(&request.exact_model).map_err(|error| error.to_krpc_error())?;
+        if misplaced_size {
+            return Err(AiccError::new(AiccErrorCode::InvalidRequest, "text-to-image size must be at the top level, not output.size").to_krpc_error());
+        }
         validate_image_dimensions(request.aspect_ratio.as_deref(), request.size.as_deref())
             .map_err(|error| error.to_krpc_error())?;
         Ok(request)
@@ -3493,6 +3497,7 @@ impl TextToImageHelperRequest {
     }
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        let misplaced_size = value.get("output").and_then(|output| output.get("size")).is_some();
         let request: Self = serde_json::from_value(value).map_err(|error| {
             RPCErrors::ParseRequestError(format!(
                 "Failed to parse TextToImageHelperRequest: {}",
@@ -3501,6 +3506,9 @@ impl TextToImageHelperRequest {
         })?;
         validate_logical_model_name(&request.logical_model)
             .map_err(|error| error.to_krpc_error())?;
+        if misplaced_size {
+            return Err(AiccError::new(AiccErrorCode::InvalidRequest, "text-to-image size must be at the top level, not output.size").to_krpc_error());
+        }
         validate_image_dimensions(request.aspect_ratio.as_deref(), request.size.as_deref())
             .map_err(|error| error.to_krpc_error())?;
         Ok(request)
@@ -3780,30 +3788,42 @@ pub enum MaskSemantics {
     AlphaZeroIsEditArea,
 }
 
+pub fn parse_image_dimensions(size: &str) -> Option<(u32, u32)> {
+    let (w, h) = size.split_once(['x', 'X', '*'])?;
+    if !w.bytes().all(|c| c.is_ascii_digit()) || !h.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let (w, h) = (w.parse::<u32>().ok()?, h.parse::<u32>().ok()?);
+    (w > 0 && h > 0).then_some((w, h))
+}
+
+pub fn image_dimensions_match_aspect(width: u32, height: u32, ratio: (u32, u32)) -> bool {
+    let actual = u64::from(width) * u64::from(ratio.1);
+    let expected = u64::from(height) * u64::from(ratio.0);
+    width > 0 && height > 0 && ratio.0 > 0 && ratio.1 > 0 && actual.abs_diff(expected) * 20 <= expected
+}
+
 fn validate_image_dimensions(
     aspect: Option<&str>,
     size: Option<&str>,
 ) -> std::result::Result<(), AiccError> {
     let invalid = |message| AiccError::new(AiccErrorCode::InvalidRequest, message);
-    let ratio = aspect
-        .map(|v| {
-            crate::parse_aspect_ratio(v)
-                .ok_or_else(|| invalid("aspect_ratio must be W:H with integers in 1..=100"))
-        })
-        .transpose()?;
+    let ratio = aspect.map(|value| crate::parse_aspect_ratio(value)
+        .ok_or_else(|| invalid("aspect_ratio must be W:H with integers in 1..=100"))).transpose()?;
     if let Some(size) = size {
-        if !matches!(size, "auto" | "1K" | "2K" | "4K") {
-            let (w, h) = size
-                .split_once('x')
-                .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
-                .filter(|(w, h)| *w > 0 && *h > 0)
-                .ok_or_else(|| {
-                    invalid("size/output.size must be positive WxH or a supported preset")
-                })?;
-            if let Some((rw, rh)) = ratio {
-                if u64::from(w) * u64::from(rh) != u64::from(h) * u64::from(rw) {
-                    return Err(invalid("size/output.size conflicts with aspect_ratio"));
-                }
+        if let Some((w, h)) = parse_image_dimensions(size) {
+            if ratio.is_some_and(|ratio| !image_dimensions_match_aspect(w, h, ratio)) {
+                return Err(invalid("size/output.size conflicts with aspect_ratio"));
+            }
+        } else {
+            let number = size.strip_suffix('K').or_else(|| size.strip_suffix('k')).unwrap_or(size);
+            let preset = number.starts_with(|c: char| c.is_ascii_digit() && c != '0')
+                && number.bytes().all(|c| c.is_ascii_digit() || c == b'.')
+                && number.bytes().filter(|c| *c == b'.').count() <= usize::from(number.len() != size.len())
+                && !number.ends_with('.')
+                && number.parse::<f64>().is_ok_and(|n| n > 0.0 && n.is_finite());
+            if size != "auto" && !preset {
+                return Err(invalid("size/output.size must be positive WxH, a positive resolution, or a model-supported K preset"));
             }
         }
     }
@@ -7122,6 +7142,29 @@ mod image_edit_contract_tests {
             };
             assert_eq!(detail.code, code.as_str());
             assert_eq!(AiccError::from_krpc_error(&wire).unwrap().code, code);
+        }
+    }
+
+    #[test]
+    fn all_image_entrypoints_share_size_syntax_and_aspect_tolerance() {
+        for (aspect, size) in [
+            (Some("16:9"), "2848x1600"), (Some("16:9"), "1792x1024"),
+            (Some("16:9"), "1344x768"), (Some("16:9"), "1376x768"),
+            (Some("16:9"), "1664x928"), (Some("9:16"), "1600x2848"),
+            (Some("4:3"), "1184x864"), (Some("04:03"), "1184X864"),
+            (Some("4:3"), "1184*864"), (Some("1:1"), "1049x1000"), (Some("1:1"), "1050x1000"),
+            (None, "3K"), (None, "512"), (None, "auto"),
+        ] {
+            assert!(TextToImageInvokeRequest::from_json(json!({"exact_model":"image@test", "prompt":"cat", "aspect_ratio":aspect, "size":size})).is_ok(), "{size}");
+            assert!(TextToImageHelperRequest::from_json(json!({"logical_model":"image.txt2img", "prompt":"cat", "aspect_ratio":aspect, "size":size})).is_ok(), "{size}");
+            assert!(ImageToImageRequest::from_json(json!({"exact_model":"image@test", "images":[], "prompt":"cat", "aspect_ratio":aspect, "output":{"size":size}})).is_ok(), "{size}");
+        }
+        for (aspect, size) in [(Some("1:1"), "1051x1000"), (Some("16:9"), "768x1344"), (None, "0x1024"), (None, "4294967296x1"), (None, "nonsense"), (None, "")] {
+            assert!(validate_image_dimensions(aspect, Some(size)).is_err(), "{size}");
+        }
+        for size in ["1024x1024", "nonsense"] {
+            assert!(TextToImageInvokeRequest::from_json(json!({"exact_model":"image@test", "prompt":"cat", "output":{"size":size}})).is_err());
+            assert!(TextToImageHelperRequest::from_json(json!({"logical_model":"image.txt2img", "prompt":"cat", "output":{"size":size}})).is_err());
         }
     }
 
