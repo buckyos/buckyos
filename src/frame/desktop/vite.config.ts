@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import https from 'node:https'
 import { join, relative, resolve, sep } from 'node:path'
-import { build, defineConfig, searchForWorkspaceRoot, type Plugin, type Rolldown } from 'vite'
+import { build, defineConfig, runnerImport, searchForWorkspaceRoot, type Plugin, type Rolldown } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // Desktop service worker (application resources for a cold start without the network): after the
@@ -25,12 +25,49 @@ function desktopServiceWorker(): Plugin {
         }
       }
       try { walk(outDir) } catch { return } // the build failed before writing anything
-      const precache = files.filter((file) => file !== 'sw.js' && !file.endsWith('.map') && !file.startsWith(PDFJS_PREFIX) && !file.startsWith(PRINT_PREFIX) && !file.startsWith('open-source/')).sort()
+      const precache = files.filter((file) => file !== 'sw.js' && !file.endsWith('.map') && !file.startsWith(PDFJS_PREFIX) && !file.startsWith(PRINT_PREFIX) && !file.startsWith('open-source/') && !file.startsWith('system-apps')).sort()
       if (!precache.includes('index.html')) return
       const hash = createHash('sha256')
       for (const file of precache) hash.update(file).update('\0').update(readFileSync(join(outDir, file)))
       const template = readFileSync(resolve(import.meta.dirname, 'src/service-worker/sw.template.js'), 'utf8')
       writeFileSync(join(outDir, 'sw.js'), template.replace('__SW_VERSION__', hash.digest('hex').slice(0, 16)).replace('__SW_PRECACHE__', JSON.stringify(precache)))
+    },
+  }
+}
+
+// The list of the desktop's system apps and their icons, for the BuckyOS client: `system-apps.json` and `system-apps/`,
+// made from the desktop's own catalog (src/app/standalone/manifest.ts) at build time, and on request by the dev server.
+function systemApps(): Plugin {
+  const read = (path: string) => readFileSync(resolve(import.meta.dirname, path), 'utf8')
+  const make = async (): Promise<Record<string, string>> => {
+    const { module } = await runnerImport<{ systemAppsFiles: (input: unknown) => Record<string, string> }>(
+      resolve(import.meta.dirname, 'src/app/standalone/manifest.ts'),
+      { configFile: false, root: import.meta.dirname, logLevel: 'warn' },
+    )
+    const tokens = Object.fromEntries([...read('src/shared/tokens.css').matchAll(/(--cp-app-[\w-]+):\s*([^;]+);/g)].map((m) => [m[1], m[2]]))
+    const locales = resolve(import.meta.dirname, 'src/i18n/locales')
+    const languagePacks = Object.fromEntries(readdirSync(locales).filter((name) => name.endsWith('.json')).map((name) => [name.slice(0, -5), JSON.parse(readFileSync(join(locales, name), 'utf8'))]))
+    return module.systemAppsFiles({ tokens, languagePacks, images: { aiworkspace: read('public/aiworkspace/icon.svg') } })
+  }
+  return {
+    name: 'desktop-system-apps',
+    configureServer(server) {
+      let files: Promise<Record<string, string>> | undefined
+      server.watcher.on('change', () => { files = undefined })
+      server.middlewares.use((req, res, next) => {
+        const path = (req.url ?? '').split('?')[0]
+        if (path !== '/system-apps.json' && !path.startsWith('/system-apps/')) return next()
+        files ??= make()
+        files.then((all) => {
+          const content = all[path.slice(1)]
+          if (content === undefined) { res.statusCode = 404; res.end(); return }
+          res.setHeader('Content-Type', path.endsWith('.svg') ? 'image/svg+xml' : 'application/json')
+          res.end(content)
+        }, next)
+      })
+    },
+    async generateBundle() {
+      for (const [fileName, source] of Object.entries(await make())) this.emitFile({ type: 'asset', fileName, source })
     },
   }
 }
@@ -267,7 +304,7 @@ export default defineConfig(() => {
     : {}
   return {
     base: '/',
-    plugins: [react(), pdfjsAssets(), aiwsHostPages(), aiwsProgramRunner(), aiwsPrintRenderer(), desktopServiceWorker()],
+    plugins: [react(), systemApps(), pdfjsAssets(), aiwsHostPages(), aiwsProgramRunner(), aiwsPrintRenderer(), desktopServiceWorker()],
     // two pages of one build: the Desktop (index.html) and a Workspace's own page (aiws.html), sharing their chunks
     build: { rollupOptions: { input: { index: resolve(import.meta.dirname, 'index.html'), aiws: resolve(import.meta.dirname, 'aiws.html') } } },
     // The Replica Worker (src/app/aiworkspace/offline/replica.worker.ts) is a module worker.

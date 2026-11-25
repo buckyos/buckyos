@@ -4,12 +4,23 @@ use std::{
     env, fs,
     path::Path,
 };
+use toml::value::Datetime;
 
 #[derive(Deserialize)]
 struct Registry {
+    review: Review,
     reader: Vec<Reader>,
     audited_sources: BTreeMap<String, String>,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Review {
+    commit: String,
+    date: Datetime,
+    changed: Datetime,
+    conclusion: String,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reader {
@@ -28,6 +39,22 @@ mod registry_paths;
 fn main() {
     println!("cargo:rerun-if-changed=readers.toml");
     let reg: Registry = toml::from_str(&fs::read_to_string("readers.toml").unwrap()).unwrap();
+    let commit = |revision: &str| {
+        revision.len() == 40
+            && revision
+                .bytes()
+                .all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    assert!(
+        commit(&reg.review.commit) && reg.audited_sources.values().all(|r| commit(r)),
+        "reviewed repositories need full commit IDs"
+    );
+    assert!(
+        reg.review.changed.date.is_some()
+            && reg.review.changed.date <= reg.review.date.date
+            && !reg.review.conclusion.trim().is_empty(),
+        "the review needs its date, the date of the last change and a conclusion"
+    );
     let cargo: toml::Table = toml::from_str(&fs::read_to_string("Cargo.toml").unwrap()).unwrap();
     // A clean workspace resolves the branch dependencies again. Report a new
     // dependency revision even when the format owners have no in-repo changes.
@@ -55,6 +82,16 @@ fn main() {
     fs::write(
         Path::new(&out).join("format_sources.json"),
         serde_json::to_vec(&source_revisions).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        Path::new(&out).join("review.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "commit": reg.review.commit,
+            "date": reg.review.date.to_string(),
+            "changed": reg.review.changed.to_string(),
+        }))
+        .unwrap(),
     )
     .unwrap();
     let mut schemas = std::collections::BTreeMap::new();

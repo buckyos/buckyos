@@ -1,4 +1,6 @@
-import { VOICE_WAVEFORM_MAX, VOICE_WAVEFORM_SAMPLES } from '../model/msgobj'
+import { formatVoiceDuration, VOICE_WAVEFORM_MAX, VOICE_WAVEFORM_SAMPLES } from '../model/msgobj'
+
+export { formatVoiceDuration }
 
 /** Longest voice note; recording stops and sends when it is reached. */
 export const VOICE_MAX_MS = 5 * 60_000
@@ -33,11 +35,6 @@ export function resampleWaveform(waveform: readonly number[], bars: number): num
 /** Bars a voice bubble draws: longer clips get a wider waveform, as in Telegram. */
 export function voiceBarCount(durationMs: number): number {
   return Math.round(Math.min(48, Math.max(24, 24 + (durationMs / 1000 - 2) * 0.9)))
-}
-
-export function formatVoiceDuration(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000))
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
 /** The recording timer: `m:ss,t` with tenths of a second. */

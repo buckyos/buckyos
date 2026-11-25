@@ -4,6 +4,7 @@
   /* state colours derived from the Desktop theme the way its own apps do: accent-soft only as a light tint
      over the surface, the accent for borders, icons and links, body text on selected rows. Derived again under a
      subtree with its own theme (the stage), since a derived variable is computed where it is declared. */
+  --aiws-table-selection-line: color-mix(in srgb, var(--cp-success) 72%, var(--cp-text));
   --aiws-selected-bg: color-mix(in srgb, var(--cp-accent-soft) 20%, var(--cp-surface));
   --aiws-selected-border: color-mix(in srgb, var(--cp-accent) 26%, var(--cp-border));
   --aiws-pressed-bg: color-mix(in srgb, var(--cp-accent) 14%, transparent);
@@ -253,7 +254,7 @@
 .aiws-td { flex: none; display: flex; align-items: center; gap: 2px; padding: 0 4px; box-sizing: border-box; min-width: 0; position: relative; border-right: 1px solid var(--cp-border); }
 .aiws-td:last-child, .aiws-td.aiws-td-pad { border-right: none; }
 .aiws-td.aiws-td-actions { border-right: none; justify-content: center; }
-.aiws-td:focus-within:not(.aiws-td-actions) { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--cp-accent) 55%, transparent); border-radius: 2px; }
+.aiws-td:focus-within:not(.aiws-td-actions) { box-shadow: inset 0 0 0 2px var(--aiws-table-selection-line); border-radius: 2px; }
 .aiws-td:focus-within :focus-visible { outline: none; box-shadow: none; }
 .aiws-tr:has(.aiws-conflict) { z-index: 4; }
 .aiws-td[data-state='needs_attention'] { box-shadow: inset 0 0 0 2px var(--cp-danger); overflow: visible; z-index: 3; }
@@ -315,7 +316,8 @@
 .aiws-flow .aiws-fblock[data-view='table']:hover .aiws-table-foot .aiws-table-count { opacity: 1; }
 .aiws-editor { display: flex; flex: 1 1 auto; min-width: 0; gap: 4px; align-items: center; }
 .aiws-editor input, .aiws-editor select { width: 100%; }
-.aiws-root .aiws-td .aiws-editor input:not([type='checkbox']), .aiws-root .aiws-td .aiws-editor select { height: 28px; border: none; border-radius: 4px; background: var(--cp-surface-opaque, var(--cp-surface)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--cp-accent) 60%, transparent); }
+.aiws-root .aiws-td .aiws-editor input:not([type='checkbox']), .aiws-root .aiws-td .aiws-editor select { height: 28px; border: none; border-radius: 4px; background: var(--cp-surface-opaque, var(--cp-surface)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--aiws-table-selection-line) 60%, transparent); }
+.aiws-root .aiws-td .aiws-editor > input[type='text'] { background: transparent; outline: none; box-shadow: none; padding-inline: 4px; }
 .aiws-editor-multi { flex-wrap: wrap; background: var(--cp-surface-opaque, var(--cp-surface)); position: absolute; z-index: 5; left: 0; top: 0; padding: 4px; border: 1px solid var(--cp-border); border-radius: 6px; width: max-content; }
 .aiws-conflict {
   position: absolute;
@@ -511,6 +513,8 @@
 .aiws-selection-group { fill: none; stroke: var(--cp-accent); stroke-width: 1.5; }
 .aiws-hover-outline { fill: none; stroke: var(--cp-accent); stroke-width: 1; opacity: 0.55; }
 .aiws-hover-outline.is-group { stroke-dasharray: 5 4; opacity: 0.8; }
+.aiws-hover-outline.is-table,
+.aiws-overlay [data-selected-view='table'] :is(.aiws-selection-box:not(.is-locked), .aiws-handle) { stroke: var(--aiws-table-selection-line); }
 .aiws-cut-outline { fill: none; stroke: var(--cp-muted); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.6; }
 .aiws-overlay-html { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
 .aiws-overlay-html > * { position: absolute; }
@@ -727,6 +731,12 @@
 .aiws-root .aiws-tool { min-width: 36px; height: 36px; padding: 0 8px; border: none; border-radius: 8px; background: none; color: var(--cp-text); justify-content: center; flex: none; }
 .aiws-root .aiws-tool:hover:not(:disabled) { background: var(--cp-surface-2); }
 .aiws-root .aiws-tool[aria-pressed='true'], .aiws-root .aiws-tool[aria-expanded='true'] { background: var(--aiws-pressed-bg); color: var(--cp-accent); }
+/* shown disabled, and its click opens the reason (ui/framework/ToolItem.tsx) */
+.aiws-root .aiws-tool[aria-disabled='true'] { opacity: 0.5; cursor: default; }
+.aiws-root .aiws-tool[aria-disabled='true']:hover { background: none; }
+.aiws-root .aiws-tool[aria-disabled='true'][aria-expanded='true'] { background: var(--cp-surface-2); color: var(--cp-text); }
+.aiws-popover.aiws-tool-reason { min-width: 0; width: max-content; max-width: min(320px, calc(100vw - 24px)); padding: 10px 12px; font-size: 13px; line-height: 1.5; text-wrap: pretty; }
+.aiws-tool-reason p { margin: 0; }
 .aiws-root .aiws-tool.is-primary { background: var(--aiws-primary-bg); color: var(--aiws-on-primary); }
 .aiws-root .aiws-tool.is-primary:hover:not(:disabled) { background: var(--aiws-primary-hover); }
 .aiws-root .aiws-tool.is-ai { color: var(--aiws-ai); }

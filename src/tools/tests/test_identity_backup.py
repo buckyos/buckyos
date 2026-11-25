@@ -37,7 +37,11 @@ class IdentityBackupTests(unittest.TestCase):
                     env["BUCKYOS_SECURITY_ROOT"] = str(security_root)
                     env["BUCKYOS_IDENTITY_ROOT"] = str(identity_root)
 
-                config = {"zone_name": "test.buckyos.io", "admin_password_hash": "test-secret"}
+                config = {
+                    "zone_name": "test.buckyos.io",
+                    "access_hostname": "home.example.com",
+                    "admin_password_hash": "test-secret",
+                }
                 files = {
                     root / "etc" / "node_identity.json": {"device_did": "did:bns:ood1.test"},
                     root / "etc" / "machine.json": {"web3_bridge": {"bns": "web3.devtests.org"}},
@@ -53,6 +57,21 @@ class IdentityBackupTests(unittest.TestCase):
                 device_key.chmod(0o600)
                 (security_root / "start_config.json").chmod(0o644)
 
+                zone_files = {}
+                for dir_name in ("home.example.com", "_.home.example.com"):
+                    for name in ("server.fullchain.pem", "server.meta.json"):
+                        zone_files[identity_root / dir_name / name] = f"{dir_name} {name}"
+                    zone_files[security_root / dir_name / "server.private.pem"] = f"{dir_name} key"
+                zone_files[security_root / "dns_credentials" / "home-example-com-1a2b3c4d.json"] = "token"
+                private_files = [file for file in zone_files if security_root in file.parents]
+                others = {
+                    identity_root / "other.example.com" / "server.fullchain.pem": "other",
+                    identity_root / "home.example.com" / "notes.txt": "notes",
+                }
+                for file, contents in {**zone_files, **others}.items():
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    file.write_text(contents, encoding="utf-8")
+
                 backup_root = temporary / "backup"
                 with patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(io.StringIO()):
                     module.backup_identity_file(str(backup_root))
@@ -62,6 +81,12 @@ class IdentityBackupTests(unittest.TestCase):
                     self.assertFalse((backup / "etc" / "start_config.json").exists())
                     if os.name != "nt":
                         self.assertEqual(stat.S_IMODE(saved_config.stat().st_mode), 0o600)
+                        for file in private_files:
+                            saved = backup / "security" / file.relative_to(security_root)
+                            self.assertEqual(stat.S_IMODE(saved.stat().st_mode), 0o600)
+                            saved.chmod(0o644)
+                    for file in others:
+                        self.assertFalse((backup / "local" / "identity" / file.relative_to(identity_root)).exists())
 
                     shutil.rmtree(root)
                     if custom_roots:
@@ -73,10 +98,38 @@ class IdentityBackupTests(unittest.TestCase):
                 for file, contents in files.items():
                     self.assertEqual(json.loads(file.read_text(encoding="utf-8")), contents)
                 self.assertEqual(device_key.read_text(encoding="utf-8"), "test-private-key")
+                for file, contents in zone_files.items():
+                    self.assertEqual(file.read_text(encoding="utf-8"), contents)
+                for file in others:
+                    self.assertFalse(file.exists())
                 self.assertFalse((root / "etc" / "start_config.json").exists())
                 if os.name != "nt":
                     self.assertEqual(stat.S_IMODE((security_root / "start_config.json").stat().st_mode), 0o600)
                     self.assertEqual(stat.S_IMODE(device_key.stat().st_mode), 0o600)
+                    for file in private_files:
+                        self.assertEqual(stat.S_IMODE(file.stat().st_mode), 0o600)
+                        self.assertEqual(stat.S_IMODE(file.parent.stat().st_mode), 0o700)
+
+    def test_backup_without_custom_domain_files(self):
+        module = _load_backup_script()
+        for hostname in (None, "", "../etc", "home.example.com"):
+            with self.subTest(hostname=hostname), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "buckyos"
+                config = {"zone_name": "test.buckyos.io"}
+                if hostname is not None:
+                    config["access_hostname"] = hostname
+                (root / "etc" / "server.secret").parent.mkdir(parents=True)
+                (root / "etc" / "server.secret").write_text("x", encoding="utf-8")
+                (root / "security").mkdir()
+                (root / "security" / "start_config.json").write_text(json.dumps(config), encoding="utf-8")
+                backup_root = Path(temporary) / "backup"
+                with (
+                    patch.dict(os.environ, {"BUCKYOS_ROOT": str(root)}, clear=True),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    module.backup_identity_file(str(backup_root))
+                saved = [path for path in backup_root.rglob("*") if path.is_file()]
+                self.assertEqual([path.name for path in saved], ["start_config.json"])
 
     def test_backup_requires_start_config_in_security_root(self):
         module = _load_backup_script()

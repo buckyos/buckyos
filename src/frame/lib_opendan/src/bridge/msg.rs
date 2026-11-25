@@ -41,9 +41,11 @@ pub struct MsgBridgeCtx {
     pub agent_did: Option<DID>,
     /// The agent's owner: the only sender whose messages reach a session.
     pub owner: DID,
-    /// Whether group messages may reach a session at all (the owner's, and
-    /// only when they mention the agent).
+    /// Whether group messages may reach a session at all.
     pub allow_group: bool,
+    /// What the group's trigger says about this message
+    /// ([`crate::group_trigger`]). `None`: not checked, nothing starts.
+    pub group: Option<crate::group_trigger::TriggerVerdict>,
     /// Registered slash commands (name without `/`).
     pub commands: BTreeMap<String, SlashCommand>,
     /// Display name of the speaker from the contact lookup, used when the
@@ -146,13 +148,15 @@ fn delivery(record: &MsgRecord, ctx: &MsgBridgeCtx) -> MsgDelivery {
             .and_then(|i| i.transport_did.as_ref())
             .map(|d| d.to_string()),
         context: false,
+        trigger: None,
     }
 }
 
 /// Filter and split one inbox record (mechanical rules, in this order).
 /// Only the owner reaches a session: anyone else's record is dropped
-/// before any inference. In a group only the owner's messages that mention
-/// the agent do, and only while group chat is allowed. The session never
+/// before any inference. In a group the messages its trigger lets through
+/// do, and only while group chat is allowed; commands are the owner's
+/// everywhere. The session never
 /// parses message text: slash text this function does not recognize is an
 /// ordinary message for the LLM.
 pub fn route_msg_record(record: &MsgRecord, msg: &MsgObject, ctx: &MsgBridgeCtx) -> MsgBridgeOutput {
@@ -194,30 +198,30 @@ pub fn route_msg_record(record: &MsgRecord, msg: &MsgObject, ctx: &MsgBridgeCtx)
             };
         }
     }
-    if record_sender(record) != ctx.owner {
-        return MsgBridgeOutput::Drop {
-            reason: "sender is not the owner",
-        };
-    }
+    let owner = record_sender(record) == ctx.owner;
+    let mut trigger = None;
     if msg.kind == MsgObjKind::GroupMsg {
         if !ctx.allow_group {
             return MsgBridgeOutput::Drop {
                 reason: "group chat is not allowed",
             };
         }
-        let mentioned = ctx.agent_did.as_ref().is_some_and(|agent| {
-            msg.mentions
-                .as_ref()
-                .is_some_and(|m| m.dids.contains(agent))
-        });
-        if !mentioned {
+        let Some(verdict) = ctx.group.as_ref().filter(|v| v.run) else {
             return MsgBridgeOutput::Drop {
-                reason: "group message without a mention of the agent",
+                reason: "no group condition lets the message through",
             };
-        }
+        };
+        trigger = Some(MsgTrigger {
+            reason: verdict.reason.clone().unwrap_or_default(),
+            member: !owner,
+        });
+    } else if !owner {
+        return MsgBridgeOutput::Drop {
+            reason: "sender is not the owner",
+        };
     }
     let text = msg.content.content.trim();
-    if msg.content.refs.is_empty() && msg.content.machine.is_none() {
+    if owner && msg.content.refs.is_empty() && msg.content.machine.is_none() {
         if let Some((name, args)) = slash_command(text, &ctx.commands) {
             return match ctx.commands.get(name) {
                 Some(SlashCommand::Stop) => MsgBridgeOutput::Control {
@@ -235,7 +239,10 @@ pub fn route_msg_record(record: &MsgRecord, msg: &MsgObject, ctx: &MsgBridgeCtx)
         }
     }
     MsgBridgeOutput::Deliver {
-        delivery: delivery(record, ctx),
+        delivery: MsgDelivery {
+            trigger,
+            ..delivery(record, ctx)
+        },
     }
 }
 
@@ -356,6 +363,7 @@ mod tests {
             agent_did: Some(did(AGENT)),
             owner: did(OWNER),
             allow_group: false,
+            group: None,
             commands: [
                 ("stop".to_string(), SlashCommand::Stop),
                 ("model".to_string(), SlashCommand::App),
@@ -490,37 +498,77 @@ mod tests {
         assert_eq!(dropped(route_msg_record(&rec, &msg, &c)), "sender is not the owner");
     }
 
+    /// The trigger's verdict on `msg`, as the host checks it.
+    fn verdict(msg: &MsgObject, triggers: Option<&[serde_json::Value]>) -> crate::group_trigger::TriggerVerdict {
+        use crate::group_trigger::{GroupTrigger, MessageConditions, TriggerInput};
+        let input = TriggerInput::new(msg, &msg.from, &did(OWNER), Some(&did(AGENT)));
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(MessageConditions::new(triggers).check(&input))
+    }
+
     #[test]
-    fn group_messages_need_the_switch_the_owner_and_a_mention() {
+    fn group_messages_need_the_switch_and_a_condition() {
         let mut c = ctx();
         let asked = group(OWNER, "@jarvis summarize the thread", &[AGENT]);
+        c.group = Some(verdict(&asked, None));
         assert_eq!(
             dropped(route_msg_record(&record(OWNER, &asked), &asked, &c)),
             "group chat is not allowed"
         );
         c.allow_group = true;
-        assert!(matches!(
-            route_msg_record(&record(OWNER, &asked), &asked, &c),
-            MsgBridgeOutput::Deliver { .. }
-        ));
-        let chatter = group(OWNER, "lunch?", &[]);
+        let MsgBridgeOutput::Deliver { delivery } = route_msg_record(&record(OWNER, &asked), &asked, &c) else {
+            panic!("the owner's mention is delivered")
+        };
         assert_eq!(
-            dropped(route_msg_record(&record(OWNER, &chatter), &chatter, &c)),
-            "group message without a mention of the agent"
-        );
-        let other = group(OWNER, "@carol look", &["did:bns:carol"]);
-        assert_eq!(
-            dropped(route_msg_record(&record(OWNER, &other), &other, &c)),
-            "group message without a mention of the agent"
+            delivery.trigger,
+            Some(MsgTrigger { reason: "condition 1: owner/mention".into(), member: false })
         );
         let mut everyone = group(OWNER, "@all meeting", &[]);
         everyone.mentions = Some(ndn_lib::MsgMentions { dids: Vec::new(), all: true });
-        assert!(matches!(route_msg_record(&record(OWNER, &everyone), &everyone, &c), MsgBridgeOutput::Drop { .. }));
-        let by_member = group("did:bns:carol", "@jarvis do my homework", &[AGENT]);
-        assert_eq!(
-            dropped(route_msg_record(&record("did:bns:carol", &by_member), &by_member, &c)),
-            "sender is not the owner"
-        );
+        for (from, msg) in [
+            (OWNER, group(OWNER, "lunch?", &[])),
+            (OWNER, group(OWNER, "@carol look", &["did:bns:carol"])),
+            (OWNER, everyone),
+            ("did:bns:carol", group("did:bns:carol", "@jarvis do my homework", &[AGENT])),
+        ] {
+            c.group = Some(verdict(&msg, None));
+            assert_eq!(
+                dropped(route_msg_record(&record(from, &msg), &msg, &c)),
+                "no group condition lets the message through"
+            );
+        }
+        // Nothing starts unchecked.
+        c.group = None;
+        assert!(matches!(route_msg_record(&record(OWNER, &asked), &asked, &c), MsgBridgeOutput::Drop { .. }));
+    }
+
+    #[test]
+    fn a_member_let_through_is_marked_and_gives_no_command() {
+        let all = [serde_json::json!({"who": "everyone", "how": "mention"})];
+        let mut c = ctx();
+        c.allow_group = true;
+        let by_member = group("did:bns:carol", "/stop", &[AGENT]);
+        c.group = Some(verdict(&by_member, Some(&all)));
+        let rec = record("did:bns:carol", &by_member);
+        let MsgBridgeOutput::Deliver { delivery } = route_msg_record(&rec, &by_member, &c) else {
+            panic!("a member's command is a message")
+        };
+        assert!(delivery.trigger.as_ref().unwrap().member);
+        let posted = PostedInput::msg("app:jarvis@bob", by_member.clone(), delivery).unwrap();
+        let SessionInput::Msg(m) = &posted.input else {
+            panic!()
+        };
+        let xml = render_msg_xml(&message_view(&posted.key, 5, m, AGENT));
+        assert!(xml.contains("triggered_by=\"member\""), "{xml}");
+        // The owner's still is one.
+        let by_owner = group(OWNER, "/stop", &[AGENT]);
+        c.group = Some(verdict(&by_owner, Some(&all)));
+        assert!(matches!(
+            route_msg_record(&record(OWNER, &by_owner), &by_owner, &c),
+            MsgBridgeOutput::Control { .. }
+        ));
     }
 
     #[test]

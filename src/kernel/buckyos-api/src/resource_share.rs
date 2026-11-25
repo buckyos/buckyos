@@ -1,4 +1,4 @@
-use crate::{invite_secret_digest, AuthTarget, PermissionItem};
+use crate::{has_permission, invite_secret_digest, AuthTarget, PermissionItem};
 use serde::{Deserialize, Serialize};
 
 pub const RESOURCE_SHARES_PREFIX: &str = "services/control_panel/resource_shares";
@@ -18,11 +18,7 @@ pub enum ShareLevel {
 
 impl ShareLevel {
     pub fn from_permissions(permissions: &[PermissionItem], now: u64) -> Self {
-        let has = |name| {
-            permissions.iter().any(|item| {
-                item.scope_path == name && item.exp.is_none_or(|exp| u64::from(exp) > now)
-            })
-        };
+        let has = |name| has_permission(permissions, name, now);
         if !has(SHARE_DIRECTED_PERMISSION) {
             return Self::Disabled;
         }

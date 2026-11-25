@@ -1,9 +1,11 @@
 import { useRef, useState, type FormEvent } from 'react'
+import { useWindowDialog } from '../../desktop/windows/dialogs'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import type { z } from 'zod'
 import { useI18n } from '../../i18n/provider'
-import { creationReason, newSessionFormSchema } from './sessionModel'
+import { confirmDefaultChange } from './defaultChange'
+import { creationReason, MEMORY_MODES, newSessionFormSchema } from './sessionModel'
 import { groupErrorText } from '../../components/conversation/model/groupNotice'
 import { useMessageHubStore } from './store'
 import type { MessageHubContext, Session } from './types'
@@ -11,21 +13,26 @@ import { DialogFocus, hubButtonClass, hubInputClass, hubPrimaryButtonClass } fro
 
 /** A new session of one entity: its name, an optional description and the connection it runs over. */
 export function CreateSessionForm({ context, entityId, onCreated, onCancel }: { context: MessageHubContext; entityId: string; onCreated: (session: Session) => void; onCancel: () => void }) {
-  const { t } = useI18n(), store = useMessageHubStore()
+  const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog()
   const entity = store.findEntity(context, entityId)
+  const agent = entity?.type === 'agent'
   const choices = store.connections(context, entityId)
   const reasonFor = (connection: string) => entity ? creationReason(context, entity, store.policy(context, entityId), choices.find(choice => choice.id === connection)?.binding) : 'binding_unknown'
   // The native connection is the default; another one only when the native one cannot create a session here.
   const preferred = choices.find(choice => choice.binding.kind === 'native' && !reasonFor(choice.id)) ?? choices.find(choice => !reasonFor(choice.id)) ?? choices.find(choice => choice.binding.kind === 'native') ?? choices[0]
-  const form = useForm<z.infer<typeof newSessionFormSchema>>({ resolver: zodResolver(newSessionFormSchema), defaultValues: { title: '', description: '', connection: preferred?.id ?? '' } })
+  const form = useForm<z.infer<typeof newSessionFormSchema>>({ resolver: zodResolver(newSessionFormSchema), defaultValues: { title: '', description: '', connection: preferred?.id ?? '', setDefault: false, memoryMode: 'normal' } })
   const connection = useWatch({ control: form.control, name: 'connection' })
+  const memoryMode = useWatch({ control: form.control, name: 'memoryMode' })
   const reason = reasonFor(connection)
   const [error, setError] = useState('')
   const busy = useRef(false)
   const submit = (event: FormEvent<HTMLFormElement>) => { void form.handleSubmit(async values => {
     if (busy.current) return
     busy.current = true; setError('')
-    try { onCreated(await store.create(context, { entityId, ...values })) } catch (failure) { setError(failure instanceof Error && failure.message.startsWith('rejected') ? groupErrorText(t, failure) : t('messagehub.operationFailed')) } finally { busy.current = false }
+    try {
+      const setDefault = agent && values.setDefault && await confirmDefaultChange(dialog, t, store, context, entityId)
+      onCreated(await store.create(context, { entityId, ...values, setDefault }))
+    } catch (failure) { setError(failure instanceof Error && failure.message.startsWith('rejected') ? groupErrorText(t, failure) : t('messagehub.operationFailed')) } finally { busy.current = false }
   })(event) }
   return <DialogFocus onCancel={onCancel}><form onSubmit={submit} className="space-y-4" data-testid="new-session">
     <label className="block text-sm">{t('messagehub.sessionName')}<input data-autofocus className={hubInputClass} autoComplete="off" {...form.register('title')} /></label>
@@ -33,6 +40,14 @@ export function CreateSessionForm({ context, entityId, onCreated, onCancel }: { 
     <label className="block text-sm">{t('messagehub.optionalDescription')}<textarea rows={2} className={hubInputClass} {...form.register('description')} /></label>
     {form.formState.errors.description && <p role="alert" className="text-sm text-[color:var(--cp-danger)]">{t('messagehub.fieldLimit')}</p>}
     <label className="block text-sm">{t('messagehub.connection')}<select className={hubInputClass} {...form.register('connection')}>{choices.map(choice => <option value={choice.id} key={choice.id}>{choice.label}</option>)}</select></label>
+    {agent && <div>
+      <label className="block text-sm">{t('messagehub.memoryMode.label')}<select className={hubInputClass} {...form.register('memoryMode')}>{MEMORY_MODES.map(mode => <option value={mode} key={mode}>{t(`messagehub.memoryMode.${mode}`)}</option>)}</select></label>
+      {memoryMode !== 'normal' && <p className="mt-1 text-xs text-[color:var(--cp-muted)]">{t(`messagehub.memoryMode.${memoryMode}Hint`)}</p>}
+    </div>}
+    {agent && <div>
+      <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" {...form.register('setDefault')} />{t('messagehub.defaultSession.create')}</label>
+      <p className="text-xs text-[color:var(--cp-muted)]">{t('messagehub.defaultSession.hint', undefined, { name: entity.name })}</p>
+    </div>}
     {reason && <p className="text-sm text-[color:var(--cp-muted)]">{t(`messagehub.reason.${reason}`)}</p>}
     {error && <p role="alert" className="text-sm text-[color:var(--cp-danger)]">{error}</p>}
     <div className="flex justify-end gap-2"><button type="button" className={hubButtonClass} onClick={onCancel}>{t('messagehub.cancel')}</button><button type="submit" className={hubPrimaryButtonClass} disabled={form.formState.isSubmitting || !!reason}>{t(form.formState.isSubmitting ? 'messagehub.creating' : 'messagehub.create')}</button></div>

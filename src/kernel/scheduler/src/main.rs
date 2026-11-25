@@ -116,6 +116,7 @@ async fn create_init_list_by_template(
         .add_boot_config(&start_config, &verify_hub_public_key, zone_document_str)?
         .add_user_doc(&start_config)?
         .add_default_accounts(&start_config)?
+        .add_domain_hosting(&start_config)?
         .add_system_defaults()?
         .add_verify_hub(&private_key_pem)
         .await?
@@ -423,6 +424,7 @@ mod test {
         .expect("device info generation failed");
 
         assert!(init_map.contains_key("boot/config"));
+        assert!(!init_map.contains_key(DOMAIN_HOSTING_KEY));
         let buckyos_info: BuckyOSInfo = serde_json::from_str(
             init_map
                 .get(BUCKYOS_INFO_KEY)
@@ -587,6 +589,50 @@ mod test {
         .await
         .expect("private init template should load");
         assert_eq!(private_init_map["test/private_template"], "selected");
+
+        let start_config_path = temp_root.path().join("security/start_config.json");
+        let domain_hosting = json!({
+            "schema_version": 1, "mode": "sn", "certificate": "acme", "domain": TEST_HOSTNAME
+        });
+        let mut hosted_start_config = start_config_value.clone();
+        hosted_start_config["access_hostname"] = json!(TEST_HOSTNAME);
+        hosted_start_config["domain_hosting"] = domain_hosting.clone();
+        hosted_start_config["enabled_features"] = json!({"llm_router": true});
+        fs::write(&start_config_path, hosted_start_config.to_string()).unwrap();
+        let mut wan_zone_document = zone_document.clone();
+        wan_zone_document.sn = Some("sn.devtests.org".to_string());
+        wan_zone_document.oods = vec![OODDescriptionString::new(
+            TEST_DEVICE_NAME.to_string(),
+            DeviceNodeType::OOD,
+            Some("wan".to_string()),
+            None,
+        )];
+        let mut hosted_init_map = create_init_list_by_template(
+            &wan_zone_document,
+            &serde_json::to_string(&wan_zone_document).unwrap(),
+            temp_root.path(),
+            &temp_root.path().join("security"),
+        )
+        .await
+        .expect("a wan Zone with an SN account should boot with the SN AI provider");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&hosted_init_map[DOMAIN_HOSTING_KEY]).unwrap(),
+            domain_hosting
+        );
+        let aicc_settings: serde_json::Value =
+            serde_json::from_str(&hosted_init_map["services/aicc/settings"]).unwrap();
+        assert_eq!(aicc_settings["providers"][0]["provider_profile_id"], "sn");
+        assert_eq!(aicc_settings["providers"].as_array().unwrap().len(), 1);
+        ensure_device_info_entry(
+            &mut hosted_init_map,
+            start_config_value["ood_jwt"].as_str().unwrap(),
+            zone_document.get_default_key().as_ref().unwrap(),
+        )
+        .expect("device info generation failed");
+        build_schedule_plan(&hosted_init_map, true)
+            .await
+            .expect("boot schedule of a wan Zone with an SN account should succeed");
+        fs::write(&start_config_path, start_config_value.to_string()).unwrap();
 
         let mut multi_ood_zone_document = zone_document.clone();
         multi_ood_zone_document.oods = vec![

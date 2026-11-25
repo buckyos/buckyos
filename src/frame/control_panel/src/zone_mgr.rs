@@ -6,8 +6,9 @@ use crate::{
 };
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
 use buckyos_api::{
-    get_buckyos_api_runtime, identity_roots, zone_document_hostname, BuckyOSRuntime, SystemConfigClient,
-    SystemConfigError, ZonePresentationConfig, ZonePresentationFields, ZONE_PRESENTATION_KEY,
+    get_buckyos_api_runtime, identity_roots, zone_document_hostname, BuckyOSRuntime, DomainHosting,
+    SystemConfigClient, SystemConfigError, ZonePresentationConfig, ZonePresentationFields,
+    DOMAIN_HOSTING_KEY, ZONE_PRESENTATION_KEY,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use chrono::{DateTime, Utc};
@@ -67,6 +68,35 @@ fn apply_zone_presentation_patch(
         }
     }
     Ok(changed)
+}
+
+async fn load_gateway_mode() -> Result<Value, RPCErrors> {
+    let client = get_buckyos_api_runtime()?.get_system_config_client().await?;
+    match client.get(DOMAIN_HOSTING_KEY).await {
+        Ok(stored) => gateway_mode(Some(&stored.value)),
+        Err(SystemConfigError::KeyNotFound(_)) => gateway_mode(None),
+        Err(error) => Err(RPCErrors::ReasonError(error.to_string())),
+    }
+}
+
+/// How the Zone's own domain is hosted; `default` is the hostname the SN provides.
+fn gateway_mode(hosting: Option<&str>) -> Result<Value, RPCErrors> {
+    let Some(raw) = hosting else {
+        return Ok(json!("default"));
+    };
+    let hosting = DomainHosting::parse(raw).map_err(|error| {
+        RPCErrors::ReasonError(format!("failed to parse {DOMAIN_HOSTING_KEY}: {error}"))
+    })?;
+    Ok(json!(hosting.mode))
+}
+
+fn zone_tls_hosts(node_gateway: &Value) -> Vec<String> {
+    node_gateway["stacks"]["zone_tls"]["hosts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|host| host.as_str().map(str::to_string))
+        .collect()
 }
 
 impl ControlPanelServer {
@@ -783,18 +813,7 @@ impl ControlPanelServer {
                         .join("\n");
                 }
 
-                if let Some(certs) = value
-                    .get("stacks")
-                    .and_then(|item| item.get("zone_tls"))
-                    .and_then(|item| item.get("certs"))
-                    .and_then(|item| item.as_array())
-                {
-                    tls_domains = certs
-                        .iter()
-                        .filter_map(|item| item.get("domain").and_then(|value| value.as_str()))
-                        .map(|value| value.to_string())
-                        .collect();
-                }
+                tls_domains = zone_tls_hosts(&value);
             }
         }
 
@@ -820,14 +839,10 @@ impl ControlPanelServer {
             }
         }
 
-        let mode = if tls_domains
-            .iter()
-            .any(|domain| domain.contains("web3.buckyos.ai"))
-        {
-            "sn"
-        } else {
-            "direct"
-        };
+        let mode = load_gateway_mode().await.unwrap_or_else(|error| {
+            notes.push(format!("Domain hosting could not be read: {error}"));
+            Value::Null
+        });
 
         notes.push("Gateway config loaded from /opt/buckyos/etc.".to_string());
         if custom_overrides.is_empty() {
@@ -1023,6 +1038,44 @@ impl ControlPanelServer {
 mod tests {
     use super::*;
     use crate::image_data_url::png_data_url;
+
+    #[test]
+    fn gateway_overview_reads_tls_hosts_and_the_domain_hosting() {
+        assert_eq!(
+            zone_tls_hosts(&json!({"stacks": {"zone_tls": {
+                "bind": "[::]:443",
+                "protocol": "tls",
+                "hosts": ["*.home.example.com", "home.example.com"],
+            }}})),
+            ["*.home.example.com", "home.example.com"]
+        );
+        for without in [
+            json!({"stacks": {}}),
+            json!({"stacks": {"zone_tls": {"hosts": "home.example.com"}}}),
+            json!({"stacks": {"zone_tls": {"certs": [{"domain": "home.example.com"}]}}}),
+        ] {
+            assert!(zone_tls_hosts(&without).is_empty(), "{without}");
+        }
+
+        assert_eq!(gateway_mode(None).unwrap(), "default");
+        for (mode, extra) in [
+            ("sn", json!({})),
+            ("manual", json!({"certificate": "upload"})),
+            (
+                "dns_api",
+                json!({"provider": "cloudflare", "credential_id": "home-example-com-1"}),
+            ),
+        ] {
+            let mut hosting =
+                json!({"schema_version": 1, "mode": mode, "certificate": "acme", "domain": "home.example.com"});
+            hosting
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            assert_eq!(gateway_mode(Some(&hosting.to_string())).unwrap(), mode);
+        }
+        assert!(gateway_mode(Some("{}")).is_err());
+    }
 
     #[test]
     fn zone_presentation_patch_keeps_sets_and_clears_fields() {

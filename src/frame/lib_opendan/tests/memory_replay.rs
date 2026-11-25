@@ -634,7 +634,7 @@ async fn conversation_on(
     install_jarvis(env);
     let route = env.agent_root.join("behaviors/chat_route.toml");
     let text = std::fs::read_to_string(&route).unwrap();
-    assert!(text.contains(r#"tool_whitelist = ["group:bash_core", "behavior:analyze_intent"]"#));
+    assert!(text.contains(r#"tool_whitelist = ["group:bash_core", "submit_reply", "behavior:analyze_intent"]"#));
     std::fs::write(&route, text.replace(r#", "behavior:analyze_intent"]"#, "]").replace("next = [\"analyze_intent\"]\n", "")).unwrap();
     common::plan::tool_env(env);
     let template = libopendan::SessionTemplate::load("ui", Some(&env.agent_root)).unwrap();

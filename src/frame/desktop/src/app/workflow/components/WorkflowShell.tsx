@@ -5,6 +5,8 @@ import { useCallback, useState } from 'react'
 import { useMediaQuery } from '@mui/material'
 import { Menu, X } from 'lucide-react'
 import { useMobileBackHandler } from '../../../desktop/windows/MobileNavContext'
+import { useAppPath } from '../../pathContext'
+import { appPath } from '../../standalone/address'
 import { WorkflowSidebar } from './Sidebar'
 import { ImportDialog } from './ImportDialog'
 import { HomePage } from '../pages/HomePage'
@@ -13,9 +15,10 @@ import { RunPage } from '../pages/RunPage'
 import { AIPromptPage } from '../pages/AIPromptPage'
 import type { WorkflowSelection } from '../types'
 
-export function WorkflowShell() {
+export function WorkflowShell({ initial = { kind: 'home' } }: { initial?: WorkflowSelection }) {
   const { t } = useI18n()
-  const [selection, setSelection] = useState<WorkflowSelection>({ kind: 'home' })
+  const [selection, setSelection] = useState<WorkflowSelection>(initial)
+  useAppPath(selection.kind === 'ai_prompt' ? appPath('prompt') : appPath('', { definition: selection.kind === 'definition' ? selection.definitionId : undefined, run: selection.kind === 'run' ? selection.runId : undefined }))
   const [importOpen, setImportOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const isMobile = useMediaQuery('(max-width: 767px)')

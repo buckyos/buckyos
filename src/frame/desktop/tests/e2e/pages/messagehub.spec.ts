@@ -148,8 +148,8 @@ async function openHub(page: import('@playwright/test').Page, entityId = CODER) 
   await page.goto(`/messagehub?entityId=${encodeURIComponent(entityId)}`)
   await expect(page.getByRole('button', { name: 'Sessions', exact: true })).toBeVisible()
 }
-async function createSession(page: import('@playwright/test').Page, title: string) {
-  await createNamedSession(page, title)
+async function createSession(page: import('@playwright/test').Page, title: string, options?: { setDefault?: boolean }) {
+  await createNamedSession(page, title, options)
   await expect(page.getByTestId('conversation-history')).toHaveAttribute('data-raw-count', '0')
   return page.evaluate(({ context, entity }) => window.__messageHubMock.sessions(context, entity)[0].id, { context: OWN, entity: CODER })
 }
@@ -265,7 +265,7 @@ for (const width of [1440, 375]) {
     await page.screenshot({ path: `test-results/messagehub-create-${width}.png` })
     await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click()
     await restoreList()
-    const first = await createSession(page, 'Release review')
+    const first = await createSession(page, 'Release review', { setDefault: true })
     await expect(page.getByText('Start a conversation', { exact: true })).toBeVisible()
     await page.locator('textarea').fill('First message in its own session')
     await page.locator('textarea').press('Enter')
@@ -544,7 +544,7 @@ test('cancelled delayed creation does not change a newer selection and refresh r
 
 test('draft attachments survive refresh and failed send retries once in the same session', async ({ page }) => {
   await openHub(page)
-  const id = await createSession(page, 'Persistent draft')
+  const id = await createSession(page, 'Persistent draft', { setDefault: true })
   await page.locator('textarea').fill('Message with attachment')
   await page.locator('input[type="file"]').first().setInputFiles('package.json')
   await expect.poll(() => page.evaluate(({ context, id }) => window.__messageHubMock.attachments(context, id).length, { context: OWN, id })).toBe(1)
@@ -576,7 +576,7 @@ for (const source of ['object', 'http'] as const) {
       body: '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="60"><rect width="80" height="60" fill="lightblue"/></svg>',
     }))
     await openHub(page)
-    const id = await createSession(page, 'Photo without caption')
+    const id = await createSession(page, 'Photo without caption', { setDefault: true })
     if (source === 'object') {
       await page.evaluate(async () => {
         const modulePath = '/src/components/conversation/history/objectAccess.ts'

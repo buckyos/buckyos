@@ -109,7 +109,7 @@ const groupDid = created.group_did
 | --- | --- |
 | `membership` | `join_policy`：`invite_only` / `request_and_approve` / `open`；成员列表可见性：`members` / `admins_only` / `public`；Guest 请求入口模板 |
 | `roles` | `admin`、`member` 的能力集合。Owner 的固定能力不由配置撤销；默认 Admin 没有 `group.read_all`、`group.update_role` |
-| `default_session` | 默认会话的发言、回应、历史、编辑/撤回窗口、回执、慢速模式和 Hook |
+| `default_session` | 默认会话的发言、回应、历史（含新成员可见的加入前消息条数 `history_before_join`）、编辑/撤回窗口、回执、慢速模式和 Hook |
 | `session_templates` | 具名会话模板，包含 `membership` 和 `rules`；实际会话通过模板与覆盖项生效 |
 | `limits` | 成员、Session、Guest、消息大小和频率上限；只能在平台允许范围内收紧，不能任意提高 |
 | `access` | 本地经过验证的应用身份白名单（值是 token 的 `appid`，系统界面统一为 `control-panel`，见 §6.2）；远端未验证客户端身份的处理方式 |
@@ -118,7 +118,7 @@ const groupDid = created.group_did
 | `rules.panels` | 引用已声明的面板 `id`，把 `scope` 未覆盖的面板额外挂到该 Session |
 | `rules.hooks[].secret` | 由服务生成，只在写入响应的 `hook_secrets` 中出现一次，`get_config` 不回显；见 §5.3 |
 
-Session 成员策略采用以下 JSON：`"inherit"`、`{"roles":["owner","admin"]}` 或 `"explicit"`。发言和回应规则采用 `"all_participants"`、`{"only":["owner","admin"]}` 或 `"nobody"`。历史范围是 `"all"` 或 `"from_join"`。
+Session 成员策略采用以下 JSON：`"inherit"`、`{"roles":["owner","admin"]}` 或 `"explicit"`。发言和回应规则采用 `"all_participants"`、`{"only":["owner","admin"]}` 或 `"nobody"`。历史范围是 `"all"` 或 `"from_join"`；`from_join` 时 `history_before_join`（缺省 32）决定新参与者还能看到加入前最近多少条消息，0 表示只看加入之后的；只有标准文本消息（纯文本或 Markdown、不带附件 / 卡片 / 语音的普通消息或回复）占条数，其间的其他消息照常可见；修改只影响以后加入的人。
 
 当前配置 `schema_version` 只接受 `1`。`required_features` 仅识别 `sessions`、`session_guests`、`message_relations`、`read_markers`、`hooks`、`allowed_clients`、`panels`；未知必需能力会报 `unsupported-required-feature:<name>`。未知顶层字段以及 `extensions` 下除 `panels` 以外的数据会保留，但不会自动成为运行逻辑。完整字段和默认值以 [group_types.rs](../../src/frame/msg_center/src/group_types.rs) 为准。
 

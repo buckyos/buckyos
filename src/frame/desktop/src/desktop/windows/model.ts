@@ -12,8 +12,8 @@ const fallbackWindowSizing = {
 
 export function resolveDesktopWindowSizing(app: AppDefinition) {
   const preferred = app.manifest.desktopWindow
-  const minWidth = preferred?.minWidth ?? fallbackWindowSizing.minWidth
-  const minHeight = preferred?.minHeight ?? fallbackWindowSizing.minHeight
+  const minWidth = preferred?.minWidth ?? Math.min(fallbackWindowSizing.minWidth, preferred?.width ?? Infinity)
+  const minHeight = preferred?.minHeight ?? Math.min(fallbackWindowSizing.minHeight, preferred?.height ?? Infinity)
 
   return {
     width: Math.max(preferred?.width ?? fallbackWindowSizing.width, minWidth),
@@ -25,13 +25,16 @@ export function resolveDesktopWindowSizing(app: AppDefinition) {
 
 export function createWindowRecord(
   app: AppDefinition,
+  window: Pick<WindowRecord, 'id' | 'windowPath'>,
   index: number,
   geometry?: Partial<Pick<WindowRecord, 'x' | 'y' | 'width' | 'height'>>,
 ): WindowRecord {
   const sizing = resolveDesktopWindowSizing(app)
 
   return {
-    id: `${app.id}-${Date.now()}`,
+    id: window.id,
+    windowPath: window.windowPath,
+    lastActive: 0,
     appId: app.id,
     state: app.manifest.defaultMode === 'windowed' ? 'windowed' : 'maximized',
     minimizedOrder: null,

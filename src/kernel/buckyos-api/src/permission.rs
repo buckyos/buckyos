@@ -22,6 +22,8 @@ pub const APP_PERMISSION_USER_HOME: &str = "user/home";
 pub const APP_PERMISSION_LIBRARY: &str = "zone/library";
 pub const APP_PERMISSION_ZONE_PUBLIC: &str = "zone/public";
 pub const APP_PERMISSION_LOCATION: &str = "zone/location";
+// 给 Zone 用户发系统通知（msg-center `notify.send`）；没有声明的 App 发送会被拒绝
+pub const APP_PERMISSION_NOTIFY: &str = "msg-center/notify";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -31,4 +33,11 @@ pub struct PermissionItem {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<String>, // e.g. ["read","write"]
     pub exp: Option<u32>,   //权限的有效期，为None表示一直有效
+}
+
+/// `items` has `scope_path` and it is not expired at `now` (unix seconds).
+pub fn has_permission(items: &[PermissionItem], scope_path: &str, now: u64) -> bool {
+    items
+        .iter()
+        .any(|item| item.scope_path == scope_path && item.exp.is_none_or(|exp| u64::from(exp) > now))
 }

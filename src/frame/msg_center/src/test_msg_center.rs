@@ -2,7 +2,8 @@ use crate::msg_box_db::MsgBoxDbMgr;
 use crate::msg_center::MessageCenter;
 use buckyos_api::{
     DeliveryReportResult, DeliveryState, IngressContext, MailboxKind, MsgCenterHandler,
-    ReadReceiptState, RecipientState, SessionDeliveryOverall, SessionMessageDirection,
+    ReadReceiptState, RecipientState, SessionDeliveryOverall, SessionMemoryMode,
+    SessionMessageDirection,
     TransportKind,
 };
 use kRPC::RPCContext;
@@ -2116,6 +2117,8 @@ mod owner_session_tests {
             title: Some(title.to_string()),
             binding: Some(json!({ "kind": "native", "targetDid": agent.to_string() })),
             origin: None,
+            set_default: false,
+            memory_mode: SessionMemoryMode::Normal,
         };
         let first = center
             .handle_create_session(create("Plan"), ctx())
@@ -2286,6 +2289,47 @@ mod owner_session_tests {
     }
 
     #[tokio::test]
+    async fn a_session_keeps_the_memory_mode_it_was_created_with() {
+        let (center, _tmp) = new_center("memory-mode").await;
+        let owner = DID::new("bns", "alice");
+        let agent = DID::new("web", "jarvis.test.buckyos.io");
+        let created = center
+            .handle_create_session(
+                MsgCenterCreateSessionReq {
+                    owner: owner.clone(),
+                    peer_did: agent.clone(),
+                    session_id: None,
+                    title: None,
+                    binding: None,
+                    origin: None,
+                    set_default: false,
+                    memory_mode: SessionMemoryMode::NoReadWrite,
+                },
+                ctx(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.memory_mode, SessionMemoryMode::NoReadWrite);
+        let sid = created.session_id.clone();
+        center.handle_archive_session(owner.clone(), sid.clone(), ctx()).await.unwrap();
+        center.handle_restore_session(owner.clone(), sid.clone(), ctx()).await.unwrap();
+        let state = center
+            .handle_get_session_state(owner.clone(), sid.clone(), ctx())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.memory_mode, SessionMemoryMode::NoReadWrite);
+        let listed = center
+            .handle_list_sessions(owner.clone(), None, None, None, None, None, None, ctx())
+            .await
+            .unwrap();
+        assert_eq!(
+            listed.items[0].state.as_ref().unwrap().memory_mode,
+            SessionMemoryMode::NoReadWrite
+        );
+    }
+
+    #[tokio::test]
     async fn clear_session_hides_history_and_keeps_the_session() {
         let (center, _tmp) = new_center("clear").await;
         let owner = DID::new("bns", "clear-owner");
@@ -2302,6 +2346,8 @@ mod owner_session_tests {
                     title: Some("Plans".to_string()),
                     binding: None,
                     origin: None,
+                    set_default: false,
+                    memory_mode: SessionMemoryMode::Normal,
                 },
                 ctx(),
             )

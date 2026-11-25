@@ -123,14 +123,18 @@ export const windowAppearancePreferencesSchema = z.object({
 })
 
 export interface DesktopWindowSizing {
-  width: number
-  height: number
+  width?: number
+  height?: number
   minWidth?: number
   minHeight?: number
 }
 
 export interface WindowManifest {
   defaultMode: DisplayMode
+  /** One window (the default) or several. */
+  instance?: 'single' | 'multi'
+  /** False fixes the size; the default is resizable. */
+  resizable?: boolean
   allowMinimize: boolean
   allowMaximize: boolean
   allowClose: boolean
@@ -221,7 +225,6 @@ export interface TaskbarAppItem {
 export const systemPreferencesInputSchema = z.object({
   locale: z.enum(supportedLocales),
   theme: z.enum(['light', 'dark']),
-  runtimeContainer: z.enum(['browser', 'desktop-app', 'mobile-app']),
   deadZoneTop: z.coerce.number().int().min(0).max(96),
   deadZoneBottom: z.coerce.number().int().min(0).max(120),
   deadZoneLeft: z.coerce.number().int().min(0).max(72),
@@ -265,8 +268,12 @@ export interface WindowRecord {
   titleKey: string
   /** Literal title (e.g. the open file name); falls back to `titleKey`. */
   title?: string
-  /** Distinguishes multiple windows of one app; undefined = the app's singleton. */
-  instanceKey?: string
+  /** The window path the app names its windows by; empty for its main window. */
+  windowPath: string
+  /** The page shown, as the app reports it (app/pathContext.ts); unknown for an embedded App. */
+  path?: string
+  /** Order of use among the open windows; the highest was used last. */
+  lastActive: number
   launch?: WindowLaunch
   x: number
   y: number
@@ -287,7 +294,7 @@ export interface WindowRecord {
  * - 本分组收集其余外观相关的持久化设置
  */
 export interface AppearanceSettings {
-  /** 运行容器类型（影响连接状态显示等） */
+  /** 运行容器类型（SDK 识别得到；影响连接状态显示等） */
   runtimeContainer: RuntimeContainer
   /** 桌面壁纸配置 */
   wallpaper: DesktopWallpaper

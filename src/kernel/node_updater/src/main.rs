@@ -256,6 +256,9 @@ fn main() -> ExitCode {
             "/format_sources.json"
         )))
         .expect("linked format sources");
+        let review: serde_json::Value =
+            serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/review.json")))
+                .expect("reviewed registry");
         let arch = match std::env::consts::ARCH {
             "aarch64" => "arm64",
             "x86_64" => "amd64",
@@ -263,7 +266,7 @@ fn main() -> ExitCode {
         };
         println!(
             "{}",
-            json!({"target_build": target_build(), "platform": format!("{arch}-{}", std::env::consts::OS), "minimum_app_sdk": buckyos_api::MINIMUM_APP_SDK, "schemas": schemas, "format_sources": sources})
+            json!({"target_build": target_build(), "platform": format!("{arch}-{}", std::env::consts::OS), "minimum_app_sdk": buckyos_api::MINIMUM_APP_SDK, "schemas": schemas, "format_sources": sources, "review": review})
         );
         return ExitCode::SUCCESS;
     }

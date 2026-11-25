@@ -23,6 +23,8 @@
  *   - 正式环境                                              → initByReal
  */
 import { createContext, useContext, useSyncExternalStore } from 'react'
+import { getRuntimeEnvironment } from 'buckyos'
+import { appWindowId, resolveOpenApp } from 'buckyos/open-app'
 import { fetchCurrentAccount } from '../api/account'
 import { userTypeCanCreateAgents } from '../api/user_type'
 import { fetchAppList } from '../api/app_mgr'
@@ -39,6 +41,7 @@ import {
   buildAuthorizedAppDefinitions,
   withAccountBuiltins,
 } from '../app/backend-apps'
+import { windowDeclarationOf } from '../app/windowDeclaration'
 import type { DesktopAppItem } from '../app/types'
 import {
   getDesktopWindowPositionBounds,
@@ -50,7 +53,7 @@ import {
   resolveDesktopWindowSizing,
 } from '../desktop/windows/model'
 import { desktopAvatarRowHeight, desktopWorkspaceInsets } from '../desktop/shell'
-import { defaultDeadZone } from '../mock/data'
+import { buildDesktopPayload, defaultDeadZone } from '../mock/data'
 import {
   buildDesktopLayout,
   desktopEntryTarget,
@@ -107,7 +110,7 @@ import {
   readWindowAppearancePreferences,
   refreshSlotIndexes,
   resolveLayout,
-  runtimeStorageKey,
+  debugRuntimeContainerKey,
   sameWindowGeometry,
   sanitizeWindowGeometryMap,
   windowAppearanceStorageKey,
@@ -305,6 +308,13 @@ export function mergeToLayoutState(
   }
 }
 
+let windowActivity = 0
+/** `zIndex` is renumbered as windows are raised; this only grows. */
+function nextWindowActivity(): number {
+  windowActivity += 1
+  return windowActivity
+}
+
 /**
  * Bring `targetId` to `targetZIndex` and renumber the rest as `10 + index`
  * (the shell's long-standing stacking rule). Records whose values are
@@ -327,13 +337,36 @@ function raiseWindow(
       )
       if (same) return w
       changed = true
-      return patched
+      return { ...patched, lastActive: nextWindowActivity() }
     }
     if (w.zIndex === 10 + i) return w
     changed = true
     return { ...w, zIndex: 10 + i }
   })
   return changed ? next : windows
+}
+
+export interface OpenWindowRequest {
+  viewportBounds?: ReturnType<typeof getDesktopWindowWorkspaceBounds>
+  launch?: WindowLaunch
+  path?: string
+  title?: string
+  windowPath?: string
+  mode?: 'reuse' | 'new'
+  /** Several windows for this request, whatever the app declares. */
+  multi?: boolean
+  windowId?: string
+}
+
+/** A page that shows one app alone (app/standalone): the page is that app's only window here. */
+export interface StandalonePage {
+  appId: string
+  launch?: WindowLaunch
+  /** Opens another window, outside this page. */
+  openWindow: (app: DesktopAppItem, request: OpenWindowRequest) => string | null
+  /** Shows another page of the app here; without it the window record carries the launch. */
+  navigate?: (app: DesktopAppItem, request: OpenWindowRequest) => void
+  close: () => void
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +411,8 @@ export class DesktopUIStore {
   /** Last workspace bounds the view reported — lets non-React callers open windows. */
   private lastViewportBounds: ReturnType<typeof getDesktopWindowWorkspaceBounds> | null = null
 
+  private standalone: StandalonePage | null = null
+
   /**
    * Window geometry is updated on every pointermove while dragging/resizing.
    * The in-memory map is always current; the localStorage write is coalesced
@@ -415,7 +450,7 @@ export class DesktopUIStore {
 
   constructor() {
     const runtimeContainer =
-      (window.localStorage.getItem(runtimeStorageKey) as RuntimeContainer | null) ?? 'browser'
+      (window.localStorage.getItem(debugRuntimeContainerKey) as RuntimeContainer | null) ?? getRuntimeEnvironment().container
     const windowAppearance = readWindowAppearancePreferences()
 
     const appearance: AppearanceSettings = {
@@ -595,6 +630,7 @@ export class DesktopUIStore {
    * - 正式环境                       → 走真实 API（当前 stub）
    */
   async init(formFactor: FormFactor, scenario: MockScenario = 'normal') {
+    this.standalone = null
     // Coalesce identical concurrent calls (StrictMode runs the mount effect
     // twice) so we neither double-fetch nor let a stale result win.
     const key = `${formFactor}:${scenario}`
@@ -741,6 +777,47 @@ export class DesktopUIStore {
         error: err instanceof Error ? err.message : String(err),
       })
     }
+  }
+
+  /**
+   * A page that shows one app alone: the catalog at once and the installed Apps when they are known, no desktop, and
+   * one window, which is the page. Returns that window's id.
+   */
+  startStandalone(page: StandalonePage, formFactor: FormFactor): string {
+    this.standalone = page
+    this.initSeq += 1
+    const id = appWindowId(currentZoneHost(), page.appId)
+    const payload = buildDesktopPayload(formFactor)
+    const definitions = isMockRuntime() ? payload.apps : buildAuthorizedAppDefinitions(payload.apps, [])
+    this.defaultPayload = payload
+    const apps = this.resolveApps(definitions, formFactor)
+    const app = findDesktopAppById(apps, page.appId)
+    // The desktop's own layout, so that saving a preference here writes it back as it was.
+    const layoutState = readJson<LayoutState>(layoutStorageKey(formFactor)) ?? payload.layout
+    this.update({
+      status: 'success',
+      error: null,
+      formFactor,
+      scenario: 'normal',
+      apps,
+      layoutState,
+      appearance: { wallpaper: payload.wallpaper, deadZone: layoutState.deadZone },
+      runtime: {
+        windows: app ? [{ ...createWindowRecord(app, { id, windowPath: '' }, 0), lastActive: nextWindowActivity(), launch: page.launch }] : [],
+      },
+    })
+    if (!isMockRuntime()) {
+      void agentGuideAllowedForAccount().then((allowed) => {
+        this.agentGuideAllowed = allowed
+        return this.refreshApps()
+      }).catch((error: unknown) => console.warn('standalone: installed apps are unavailable', error))
+    }
+    return id
+  }
+
+  /** Whether this page shows one app alone, without the desktop. */
+  isStandalone() {
+    return this.standalone !== null
   }
 
   // ========================================================================
@@ -1056,6 +1133,7 @@ export class DesktopUIStore {
   // Window actions (操作运行时窗口 — 不属于同步数据)
   // ========================================================================
 
+  /** An icon or a taskbar button: the app's window, or a new one. */
   openApp(
     appId: string,
     opts: {
@@ -1080,31 +1158,7 @@ export class DesktopUIStore {
       return
     }
 
-    const { windows } = this.snapshot.runtime
-    const { scenario } = this.snapshot
-    const existing = windows.find((w) => w.appId === appId)
-
-    if (existing) {
-      const nextWindows = raiseWindow(windows, existing.id, windows.length + 10, {
-        state: restoredWindowState(app, existing),
-        minimizedOrder: null,
-      })
-      this.update({ runtime: { windows: nextWindows } })
-    } else {
-      // Group 2: 用保存的窗口布局设置作为参考
-      const preferredGeometry =
-        scenario === 'normal' ? this.windowGeometryByApp[app.id] : undefined
-      const geometry = this.normalizeWindowGeometry(
-        app,
-        preferredGeometry,
-        windows.length,
-        opts.viewportBounds,
-      )
-      // A new window always lands on top of the currently focused one.
-      const topZIndex = windows.reduce((top, w) => Math.max(top, w.zIndex), 10 + windows.length)
-      const record = { ...createWindowRecord(app, windows.length, geometry), zIndex: topZIndex + 1 }
-      this.update({ runtime: { windows: [...windows, record] } })
-    }
+    this.openAppWindow(appId, { viewportBounds: opts.viewportBounds })
     opts.logActivity?.(`Opened ${appId}`)
   }
 
@@ -1118,49 +1172,58 @@ export class DesktopUIStore {
     })
   }
 
+  /** Windows belong to this Zone; the Shell shows no other. */
+  private openWindowDecision(app: DesktopAppItem, opts: { path?: string; windowPath?: string; mode?: 'reuse' | 'new'; multi?: boolean }) {
+    const zone = currentZoneHost()
+    const declaration = windowDeclarationOf(app.manifest)
+    return resolveOpenApp(
+      { zone, app: app.id, path: opts.path, window: opts.windowPath, mode: opts.mode },
+      app.id,
+      opts.multi ? { ...declaration, instance: 'multi' } : declaration,
+      this.snapshot.runtime.windows.map((w) => ({
+        id: w.id, zone, appInstance: w.appId, windowPath: w.windowPath, path: w.path, lastActive: w.lastActive,
+      })),
+    )
+  }
+
   /**
-   * Opens — or re-targets — a window that carries a launch request.
-   *
-   * Unlike `openApp` (one window per app), callers can ask for a fresh
-   * instance (`newInstance`) or address an existing window by id. Multi-window
-   * apps such as Preview schedule their own windows on top of this primitive
-   * and only exchange launch metadata with the shell, never content.
+   * Opens — or re-targets — a window that carries a launch request. Which window it is follows `resolveOpenApp`
+   * (the app's declaration, `windowPath`, `mode`), unless `windowId` names one: multi-window apps such as Preview
+   * schedule their own windows on top of this primitive and only exchange launch metadata with the shell, never
+   * content. With `path`, the launch is that page: a window already showing it is only brought to the front.
    * Returns the window id, or null when the app is unknown.
    */
-  openAppWindow(
-    appId: string,
-    opts: {
-      viewportBounds?: ReturnType<typeof getDesktopWindowWorkspaceBounds>
-      launch?: WindowLaunch
-      title?: string
-      newInstance?: boolean
-      windowId?: string
-      instanceKey?: string
-    } = {},
-  ): string | null {
+  openAppWindow(appId: string, opts: OpenWindowRequest = {}): string | null {
     const app = findDesktopAppById(this.snapshot.apps, appId)
     if (!app) return null
     const { windows } = this.snapshot.runtime
-    const target = opts.windowId
-      ? windows.find((w) => w.id === opts.windowId)
-      : opts.newInstance
-        ? undefined
-        : windows.find((w) => w.appId === appId && (opts.instanceKey ? w.instanceKey === opts.instanceKey : true))
+    const decision = opts.windowId ? null : this.openWindowDecision(app, opts)
+    const target = decision?.action === 'create'
+      ? undefined
+      : windows.find((w) => w.id === (decision ? decision.windowId : opts.windowId))
 
     if (target) {
+      const stays = opts.path !== undefined && decision?.action === 'focus' && decision.navigate === undefined
+      if (this.standalone?.navigate) {
+        if (!stays && (opts.path !== undefined || opts.launch)) this.standalone.navigate(app, opts)
+        return target.id
+      }
       const top = windows.reduce((max, w) => Math.max(max, w.zIndex), windows.length + 10) + 1
       this.update({
         runtime: {
           windows: raiseWindow(windows, target.id, top, {
             state: restoredWindowState(app, target),
             minimizedOrder: null,
-            launch: opts.launch ?? target.launch,
-            title: opts.title ?? target.title,
+            // The app says where it is once it got there (app/pathContext.ts).
+            ...(opts.launch && !stays ? { launch: opts.launch, title: opts.title ?? target.title, path: undefined } : {}),
           }),
         },
       })
       return target.id
     }
+    if (decision?.action !== 'create') return null
+
+    if (this.standalone) return this.standalone.openWindow(app, opts)
 
     const bounds = opts.viewportBounds ?? this.lastViewportBounds ?? this.fallbackViewportBounds()
     const preferredGeometry =
@@ -1171,13 +1234,14 @@ export class DesktopUIStore {
     const cascade = siblings * 28
     const topZIndex = windows.reduce((top, w) => Math.max(top, w.zIndex), 10 + windows.length)
     const record: WindowRecord = {
-      ...createWindowRecord(app, windows.length, geometry),
-      id: `${app.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      ...createWindowRecord(app, { id: decision.windowId, windowPath: decision.windowPath }, windows.length, geometry),
       // A new window always lands on top of the currently focused one.
       zIndex: topZIndex + 1,
-      x: clamp(geometry.x + cascade, bounds.minX, Math.max(bounds.minX, bounds.maxRight - geometry.width)),
-      y: clamp(geometry.y + cascade, bounds.minY, Math.max(bounds.minY, bounds.maxBottom - geometry.height)),
-      instanceKey: opts.instanceKey,
+      lastActive: nextWindowActivity(),
+      ...(siblings > 0 ? {
+        x: clamp(geometry.x + cascade, bounds.minX, Math.max(bounds.minX, bounds.maxRight - geometry.width)),
+        y: clamp(geometry.y + cascade, bounds.minY, Math.max(bounds.minY, bounds.maxBottom - geometry.height)),
+      } : {}),
       launch: opts.launch,
       title: opts.title,
     }
@@ -1186,7 +1250,7 @@ export class DesktopUIStore {
   }
 
   /** Update the shell-visible metadata of a window (title, launch request). */
-  updateWindow(windowId: string, patch: Partial<Pick<WindowRecord, 'title' | 'launch' | 'instanceKey'>>) {
+  updateWindow(windowId: string, patch: Partial<Pick<WindowRecord, 'title' | 'launch' | 'path'>>) {
     const { windows } = this.snapshot.runtime
     const current = windows.find((w) => w.id === windowId)
     if (!current || (Object.keys(patch) as Array<keyof typeof patch>).every((key) => current[key] === patch[key])) return
@@ -1206,7 +1270,7 @@ export class DesktopUIStore {
     )
     this.update({ apps: this.resolveApps(definitions, this.snapshot.formFactor) })
     // A shortcut to an app installed (or removed) since shows (or hides) now.
-    this.relayoutFromFolder()
+    if (!this.standalone) this.relayoutFromFolder()
   }
 
   /** Updates the Jarvis guide item's label, image and status mark (see app/agent-setup/guide.ts). */
@@ -1245,7 +1309,12 @@ export class DesktopUIStore {
   }
 
   async prepareLogout(): Promise<boolean> {
-    for (const guard of this.closeGuards.values()) if (!await guard('logout')) return false
+    return this.mayCloseAll('logout')
+  }
+
+  /** Asks every window whether it may be closed. */
+  async mayCloseAll(reason: 'user' | 'logout' | 'shell'): Promise<boolean> {
+    for (const guard of this.closeGuards.values()) if (!await guard(reason)) return false
     return true
   }
 
@@ -1256,6 +1325,10 @@ export class DesktopUIStore {
       this.closingWindows.add(windowId)
       void guard().then(allow => { if (allow) this.closeWindow(windowId, true) })
         .finally(() => this.closingWindows.delete(windowId))
+      return
+    }
+    if (this.standalone) {
+      this.standalone.close()
       return
     }
     this.closeGuards.delete(windowId)
@@ -1406,7 +1479,7 @@ export class DesktopUIStore {
     if (own.length === 0) return false
     const front = this.getWindowLayerModel().topWindow
     if (front?.appId === appId) {
-      this.minimizeWindow(front.id)
+      if (front.app.manifest.allowMinimize) this.minimizeWindow(front.id)
       return true
     }
     const visible = own.filter((w) => w.state !== 'minimized')
@@ -1697,7 +1770,6 @@ export class DesktopUIStore {
     callbacks.setLocale(values.locale)
     callbacks.setThemeMode(values.theme as ThemeMode)
 
-    window.localStorage.setItem(runtimeStorageKey, values.runtimeContainer)
     writeJson(windowAppearanceStorageKey, nextWindowAppearance)
 
     const { layoutState } = this.snapshot
@@ -1706,7 +1778,6 @@ export class DesktopUIStore {
         ? { ...layoutState, deadZone: nextDeadZone }
         : layoutState,
       appearance: {
-        runtimeContainer: values.runtimeContainer as RuntimeContainer,
         windowAppearance: nextWindowAppearance,
         deadZone: nextDeadZone,
       },
@@ -1950,13 +2021,14 @@ export class DesktopUIStore {
     const sizing = resolveDesktopWindowSizing(app)
     const minWidth = Math.min(sizing.minWidth, viewportBounds.maxWidth)
     const minHeight = Math.min(sizing.minHeight, viewportBounds.maxHeight)
+    const fixed = app.manifest.resizable === false
     const width = clamp(
-      geometry?.width ?? sizing.width,
+      (fixed ? undefined : geometry?.width) ?? sizing.width,
       minWidth,
       viewportBounds.maxWidth,
     )
     const height = clamp(
-      geometry?.height ?? sizing.height,
+      (fixed ? undefined : geometry?.height) ?? sizing.height,
       minHeight,
       viewportBounds.maxHeight,
     )

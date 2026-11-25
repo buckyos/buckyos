@@ -181,22 +181,19 @@ impl Workspace {
         self.materialize_for(&access, "checkpoint", &caller.principal)
     }
 
-    /// `doc.export`: build a package into the owner's `exports` bucket and return its manifest and download.
+    /// `doc.export`: the workspace owner builds a package into their `exports` bucket.
     ///
-    /// `share`: a new content snapshot of what the caller may read — no drafts,
+    /// `share`: a new content snapshot of the workspace — no drafts,
     /// no history, no CRDT bytes, no credentials. `personal_backup`: additionally
     /// the original CRDT states and the caller's personal annotations. `notes`: whether speaker notes travel
     /// (default: in a personal backup only; third phase §6.4).
     pub fn export(&mut self, caller: &Caller, mode: &str, self_contained: bool, notes: Option<bool>) -> WsResult<Value> {
-        let access = self.require_ws(caller, Cap::Export)?;
+        let access = self.require_owner(caller)?;
         let personal = match mode {
             "share" => false,
             "personal_backup" => true,
             _ => return Err(WsError::invalid_op("mode must be share or personal_backup")),
         };
-        if personal && !access.ws_caps.has(Cap::Read) {
-            return Err(WsError::denied("a personal backup needs workspace-level read"));
-        }
         let notes = notes.unwrap_or(personal);
         self.check_quota(0, false)?;
         let cp = self.materialize_notes(&access, "export", &caller.principal, notes)?;
@@ -277,9 +274,8 @@ impl Workspace {
             .map(|a| json!({ "id": a, "reason": if self_contained { "unavailable" } else { "external" } }))
             .collect();
         missing.extend(cp.unresolved.iter().filter(|u| u.get("to").is_some()).map(|u| json!({ "ref": u["to"], "reason": "external" })));
-        // a manager's package carries the permission design (权限需求 R12): a new import starts with it; members never travel
-        let design = if access.ws_caps.has(Cap::Manage) { Some(self.permission_design(&|id| cp.objects.contains_key(id))?.0) } else { None };
-        let mut manifest = json!({
+        let (design, _) = self.permission_design(&|id| cp.objects.contains_key(id))?;
+        let manifest = json!({
             "format": PACKAGE_FORMAT, "format_version": FORMAT_VERSION, "export_mode": mode,
             // only true when everything in the declared scope really is inside the package
             "self_contained": self_contained && missing.is_empty() && external.is_empty(),
@@ -289,11 +285,8 @@ impl Workspace {
             "editor_schemas": if has_richtext { json!([richtext::EDITOR_SCHEMA]) } else { json!([]) },
             "missing": missing, "external_sources": external, "excluded_entities": cp.excluded,
             "collab": collab, "personal_entities": personal_count, "notes_included": notes,
-            "exported_at": now, "exported_by": caller.principal,
+            "exported_at": now, "exported_by": caller.principal, "permission_design": design,
         });
-        if let Some(d) = design {
-            manifest["permission_design"] = d;
-        }
         zip.start_file("manifest.json", opts).map_err(zerr)?;
         zip.write_all(serde_json::to_string_pretty(&manifest).unwrap().as_bytes()).map_err(io)?;
         zip.finish().map_err(zerr)?.sync_all().map_err(io)?;

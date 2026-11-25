@@ -20,10 +20,10 @@ export function TablePop({ anchor, onClose, label, children, testId, width = 320
 }
 
 /** A menu in a pop-over (a sheet on a phone); the items close it when chosen. */
-export function TableMenu({ anchor, onClose, label, items, testId }: { anchor: AnchorRect; onClose: () => void; label: string; items: (MenuItem | 'separator')[]; testId?: string }) {
+export function TableMenu({ anchor, onClose, label, items, testId, id }: { anchor: AnchorRect; onClose: () => void; label: string; items: (MenuItem | 'separator')[]; testId?: string; id?: string }) {
   return (
     <TablePop anchor={anchor} onClose={onClose} label={label} testId={testId} width={260}>
-      <ControlMenu items={items} onClose={onClose} label={label} />
+      <ControlMenu items={items} onClose={onClose} label={label} id={id} />
     </TablePop>
   )
 }

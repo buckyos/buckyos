@@ -59,7 +59,7 @@ Provider 不能自定义方法名，只能声明自己支持标准集合中的�
 路由规则：
 
 1. Router 按 `api_type` 选择候选；Provider Call Resolver 按 kRPC `method` 和 `api_type` 解析 operation。
-2. fallback 不得改变 method，只能在同一 method 的候选模型内切换。
+2. 不自动换模型；管理员配置的 fallback 不得改变 method（原则见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)）。
 3. `logical_model` 只存在于 `route.resolve` 和 Helper；typed inference 只接受 `exact_model`。
 4. `Capability` 可用于 RBAC 边界、UI tab 分组和粗粒度 quota 桶，但不能作为 schema discriminator。
 5. RBAC / quota 支持直接挂在 method namespace 上，例如 `audio.*`、`image.*`、`chat.completions.*`。
@@ -88,7 +88,7 @@ Provider 不能自定义方法名，只能声明自己支持标准集合中的�
 
 `route.resolve`、全部 typed inference request 以及三个 Helper request 都接受可选的 body 字段 `trace_id`。调用方提供时，Service 必须原样将其用于路由决策、TaskMgr task data/progress event、usage event 和 route trace 的关联；未提供时由 Service 生成非空 canonical trace id。该字段与 kRPC `sys` 中的传输 trace、`request_id` 及 Provider 返回的 `provider_trace_id` 相互独立，任一字段都不能替代 canonical `trace_id`。
 
-`fallback_attempts` 表达路由建议的运行时 failover 候选顺序，不是 lease，也不保证候选在后续时刻仍可用。它不包含 primary；当前受 `runtime_failover` 和系统 `fallback_limit` 限制，排序来自 scheduler 之后的同 method 候选。
+`fallback_attempts` 只包含系统管理员为该逻辑目录手工配置的 fallback，没有配置时为空。现有实现仍会填入同池候选，并受 `runtime_failover` 和 `fallback_limit` 限制，将按 [显式 fallback 改造 TODO](../../notepads/aicc-explicit-fallback-todo.md) 改掉；调用方不应据此自动换模型重试。
 
 `enabled_capabilities` / `disabled_capabilities` 表达本次路由后模型可用能力与请求禁用能力。能力判断使用结构化 `ModelRequirement` / `ModelDisable`，最终能力是 Model Driver、Protocol Adapter 与 Provider discovery 的交集。
 
@@ -186,13 +186,7 @@ Response：
   "operation": "responses.create",
   "enabled_capabilities": ["tool_calling", "json_output"],
   "disabled_capabilities": ["web_search"],
-  "fallback_attempts": [
-    {
-      "exact_model": "claude-sonnet-4-5@anthropic_main",
-      "provider_instance_name": "anthropic_main",
-      "provider_model_id": "claude-sonnet-4-5"
-    }
-  ],
+  "fallback_attempts": [],
   "route_trace": { "...": "见 §3.7" },
   "inventory_revision": "inv-42"
 }
@@ -205,7 +199,7 @@ Response：
 3. `provider_model_id` 是 Provider discovery 返回并用于 wire request 的原始模型名，不得替换为 `origin_model_id`。
 4. `operation` 由 Provider Rules 和 adapter 注册表解析；调用方不能指定任意 operation 或 URL。
 5. `enabled_capabilities` / `disabled_capabilities` 表达本次路由后实际启用 / 禁用的能力集合。
-6. `fallback_attempts` 是路由建议的运行时候选顺序（不含 primary），供调用方在失败后自行决定是否重试，不是 lease，也不保证后续时刻仍可用。
+6. `fallback_attempts` 只列管理员手工配置的 fallback（不含 primary），没有配置时为空。
 7. `requirements.canonical_fields` 以 typed request 的 JSON Pointer 为 key。Model/Provider metadata 为每个 pointer 选择 AICC 内置的 Rust converter，并用统一 `fallback` 配置字段缺失或转换失败时的 `reject`、`omit` 或 canonical `default`；配置不内联映射表或脚本。默认值仍须通过同一 converter。`strict=true` 不执行 fallback，只接受 converter 产生的 exact，或在 `allow_fuzzy=true` 时接受 fuzzy。无法满足的严格要求会在路由阶段排除，不能作为无效 Provider 参数静默下发。
 8. 视频生成的需求使用 `requirements.video`（`VideoGenerationRequirement`），从 `video.generate` 请求推导；`route.resolve`、`helper.video_generate` 与执行前复核共用同一判定，见 [video_generation.md](video_generation.md) §3。
 
@@ -248,7 +242,7 @@ Response：
 }
 ```
 
-数据面字段直接挂在 `params` 上。调用方只能传 canonical 字段；Provider-specific defaults/set/remove 由 Provider Call Resolver 应用。逻辑模型名传入会返回 `invalid_model_name`；primary exact model在推理时 quota exhausted / unavailable 时不 fallback，调用方需重新 `route.resolve` 或使用 `fallback_attempts`。
+数据面字段直接挂在 `params` 上。调用方只能传 canonical 字段；Provider-specific defaults/set/remove 由 Provider Call Resolver 应用。逻辑模型名传入会返回 `invalid_model_name`；exact model 在推理时 quota exhausted / unavailable 时返回真实错误，不换模型。
 
 ### 2.3 `helper.*`（组合层）
 
@@ -723,23 +717,25 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
       "ended_at": "2026-04-25T10:00:01Z",
       "outcome": "failed",
       "error_code": "provider_error",
-      "fallback_reason": "provider_5xx"
+      "fallback_reason": null
     },
     {
       "step": 1,
-      "exact_model": "claude-sonnet-4.6@anthropic",
+      "exact_model": "gpt-mini@openai_primary",
       "started_at": "2026-04-25T10:00:01Z",
       "ended_at": "2026-04-25T10:00:03Z",
       "outcome": "succeeded",
       "error_code": null,
-      "fallback_reason": "runtime_failover"
+      "fallback_reason": "configured_fallback"
     }
   ],
-  "final_model": "claude-sonnet-4.6@anthropic"
+  "final_model": "gpt-mini@openai_primary"
 }
 ```
 
-`outcome` 可为 `succeeded`、`failed`、`skipped`。`fallback_reason` 可为空；非空时应使用可枚举短码，例如 `provider_5xx`、`timeout`、`health_unavailable`、`policy_retry`。
+上例的第二步来自管理员为该目录配置的 fallback；没有配置时只有第一步。
+
+`outcome` 可为 `succeeded`、`failed`、`skipped`。`fallback_reason` 可为空；非空时应使用可枚举短码，例如 `configured_fallback`、`same_model_retry`。
 
 ---
 
@@ -833,8 +829,8 @@ Response mapping：
 
 Fallback（逻辑路由层语义，由 `route.resolve` / helper / logical definition 承载，数据面 `chat.completions.create` 自身不 fallback）：
 
-1. `llm.plan`、`llm.code`、`llm.summary` 可 parent fallback 到 `llm`。
-2. `llm.reason` 默认 disabled 或 strict，避免静默降级到无 reasoning 能力模型。
+1. 所有用途默认 strict；只有系统管理员手工配置的目标才会被使用，见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)。
+2. `llm.reason` 应为 disabled，避免降级到无 reasoning 能力模型。
 3. `llm.vision` 必须硬过滤 `vision=true`（在逻辑模型定义 `min_line` 中表达）。
 
 AICC 不定义 `llm.completion`。纯文本 completion 由调用方构造单条 user message 后调用 `chat.completions.create`；服务端不保留旧 Completion schema、method alias 或自动转换入口。
@@ -1150,9 +1146,9 @@ Response：
 }
 ```
 
-Image fallback：
+Image fallback（默认 strict；以下约束适用于管理员手工配置的 fallback）：
 
-1. `image.txt2img` 可 parent fallback，但必须保持 `method=images.generate`。
+1. `image.txt2img` 必须保持 `method=images.generate`。
 2. `inpaint` fallback 必须保持 mask 语义一致。
 3. `upscale` fallback 必须满足目标分辨率和人脸保护等硬约束。
 
@@ -1658,7 +1654,7 @@ Request：
 
 Response：同 `video.generate`。
 
-Video fallback：
+Video fallback（默认 strict；以下约束适用于管理员手工配置的 fallback）：
 
 1. 只能在同 `method` 内 fallback。
 2. Provider 一旦返回 Started / Queued，AICC 不再跨 Provider 重试。
@@ -1800,15 +1796,15 @@ Fallback：
 
 | 一级目录 | canonical api_type / builtin 逻辑入口 | fallback |
 |---|---|---|
-| `llm` | `llm` / `llm.chat`、`llm.plan`、`llm.code` 等 | namespace-only；无隐式 parent fallback |
+| `llm` | `llm` / `llm.chat`、`llm.plan`、`llm.code` 等 | namespace-only；各用途 strict |
 | `embedding` | `embedding.text` / `embedding.text`、`embedding.multimodal` | strict |
 | `decision` | `decision` / `decision` | strict |
 | `rerank` | `rerank` / `rerank` | strict |
-| `image` | `image.*` / 对应 `image.*` | same api_type parent |
+| `image` | `image.*` / 对应 `image.*` | strict |
 | `vision` | `vision.*` / 对应 `vision.*` | strict |
 | `audio` | `audio.*` / 对应 `audio.*` | strict 或 voice contract |
-| `video` | `video.*` / 对应 `video.*` | same api_type parent |
-| `agent_runtime` | `agent.computer_use` / `agent_runtime.computer_use` | parent |
+| `video` | `video.*` / 对应 `video.*` | strict |
+| `agent_runtime` | `agent.computer_use` / `agent_runtime.computer_use` | strict |
 
 ### 14.2 调用方选择模型
 
@@ -1840,7 +1836,7 @@ Fallback：
 
 1. `route.resolve.logical_model` 必须是不含 `@` 的逻辑路径。
 2. typed inference 的 `exact_model` 按 `<provider_model_id>[:variant]@<provider_instance_name>` 解析。
-3. exact model 不做 parent fallback 或 runtime failover；Provider 启动失败直接返回失败。
+3. exact model 不换模型；Provider 启动失败直接返回真实错误。
 4. logical path fallback 只能改变同一 `api_type` 的候选模型。
 ### 14.3 Exact model variant 与 Provider Rules lowering
 
@@ -1898,9 +1894,9 @@ AICC 错误 payload schema：
 | `schema_validation_failed` | request 未通过 method schema 校验。 |
 | `resource_invalid` | 资源不存在、无权限、格式不支持或过大。 |
 | `no_provider_available` | 无 Provider 支持指定 method / capability。 |
-| `no_candidate_model` | route 过滤后无候选。 |
+| `no_candidate_model` | 没有接入满足请求的模型。不用于表示 Provider 故障，故障应返回 `provider_error` 等真实错误。 |
 | `context_length_exceeded` | 请求放不进模型的上下文窗口：Provider 以结构化码拒绝，或有候选仅因上下文长度不足被过滤。不可原样重试，缩小输入后再发。 |
-| `fallback_not_allowed` | fallback 被 policy 或 method 禁止。 |
+| `fallback_not_allowed` | 管理员配置的 fallback 被请求 policy 或 method 禁止。 |
 | `provider_start_failed` | Provider 启动或提交失败。 |
 | `provider_error` | Provider 原生错误。 |
 | `unsupported_execution_mode` | 路由或选定 Adapter/operation 不支持请求的 canonical execution mode；不得静默切换模式。 |

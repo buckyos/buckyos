@@ -1,0 +1,14 @@
+{
+  "input": {
+    "REQ": {
+      "path": "/readme",
+      "host": "public.test.buckyos.io",
+      "url": "https://public.test.buckyos.io/readme"
+    }
+  },
+  "id": "server:buckyos_public_web:main",
+  "output": [
+    "REQ",
+    "RESP"
+  ]
+}

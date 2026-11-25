@@ -9,6 +9,7 @@ import { fetchCurrentAccount, type CurrentAccount } from '../../api/account'
 import { userTypeCanCreateAgents } from '../../api/user_type'
 import { createAgent } from '../../api/user_mgr'
 import { desktopUIStore } from '../../models/DesktopUIDataModel'
+import { appPath, systemAppAddress } from '../standalone/address'
 import { useMobileBackHandler } from '../../desktop/windows/MobileNavContext'
 import { openUsersAgents } from '../users-agents/launch'
 import { ChannelPage } from './ChannelPage'
@@ -37,6 +38,7 @@ import {
   isTelegramBotToken,
   newAgentSetupDraft,
   ownerChannelBinding,
+  AGENT_SETUP_APP_ID,
   pickTemplate,
   runsOnHost,
   templatesForLoader,
@@ -59,9 +61,9 @@ const stepGroups: Array<{ key: string; pages: AgentSetupPage[] }> = [
 
 /** Sends the user to sign in again and brings them back to this wizard; the draft stays in storage. */
 function relogin(source: AgentSetupSource, agentId: string | null) {
-  const back = new URL('/', window.location.origin)
-  back.searchParams.set('agent_setup', source)
-  if (agentId) back.searchParams.set('agent_id', agentId)
+  const back = desktopUIStore.isStandalone()
+    ? new URL(systemAppAddress(AGENT_SETUP_APP_ID, appPath('', { source, agent_id: agentId })), window.location.origin)
+    : new URL(`/?${new URLSearchParams({ agent_setup: source, ...(agentId ? { agent_id: agentId } : {}) })}`, window.location.origin)
   const login = new URL('/login', window.location.origin)
   login.searchParams.set('redirect_url', back.toString())
   window.location.assign(login.toString())

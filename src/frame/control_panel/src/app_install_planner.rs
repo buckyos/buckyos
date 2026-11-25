@@ -18,7 +18,7 @@ use buckyos_api::{
     AppDoc, AppDocumentRef, AppInstanceId, ContentLocation, DidResolutionSnapshot,
     InspectedContent, InstallError, InstallErrorCode, InstallInspection, InstallParams,
     InstallPlan, InstallPlanStatus, InstallPlanUse, InstallPolicy, InstallSourceIdentity,
-    InstallStage, InstallTarget, PackageSelector, PlanReadiness, PlannedContent, ReadinessState,
+    InstallStage, InstallTarget, PackageSelector, PermissionItem, PlanReadiness, PlannedContent, ReadinessState,
     SelectedPackage, SubPkgDesc, SubPkgList, APP_INSTALL_SCHEMA_VERSION,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
@@ -62,17 +62,41 @@ pub struct PlannerInput<'a> {
     pub pikg: Option<&'a PikgInspection>,
 }
 
-/// AppDoc 未被调用方参数覆盖时的建议安装参数。普通安装只预选必需权限；
-/// SYSTEM_INTERNAL 延续自动确认语义，预选 AppDoc 声明的全部权限。
+/// AppDoc 未被调用方参数覆盖时的建议安装参数。普通安装只预选必需权限和通知权限
+/// （声明了就默认开，用户随时可以按应用关）；SYSTEM_INTERNAL 延续自动确认语义，
+/// 预选 AppDoc 声明的全部权限。
 pub fn default_install_params(app_doc: &AppDoc, policy: InstallPolicy) -> InstallParams {
     let mut params = InstallParams::default();
     params.permissions = app_doc
         .permissions
         .iter()
-        .filter(|permission| permission.required || policy.allow_auto_confirm())
+        .filter(|permission| {
+            permission.required
+                || permission.scope_path == buckyos_api::APP_PERMISSION_NOTIFY
+                || policy.allow_auto_confirm()
+        })
         .cloned()
         .collect();
     params
+}
+
+/// 升级时沿用已批准的权限；已安装版本还没有声明通知而新版本声明了，和新装一样默认开。
+pub fn inherited_permissions(
+    approved: &[PermissionItem],
+    installed: &AppDoc,
+    app_doc: &AppDoc,
+) -> Vec<PermissionItem> {
+    let declared = |doc: &AppDoc| {
+        doc.permissions
+            .iter()
+            .find(|item| item.scope_path == buckyos_api::APP_PERMISSION_NOTIFY)
+            .cloned()
+    };
+    let mut permissions = approved.to_vec();
+    if let (None, Some(item)) = (declared(installed), declared(app_doc)) {
+        permissions.push(item);
+    }
+    permissions
 }
 
 fn validate_permission_selection(app_doc: &AppDoc, install_params: &InstallParams) -> Vec<String> {
@@ -685,6 +709,52 @@ mod tests {
             runtime_version: None,
             capabilities: Default::default(),
         }
+    }
+
+    #[test]
+    fn notifications_are_approved_unless_the_installer_takes_them_out() {
+        let item = |scope: &str, required: bool| buckyos_api::PermissionItem {
+            scope_path: scope.to_string(),
+            required,
+            actions: vec![],
+            exp: None,
+        };
+        let owner = name_lib::DID::new("bns", "tester");
+        let mut doc = AppDoc::builder(buckyos_api::AppType::Web, "demo", "0.1.0", "tester", &owner)
+            .web_pkg(
+                SubPkgDesc::new("all.web.demo.tester.bns.did#0.1.0").package_meta_object_id(
+                    ObjId::new_by_raw("pkg".to_string(), vec![1; 32]),
+                ),
+            )
+            .build()
+            .unwrap();
+        let before = doc.clone();
+        doc.permissions = vec![
+            item("user/home", true),
+            item("zone/library", false),
+            item(buckyos_api::APP_PERMISSION_NOTIFY, false),
+        ];
+        let scopes = |params: &InstallParams| {
+            params
+                .permissions
+                .iter()
+                .map(|p| p.scope_path.clone())
+                .collect::<Vec<_>>()
+        };
+        let mut params = default_install_params(&doc, InstallPolicy::Normal);
+        assert_eq!(scopes(&params), ["user/home", buckyos_api::APP_PERMISSION_NOTIFY]);
+        assert!(validate_permission_selection(&doc, &params).is_empty());
+        params.permissions.pop();
+        assert!(validate_permission_selection(&doc, &params).is_empty());
+
+        // an upgrade keeps what was approved; a version that starts to declare it is like a new install
+        let home = doc.permissions[0].clone();
+        let notify = doc.permissions[2].clone();
+        assert_eq!(
+            inherited_permissions(&[home.clone()], &before, &doc),
+            [home.clone(), notify]
+        );
+        assert_eq!(inherited_permissions(&[home.clone()], &doc, &doc), [home]);
     }
 
     #[test]

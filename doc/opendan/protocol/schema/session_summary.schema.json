@@ -35,8 +35,15 @@
     },
     "made_by": {
       "default": "",
-      "description": "`context_limit | ratio | manual`.",
+      "description": "`context_limit | ratio | prompt_refrozen | manual`.",
       "type": "string"
+    },
+    "perceptions": {
+      "description": "What the session recorded with `ctl perceive` before the compression, one line each (reference, Turn, words): listed with the summary, not left to the summarizer.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     },
     "renderer": {
       "default": "libopendan.history/4",

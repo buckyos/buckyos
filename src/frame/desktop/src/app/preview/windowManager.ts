@@ -129,7 +129,7 @@ export class PreviewWindowManager {
 
     if (request.newWindow) {
       const payload: PreviewLaunchPayload = { ...base, requestId: newRequestId(), createdBy: 'manual' }
-      const windowId = desktopUIStore.openAppWindow(PREVIEW_APP_ID, { newInstance: true, launch: { requestId: payload.requestId, payload }, title })
+      const windowId = desktopUIStore.openAppWindow(PREVIEW_APP_ID, { mode: 'new', launch: { requestId: payload.requestId, payload }, title })
       if (!windowId) return null
       this.windows.set(windowId, this.metaFor(windowId, 'manual', payload, info, now))
       return windowId
@@ -138,7 +138,8 @@ export class PreviewWindowManager {
     const decision = chooseWindow(this.list(), info, { windowMode: settings.windowMode, autoWindowLimit: settings.autoWindowLimit }, now)
     if (decision.action === 'create') {
       const payload: PreviewLaunchPayload = { ...base, requestId: newRequestId(), createdBy: 'auto' }
-      const windowId = desktopUIStore.openAppWindow(PREVIEW_APP_ID, { newInstance: true, launch: { requestId: payload.requestId, payload }, title })
+      // A page of its own does not see the Preview windows open elsewhere: whoever does reuses one of them.
+      const windowId = desktopUIStore.openAppWindow(PREVIEW_APP_ID, { mode: desktopUIStore.isStandalone() ? 'reuse' : 'new', launch: { requestId: payload.requestId, payload }, title })
       if (!windowId) return null
       this.windows.set(windowId, this.metaFor(windowId, 'auto', payload, info, now))
       this.rememberLast(payload)

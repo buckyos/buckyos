@@ -15,8 +15,10 @@
 当前写入的关键文件（两条激活路径 `handle_active_by_wallet()` 与 `handle_do_active()` 都会写）：
 - `security/<device host>/authentication.private.pem`：本设备 Ed25519 私钥（路径见 `src/kernel/buckyos-api/src/device_identity.rs`）。
 - `node_identity.json`：设备与 Zone/Owner 的绑定信息（见下方 `NodeIdentityConfig` 最小字段视图）。
-- `security/start_config.json` 的必填 `schema` 为 `buckyos.start_config.v1`。激活时写入 `ood_jwt`、管理员密码哈希和 provider 配置，供后续 boot.template 渲染使用（`src/kernel/node_daemon/src/active_server.rs`）。
+- `security/start_config.json` 的必填 `schema` 为 `buckyos.start_config.v1`。激活时写入 `ood_jwt`、管理员密码哈希、`enabled_features`（含 `llm_router`），自有域名时还有 `domain_hosting`，供首次调度使用（`src/kernel/node_daemon/src/active_server.rs`）。不含 AI 厂商的 token、Telegram 账号和 DNS 服务商的 token：前两项激活后在 AI 中心、“用户与 Agent”里填，DNS token 单独存在 `security/dns_credentials/<credential_id>.json`。
 - `sn_zone_info.json`：激活完成后通过 `SnClient::get_zone_info()` 获取的 SN 运行态；下一次 node-daemon 启动生成首份 cyfs-gateway keep-tunnel 配置时优先使用非空 `relay_sn`，为 `null` 时使用 `ZoneBootConfig.sn`。
+- `<zone host>.zone_lkgs.json`：本次签出的 Zone Document，作为 Last Known Good State，首次启动按 Warm Restart 走（见 `BuckyOS Booting阶段 resolve-did-document的特殊处理说明.md` §14.1）。
+- 上传的证书：`local/identity/<域名>/`、`local/identity/_.<域名>/` 和 `security/` 的同名目录，`renewal.manager` 为 `manual`。
 - `node_device_config.json`：DeviceConfig 的 JSON 形式，供启动阶段读取（`src/kernel/node_daemon/src/active_server.rs`）。
 - `host_account.json` 保存 owner 在激活时为 Agent 指定的 OS 账号，仅 Linux root node_daemon 提供。文件格式为 `{"schema":"buckyos.host_account.v1","account":"alice"}`，未指定账号时省略该文件。账号权限见 `doc/arch/node_exector.md` §4.2。
 

@@ -1,122 +1,25 @@
 import type { GroupDisplayInfo, GroupHookInfo, GroupPanelRef } from './extensions/model'
 import type { GroupInvitation, GroupInvitationView, GroupRole, PinnedMessage, ReadReceipt, RuntimeState, SessionAccess, SessionPanelInfo } from '../../components/conversation/model/types'
 
+import type { Session as SharedSession } from '../../shared/messagehub/types.ts'
+
 export type { GroupInvitation, GroupInvitationView, GroupRole, PinnedMessage, ReadReceipt, RuntimeState, SessionAccess, SessionPanelInfo }
+export type {
+  AccountBinding,
+  CreationPolicy,
+  Entity,
+  EntityChildrenMode,
+  EntityChildrenSection,
+  EntityDetail,
+  EntityType,
+  MessagePreview,
+  SessionBinding,
+  SessionType,
+} from '../../shared/messagehub/types.ts'
 
-/* ── Entity ── */
-
-export type EntityType = 'person' | 'agent' | 'group' | 'service'
-export type EntityChildrenMode = 'inline' | 'drilldown'
-
-export interface EntityChildrenSection {
-  id: string
-  title: string
-  description?: string
-  childIds: string[]
-}
-
-export interface Entity {
-  id: string
-  type: EntityType
-  sessionCreation?: { policy: CreationPolicy; canCreate: boolean; unavailableReason?: string }
-  name: string
-  avatar?: string
-  /** Short status line, e.g. "online", "last seen 2h ago" */
-  statusText?: string
-  isOnline?: boolean
-  isPinned?: boolean
-  isMuted?: boolean
-  unreadCount: number
-  /** Tags for filtering */
-  tags: string[]
-  /** Last message preview */
-  lastMessage?: MessagePreview
-  /** Timestamp of last activity (ms) */
-  lastActiveAt: number
-  /** Sub-entities (e.g. topics under a group) */
-  children?: Entity[]
-  /** Whether children stay inline or take over the entity panel */
-  childrenMode?: EntityChildrenMode
-  /** Custom grouped content for drill-down entity panels */
-  childrenSections?: EntityChildrenSection[]
-  /** Summary shown in the drill-down overview */
-  drilldownDescription?: string
-  /** Platform/protocol source */
-  source?: string
-  /** All protocol sources of the entity (`UI_DATAMODEL.md` §3.2). */
-  sources?: string[]
-  /** Managed (zone user / agent / hosted group) vs external identity. */
-  domain?: 'managed' | 'external'
-  /** Number of visible sessions under the entity. */
-  sessionCount?: number
-  /** Visible REQUEST_BOX records across the entity's sessions. */
-  requestCount?: number
-  /**
-   * The system notify sender (the Zone DID) holding the user's notification
-   * sessions `sysnotify:todo|agent|app`: shown as "System notifications", no
-   * session can be created and nothing can be sent.
-   */
-  systemNotify?: boolean
-}
-
-export interface MessagePreview {
-  senderName?: string
-  text: string
-  timestamp: number
-}
-
-/* ── Session ── */
-
-export type SessionType = 'chat' | 'task' | 'workspace'
-
-export interface Session {
-  id: string
-  entityId: string
-  ownerDid: string
-  binding: SessionBinding
-  origin: 'manual' | 'connection' | 'remote_context' | 'unknown'
-  lifecycle: 'active' | 'archived'
-  createdAt: number
-  shared: { title: string; description: string; updatedAt: number }
-  members: Record<string, { nickname: string; updatedAt: number }>
-  lastMessage?: MessagePreview
-  title: string
-  type: SessionType
-  /** Protocol/tunnel source label */
-  source?: string
-  lastActiveAt: number
-  unreadCount: number
-  /** Visible REQUEST_BOX records in this session (real backend only). */
-  requestCount?: number
-  /** Aggregated delivery state of the latest outbound message. */
-  lastDelivery?: 'sending' | 'delivered' | 'partial_failed' | 'failed'
-  /** How the entity attribution was derived (real backend only). */
-  attributionEvidence?: 'registered' | 'group_tag' | 'group_message' | 'direct' | 'message' | 'record' | 'none'
+export interface Session extends SharedSession {
   /** Custom content of the floating session panel (`UI_DATAMODEL.md` §3.3.6); wins over a pinned message. */
   panel?: SessionPanelInfo
-}
-
-/* ── Entity Details ── */
-
-export interface EntityDetail extends Entity {
-  bio?: string
-  /** Account bindings / protocol sources */
-  bindings?: AccountBinding[]
-  /** Group members count */
-  memberCount?: number
-  /** Notes added by user */
-  note?: string
-  createdAt?: number
-  /** Contact admission level of the current owner towards this entity. */
-  accessLevel?: 'block' | 'stranger' | 'temporary' | 'allow'
-  isVerified?: boolean
-  contactSource?: string
-}
-
-export interface AccountBinding {
-  platform: string
-  accountId: string
-  displayId: string
 }
 
 /* ── Filter / Search ── */
@@ -136,12 +39,6 @@ export interface MessageHubState {
   showSessionSidebar: boolean
   detailsTarget: 'entity' | 'session' | null
 }
-
-export type CreationPolicy = 'default' | 'allow' | 'deny'
-export type SessionBinding =
-  | { kind: 'native'; targetDid: string }
-  | { kind: 'tunnel'; tunnelInstanceId: string; endpointDid: string; connectionName: string; remoteContextId?: string; supportsMultipleSessions: boolean; canCreateRemoteSession: boolean; canSend: boolean; connected: boolean; revision?: number }
-  | { kind: 'unknown' }
 
 export interface SessionPreferences {
   title: string
@@ -238,6 +135,13 @@ export interface GroupSessionParticipants {
   complete: boolean
 }
 
+/** What the group editor saves; `historyBeforeJoin` is left out when the group shows the whole history. */
+export interface GroupProfileInput {
+  name: string
+  description: string
+  historyBeforeJoin?: number
+}
+
 /** The viewer's view of one group: hosted by this zone, or joined on a remote host. */
 export interface GroupInfo {
   did: string
@@ -257,6 +161,11 @@ export interface GroupInfo {
   can: GroupCapabilities
   /** Edit / recall windows of the default session; undefined means unlimited. */
   messageRules: { editWindowMs?: number; recallWindowMs?: number }
+  /**
+   * How many messages from before joining a new member sees in the default
+   * session; undefined when it shows the whole history or the configuration is unknown.
+   */
+  historyBeforeJoin?: number
   /** An owner transfer the owner started and the target has not accepted yet. */
   pendingTransfer?: { memberDid: string; transferId: string; expiresAt: number }
 }

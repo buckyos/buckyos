@@ -53,8 +53,9 @@ test('OX01/OX02/OX06 resting objects draw no host frame; hover shows the outline
   // OX02: a solid outline at once, the name label after a short delay; nothing while dragging
   await hover(page, 'blk-sales')
   await expect(page.getByTestId('aiws-hover-outline')).toBeVisible()
-  await expect(page.getByTestId('aiws-afford-name')).toContainText('原始销售数据')
-  await expect(page.getByTestId('aiws-afford-add-row')).toBeVisible()
+  await expect(page.getByTestId('aiws-cell-title-blk-sales')).toBeVisible()
+  await expect(page.getByTestId('aiws-afford-name')).toHaveCount(0)
+  await expect(page.getByTestId('aiws-afford-add-row')).toHaveCount(0)
   await shot(page, 'ox02-hover-table')
   await page.mouse.move(5, 500)
   await expect(page.getByTestId('aiws-afford-name')).toHaveCount(0)
@@ -151,7 +152,8 @@ test('OX04/OX12 the table: "+ row" on hover adds a record; filter, fields and ne
   await fitAll(page)
   const before = (await api.table(ALICE, ws.workspace_id, { source_id: 'sales', limit: 1 })).total
   await hover(page, 'blk-sales')
-  await page.getByTestId('aiws-afford-add-row').click()
+  await page.getByTestId('aiws-add-record-blk-sales').hover()
+  await page.getByTestId('aiws-add-record-blk-sales').click()
   const frame = page.getByTestId('aiws-canvas-block-blk-sales')
   // the new record's form (UI 框架 PRD §7.3): a side panel, every field, added in one Commit
   const form = page.getByTestId('aiws-table-record-panel')
@@ -507,4 +509,150 @@ test.describe('OX15 a tablet (touch, not a phone)', () => {
     await expect(page.getByTestId('aiws-rotate-handle')).toHaveCSS('width', '36px')
     await shot(page, 'ox15-tablet-selected')
   })
+})
+
+test('ordinary canvas table hands the first click to the cell and appends once on Tab', async ({ page, api }) => {
+  const ws = await api.rpc(ALICE, 'ws.create', { title: `Grid ${Date.now()}` })
+  expect((await api.commit(ALICE, ws, [
+    { op: 'entity.create', entity_id: 'grid-data', type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: 'h', payload: { kind: 'folder', system: 'surface_content', surface_id: 'grid-page' } },
+    { op: 'entity.create', entity_id: 'grid-page', type_id: 'buckyos.container', parent_id: 'surfaces', order_key: 'h', payload: { kind: 'surface', title: 'Grid', layout: { mode: 'free' }, content_folder_id: 'grid-data' } },
+  ])).status).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await page.getByTestId('aiws-tool-table').click()
+  await page.getByTestId('aiws-tool-insert-table').click()
+  await page.mouse.click(560, 330)
+  const frame = page.locator('.aiws-frame-block[data-view="table"]')
+  await expect(frame.getByRole('columnheader')).toHaveCount(3)
+  await expect(frame.getByRole('gridcell')).toHaveCount(6)
+  const id = (await frame.getAttribute('data-block-id'))!
+  const view = await api.read(ALICE, ws.workspace_id, id)
+  const source = view.content.payload.source_ref.entity_id
+  const query = () => api.table(ALICE, ws.workspace_id, { source_id: source, limit: 10 })
+  const fields = (await api.read(ALICE, ws.workspace_id, source)).content.fields
+  const rows = (await query()).rows
+  const first = frame.getByTestId(`aiws-cell-${rows[0].record_id}-${fields[0].field_id}`)
+  await first.click()
+  await first.getByRole('textbox').fill('323')
+  await first.getByRole('textbox').press('Enter')
+  await expect.poll(async () => (await query()).rows[0].values[fields[0].field_id]).toBe('323')
+  const last = frame.getByTestId(`aiws-cell-${rows[1].record_id}-${fields[2].field_id}`)
+  await last.click()
+  await last.getByRole('textbox').fill('tail')
+  await last.getByRole('textbox').press('Tab')
+  await expect.poll(async () => (await query()).total).toBe(3)
+  const added = (await query()).rows[2]
+  await expect(frame.getByTestId(`aiws-cell-${added.record_id}-${fields[0].field_id}`).locator('[data-row]')).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(frame).toBeFocused()
+  const name = frame.getByTestId(`aiws-cell-title-${id}`)
+  const titleInput = frame.getByTestId(`aiws-cell-title-input-${id}`)
+  await first.click()
+  await expect(first.getByRole('textbox')).toBeFocused()
+  await name.click()
+  await expect(frame).toHaveClass(/is-selected/)
+  await expect(frame).not.toHaveClass(/is-editing/)
+  await expect(titleInput).toHaveCount(0)
+  await first.click()
+  await first.getByRole('textbox').fill('324')
+  await name.dblclick()
+  await expect(titleInput).toBeFocused()
+  await titleInput.fill('Grid title')
+  await titleInput.press('Enter')
+  await expect.poll(async () => (await query()).rows[0].values[fields[0].field_id]).toBe('324')
+  await expect(name).toHaveText('Grid title')
+  await frame.getByTestId('aiws-table-properties').click()
+  const properties = page.getByTestId('aiws-table-properties-panel')
+  await properties.getByRole('checkbox').click()
+  await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, id)).content.payload.config?.show_header).toBe(false)
+  await properties.getByRole('combobox').selectOption('striped')
+  await page.keyboard.press('Escape')
+  await expect(frame.getByRole('columnheader')).toHaveCount(0)
+  await frame.getByTestId('aiws-table-toggle-layout').click()
+  await expect(frame.getByTestId('aiws-table-card')).toHaveCount(3)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await expect(frame.getByTestId('aiws-table-card')).toHaveCount(3)
+  await expect(name).toHaveText('Grid title')
+  await frame.getByTestId('aiws-table-toggle-layout').click()
+  await expect(first).toContainText('324')
+  await expect(frame.getByRole('columnheader')).toHaveCount(0)
+  await expect(frame.getByTestId(`aiws-table-${id}`)).toHaveAttribute('data-grid-style', 'striped')
+})
+
+async function accessGrid(api: Api, title: string, lockRequired: boolean) {
+  const ws = await api.freeCanvas(ALICE, title)
+  const made = await api.commit(ALICE, ws, [
+    { op: 'entity.create', entity_id: 'rows', type_id: 'buckyos.table-source', name: 'Rows', parent_id: 'data', order_key: 'a', payload: {
+      fields: [{ field_id: 'title', name: 'Title', type: 'text' }, { field_id: 'flag', name: 'Flag', type: 'boolean' }],
+    } },
+    { op: 'table.insert_records', source_id: 'rows', records: [{ record_id: 'one', values: { flag: false } }] },
+    { op: 'entity.create', entity_id: 'grid', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 480, h: 240 },
+      payload: { title: 'Rows', view: { type: 'table' }, source_ref: { entity_id: 'rows' } } },
+  ])
+  expect(made.status, JSON.stringify(made)).toBe('accepted')
+  if (lockRequired) {
+    const policy = await api.commit(ALICE, ws, [{ op: 'entity.set_write_policy', entity_id: 'rows', policy: 'lock_required', expect: { rev: made.seq } }])
+    expect(policy.status, JSON.stringify(policy)).toBe('accepted')
+  }
+  return ws
+}
+
+test('a static grid takes a required lock on first click and toggles a boolean exactly once', async ({ page, api }) => {
+  const ws = await accessGrid(api, `first click lock ${Date.now()}`, true)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const frame = page.getByTestId('aiws-canvas-block-grid')
+  const title = frame.getByTestId('aiws-cell-one-title')
+  const holders = async () => (await api.rpc(ALICE, 'lock.list', { workspace_id: ws.workspace_id })).locks.map((lock: { principal: string }) => lock.principal)
+  expect(await holders()).toEqual([])
+  await title.click()
+  await expect.poll(holders).toEqual(['alice'])
+  await title.getByRole('textbox').fill('First click')
+  await title.getByRole('textbox').press('Enter')
+  await expect.poll(async () => (await api.cell(ALICE, ws.workspace_id, 'rows', 'one', 'title')).value).toBe('First click')
+  await page.getByTestId('aiws-canvas').click({ position: { x: 850, y: 550 } })
+  await expect.poll(holders).toEqual([])
+  const seq = await api.headSeq(ALICE, ws.workspace_id)
+  await frame.getByTestId('aiws-cell-one-flag').getByRole('checkbox').click()
+  await expect.poll(holders).toEqual(['alice'])
+  await expect.poll(async () => (await api.cell(ALICE, ws.workspace_id, 'rows', 'one', 'flag')).value).toBe(true)
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(seq + 1)
+})
+
+test('a lock held by another principal leaves the static grid intact', async ({ page, api }) => {
+  const ws = await accessGrid(api, `occupied table lock ${Date.now()}`, true)
+  const bob = 'tok-bob'
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update'] }] })
+  const taken = await api.rpc(bob, 'lock.acquire', { workspace_id: ws.workspace_id, session_id: 'other-editor', entity_ids: ['rows'] })
+  expect(taken.locks).toHaveLength(1)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const frame = page.getByTestId('aiws-canvas-block-grid')
+  const before = await api.headSeq(ALICE, ws.workspace_id)
+  await frame.getByTestId('aiws-cell-one-flag').click()
+  await page.getByTestId('aiws-near-lock-state').click()
+  await expect(page.getByTestId('aiws-lock-holder')).toContainText('bob')
+  await expect(frame.getByTestId('aiws-cell-one-title').getByRole('textbox')).toHaveCount(0)
+  expect((await api.cell(ALICE, ws.workspace_id, 'rows', 'one', 'flag')).value).toBe(false)
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(before)
+})
+
+test('a reader cannot edit a canvas grid; granting only append adds a row without changing the schema or view', async ({ page, api }) => {
+  const ws = await accessGrid(api, `table append only ${Date.now()}`, false)
+  const bob = 'tok-bob'
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
+  await openCanvas(page, bob, ws.workspace_id)
+  const frame = page.getByTestId('aiws-canvas-block-grid')
+  const flag = frame.getByTestId('aiws-cell-one-flag')
+  await flag.click()
+  await expect(frame.getByTestId('aiws-add-record-grid')).toHaveCount(0)
+  await expect(flag.getByRole('checkbox')).not.toBeChecked()
+  expect((await api.cell(ALICE, ws.workspace_id, 'rows', 'one', 'flag')).value).toBe(false)
+
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: '/data/Rows', allow: ['read', 'append'] }] })
+  await openCanvas(page, bob, ws.workspace_id)
+  const add = frame.getByTestId('aiws-add-record-grid')
+  await add.hover()
+  await add.click()
+  await expect.poll(async () => (await api.table(ALICE, ws.workspace_id, { source_id: 'rows' })).total).toBe(2)
+  await expect(frame.getByTestId('aiws-edge-column-grid')).toHaveCount(0)
+  expect((await api.read(ALICE, ws.workspace_id, 'rows')).content.fields).toHaveLength(2)
+  expect((await api.read(ALICE, ws.workspace_id, 'grid')).content.payload.fields).toBeUndefined()
 })

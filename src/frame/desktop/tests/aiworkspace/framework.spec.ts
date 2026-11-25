@@ -180,6 +180,56 @@ test('§15-5 播放: one path starts it at once; a path and a guide drop down; n
   await bob.close()
 })
 
+test('播放 on a flow page is shown disabled: a click says to switch to a free canvas and starts nothing; on a free canvas it plays again', async ({ page, api }) => {
+  const flowPage = [
+    { op: 'entity.create', entity_id: 'flow-page-content', type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: 'y', name: '页', payload: { kind: 'folder', title: '页', system: 'surface_content', surface_id: 'flow-page' } },
+    { op: 'entity.create', entity_id: 'flow-page', type_id: 'buckyos.container', parent_id: 'surfaces', order_key: 'y', name: '页', payload: { kind: 'surface', layout: { mode: 'flow' }, title: '页', content_folder_id: 'flow-page-content' } },
+  ]
+  const goTo = async (surfaceId: string) => {
+    await page.getByTestId('aiws-surface-switch').click()
+    await page.getByTestId(`aiws-surface-item-${surfaceId}`).getByRole('menuitem').click()
+  }
+  const reason = '流式页上不能播放：请先切换到一张自由画布'
+  const play = page.getByTestId('aiws-collab-play')
+  const note = page.getByTestId('aiws-collab-play-reason')
+  // the pointer itself: Playwright's click waits for an `aria-disabled` element to become enabled
+  const press = async () => {
+    const box = (await play.boundingBox())!
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+  }
+  // a path and a guide (a drop-down on a free canvas)
+  const ws = await showWorkspace(api, `f05d ${Date.now()}`)
+  expect(((await api.commit(ALICE, ws, flowPage)) as { status: string }).status).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await expect(play).toHaveAttribute('aria-haspopup', 'menu')
+  await expect(play).not.toHaveAttribute('aria-disabled', 'true')
+  await goTo('flow-page')
+  await expect(page.getByTestId('aiws-flow-host')).toBeVisible()
+  await expect(play).toHaveAttribute('aria-disabled', 'true')
+  await expect(play).toHaveAttribute('title', reason)
+  await press()
+  await expect(note).toHaveText(reason)
+  await expect(page.getByTestId('aiws-collab-play-list')).toHaveCount(0)
+  await expect(page.getByTestId('aiws-start-show')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(note).toHaveCount(0)
+  await goTo('s-launch')
+  await expect(play).not.toHaveAttribute('aria-disabled', 'true')
+  await play.click()
+  await expect(page.getByTestId('aiws-collab-play-list').getByTestId('aiws-play-path-path-intro')).toBeVisible()
+  await page.keyboard.press('Escape')
+  // no path: on a flow page the click does not lead to path editing either
+  const none = await api.demo(ALICE, 'quarterly', `f05e ${Date.now()}`)
+  expect(((await api.commit(ALICE, none, flowPage)) as { status: string }).status).toBe('accepted')
+  await openCanvas(page, ALICE, none.workspace_id)
+  await goTo('flow-page')
+  await expect(page.getByTestId('aiws-flow-host')).toBeVisible()
+  await expect(play).toHaveAttribute('aria-disabled', 'true')
+  await press()
+  await expect(note).toHaveText(reason)
+  await expect(page.getByTestId('aiws-presentation-placeholder')).toHaveCount(0)
+})
+
 test('§15-6 宏: two macros on the canvas drop down — wishes holding a program, never one without; running one is the card\'s run, its start and end are in the work log, and it comes first next time', async ({ page, api }) => {
   test.slow()
   // the scripted model (mock-llm.mjs) analyses and codes the wish in this browser

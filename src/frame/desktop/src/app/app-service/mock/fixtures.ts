@@ -7,6 +7,7 @@ import type {
   RuntimeView,
 } from '../types'
 import type { InstallInput } from '../schemas'
+import { NOTIFY_PERMISSION } from '../../../shared/permissions.ts'
 
 export const targets: InstallTarget[] = [
   {
@@ -172,6 +173,7 @@ export function appDocument(
         exp: null,
       },
       { scope_path: 'wan', actions: ['connect'], required: false, exp: null },
+      { scope_path: NOTIFY_PERMISSION, actions: ['write'], required: false, exp: null },
     ],
     endpoints:
       product.type === 'script'
@@ -260,7 +262,8 @@ export function defaultInput(app: AppDocumentView): InstallInput {
       selected_components: app.components
         .filter((c) => c.required)
         .map((c) => c.name),
-      permissions: app.permissions.filter((p) => p.required),
+      // Notifications start out approved, as the server's install plan has them.
+      permissions: app.permissions.filter((p) => p.required || p.scope_path === NOTIFY_PERMISSION),
       data_mount_points: mounts('data'),
       local_cache_mount_points: mounts('local_cache'),
       external_mount_points: mounts('external'),

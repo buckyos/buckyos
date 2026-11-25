@@ -423,7 +423,8 @@ impl LLMContext {
                 );
             }
 
-            let infer_req = self.build_inference_request();
+            let plain_text = self.accepts_text().await;
+            let infer_req = self.build_inference_request(plain_text);
 
             // A request known not to fit is never sent. Checked after the
             // hooks, so a failed checkpoint is never masked by the yield.
@@ -1174,7 +1175,19 @@ impl LLMContext {
         }
     }
 
-    fn build_inference_request(&mut self) -> LlmInferenceRequest {
+    /// The run has a reply contract and its host takes a plain text now.
+    async fn accepts_text(&self) -> bool {
+        let contract = matches!(
+            self.request.output,
+            OutputSpec::Json { max_repairs: Some(_), .. }
+        );
+        match &self.deps.output_validator {
+            Some(v) if contract => v.accepts_text().await,
+            _ => false,
+        }
+    }
+
+    fn build_inference_request(&mut self, plain_text: bool) -> LlmInferenceRequest {
         let mut tool_specs =
             resolve_tool_specs(&self.request.tool_policy, self.deps.tools.as_ref());
         let native = self.request.tool_policy.mode != ToolMode::None;
@@ -1189,6 +1202,7 @@ impl LLMContext {
 
         let (force_json, json_schema) = match &self.request.output {
             OutputSpec::Text => (false, None),
+            OutputSpec::Json { .. } if plain_text => (false, None),
             OutputSpec::Json { schema, .. } => (true, schema.clone()),
         };
 
@@ -1363,8 +1377,13 @@ impl LLMContext {
                 ..
             } => {
                 let (schema, max) = (schema.clone(), *max);
+                let plain_text = self.accepts_text().await
+                    && Self::parse_reply(&text, schema.as_ref()).is_err();
                 match self.check_reply(&text, schema.as_ref()).await {
                     Ok(value) => ContextOutput::Json { content: value },
+                    Err(_) if plain_text => ContextOutput::Text {
+                        content: text.clone(),
+                    },
                     Err(error) => {
                         self.deps
                             .worklog
@@ -1378,10 +1397,16 @@ impl LLMContext {
                             // the failed reply stays in the transcript.
                             self.state.output_repairs += 1;
                             self.state.accumulated.push(response.message.clone());
-                            self.state.accumulated.push(AiMessage::text(
-                                AiRole::User,
-                                repair_message(&error, schema.as_ref()),
-                            ));
+                            let mut correction = repair_message(&error, schema.as_ref());
+                            if let Some(v) = &self.deps.output_validator {
+                                if let Some(hint) = v.repair_hint().await {
+                                    correction.push('\n');
+                                    correction.push_str(&hint);
+                                }
+                            }
+                            self.state
+                                .accumulated
+                                .push(AiMessage::text(AiRole::User, correction));
                             return None;
                         }
                         ContextOutput::Invalid {
@@ -1437,14 +1462,19 @@ impl LLMContext {
         })
     }
 
-    /// A reply under a reply contract: parsed (one code fence tolerated),
-    /// matching the schema, accepted by the host's validator.
-    async fn check_reply(&self, text: &str, schema: Option<&Value>) -> Result<Value, String> {
+    fn parse_reply(text: &str, schema: Option<&Value>) -> Result<Value, String> {
         let value = crate::json_check::parse_reply(text)
             .map_err(|e| format!("the reply is not one JSON value ({e})"))?;
         if let Some(schema) = schema {
             crate::json_check::validate(schema, &value)?;
         }
+        Ok(value)
+    }
+
+    /// A reply under a reply contract: parsed (one code fence tolerated),
+    /// matching the schema, accepted by the host's validator.
+    async fn check_reply(&self, text: &str, schema: Option<&Value>) -> Result<Value, String> {
+        let value = Self::parse_reply(text, schema)?;
         if let Some(v) = &self.deps.output_validator {
             v.validate(&value).await?;
         }

@@ -6,8 +6,8 @@
  * ui/framework/members.tsx). A phone has no collaboration zone (§6.1): its title area is ui/shell/MainToolbar's
  * PhoneTitle. */
 
-import { useEffect, useState } from 'react'
-import { Ellipsis, Link2, Minus, Plus } from 'lucide-react'
+import { useEffect, useId, useState } from 'react'
+import { Ellipsis, Link2, Minus, Play, Plus } from 'lucide-react'
 import { useAiwsText } from '../../useAiwsText'
 import type { Camera } from '../canvas/render/camera'
 import { MAX_ZOOM, MIN_ZOOM } from '../canvas/render/camera'
@@ -54,7 +54,9 @@ export function ViewToolbar({ canvas, zone }: {
     }
     const model = toolItemOf(def, actions, item.args, { title: item.title, icon: item.icon })
     if (!model) return null
-    return <ToolItem key={item.key} item={model} testId={item.key === def.id ? def.zone?.testId : `aiws-collab-item-${item.key}`} />
+    return <ToolItem key={item.key} item={model} testId={item.key === def.id ? def.zone?.testId : `aiws-collab-item-${item.key}`}>
+      {def.id === 'collab.play' && model.icon === 'play' ? <PresentationPlayIcon /> : undefined}
+    </ToolItem>
   }
   const shown = items.filter(({ def }) => !inMore(def))
   const firstControl = shown.findIndex(({ def }) => def.zone?.control)
@@ -71,6 +73,20 @@ export function ViewToolbar({ canvas, zone }: {
       )}
       {after.filter(({ def }) => def.zone?.control === 'share').map(render)}
     </div>
+  )
+}
+
+function PresentationPlayIcon() {
+  const gradient = useId()
+  return (
+    <Play size={18} fill={`url(#${gradient})`} stroke="#b9571b" strokeWidth={1.5} aria-hidden="true">
+      <defs>
+        <linearGradient id={gradient} x2="100%" y2="100%">
+          <stop stopColor="#ffc078" />
+          <stop offset="100%" stopColor="#f47a32" />
+        </linearGradient>
+      </defs>
+    </Play>
   )
 }
 

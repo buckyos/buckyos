@@ -80,7 +80,7 @@ function Card({ row, lines, style, fields, titleField, selection, onToggle, onSt
   const title = titleField ? formatValue(titleField, row.values[titleField.field_id]) : ''
   return (
     <div role="listitem" className="aiws-table-card-item" style={style}>
-      <button type="button" className={`aiws-table-card${selected ? ' is-selected' : ''}`} data-testid="aiws-table-card" data-record-id={row.record_id}
+      <div role="button" tabIndex={0} onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.currentTarget.click() } }} className={`aiws-table-card${selected ? ' is-selected' : ''}`} data-testid="aiws-table-card" data-record-id={row.record_id}
         aria-pressed={selection ? selected : undefined} {...press}>
         <span className="aiws-table-card-title">
           {selection && <span className="aiws-table-card-check" aria-hidden="true" data-checked={selected ? 'true' : 'false'} />}
@@ -99,7 +99,7 @@ function Card({ row, lines, style, fields, titleField, selection, onToggle, onSt
             </span>
           )
         })}
-      </button>
+      </div>
     </div>
   )
 }

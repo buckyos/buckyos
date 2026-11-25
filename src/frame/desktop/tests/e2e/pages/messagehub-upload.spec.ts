@@ -34,7 +34,7 @@ function png(width: number, height: number, rgb: [number, number, number]): Buff
 async function openSession(page: Page, title: string) {
   await page.goto(`/messagehub?entityId=${encodeURIComponent(CODER)}`)
   await expect(page.getByRole('button', { name: 'Sessions', exact: true })).toBeVisible()
-  await createNamedSession(page, title)
+  await createNamedSession(page, title, { setDefault: true })
   await expect(page.getByTestId('conversation-history')).toHaveAttribute('data-raw-count', '0')
   return page.evaluate(({ context, entity }) => window.__messageHubMock.sessions(context, entity)[0].id, { context: OWN, entity: CODER })
 }

@@ -148,6 +148,21 @@ test('wrong password, cancellation, expiry and retry preserve the confirmation b
   )
 })
 
+test('an app that sends notifications says so; the choice is part of the plan', async ({ page }) => {
+  await openPlan(page)
+  const row = page.getByTestId('app-installer-permission-notify')
+  await expect(row).toContainText('Send you notifications · Optional')
+  await expect(row).toContainText('Settings → Notifications')
+  const box = page.getByRole('checkbox', { name: /^Send you notifications/ })
+  await expect(box).toBeChecked()
+  const summary = page.getByTestId('app-installer-approved-summary')
+  await expect(summary).toContainText('Send you notifications')
+  await box.uncheck()
+  await page.getByTestId('app-installer-recheck').click()
+  await expect(page.getByTestId('app-installer-submit')).toBeEnabled()
+  await expect(summary).not.toContainText('Send you notifications')
+})
+
 test('edits invalidate the plan; required declarations and sensitive variables are protected', async ({
   page,
 }) => {

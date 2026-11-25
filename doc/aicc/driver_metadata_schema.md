@@ -192,14 +192,13 @@ request routing retain that selected exact variant. Final wire parameter locking
 is separate Provider/Adapter work.
 
 LLM directories require Manual admission. The `llm` root is a namespace.
-Tasks, specifications and families have no implicit Parent fallback. The builtin
-usecases fall back explicitly (`target_logical`) to `llm.fallback`, which only
-references non-`direct_only` specifications in cost tiers (cheap/fast 4.0, value
-3.0, standard 2.0, premium/specialised 1.0) and is itself `disabled`. Explicit
-fallback retains original task/request requirements and the requested task's
-scheduler; direct `llm.fallback` requests use `cost_first`. A new non-direct_only
-specification must be placed in `llm.fallback`; the single-model coverage test
-fails otherwise.
+Tasks, specifications and families have no implicit Parent fallback and default to
+`strict`; `llm.fallback` is empty by default. A fallback exists only where a system
+administrator configured one, and it retains the original task/request requirements.
+See [aicc_router.md section 9](aicc_router.md#9-fallback-与失败处理). The current code still
+ships builtin `target_logical` rules to a populated `llm.fallback`, and its single-model
+coverage test requires new non-`direct_only` specifications to be listed there; both are
+removed by the [explicit fallback TODO](../../notepads/aicc-explicit-fallback-todo.md).
 Legacy `llm.{driver}.{model}` names are not aliases.
 
 Overlays retain `factory -> system -> user -> session` precedence. Item and

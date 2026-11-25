@@ -23,7 +23,7 @@ use buckyos_api::{
     agent_settings_key, agent_short_name, agent_spec_key, agent_template_record_key,
     get_buckyos_api_runtime, user_app_spec_key, AgentCreateError, AgentSlot, AGENT_SLOT_KEY, AgentCreateStep, AgentId,
     AgentInstallRecord, AgentInstallState, AgentMsgTunnelSettings, AgentPermissionMode,
-    AgentProfile, AgentRuntimeInfo, AgentServiceBinding, AgentSettings, AgentSpec,
+    AgentProfile, AgentRuntimeInfo, AgentServiceBinding, AgentSettings, AgentSpec, GroupChatSettings,
     AgentTemplateConfig, AgentTemplateRecord, AgentTemplateSource, AgentTunnelState,
     AppDataDisposition, AppDoc, AppId, AppInstallTaskData, AppInstanceId, AppRegistry,
     AppServiceSpec, AppType, AppUpdateTaskData, InstallError, InstallErrorCode, InstallInspection,
@@ -2168,6 +2168,7 @@ fn settings_view(settings: &AgentSettings) -> Value {
         "auto_start": settings.auto_start,
         "allow_other_users": settings.allow_other_users,
         "allow_group": settings.allow_group,
+        "group_chat": settings.group_chat,
         "role_supplement": settings.role_supplement,
         "template_auto_update": settings.template_auto_update,
         "desktop_entry": settings.desktop_entry,
@@ -3137,14 +3138,25 @@ impl ControlPanelServer {
         let auto_share_results = flag("auto_share_results")?;
         let runtimes = req.params.get("runtimes");
         let default_runtime_id = req.params.get("default_runtime_id");
+        // `null` goes back to the default conditions.
+        let group_chat = match req.params.get("group_chat") {
+            None => None,
+            Some(Value::Null) => Some(GroupChatSettings::default()),
+            Some(value) => Some(
+                serde_json::from_value::<GroupChatSettings>(value.clone()).map_err(|error| {
+                    RPCErrors::ParseRequestError(format!("group_chat: {error}"))
+                })?,
+            ),
+        };
         if allow_group.is_none()
+            && group_chat.is_none()
             && homestation.is_none()
             && auto_share_results.is_none()
             && runtimes.is_none()
             && default_runtime_id.is_none()
         {
             return Err(RPCErrors::ParseRequestError(
-                "agent.update changes allow_group, homestation, auto_share_results, runtimes or default_runtime_id".to_string(),
+                "agent.update changes allow_group, group_chat, homestation, auto_share_results, runtimes or default_runtime_id".to_string(),
             ));
         }
         let kv = ZoneKv::connect().await?;
@@ -3155,6 +3167,9 @@ impl ControlPanelServer {
             .unwrap_or_default();
         if let Some(allow_group) = allow_group {
             settings.allow_group = allow_group;
+        }
+        if let Some(group_chat) = group_chat {
+            settings.group_chat = group_chat;
         }
         if let Some(homestation) = homestation {
             settings.homestation = homestation;

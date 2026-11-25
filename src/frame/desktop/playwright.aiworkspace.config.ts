@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { resolve } from 'node:path'
 import { defineConfig, devices } from '@playwright/test'
 
 /**
@@ -59,6 +60,7 @@ export default defineConfig({
     {
       command: 'node tests/aiworkspace/start-backend.mjs',
       url: `${backend}/kapi/aiworkspace/healthz`,
+      env: { AIWS_E2E_WEB: process.env.AIWS_E2E_WEB ?? resolve(previewDir) },
       reuseExistingServer: false,
       timeout: 900_000,
       stdout: 'pipe',

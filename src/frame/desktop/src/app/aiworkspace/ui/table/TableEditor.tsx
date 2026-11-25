@@ -1,32 +1,38 @@
 /* The standard table editor (UI 框架 PRD §7.1–§7.3): one editor for a TableSource, used by a table Block (on a
  * canvas or a page), by a data-mode tab and by a phone's full screen. Its title row has the filter, the fields and ⋯;
  * the conditions in force are chips under it; the content is a grid or cards (a phone starts with cards, a computer
- * with the grid, the choice is each person's); the foot holds "+ new record" and how many records are loaded. A
+ * with the grid, the choice is each person's); the footer counts the loaded records. A
  * record opens in its form (a side panel, or the whole phone screen); records are selected by ticking (computer) or
  * a long press (phone) and the bar at the bottom deletes or copies them. Every write keeps the rules of the grid:
  * capability, the read-only reason, undo, the save state. */
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import { useContext, useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { ClipboardCopy, Columns3, LayoutGrid, ListChecks, ListFilter, Lock, MoreHorizontal, Plus, Rows3, X } from 'lucide-react'
-import { languageCurrency } from '@table/currency'
+import { LockScope } from '../blocks/editors'
+import { BlockTitle } from '../blocks/BlockTitle'
+import { useFlowBlock } from '../blocks/flowContext'
+import { TableBlockContext } from './TableBlockContext'
+import { TableHeading } from './TableHeading'
+import { tableAppearance, cleanRowHeights } from './appearance'
+import { placeRow, rowOrderOp } from './rowOrder'
+import { insertRecordOp, missingRecordFields } from './insert'
 import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
-import type { CellPayload, FieldDef, FilterNode, Json, KeyedContent, SortSpec, TableSourceContent } from '../../api/types'
+import type { CellPayload, CommitOutcome, EntityEnvelope, RowOrder, FilterNode, Json, KeyedContent, QueryRow, SortSpec, TableSourceContent } from '../../api/types'
+import type { SubmitOptions } from '../../state/store'
 import type { CapturedAnchor } from '../../anchors/registry'
 import { useEntity, useLoad, useReadOnlyReason, useStore, useUserState, useVersion, type AnnotationMark } from '../../state/hooks'
-import type { WorkspaceStore } from '../../state/store'
 import { useAiwsText } from '../../useAiwsText'
-import { consumeIntent, useEditorToolbar, useIntent } from '../blocks/editorToolbar'
+import { consumeIntent, requestIntent, useEditorToolbar, useIntent, type TableIntent } from '../blocks/editorToolbar'
 import type { ToolbarItem } from '../blocks/registry'
 import { annotatedRecords, useRecordFocus } from '../controls/data/focus'
 import { FieldManager } from '../FieldManager'
-import { addFieldOps, CREATABLE_FIELD_TYPES } from '../fieldOps'
+import { quickColumnOps, insertColumnId } from '../fieldOps'
 import { COPY_LIMIT, tableClipboard } from '../import/copyTable'
 import { usePhone } from '../shell/shellContext'
 import { TablePager, type PagerQuery } from '../tablePager'
-import { FIELD_TYPE_LABEL } from '../values'
 import { PhoneEditBar } from './EditBar'
-import { FIELD_ICONS } from './fieldIcons'
 import { FilterSortPanel } from './FilterPanel'
 import {
   blockColumns, conditionText, conditionsOf, listedOf, personalColumns, personalOf, recordTitle, sortText, titleFieldOf, withoutCondition,
@@ -35,7 +41,7 @@ import {
 import { publishTableCurrent } from './current'
 import { TableRecordPanel, type RecordPanelState } from './RecordPanel'
 import { TableCards } from './TableCards'
-import { TableGrid, type CellRef } from './TableGrid'
+import { TableGrid, type CellRef, type TableGridProps } from './TableGrid'
 import { ConfirmPop, TableMenu, TablePop, anchorOf, usePop, type MenuItem } from './TablePop'
 import './table.css'
 
@@ -47,8 +53,10 @@ const DEFAULT_ROW_LIMIT = 100
 export interface TableEditorBodyProps {
   /** The table-view Block, or the table's synthetic view (`sourceMode`). */
   cell: CellRead
+  lockSource?: EntityEnvelope
   sourceMode?: boolean
   size: TableEditorSize
+  awaitingLock?: boolean
   readOnly: boolean
   readOnlyReason?: string | null
   compact?: boolean
@@ -60,6 +68,8 @@ export interface TableEditorBodyProps {
 /** What this person chose for this view (user work state): the presentation per device; without a Block also the
  * temporary filter and sort and the columns. */
 interface TablePref extends PersonalColumns {
+  row_order?: RowOrder
+  config?: Record<string, Json>
   layout?: { phone?: TableLayout; desktop?: TableLayout }
   filter?: FilterNode | null
   sorts?: SortSpec[] | null
@@ -67,69 +77,41 @@ interface TablePref extends PersonalColumns {
 
 type Panel = 'none' | 'filter' | 'fields'
 
-export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReason, compact, annotations, onAnnotate, onActivateAnnotation }: TableEditorBodyProps) {
-  const { t, locale } = useAiwsText()
+function useTableData({ cell, sourceMode, compact }: TableEditorBodyProps) {
   const store = useStore()
-  const phone = usePhone()
   const cellId = cell.entity_id
   const payload = cell.content.payload
   const sourceId = payload.source_ref?.entity_id ?? ''
   const sourceVersion = useVersion(`e:${sourceId}`)
   const loadSource = useMemo(() => () => store.session.read<TableSourceContent>(sourceId), [store, sourceId])
   const source = useLoad<SourceRead>(loadSource, sourceVersion)
-  const entity = useEntity(sourceId)
-  const directReason = useReadOnlyReason()
 
   // ---- personal state: a Block's `block:<id>/table`; the table itself keeps its old `tableview:<id>` entry (phase two §6.1)
   const prefKey = sourceMode ? `tableview:${sourceId}` : `block:${cellId}/table`
   const pref = useUserState<Json>(prefKey) as TablePref | undefined
   const writePref = (change: Partial<TablePref>) => {
-    const next: Record<string, unknown> = { ...(pref ?? {}), ...change }
+    const next: Record<string, unknown> = { ...((store.userState.get<Json>(prefKey) as TablePref | undefined) ?? {}), ...change }
     for (const key of Object.keys(next)) if (next[key] === null || next[key] === undefined) delete next[key]
     store.userState.set(prefKey, Object.keys(next).length > 0 ? (next as Json) : null)
   }
   // session-level filter and sort (design §3.5.2): not a commit until "save view"; without a Block in the user state
   const [localView, setLocalView] = useState<SessionView>({ filter: null, sorts: null })
+  if (compact && (localView.filter || localView.sorts)) setLocalView({ filter: null, sorts: null })
   const sessionView: SessionView = sourceMode ? { filter: pref?.filter ?? null, sorts: pref?.sorts ?? null } : localView
   const setSessionView = (view: SessionView) => { if (sourceMode) writePref({ filter: view.filter, sorts: view.sorts }); else setLocalView(view) }
-  const device = phone ? 'phone' : 'desktop'
-  const layout: TableLayout = compact ? 'grid' : pref?.layout?.[device] ?? (phone ? 'cards' : 'grid')
-  const setLayout = (next: TableLayout) => writePref({ layout: { ...(pref?.layout ?? {}), [device]: next } })
-
-  // ---- what is open
-  const [panel, setPanel] = useState<Panel>('none')
-  const [record, setRecord] = useState<RecordPanelState | null>(null)
-  const [selection, setSelection] = useState<Set<string> | null>(null)
-  const [phoneCell, setPhoneCell] = useState<CellRef | null>(null)
-  const [editBar, setEditBar] = useState<CellRef | null>(null)
-  const pops = usePop<'menu' | 'delete-selected' | 'add-field'>()
-  // a toolbar button pressed while the Block was only selected names what to open (标准对象的交互改进 §5.2)
-  const intentKey = sourceMode || compact ? '' : cellId
-  const intent = useIntent(intentKey)
-  const [intentSeen, setIntentSeen] = useState(0)
-  const [askedCopy, setAskedCopy] = useState(0)
-  if (intent && intent.seq !== intentSeen) {
-    setIntentSeen(intent.seq)
-    if (intent.value === 'copy') setAskedCopy(intent.seq)
-    else if (intent.value === 'add') setRecord({ kind: 'new' })
-    else if (intent.value === 'select') setSelection(new Set())
-    else if (intent.value === 'filter' || intent.value === 'fields') setPanel(intent.value)
-  }
-  useEffect(() => { if (intent) consumeIntent(intentKey, intent) }, [intent, intentKey])
-  // a record's link (控件机制 G12) opens its form
-  useRecordFocus(intentKey, (focus) => setRecord({ kind: 'edit', recordId: focus.record }))
 
   // ---- rows
-  const savedKey = JSON.stringify([payload.filter ?? null, payload.sorts ?? null, payload.fields ?? null])
+  const rowOrder = sourceMode ? pref?.row_order : payload.row_order
+  const savedKey = JSON.stringify([payload.filter ?? null, payload.sorts ?? null, payload.fields ?? null, rowOrder ?? null])
   const sessionKey = JSON.stringify(sessionView)
-  const pager = useMemo(() => {
-    const saved = JSON.parse(savedKey) as [FilterNode | null, SortSpec[] | null, unknown]
+  const { pager, viewportRef } = useMemo(() => {
+    const saved = JSON.parse(savedKey) as [FilterNode | null, SortSpec[] | null, unknown, RowOrder | null]
     const session = JSON.parse(sessionKey) as SessionView
     const query: PagerQuery = {
-      viewId: sourceMode ? undefined : cellId, sourceId, filter: session.filter, sorts: session.sorts,
+      viewId: sourceMode ? undefined : cellId, sourceId, rowOrder: sourceMode ? saved[3] ?? undefined : undefined, filter: session.filter, sorts: session.sorts,
       orderDependsOnData: Boolean(saved[0] || (saved[1] && saved[1].length > 0) || session.filter || (session.sorts && session.sorts.length > 0)),
     }
-    return new TablePager(store.session, query)
+    return { pager: new TablePager(store.session, query), viewportRef: { current: { left: 0, top: 0 } } }
   }, [store, cellId, sourceId, savedKey, sessionKey, sourceMode])
   const rows = useSyncExternalStore(pager.subscribe, pager.snapshot)
   // a Block may show only the first rows of its view (B7-3): a display limit, the data keeps every row
@@ -145,6 +127,64 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
     lastSchema.current = schemaKey
   }, [schemaKey, pager])
 
+  return {
+    cellId, payload, sourceId, source, prefKey, pref, writePref, sessionView, setSessionView, sessionKey,
+    rowOrder, pager, viewportRef, rows, rowLimit, limited, shown,
+  }
+}
+
+export function TableEditorBody(props: TableEditorBodyProps) {
+  const data = useTableData(props)
+  const session = <TableEditorSession {...props} data={data} />
+  return props.compact ? session : <LockScope entity={props.lockSource} intentKey={props.cell.entity_id}>{session}</LockScope>
+}
+
+function TableEditorSession({ cell, sourceMode, size, awaitingLock, readOnly, readOnlyReason, compact, data, annotations, onAnnotate, onActivateAnnotation }: TableEditorBodyProps & { data: ReturnType<typeof useTableData> }) {
+  const { t } = useAiwsText()
+  const store = useStore()
+  const phone = usePhone()
+  const block = useContext(TableBlockContext)
+  const flow = useFlowBlock()
+  const titleRelease = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(titleRelease.current), [])
+  const interactiveStatic = Boolean(compact && block?.mode === 'edit' && block.depth === 0)
+  const activeBlock = (action: TableIntent) => {
+    if (!interactiveStatic || !block) return
+    requestIntent(block.cell.entity_id, action)
+    block.activateEditor()
+  }
+  const {
+    cellId, payload, sourceId, source, prefKey, pref, writePref, sessionView, setSessionView, sessionKey,
+    rowOrder, pager, viewportRef, rows, rowLimit, limited, shown,
+  } = data
+  const entity = useEntity(sourceId)
+  const directReason = useReadOnlyReason()
+  const device = phone ? 'phone' : 'desktop'
+  const layout: TableLayout = pref?.layout?.[device] ?? (phone ? 'cards' : 'grid')
+  const setLayout = (next: TableLayout) => writePref({ layout: { ...(pref?.layout ?? {}), [device]: next } })
+
+  // ---- what is open
+  const [panel, setPanel] = useState<Panel>('none')
+  const [record, setRecord] = useState<RecordPanelState | null>(null)
+  const [selection, setSelection] = useState<Set<string> | null>(null)
+  const [phoneCell, setPhoneCell] = useState<CellRef | null>(null)
+  const [editBar, setEditBar] = useState<CellRef | null>(null)
+  const pops = usePop<'menu' | 'delete-selected'>()
+  // a toolbar button pressed while the Block was only selected names what to open (标准对象的交互改进 §5.2)
+  const intentKey = compact ? '' : cellId
+  const intent = useIntent(intentKey)
+  const [intentSeen, setIntentSeen] = useState(0)
+  const [askedCopy, setAskedCopy] = useState(0)
+  if (intent && !intent.table && intent.value !== 'add' && intent.seq !== intentSeen) {
+    setIntentSeen(intent.seq)
+    if (intent.value === 'copy') setAskedCopy(intent.seq)
+    else if (intent.value === 'select') setSelection(new Set())
+    else if (intent.value === 'filter' || intent.value === 'fields') setPanel(intent.value)
+  }
+
+  // a record's link (控件机制 G12) opens its form
+  useRecordFocus(intentKey, (focus) => setRecord({ kind: 'edit', recordId: focus.record }))
+
   // ---- columns: a Block's view lists them; the table itself, this person
   const fields = source.data?.content.fields
   const entries: ColumnEntry[] = useMemo(() => (!fields ? [] : sourceMode ? personalColumns(fields, pref ?? {}) : blockColumns(fields, payload.fields)), [fields, sourceMode, pref, payload.fields])
@@ -159,15 +199,37 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
   const canAppend = canWriteContent && caps.some((capability) => capability === 'append' || capability === 'update')
   const canDelete = canWriteContent && caps.includes('delete')
   const canStructure = canWriteContent && caps.includes('structure')
-  const canEditView = !readOnly && !sourceMode && cell.capabilities.includes('update')
+  const canEditView = (interactiveStatic ? block?.readOnlyReason === null : !readOnly) && !sourceMode && cell.capabilities.includes('update')
   const reason = readOnlyReason ?? directReason ?? (external ? t('aiworkspace.table.readOnly.external')
     : source.data && !caps.some((capability) => capability === 'update' || capability === 'append') ? t('aiworkspace.table.readOnly.noPermission') : null)
   const columnsReason = sourceMode ? null : canEditView ? null : t('aiworkspace.table.readOnly.noView')
   const structureReason = canStructure ? null : reason ?? t('aiworkspace.table.readOnly.noStructure')
+  const config = sourceMode ? pref?.config : payload.config
+  const appearance = useMemo(() => tableAppearance(config), [config])
+  const accepted = (outcome: CommitOutcome) => outcome.status === 'accepted' || outcome.status === 'saved_locally'
+  const saveAppearance = async (patch: Record<string, Json>, height?: { id: string; px: number }) => {
+    if (!sourceMode && !canEditView) return
+    const visible = new Set(rows.rows.map((r) => r.record_id))
+    let current = cell
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const config = sourceMode ? (store.userState.get<Json>(prefKey) as TablePref | undefined)?.config : current.content.payload.config
+      const next = { ...config, ...patch }
+      const heights = tableAppearance(next).rowHeights
+      if (height) heights[height.id] = height.px
+      if (Object.keys(heights).length) next.row_heights = await cleanRowHeights(store.session, sourceId, heights, visible)
+      if (sourceMode) { writePref({ config: next }); return }
+      const result = await store.submit({ editId: `view:${cellId}:config`, label: t('aiworkspace.table.properties'), operations: [
+        { op: 'entity.set_keys', entity_id: cellId, keys: [{ key: 'config', value: next, expect: { rev: current.content.key_revs.config ?? 0 } }] },
+      ] })
+      if (result.status !== 'conflict') return
+      current = await store.session.read<KeyedContent<CellPayload>>(cellId)
+    }
+  }
   const saveColumns = (next: ColumnEntry[]) => {
     if (sourceMode) { writePref(personalOf(next)); return }
     if (!canEditView) { store.notify('info', columnsReason ?? ''); return }
     void store.submit({ editId: `view:${cellId}`, label: t('aiworkspace.data.view.columnsEdit'), operations: [{ op: 'entity.set_keys', entity_id: cellId, keys: [{ key: 'fields', value: listedOf(next) as unknown as Json, expect: { rev: cell.content.key_revs.fields ?? 0 } }] }] })
+      .then((result) => { if (result.status === 'conflict') store.versions.bump([`e:${cellId}`]) })
   }
 
   /** "Copy as table" (表格数据导入 TODO §4.1): the shown columns, every row of the view's filter and order (≤ 20 000),
@@ -215,16 +277,131 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
       : { op: 'entity.set_keys', entity_id: cellId, keys: [{ key: 'row_limit', value: limit, expect: { rev: cell.content.key_revs.row_limit ?? 0 } }] }],
   })
 
+  type Side = 'before' | 'after'
+  const sorted = Boolean((sessionView.sorts?.length ?? 0) || payload.sorts?.length)
+  const schemaId = source.data?.schema_id ?? entity?.schema_id
+  const staticWrite = interactiveStatic && block?.readOnlyReason === null && !external
+  const allowRow = canAppend || (staticWrite && caps.some((cap) => cap === 'append' || cap === 'update'))
+  const canChangeFields = canStructure || (staticWrite && caps.includes('structure'))
+  const allowColumn = canChangeFields && (!payload.fields?.length || canEditView || sourceMode)
+  const allowMove = (!compact && !readOnly || staticWrite) && !external && (sourceMode || canEditView) && !sorted
+  const [focusRequest, setFocusRequest] = useState<TableGridProps['focusRequest']>()
+  const [addedOutside, setAddedOutside] = useState<string | null>(null)
+  const anchor = useRef<{ id: string; side: Side; index?: number } | null>(null)
+  const inserting = useRef(false)
+  type PendingInsert = { id: string; submission: SubmitOptions; expectedIndex: number; personalRank?: string }
+  const unresolved = useRef<(PendingInsert & { key: string }) | null>(null)
+  const [pendingRow, setPendingRow] = useState<{ id: string; before: typeof rows.rows; expectedIndex: number } | null>(null)
+  useEffect(() => {
+    if (pendingRow) pager.ensure(Math.min(pendingRow.expectedIndex, rowLimit === null ? Infinity : rowLimit - 1))
+  }, [pager, pendingRow, rowLimit])
+  if (pendingRow && !rows.loading && (shown.done || shown.rows.length > pendingRow.expectedIndex) && pendingRow.before !== rows.rows) {
+    setPendingRow(null)
+    const actual = shown.rows.findIndex((r) => r.record_id === pendingRow.id)
+    if (actual >= 0 && (!sorted || actual === pendingRow.expectedIndex)) setFocusRequest((f) => ({ recordId: pendingRow.id, action: 'focus', seq: (f?.seq ?? 0) + 1 }))
+    else setAddedOutside(pendingRow.id)
+  }
+  const prepareInsert = async (recordId: string, values: Record<string, Json>, definitions: NonNullable<typeof fields>): Promise<PendingInsert> => {
+    const ops = [insertRecordOp(sourceId, definitions, recordId, values)]
+    const target = anchor.current
+    let personalRank: string | undefined
+    if (target && !sorted) {
+      if (!sourceMode && !canEditView) throw new Error(t('aiworkspace.table.readOnly.noView'))
+      const row = rows.rows.find((r) => r.record_id === target.id) ?? (await store.session.read<QueryRow>(sourceId, { kind: 'table_record', record_id: target.id })).content
+      const next = placeRow(store.core, rowOrder, recordId, row, target.side)
+      if (sourceMode) personalRank = next[recordId]
+      else ops.push(rowOrderOp(cell, next))
+    }
+    const submission = { editId: `record:${sourceId}:${recordId}`, label: t('aiworkspace.data.record.add'), operations: ops, mine: values, hasMine: true }
+    const expectedIndex = target ? (target.index ?? rows.rows.findIndex((r) => r.record_id === target.id)) + Number(target.side === 'after')
+      : rows.rows.length || rows.done ? rows.total : source.data?.content.record_count ?? 0
+    return { id: recordId, submission, personalRank, expectedIndex }
+  }
+  const insert = async (recordId: string, values: Record<string, Json>) => {
+    if (!fields || !canAppend) throw new Error(reason ?? t('aiworkspace.blocks.noPermission'))
+    const prior = unresolved.current
+    const request = prior ?? await prepareInsert(recordId, values, fields)
+    const outcome = prior ? await store.retry(prior.submission, prior.key) : await store.submit(request.submission)
+    if (outcome.status === 'unknown') {
+      unresolved.current = { ...request, key: outcome.idempotency_key }
+      store.notify('error', outcome.detail)
+      return outcome
+    }
+    unresolved.current = null
+    if (accepted(outcome)) {
+      if (request.personalRank) {
+        const current = store.userState.get<Json>(prefKey) as TablePref | undefined
+        writePref({ row_order: { ...current?.row_order, [request.id]: request.personalRank } })
+      }
+      setAddedOutside(null)
+      setPendingRow({ id: request.id, before: pager.snapshot().rows, expectedIndex: request.expectedIndex })
+      pager.refresh()
+    } else if (outcome.status === 'conflict') store.versions.bump([`e:${cellId}`])
+    return outcome
+  }
+  const insertRow = async (anchorId?: string, side: Side = 'after', rowIndex?: number) => {
+    const index = rowIndex ?? (anchorId ? rows.rows.findIndex((r) => r.record_id === anchorId) : undefined)
+    if (interactiveStatic) { activeBlock({ action: 'insertRow', recordId: anchorId, side, rowIndex: index }); return }
+    if (!canAppend || !fields || inserting.current || record?.kind === 'new') return
+    anchor.current = anchorId ? { id: anchorId, side, index } : null
+    if (missingRecordFields(store.core, fields, schemaId).length) { setRecord({ kind: 'new' }); return }
+    inserting.current = true
+    try { await insert(unresolved.current?.id ?? randomId('r'), {}) }
+    catch (e) { store.notify('error', String(e)) }
+    finally { inserting.current = false }
+  }
+  const insertColumn = async (anchorId?: string, side: Side = 'after') => {
+    if (interactiveStatic) { activeBlock({ action: 'insertColumn', fieldId: anchorId, side }); return }
+    if (!allowColumn || !fields) return
+    const { fieldId, operations } = quickColumnOps(store.core, sourceId, cell, fields, anchorId, side)
+    const result = await store.submit({ editId: `schema:${sourceId}:${fieldId}`, label: t('aiworkspace.data.field.addColumn'), operations })
+    if (accepted(result) && sourceMode) writePref({ order: insertColumnId(entries.map((e) => e.field.field_id), fieldId, anchorId, side) })
+    if (result.status === 'conflict') store.versions.bump([`e:${cellId}`, `e:${sourceId}`])
+  }
+  const moveRow = async (id: string, targetId: string, side: Side) => {
+    const row = pager.snapshot().rows.find((r) => r.record_id === targetId)
+    if (!row || !allowMove) return
+    const next = placeRow(store.core, rowOrder, id, row, side)
+    if (sourceMode) writePref({ row_order: next })
+    else {
+      const result = await store.submit({ editId: `view:${cellId}:row_order`, label: t('aiworkspace.table.moveRow'), operations: [rowOrderOp(cell, next)] })
+      if (result.status === 'conflict') store.versions.bump([`e:${cellId}`])
+    }
+  }
+  const readyIntent = fields && (!readOnly || (!intent?.table && intent?.value !== 'add')) ? intent : undefined
+  if (readyIntent?.table && readyIntent.seq !== intentSeen) {
+    const task = readyIntent.table
+    setIntentSeen(readyIntent.seq)
+    if (task.action === 'edit' || task.action === 'rename') {
+      setFocusRequest({ action: task.action, recordId: task.recordId ?? '', fieldId: task.fieldId, seq: (focusRequest?.seq ?? 0) + 1 })
+    }
+    if (task.action === 'openRecord' && task.recordId) setRecord({ kind: 'edit', recordId: task.recordId })
+  }
+  const addByIntent = useEffectEvent(async (task: TableIntent) => {
+    if (task.action === 'insertColumn') await insertColumn(task.fieldId, task.side)
+    else await insertRow(task.recordId, task.side, task.rowIndex)
+  })
+  const consumed = useRef(0)
+  useEffect(() => {
+    if (!readyIntent || consumed.current === readyIntent.seq) return
+    consumed.current = readyIntent.seq
+    consumeIntent(intentKey, readyIntent)
+    const task = readyIntent.value === 'add' ? { action: 'insertRow' as const } : readyIntent.table
+    if (task?.rowIndex !== undefined) pager.ensure(task.rowIndex)
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- deliver the pending canvas click once the editor holds its lock
+    if (task?.action === 'insertColumn' || task?.action === 'insertRow') void addByIntent(task).catch((e) => store.notify('error', String(e)))
+  }, [readyIntent, intentKey, pager, store])
   // ---- the title row's tools: in the near toolbar on a free canvas, drawn here elsewhere
   const togglePanel = (next: Panel) => setPanel(panel === next ? 'none' : next)
   const filtered = Boolean(sessionView.filter || sessionView.sorts)
   const canFields = canStructure || columnsReason === null
   const filterLabel = filtered ? t('aiworkspace.data.table.filterSortSession') : payload.filter || payload.sorts?.length ? t('aiworkspace.data.table.filterSortSaved') : t('aiworkspace.data.table.filterSort')
-  const menuItems = (inline: boolean): (MenuItem | 'separator')[] => [
+  const menuItems: (MenuItem | 'separator')[] = [
     layout === 'grid'
       ? { id: 'table-layout-cards', label: t('aiworkspace.table.layout.showCards'), icon: <LayoutGrid size={14} />, run: () => setLayout('cards') }
       : { id: 'table-layout-grid', label: t('aiworkspace.table.layout.showGrid'), icon: <Rows3 size={14} />, run: () => setLayout('grid') },
-    ...(inline && phone && canFields ? [{ id: 'table-fields', label: t('aiworkspace.data.table.fields'), icon: <Columns3 size={14} />, run: () => togglePanel('fields') }] : []),
+    ...(allowRow ? [{ id: 'table-add', label: t('aiworkspace.table.newRecord'), icon: <Plus size={14} />, run: () => { void insertRow() } }] : []),
+    ...(phone && canFields ? [{ id: 'table-fields', label: t('aiworkspace.data.table.fields'), icon: <Columns3 size={14} />, run: () => togglePanel('fields') }] : []),
     { id: 'table-select', label: t('aiworkspace.table.selection.start'), icon: <ListChecks size={14} />, run: () => setSelection(new Set()) },
     { id: 'table-copy', label: t('aiworkspace.data.table.copyAsTable'), icon: <ClipboardCopy size={14} />, run: () => copyRows(null) },
     ...(canEditView ? [{ id: 'table-rows', label: rowLimit ? t('aiworkspace.datasource.rows.all') : t('aiworkspace.datasource.rows.first', { count: DEFAULT_ROW_LIMIT }), icon: <Rows3 size={14} />, run: () => { void setRowLimit(rowLimit ? null : DEFAULT_ROW_LIMIT) } }] : []),
@@ -232,10 +409,11 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
   const tools: ToolbarItem[] | null = compact || !source.data ? null : [
     { kind: 'button', id: 'table-filter', icon: ListFilter, label: filterLabel, active: panel === 'filter' || filtered, run: () => togglePanel('filter') },
     ...(canFields ? [{ kind: 'button' as const, id: 'table-fields', icon: Columns3, label: t('aiworkspace.data.table.fields'), active: panel === 'fields', run: () => togglePanel('fields') }] : []),
-    ...(canAppend ? [{ kind: 'button' as const, id: 'table-add', icon: Plus, label: t('aiworkspace.data.record.add'), active: record?.kind === 'new', run: () => setRecord({ kind: 'new' }) }] : []),
+    ...(canAppend ? [{ kind: 'button' as const, id: 'table-add', icon: Plus, label: t('aiworkspace.data.record.add'), active: record?.kind === 'new', run: () => { void insertRow() } }] : []),
     { kind: 'button', id: 'table-copy', icon: ClipboardCopy, label: t('aiworkspace.data.table.copyAsTable'), run: () => copyRows(null) },
-    { kind: 'menu', id: 'table-more', icon: MoreHorizontal, label: t('aiworkspace.table.more'), onPick: (value) => (menuItems(false).find((item) => item !== 'separator' && item.id === value) as MenuItem | undefined)?.run(),
-      items: menuItems(false).flatMap((item) => (item === 'separator' || item.id === 'table-copy' || item.disabled ? [] : [{ value: item.id, label: item.label }])) },
+    { kind: 'menu', id: 'table-more', icon: MoreHorizontal, label: t('aiworkspace.table.more'), onPick: (value) => (menuItems.find((item) => item !== 'separator' && item.id === value) as MenuItem | undefined)?.run(),
+      // eslint-disable-next-line react-hooks/refs -- only labels and IDs are read here; commands run on activation
+      items: menuItems.flatMap((item) => (item === 'separator' || item.id === 'table-copy' || item.id === 'table-fields' || item.disabled ? [] : [{ value: item.id, label: item.label }])) },
   ]
   const inNearToolbar = useEditorToolbar('table', tools)
 
@@ -304,7 +482,8 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
   const noEditing = !canUpdate && !canAppend
   const showReason = !compact && reason !== null && noEditing
 
-  const maxHeight = size !== 'embedded' ? null : compact ? 220 : phone ? 520 : 420
+  const canvasGrid = inNearToolbar && block?.depth === 0 && layout === 'grid'
+  const maxHeight = size !== 'embedded' || canvasGrid ? null : compact ? 220 : phone ? 520 : 420
   const filterPanel = (
     <FilterSortPanel
       key={sessionKey}
@@ -322,10 +501,68 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
   const inSheet = phone && !compact
   const tableId = cellId
 
+  const title = cell.title ?? payload.title ?? entity?.title ?? entity?.name ?? t('aiworkspace.blocks.table.title')
+  const leave = () => {
+    if (flow) flow.select()
+    else if (block?.selectBlock) { block.deactivateEditor(); block.selectBlock() }
+    else root?.focus()
+    const owner = document.activeElement
+    if (!(owner instanceof HTMLElement) || owner === document.body) return
+    const controller = new AbortController()
+    owner.addEventListener('blur', () => controller.abort(), { once: true })
+    owner.addEventListener('keydown', (event) => {
+      if (event.key !== 'Tab' || event.target !== owner) return
+      const children = Array.from(owner.children).filter((el): el is HTMLElement => el instanceof HTMLElement && !el.inert)
+      for (const child of children) child.inert = true
+      requestAnimationFrame(() => { for (const child of children) child.inert = false })
+      controller.abort()
+    }, { signal: controller.signal })
+  }
+  const canRename = Boolean(block?.mode === 'edit' && block.depth === 0 && directReason === null && block.cell.capabilities.includes('update'))
+  const selectTitle = (clickCount: number) => {
+    if (!block) return
+    block.selectBlock?.()
+    if (!block.editorActive) {
+      if (root?.dataset.pointer === 'touch') block.activateEditor()
+      return
+    }
+    if (root?.dataset.pointer === 'touch' || !canRename || clickCount === 0) {
+      block.deactivateEditor()
+      return
+    }
+    // Selection and cell blur happen on the first click. Keep the title mounted long enough to receive a double click.
+    if (clickCount === 1) {
+      titleRelease.current = window.setTimeout(() => {
+        if (!root?.contains(document.activeElement)) block.deactivateEditor()
+      }, 500)
+    }
+  }
+  const heading = <TableHeading layout={layout} setLayout={setLayout} fields={fields.length} records={source.data.content.record_count} source={entity?.title ?? entity?.name ?? sourceId}
+    reason={reason} showHeader={appearance.showHeader} style={appearance.style}
+    setAppearance={canEditView || sourceMode ? (patch) => { void saveAppearance(patch).catch((e) => store.notify('error', String(e))) } : undefined}
+    title={block ? <BlockTitle cell={block.cell} title={title} canRename={canRename}
+      select={flow ? undefined : selectTitle} finishRename={!flow && block.editorActive ? block.deactivateEditor : undefined} /> : <strong>{title}</strong>}>
+    {(compact || layout === 'cards' || !rows.total) && !flow && <button type="button" className="aiws-table-tool" aria-label={t('aiworkspace.table.more')} data-testid={`aiws-table-heading-menu-${tableId}`}
+      onClick={(e) => pops.open('menu', e.currentTarget)}><MoreHorizontal size={16} /></button>}
+  </TableHeading>
   return (
-    <div ref={bindRoot} className="aiws-table" data-testid={`aiws-table-${tableId}`} data-total={rows.total} data-loaded={rows.rows.length} data-compact={compact ? 'true' : 'false'}
-      data-layout={layout} data-size={size} data-phone={phone ? 'true' : undefined} data-selecting={selection ? 'true' : undefined}
+    <div ref={bindRoot} tabIndex={-1} data-grid-style={appearance.style} data-table-interactive={block?.mode === 'edit' && block.depth === 0 ? '' : undefined}
+      onPointerDownCapture={(e) => { window.clearTimeout(titleRelease.current); e.currentTarget.dataset.pointer = e.pointerType }}
+      onClickCapture={interactiveStatic || awaitingLock ? (e) => {
+        const target = e.target as HTMLElement
+        if (target.closest('a[href], .aiws-cell-reference button')) return
+        const td = target.closest<HTMLElement>('[role="gridcell"], [role="columnheader"]')
+        if (!td?.dataset.fieldId) return
+        e.stopPropagation()
+        const dispatch = interactiveStatic ? activeBlock : (action: TableIntent) => requestIntent(intentKey, action)
+        const row = td.closest<HTMLElement>('[data-row-index]')
+        dispatch({ action: td.getAttribute('role') === 'columnheader' ? 'rename' : 'edit', fieldId: td.dataset.fieldId,
+          recordId: td.dataset.recordId ?? row?.dataset.recordId, rowIndex: row ? Number(row.dataset.rowIndex) : undefined })
+      } : undefined} className="aiws-table" data-testid={`aiws-table-${tableId}`} data-total={rows.total} data-loaded={rows.rows.length} data-compact={compact ? 'true' : 'false'}
+      data-layout={layout} data-size={canvasGrid ? 'canvas' : size} data-phone={phone ? 'true' : undefined} data-selecting={selection ? 'true' : undefined}
       onFocusCapture={publishes ? (event) => { const id = (event.target as HTMLElement).closest<HTMLElement>('.aiws-tr[data-record-id]')?.dataset.recordId; if (id) setFocusedRecord(id) } : undefined}>
+      {flow ? flow.tableHeading && createPortal(heading, flow.tableHeading) : heading}
+      {addedOutside && <div role="status">{t('aiworkspace.table.insertedElsewhere')} <button type="button" onClick={() => setRecord({ kind: 'edit', recordId: addedOutside })}>{t('aiworkspace.table.openInserted')}</button></div>}
       {!compact && !inNearToolbar && (
         <div className="aiws-table-bar" data-testid={`aiws-table-bar-${tableId}`}>
           <button type="button" className="aiws-table-tool" aria-label={t('aiworkspace.data.table.filterSort')} title={filterLabel} aria-pressed={panel === 'filter' || filtered} data-testid={`aiws-filter-open-${tableId}`}
@@ -376,13 +613,14 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
         </div>
       ) : layout === 'cards' ? (
         <TableCards tableId={tableId} fields={fields} columns={columns} titleField={titleField} rows={shown} pager={pager} scrollRef={scrollRef} maxHeight={maxHeight}
-          selection={selection} onToggle={toggle} onStartSelect={(id) => setSelection(new Set([id]))} onOpen={(id) => setRecord({ kind: 'edit', recordId: id })} annotatedRecords={annotatedSet} />
+          selection={selection} onToggle={toggle} onStartSelect={(id) => setSelection(new Set([id]))} onOpen={(id) => { if (compact) activeBlock({ action: 'openRecord', recordId: id }); else setRecord({ kind: 'edit', recordId: id }) }} annotatedRecords={annotatedSet} />
       ) : (
         <TableGrid tableId={tableId} sourceId={sourceId} fields={fields} columns={columns} rows={shown} pager={pager} scrollRef={scrollRef} maxHeight={maxHeight} compact={Boolean(compact)} phone={phone}
           editable={canUpdate} resultTable={Boolean(source.data.derived)} titleField={titleField} annotations={annotations} onAnnotate={onAnnotate} onActivateAnnotation={onActivateAnnotation}
-          rowHead={!compact} selection={selection} onToggle={toggle} onToggleAll={toggleAll} onStartSelect={(id) => setSelection(new Set([id]))} onOpen={(id) => setRecord({ kind: 'edit', recordId: id })}
+          viewportRef={canvasGrid ? viewportRef : undefined} showHandles={!compact || interactiveStatic} selection={selection} onToggle={toggle} onToggleAll={toggleAll}
+          onOpen={(id) => { if (interactiveStatic) activeBlock({ action: 'openRecord', recordId: id }); else setRecord({ kind: 'edit', recordId: id }) }}
           annotatedRecords={annotatedSet} phoneCell={phoneCell} onPhoneCell={setPhoneCell} onPhoneEdit={(c) => { setPhoneCell(c); setEditBar(c) }}
-          columnsEditable={!compact && columnsReason === null}
+          columnsEditable={(!compact || interactiveStatic) && columnsReason === null}
           onResize={(fieldId, width) => saveColumns(entries.map((entry) => (entry.field.field_id === fieldId ? { ...entry, width } : entry)))}
           onMove={(fieldId, to) => {
             // `to` counts shown columns: place it before the shown column now at that index
@@ -394,10 +632,15 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
             const at = before ? rest.indexOf(before) : rest.length
             saveColumns([...rest.slice(0, at), moving, ...rest.slice(at)])
           }}
-          onAddField={canStructure && !compact && !phone ? (button) => pops.open('add-field', button) : null} addFieldOpen={pops.pop?.kind === 'add-field'} />
+          onInsertRow={allowRow ? insertRow : undefined} onInsertColumn={allowColumn ? insertColumn : undefined}
+          activateCells={Boolean((interactiveStatic && !block?.readOnlyReason || awaitingLock) && !external && caps.includes('update'))} allowNearRow={Boolean(sourceMode || canEditView || sorted)}
+          onMoveRow={allowMove ? moveRow : undefined} sorted={sorted} limited={limited}
+          rowHeights={appearance.rowHeights} showHeader={appearance.showHeader} canRenameField={(!compact || interactiveStatic) && canChangeFields}
+          onResizeRow={(canEditView || sourceMode) ? (id, px) => { void saveAppearance({}, { id, px }).catch((e) => store.notify('error', String(e))) } : undefined}
+          onExitGrid={leave} focusRequest={focusRequest} />
       )}
       {!compact && !rows.error && !pending && rows.done && rows.total === 0 && <div className="aiws-muted aiws-table-empty" data-testid={`aiws-table-empty-${tableId}`}>{canAppend ? t('aiworkspace.table.emptyAdd') : t('aiworkspace.table.empty')}</div>}
-      {!compact && (selection ? (
+      {selection ? (
         <div className="aiws-table-foot aiws-table-selection" role="toolbar" aria-label={t('aiworkspace.table.selection.label')} data-testid={`aiws-table-selection-${tableId}`}>
           <span data-testid="aiws-table-selection-count">{t('aiworkspace.table.selection.count', { count: selection.size })}</span>
           <span className="aiws-grow" />
@@ -405,11 +648,8 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
           {canDelete && <button type="button" className="aiws-table-foot-btn is-danger" data-testid="aiws-table-selection-delete" disabled={selection.size === 0} onClick={(event) => pops.open('delete-selected', event.currentTarget)}>{t('aiworkspace.common.delete')}</button>}
           <button type="button" className="aiws-table-foot-btn" data-testid="aiws-table-selection-cancel" aria-label={t('aiworkspace.table.selection.cancel')} onClick={() => setSelection(null)}><X size={15} aria-hidden="true" />{t('aiworkspace.table.selection.cancel')}</button>
         </div>
-      ) : !inNearToolbar && (
+      ) : (!compact || (canvasGrid && interactiveStatic)) && (
         <div className="aiws-table-foot">
-          {canAppend && !rows.error && (phone || layout === 'cards'
-            ? <button type="button" className="aiws-table-new" data-testid={`aiws-add-record-${tableId}`} onClick={() => setRecord({ kind: 'new' })}><Plus size={16} aria-hidden="true" />{t('aiworkspace.table.newRecord')}</button>
-            : <NewRecordRow store={store} source={source.data} cellId={tableId} onNeedForm={() => setRecord({ kind: 'new' })} />)}
           <span className="aiws-grow" />
           <span className="aiws-table-count" data-testid={`aiws-table-count-${tableId}`} data-limited={limited ? 'true' : undefined}>{pending ? '' : limited
             ? t('aiworkspace.datasource.rows.limited', { count: rowLimit ?? 0, total: rows.total })
@@ -417,15 +657,14 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
             ? t('aiworkspace.table.countLoaded', { loaded: rows.rows.length, count: rows.total })
             : rows.loading ? t('aiworkspace.data.table.countLoading', { count: rows.total }) : t('aiworkspace.data.table.count', { count: rows.total })}</span>
         </div>
-      ))}
-      {pops.pop?.kind === 'menu' && <TableMenu anchor={pops.pop.anchor} onClose={pops.close} label={t('aiworkspace.table.more')} items={menuItems(true)} testId={`aiws-table-menu-pop-${tableId}`} />}
+      )}
+      {pops.pop?.kind === 'menu' && <TableMenu anchor={pops.pop.anchor} onClose={pops.close} label={t('aiworkspace.table.more')} items={menuItems} testId={`aiws-table-menu-pop-${tableId}`} />}
       {pops.pop?.kind === 'delete-selected' && selection && (
         <ConfirmPop anchor={pops.pop.anchor} title={t('aiworkspace.table.selection.deleteAsk', { count: selection.size })} detail={t('aiworkspace.table.undoHint')} confirm={t('aiworkspace.common.delete')}
           onConfirm={() => { void deleteSelected() }} onClose={pops.close} />
       )}
-      {pops.pop?.kind === 'add-field' && <QuickAddField source={source.data} cell={cell} anchor={pops.pop.anchor} onClose={pops.close} locale={locale} />}
       {record && (
-        <TableRecordPanel host={host} sourceId={sourceId} cellId={sourceMode ? null : cellId} fields={fields} titleField={titleField} state={record} rows={rows.rows} pager={pager}
+        <TableRecordPanel host={host} sourceId={sourceId} schemaId={schemaId} onInsert={insert} cellId={sourceMode ? null : cellId} fields={fields} titleField={titleField} state={record} rows={rows.rows} pager={pager}
           canUpdate={canUpdate} canAppend={canAppend} canDelete={canDelete} readOnlyReason={noEditing ? reason : null}
           onOpen={(recordId) => setRecord({ kind: 'edit', recordId })} onClose={() => setRecord(null)} />
       )}
@@ -440,81 +679,4 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
 function SheetPanel({ label, testId, onClose, children }: { label: string; testId: string; onClose: () => void; children: ReactNode }) {
   const anchor = anchorOf(null)
   return <TablePop anchor={anchor} onClose={onClose} label={label} testId={testId}>{children}</TablePop>
-}
-
-/** "+" of the header: a field by name and type, nothing else asked (the field manager has the rest). */
-function QuickAddField({ source, cell, anchor, onClose, locale }: { source: SourceRead; cell: CellRead; anchor: ReturnType<typeof anchorOf>; onClose: () => void; locale: string }) {
-  const { t } = useAiwsText()
-  const store = useStore()
-  const [name, setName] = useState('')
-  const [type, setType] = useState<FieldDef['type']>('text')
-  const submit = () => {
-    const text = name.trim()
-    if (!text) return
-    // a currency column takes the interface language's currency (@table/currency); the field manager can change it
-    void store.submit({ editId: `schema:${source.entity_id}:${randomId()}`, label: t('aiworkspace.data.field.addEdit', { name: text }), operations: addFieldOps(source.entity_id, cell, text, type, 2, languageCurrency(locale)) })
-      .then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') onClose() })
-  }
-  return (
-    <TablePop anchor={anchor} onClose={onClose} label={t('aiworkspace.data.field.addColumn')} width={280}>
-      <form className="aiws-quick-field" data-testid="aiws-quick-field" onSubmit={(event) => { event.preventDefault(); submit() }}>
-        <input aria-label={t('aiworkspace.data.field.name')} data-testid="aiws-quick-field-name" autoFocus placeholder={t('aiworkspace.data.field.name')} value={name} onChange={(event) => setName(event.target.value)} />
-        <div className="aiws-quick-field-types" role="radiogroup" aria-label={t('aiworkspace.data.field.type')}>
-          {CREATABLE_FIELD_TYPES.map((item) => {
-            const Icon = FIELD_ICONS[item] ?? Columns3
-            return (
-              <button key={item} type="button" role="radio" aria-checked={type === item} className="aiws-quick-field-type" data-testid={`aiws-quick-field-type-${item}`} onClick={() => setType(item)}>
-                <Icon size={14} aria-hidden="true" />{FIELD_TYPE_LABEL[item]}
-              </button>
-            )
-          })}
-        </div>
-        <button type="submit" className="is-primary" data-testid="aiws-quick-field-add" disabled={!name.trim()}>{t('aiworkspace.data.field.addColumn')}</button>
-      </form>
-    </TablePop>
-  )
-}
-
-/** "+ 新建" under the rows (Notion): type the title, Enter adds the record and keeps the line open for the next one.
- * A table with other required fields asks for them in the record's form instead. */
-function NewRecordRow({ store, source, cellId, onNeedForm }: { store: WorkspaceStore; source: SourceRead; cellId: string; onNeedForm: () => void }) {
-  const { t } = useAiwsText()
-  const fields = source.content.fields
-  const titleField = fields.find((field) => field.field_id === source.content.payload.title_field_id) ?? fields.find((field) => field.type === 'text')
-  // a required field with a default gets it from the service (§7.3)
-  const otherRequired = fields.some((field) => field.required && field.default === undefined && field.field_id !== titleField?.field_id)
-  const [open, setOpen] = useState(false)
-  const [text, setText] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const insert = async (title: string) => {
-    if (titleField?.required && titleField.default === undefined && !title) { setError(t('aiworkspace.data.record.required', { name: titleField.name })); return }
-    const values: Record<string, Json> = titleField && title ? { [titleField.field_id]: title } : {}
-    const recordId = randomId('r')
-    const outcome = await store.submit({
-      editId: `record:${source.entity_id}:${recordId}`, label: t('aiworkspace.data.record.add'), mine: values, hasMine: true,
-      operations: [{ op: 'table.insert_records', source_id: source.entity_id, field_type_revs: titleField && title ? { [titleField.field_id]: titleField.type_rev } : {}, records: [{ record_id: recordId, values }] }],
-    })
-    if (outcome.status === 'accepted' || outcome.status === 'saved_locally') { setText(''); setError(null) }
-    else setError(t('aiworkspace.data.record.addFailed'))
-  }
-  const start = () => {
-    if (otherRequired) { onNeedForm(); return }
-    if (!titleField) { void insert(''); return }
-    setOpen(true)
-  }
-  if (!open) {
-    return <button type="button" className="aiws-table-new" data-testid={`aiws-add-record-${cellId}`} onClick={start}><Plus size={14} aria-hidden="true" />{t('aiworkspace.table.newRecord')}</button>
-  }
-  return (
-    <form className="aiws-table-new-row" onSubmit={(event) => { event.preventDefault(); void insert(text.trim()) }}>
-      <Plus size={14} aria-hidden="true" className="aiws-muted" />
-      <input aria-label={t('aiworkspace.data.record.newAria', { name: titleField?.name ?? t('aiworkspace.data.record.titleFallback') })} data-testid="aiws-new-record-input" autoFocus value={text}
-        placeholder={t('aiworkspace.data.record.newPlaceholder', { name: titleField?.name ?? t('aiworkspace.data.record.titleFallback') })}
-        onChange={(event) => { setText(event.target.value); setError(null) }}
-        onBlur={() => { if (!text.trim()) { setOpen(false); setError(null) } }}
-        onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setOpen(false); setText(''); setError(null) } }} />
-      <button type="submit" className="aiws-link" data-testid="aiws-add-record-submit">{t('aiworkspace.data.record.addButton')}</button>
-      {error && <span className="aiws-error" role="alert">{error}</span>}
-    </form>
-  )
 }

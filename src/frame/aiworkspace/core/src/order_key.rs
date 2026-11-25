@@ -21,6 +21,21 @@ pub fn check_order_key(k: &str) -> WsResult<()> {
     }
 }
 
+pub fn base_row_key(seq: u64, id: &str) -> String {
+    format!("{seq:016x}!{id}!h")
+}
+
+pub fn check_row_key(k: &str) -> WsResult<()> {
+    let mut parts = k.split('!');
+    let (Some(seq), Some(id), Some(fraction), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+        return Err(WsError::invalid_op("expected a row key with creation sequence, record id and fraction"));
+    };
+    if seq.len() != 16 || !seq.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) || !crate::id::is_valid_id(id) || fraction == "h" {
+        return Err(WsError::invalid_op("invalid row order key"));
+    }
+    check_order_key(fraction)
+}
+
 fn idx(c: u8) -> usize {
     DIGITS.iter().position(|d| *d == c).unwrap_or(0)
 }

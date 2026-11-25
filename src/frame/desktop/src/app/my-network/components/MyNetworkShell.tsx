@@ -3,6 +3,8 @@
 import { useMediaQuery } from '@mui/material'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMobileBackHandler } from '../../../desktop/windows/MobileNavContext'
+import { useAppPath } from '../../pathContext'
+import { appPath } from '../../standalone/address'
 import { useI18n } from '../../../i18n/provider'
 import { useNetworkDialogs } from '../../../components/network/dialogs'
 import { useNetworkResource, useRequests } from '../../../components/network/hooks'
@@ -99,6 +101,7 @@ export function MyNetworkShell({ launch }: { launch?: MyNetworkLaunch }) {
     setSelected(null)
   }, [view.kind])
   useMobileBackHandler(isMobile && stage !== 'nav' ? back : null)
+  useAppPath(view.kind === 'requests' ? appPath('requests') : appPath('', { entity: selected }))
 
   const nav = (
     <NavSidebar

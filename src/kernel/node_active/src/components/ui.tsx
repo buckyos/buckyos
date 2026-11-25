@@ -1,8 +1,8 @@
-import { Box, Stack, Typography } from "@mui/material";
-import type { ReactNode } from "react";
-
-/** Some older strings were written as inline labels ("RTCP Port:"); a floating label or a card title has no colon. */
-export const plainLabel = (text: string) => text.replace(/[:：]\s*$/, "");
+import { Alert, Box, IconButton, Stack, Tooltip, Typography } from "@mui/material";
+import { Check, Copy } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
+import { copyTextToClipboard } from "../utils/clipboard";
 
 export type Tone = "success" | "warning" | "danger" | "accent" | "muted";
 
@@ -72,17 +72,19 @@ type ChoiceCardProps = {
   icon: ReactNode;
   title: ReactNode;
   description: ReactNode;
+  disabled?: boolean;
 };
 
 /** One option of a single-choice group: hairline card, the chosen one takes the accent border and a radio mark. */
-export const ChoiceCard = ({ selected, onSelect, icon, title, description }: ChoiceCardProps) => (
+export const ChoiceCard = ({ selected, onSelect, icon, title, description, disabled = false }: ChoiceCardProps) => (
   <Box
     role="radio"
     aria-checked={selected}
-    tabIndex={0}
-    onClick={onSelect}
+    aria-disabled={disabled}
+    tabIndex={disabled ? -1 : 0}
+    onClick={disabled ? undefined : onSelect}
     onKeyDown={(event) => {
-      if (event.key === "Enter" || event.key === " ") {
+      if (!disabled && (event.key === "Enter" || event.key === " ")) {
         event.preventDefault();
         onSelect();
       }
@@ -93,15 +95,15 @@ export const ChoiceCard = ({ selected, onSelect, icon, title, description }: Cho
       p: 2,
       pr: 5,
       borderRadius: "12px",
-      cursor: "pointer",
+      cursor: disabled ? "not-allowed" : "pointer",
       border: "1px solid",
       borderColor: selected ? "var(--cp-accent)" : "var(--cp-border)",
       boxShadow: selected ? "inset 0 0 0 1px var(--cp-accent)" : "none",
-      bgcolor: selected ? "var(--cp-accent-surface)" : "var(--cp-surface)",
+      bgcolor: selected ? "var(--cp-accent-surface)" : disabled ? "var(--cp-surface-2)" : "var(--cp-surface)",
       transition:
         "border-color 150ms var(--cp-ease-smooth), background-color 150ms var(--cp-ease-smooth), box-shadow 150ms var(--cp-ease-smooth)",
       "&:hover": {
-        borderColor: selected ? "var(--cp-accent)" : "var(--cp-border-strong)",
+        borderColor: selected ? "var(--cp-accent)" : disabled ? "var(--cp-border)" : "var(--cp-border-strong)",
       },
     }}
   >
@@ -141,6 +143,76 @@ export const ChoiceCard = ({ selected, onSelect, icon, title, description }: Cho
       </Box>
     </Box>
   </Box>
+);
+
+/** A titled part of a step. */
+export const Section = ({ title, action, children }: { title: ReactNode; action?: ReactNode; children: ReactNode }) => (
+  <Stack component="section" spacing={1.5}>
+    <Stack direction="row" spacing={2} alignItems="center" justifyContent="space-between" sx={{ minHeight: 24 }}>
+      <Typography variant="subtitle2" component="h3" sx={{ fontSize: 15 }}>
+        {title}
+      </Typography>
+      {action}
+    </Stack>
+    {children}
+  </Stack>
+);
+
+/** A value to carry over to another page, with its own copy button. */
+export const CopyField = ({ label, value }: { label: ReactNode; value: string }) => {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  const action = copied ? t("success_copied") : t("copy_button");
+  return (
+    <Box>
+      <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 0.5 }}>
+        {label}
+      </Typography>
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1}
+        sx={{
+          pl: 1.5,
+          pr: 0.5,
+          minHeight: 40,
+          borderRadius: "10px",
+          border: "1px solid var(--cp-border)",
+          bgcolor: "var(--cp-surface)",
+        }}
+      >
+        <Typography sx={{ ...mono, fontSize: 13, flex: 1, minWidth: 0, py: 1, overflowWrap: "anywhere", userSelect: "all" }}>
+          {value}
+        </Typography>
+        <Tooltip title={action}>
+          <IconButton
+            size="small"
+            aria-label={`${action}: ${value}`}
+            onClick={async () => setCopied(await copyTextToClipboard(value))}
+          >
+            {copied ? <Check size={16} strokeWidth={2} /> : <Copy size={16} strokeWidth={1.75} />}
+          </IconButton>
+        </Tooltip>
+      </Stack>
+    </Box>
+  );
+};
+
+/** What to do is the message; the raw detail stays a footnote. */
+export const ErrorAlert = ({ message, detail }: { message: ReactNode; detail?: string }) => (
+  <Alert severity="error">
+    {message}
+    {detail ? (
+      <Typography variant="caption" component="div" sx={{ ...mono, mt: 0.5, overflowWrap: "anywhere" }}>
+        {detail}
+      </Typography>
+    ) : null}
+  </Alert>
 );
 
 /** The bottom row of a step: Back on the left, the one primary action on the right. */

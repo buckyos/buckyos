@@ -74,7 +74,7 @@ impl ReadSet {
 
     /// The configuration of a saved table view that decides which rows and columns it shows.
     pub fn view(&mut self, ctx: &dyn ReadCtx, cell_id: &str) -> WsResult<()> {
-        for key in ["filter", "sorts", "group", "fields", "manual_order", "source_ref"] {
+        for key in ["filter", "sorts", "group", "fields", "row_order", "source_ref"] {
             self.add(ctx, cell_id, Some(json!({ "kind": "doc_key", "key": key })))?;
         }
         Ok(())

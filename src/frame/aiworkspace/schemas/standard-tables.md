@@ -15,14 +15,17 @@ columns). Rules on a standard field that a table lacks are skipped.
 | field_id | type | rule |
 | --- | --- | --- |
 | `title` | text, required | the table's `title_field_id` |
-| `status` | select, required | the option list is the board's columns, in order; option `done` means completed (initial options `todo`, `doing`, `done`) |
+| `status` | select, required | new records take the schema default (initially `todo`) when this field is omitted. The option list is the board's columns, in order; option `done` means completed (initial options `todo`, `doing`, `done`) |
 | `due` | date, nullable | |
 | `order` | text, nullable | an order key (`order_key::check_order_key`): the list / column order, one per record so concurrent moves of different cards do not conflict |
 | `done_at` | datetime, nullable | set when completed |
 | `ext` | json, nullable | extension fields, see below |
 
 `ext` keys with a meaning (others are kept as they are): `priority` (`low` \| `normal` \| `high` \| `urgent`), `tags`
-(≤ 32 strings of ≤ 64 characters), `assignee` (string ≤ 256), `reminders` (as on the calendar), `source` (object ≤ 4 KiB).
+(≤ 32 strings of ≤ 64 characters), `assignee` (string ≤ 256; an account's user id is reminded), `reminders` (as on the
+calendar, counted back from 09:00 of the due date), `source` (object ≤ 4 KiB).
+
+The add-record form asks only for missing required fields, including hidden fields. A new standard to-do needs only its title when its status has a default.
 
 ## `buckyos.calendar@1`
 
@@ -37,6 +40,8 @@ columns). Rules on a standard field that a table lacks are skipped.
 | `status` | select, nullable | `confirmed`, `tentative`, `cancelled` |
 | `ext` | json, nullable | extension fields, see below |
 
+An event has no default start time. The form asks for a title and the start appropriate to the current `all_day` choice.
+
 `ext` keys with a meaning (others are kept):
 
 | key | shape |
@@ -48,11 +53,11 @@ columns). Rules on a standard field that a table lacks are skipped.
 | `location` | string ≤ 1024 |
 | `color` | `#rrggbb` |
 | `busy` | boolean (absent: a timed event is busy, an all-day one free) |
-| `reminders` | ≤ 16 of `{ before_min: 0…40320, channel?: string ≤ 64 }` |
+| `reminders` | ≤ 16 of `{ before_min: 0…40320, channel?: string ≤ 64 }`: the service sends a System Notify that long before each occurrence starts (an all-day event: before 09:00 of its first day, in the zone the reminded user chose); `channel` is not read (README “Notices”) |
 | `rule_text` | string ≤ 256: a rule the subset cannot express (“每月最后一个法定工作日”), shown as is |
 | `occurrences` | ≤ 1000 starts (datetime or date) an Agent wrote for a `rule_text` series |
-| `covered_until` | datetime or date: how far `occurrences` (or the reminders an Agent scheduled) reach |
-| `maintenance` | object ≤ 4 KiB: `{ covered_until?, last_success_at?, last_error?, maintainer? }` (D4 §5.4) |
+| `covered_until` | datetime or date: how far `occurrences` (or the reminders an Agent scheduled) reach; the service leaves the reminders of such a record to the Agent |
+| `maintenance` | object ≤ 4 KiB: `{ covered_until?, last_success_at?, last_error?, maintainer? }` (D4 §5.4); as `covered_until` for reminders |
 
 ### The RRULE subset
 

@@ -1,5 +1,18 @@
+[review]
+commit = "fb5eaf9afe19f61424c549d34a55e7c94fd8e5c3"
+date = 2026-11-23
+changed = 2026-11-23
+conclusion = """
+已登记的格式没有变化，不需要迁移代码，现有 reader 不会误拒新数据。
+补登记 system/domain_hosting、security/dns_credentials、SSO 与 OAuth 绑定记录，前两项同时补 schema 标记；
+msg-center 的审计加 group_types.rs；依赖仓库加 cyfs-gateway 和 buckyos-base，cyfs-ndn 更新到 0c9c823（只改 ambient 的 pin scope，表结构不变）。
+未登记：services/control_panel 下的邀请、资源分享、owner_*、app_* 等记录，下次 review 继续核对。
+"""
+
 [audited_sources]
-cyfs-ndn = "e36948ce347a7325ba4d550c5dbef9db537da5e2"
+buckyos-base = "e1ddc24ae7930972f9bc766a6ddb392282695afb"
+cyfs-gateway = "e80b6e282ae37520431385bf7d23ac7c8a722b48"
+cyfs-ndn = "0c9c823a5ce530a5363393cc5c0dd23fa3f14500"
 
 [[reader]]
 id = "system-config"
@@ -16,9 +29,9 @@ id = "kernel-config"
 library = "buckyos-api"
 rust = "config::kernel"
 owner = "kernel"
-areas = ["kv/system/buckyos_info", "kv/system/buckyos_dev_config", "kv/system/zone_presentation"]
+areas = ["kv/system/buckyos_info", "kv/system/buckyos_dev_config", "kv/system/zone_presentation", "kv/system/domain_hosting"]
 schema = "1"
-audit = ["kernel/buckyos-api/src/system_config.rs", "kernel/buckyos-api/src/completed_install.rs", "kernel/sys_config_service/src/install_info.rs"]
+audit = ["kernel/buckyos-api/src/system_config.rs", "kernel/buckyos-api/src/completed_install.rs", "kernel/buckyos-api/src/domain_hosting.rs", "kernel/sys_config_service/src/install_info.rs"]
 depends = ["system-config"]
 
 [[reader]]
@@ -48,8 +61,28 @@ owner = "kernel"
 rust = "identity_config::identity"
 areas = ["kv/system/rbac/policy", "kv/users/*/doc", "kv/users/*/settings", "kv/users/*/profile", "kv/devices/*/doc", "kv/devices/*/info"]
 schema = "1"
-audit = ["kernel/buckyos-api/src/control_panel.rs", "kernel/buckyos-api/src/rbac_config.rs", "kernel/buckyos-api/src/device_identity.rs", "kernel/sys_config_service/src/main.rs"]
+audit = ["kernel/buckyos-api/src/control_panel.rs", "kernel/buckyos-api/src/rbac_config.rs", "kernel/buckyos-api/src/device_identity.rs", "kernel/sys_config_service/src/main.rs", "buckyos-base:src/name-lib/src/device.rs", "buckyos-base:src/name-lib/src/user.rs", "buckyos-base:src/name-lib/src/user_profile.rs"]
 depends = ["system-config"]
+
+[[reader]]
+id = "sso-config"
+library = "buckyos-api"
+owner = "control-panel"
+rust = "identity_config::sso"
+areas = ["kv/system/sso/settings", "kv/services/control_panel/oauth", "kv/services/control_panel/native_login_bindings", "kv/services/control_panel/user_login_sources"]
+schema = "1"
+audit = ["kernel/buckyos-api/src/hybrid_sso.rs", "kernel/buckyos-api/src/oauth.rs", "frame/control_panel/src/oauth.rs", "frame/control_panel/src/sso_settings.rs", "frame/control_panel/src/user_mgr.rs"]
+depends = ["system-config"]
+
+[[reader]]
+id = "dns-credential"
+library = "cyfs-dns-provider"
+owner = "cyfs-gateway"
+rust = "files::dns_credential"
+areas = ["security/dns_credentials"]
+schema = "buckyos.dns_credential.v1"
+audit = ["kernel/node_daemon/src/domain/service.rs", "cyfs-gateway:src/components/cyfs-dns-provider/src/credential.rs", "cyfs-gateway:src/components/cyfs-dns-provider/src/table.rs"]
+depends = ["kernel-config"]
 
 [[reader]]
 id = "rdb"
@@ -78,7 +111,7 @@ rust = "sql::messages"
 owner = "msg-center"
 areas = ["rdb/msg-center/msg-center-main"]
 schema = "13"
-audit = ["kernel/sqlite_schema/src/lib.rs", "frame/msg_center/src/msg_box_db.rs", "frame/msg_center/src/group_store.rs", "frame/msg_center/src/notify.rs", "frame/msg_center/src/groups.sql", "frame/msg_center/src/notify.sql", "kernel/buckyos-api/src/msg_center_client.rs"]
+audit = ["kernel/sqlite_schema/src/lib.rs", "frame/msg_center/src/msg_box_db.rs", "frame/msg_center/src/group_store.rs", "frame/msg_center/src/group_types.rs", "frame/msg_center/src/notify.rs", "frame/msg_center/src/groups.sql", "frame/msg_center/src/notify.sql", "kernel/buckyos-api/src/msg_center_client.rs"]
 depends = ["rdb"]
 
 [[reader]]
@@ -178,7 +211,7 @@ rust = "files::startup"
 owner = "node-daemon"
 areas = ["file/etc/start_config.json", "security/start_config.json", "security/start_config.legacy.json"]
 schema = "buckyos.start_config.v1"
-audit = ["kernel/buckyos-api/src/device_identity.rs", "kernel/buckyos-api/src/test_config.rs", "kernel/node_daemon/src/active_server.rs", "kernel/scheduler/src/system_config_builder.rs", "frame/control_panel/src/zone_mgr.rs", "make_config.ts", "active.ts"]
+audit = ["kernel/buckyos-api/src/device_identity.rs", "kernel/buckyos-api/src/domain_hosting.rs", "kernel/buckyos-api/src/test_config.rs", "kernel/node_daemon/src/active_server.rs", "kernel/node_daemon/src/domain/runtime.rs", "kernel/scheduler/src/system_config_builder.rs", "frame/control_panel/src/zone_mgr.rs", "make_config.ts", "active.ts"]
 depends = []
 
 [[reader]]
@@ -188,7 +221,7 @@ rust = "files::zones"
 owner = "node-daemon"
 areas = ["file/etc/*.zone_lkgs.json"]
 schema = "buckyos.zone_lkgs.v1"
-audit = ["kernel/node_daemon/src/zone_boot_resolve.rs"]
+audit = ["kernel/node_daemon/src/zone_boot_resolve.rs", "buckyos-base:src/name-lib/src/zone.rs"]
 depends = []
 
 [[reader]]
@@ -248,7 +281,7 @@ rust = "sql::workspaces"
 owner = "aiworkspace"
 areas = ["file/data/aiworkspace/workspaces/*", "file/data/aiworkspace/sessions.sqlite", "file/data/aiworkspace/users.sqlite", "file/data/aiworkspace/library.sqlite"]
 schema = "format 1.0, doc 7, local/library/users/sessions 1"
-audit = ["kernel/sqlite_schema/src/lib.rs", "frame/aiworkspace/store/src/users.rs", "frame/aiworkspace/store/src/session/registry.rs", "frame/aiworkspace/store/src/workspace.rs", "frame/aiworkspace/store/src/schema.rs", "frame/aiworkspace/store/src/acl.rs", "frame/aiworkspace/store/src/users.sql", "frame/aiworkspace/store/src/library.rs", "frame/aiworkspace/store/src/session/mod.rs", "frame/aiworkspace/store/src/session/sessions.sql"]
+audit = ["kernel/sqlite_schema/src/lib.rs", "frame/aiworkspace/store/src/users.rs", "frame/aiworkspace/store/src/session/registry.rs", "frame/aiworkspace/store/src/workspace.rs", "frame/aiworkspace/store/src/schema.rs", "frame/aiworkspace/store/src/entries.rs", "frame/aiworkspace/store/src/acl.rs", "frame/aiworkspace/store/src/users.sql", "frame/aiworkspace/store/src/library.rs", "frame/aiworkspace/store/src/session/mod.rs", "frame/aiworkspace/store/src/session/sessions.sql"]
 depends = []
 
 [[reader]]

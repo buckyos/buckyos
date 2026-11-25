@@ -1,6 +1,7 @@
 import importlib.util
 import hashlib
 import json
+import os
 import tarfile
 import tempfile
 import unittest
@@ -150,6 +151,16 @@ class PackageFileManifestTests(unittest.TestCase):
 
     def test_posix_build_does_not_modify_committed_launchers(self) -> None:
         self._test_build_does_not_modify_committed_launchers(windows=False)
+
+    @unittest.skipIf(os.name == "nt", "directory symlinks can require privileges on Windows")
+    def test_posix_build_with_symlinked_temp_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_dir = Path(temporary).resolve() / "temp"
+            temp_dir.mkdir()
+            link = temp_dir.with_name("temp-link")
+            link.symlink_to(temp_dir, target_is_directory=True)
+            with mock.patch.object(tempfile, "tempdir", str(link)):
+                self._test_build_does_not_modify_committed_launchers(windows=False)
 
 
 if __name__ == "__main__":

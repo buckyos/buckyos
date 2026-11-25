@@ -1,6 +1,8 @@
 # AICC LLM 模型目录例行维护
 
-本文是可重复执行的维护手册：核对主流厂商的型号、能力、价格与下线信息，更新 Model Driver / Provider Rules，验证默认用途覆盖和廉价快速 fallback，并留下记录。首次修复（2026-11-16）的过程与结论见 [driver_metadata_review_20261116.md](../driver_metadata_review_20261116.md)。
+本文是可重复执行的维护手册：核对主流厂商的型号、能力、价格与下线信息，更新 Model Driver / Provider Rules，验证默认用途覆盖，并留下记录。首次修复（2026-11-16）的过程与结论见 [driver_metadata_review_20261116.md](../driver_metadata_review_20261116.md)。
+
+> **2026-11-23 原则变更**：系统不再内置 fallback，也不自动换模型；fallback 只来自管理员手工配置（[aicc_router.md §9](../aicc_router.md#9-fallback-与失败处理)）。§1、§2.4、§2.5 中关于 `llm.fallback` 分层和用途回退的内容描述的是**当前代码**，将随 [显式 fallback 改造 TODO](../../../notepads/aicc-explicit-fallback-todo.md) 移除。在此之前维护目录时：不要新增内置 fallback 目标，也不要为提高覆盖率扩充 `llm.fallback`；新规格放进合适的用途目录，或标记 `direct_only`。
 
 触发时机：厂商发布新模型、调价、能力变化或下线时追加维护；没有变化也可按需复查。本文不创建定时任务。当前规则以 `src/frame/aicc` 源码为准，本文与源码冲突时更新本文。
 
@@ -39,7 +41,7 @@
 
 - **原厂事实**写 Model Driver：canonical ID、别名、稳定性、上下文与输出上限、输入模态、tools、结构化输出、`supported_efforts`、`default_effort`、所属规格及固定 `effort`、同规格内的版本 `weight`。
 - **渠道事实**写 Provider Rules：operation、effort lowering（variants 的 `origin_model_id` 列表）、`capability_limits`、请求改写、`model_pricing`（`source_url`、`verified_at`、币种、输入/输出/缓存读写、长上下文 `tiers`）。只有 endpoint/adapter/发现方式变化时才改 Known Provider。
-- 新型号先归入已有规格；只有厂商发布新产品线或新用途时才新增规格。新增非 `direct_only` 规格必须同时加入某个用途或 `llm.fallback` 的分层（否则单模型覆盖测试失败），否则标记 `direct_only`。
+- 新型号先归入已有规格；只有厂商发布新产品线或新用途时才新增规格。新增规格应加入合适的用途，否则标记 `direct_only`。当前的单模型覆盖测试还要求非 `direct_only` 规格出现在 `llm.fallback`，改造完成前为通过测试可以照加，但要在记录里写明。
 - 低档预设只能通过合法的 `spec` / `additional_specs` 绑定表达；不要为降低 fallback 成本改写所有用途共用的规格 effort 或 `default_effort`，也不要伪造 `none`。
 - 只被 swift、summarize、translate 和 `llm.fallback` 引用的廉价规格（如 `qwen-flash`、`gpt-mini`、`minimax-highspeed`）绑定 `none`/`low` 档：这些调用方的输出上限只有几千 token（会话压缩 6144），`xhigh`/`max` 档会把额度全部用在思考上、返回空正文。
 - 下线：原厂停供只记录日期并调整对应原生渠道的价格/可用性；第三方或本地部署仍可提供时保留技术定义。停止默认推荐（调权重）与删除定义分开处理；退役规格前先清理用途、`llm.fallback` 和 overlay 的引用。
@@ -47,7 +49,7 @@
 - 修改过的每个 catalog 文件 `revision_seq` 加 1；`src/frame/aicc/src/settings/mod.rs` 的 `BUILTIN_CATALOG_REVISION_SEQ` 加 1。同步更新断言固定计数/版本的单测（`provider_pricing_contains_all_rebased_model_defaults`、`every_builtin_provider_price_has_provenance`、各 provider 的 `revision_seq` 断言）。
 - 同步独立验收契约：`test/aicc_test/acceptance/provider_protocol_contracts.json`（官方模型 ID 列表、variant 规则），必要时 `provider_capability_baseline.json`、`logical_entrypoint_baseline.json`、`route_exposure_contracts.json`。按官方文档手写，不从产品 metadata 生成。
 
-### 2.4 fallback 选型
+### 2.4 fallback 选型（改造后删除）
 
 - 每个纳入范围的系列在 4.0 层保留其廉价快速规格；没有独立廉价档的系列（如 Kimi）以最低通用规格作为最低档并在记录中说明。
 - 选型表列：系列、规格 → 当前首选家族:预设、适用渠道、费用口径（渠道、币种、输入/输出/缓存、阈值）、速度依据（官方定位或实测；没有数字就写“无官方延迟数字”）、后备顺序、来源、核对日期。原厂价不代表 SN/OpenRouter 等渠道的实际报价。

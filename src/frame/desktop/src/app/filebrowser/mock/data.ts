@@ -321,6 +321,22 @@ const entries: FileEntry[] = [
     path: '/shared/incoming',
     modifiedAt: '2026-03-31T20:04:00Z',
   },
+
+  // ─── Zone-wide folders behind the sidebar's Published and Library ───
+  {
+    id: 'srv-publish',
+    name: 'publish',
+    kind: 'folder',
+    path: '/srv/publish',
+    modifiedAt: '2026-04-02T10:00:00Z',
+  },
+  {
+    id: 'srv-library',
+    name: 'library',
+    kind: 'folder',
+    path: '/srv/library',
+    modifiedAt: '2026-04-02T10:00:00Z',
+  },
 ]
 
 // ─── /home/stress-10k — 10,000 generated entries (virtualization stress) ───

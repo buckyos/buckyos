@@ -2,12 +2,12 @@
  * record form, the previous / next record of the view, and the record's ⋯ — comment, copy its link, materialize a
  * formula, delete (asked first). A new record's empty form adds it in one Commit, or adds it and starts the next. */
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, ChevronLeft, ChevronUp, Link2, MessageSquarePlus, MoreHorizontal, Sigma, Trash2, X } from 'lucide-react'
 import { randomId } from '../../api/ids'
-import type { ReadOk } from '../../api/session'
-import type { FieldDef, Json, QueryRow } from '../../api/types'
+import { describeError, type ReadOk } from '../../api/session'
+import type { CommitOutcome, FieldDef, Json, QueryRow } from '../../api/types'
 import { useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import { contactRecordHref } from '../../links'
 import { useAiwsText } from '../../useAiwsText'
@@ -17,6 +17,7 @@ import { useOverlayMounted } from '../shell/popover'
 import { usePhone } from '../shell/shellContext'
 import type { TablePager } from '../tablePager'
 import { UNSET, type Input } from '../values'
+import { missingRecordFields } from './insert'
 import { cellEditId, recordTitle, writeOperation } from './model'
 import { DraftRecordForm, RecordForm, useDraftRecord, type DraftFieldDef, type FormField } from './RecordForm'
 import { ConfirmPop, TableMenu, usePop, type MenuItem } from './TablePop'
@@ -27,6 +28,8 @@ export interface TableRecordPanelProps {
   /** The workspace root the panel is placed in. */
   host: HTMLElement | null
   sourceId: string
+  schemaId: string | null | undefined
+  onInsert: (recordId: string, values: Record<string, Json>) => Promise<CommitOutcome>
   /** The table-view Block, when there is one: a record's link names it. */
   cellId: string | null
   fields: FieldDef[]
@@ -105,7 +108,7 @@ function EditRecord({ recordId, sourceId, cellId, fields, titleField, rows, page
     return {
       id: field.field_id, name: field.name, def: field, value, rev: row.revs[field.field_id] ?? 0,
       editId: cellEditId(sourceId, recordId, field.field_id), testId: `aiws-record-field-${field.field_id}`,
-      locked: !canUpdate ? (readOnlyReason ?? '') : field.type === 'object_ref' ? '' : null,
+      locked: !canUpdate ? (readOnlyReason ?? '') : field.submitter ? '' : null,
       ...(href ? { display: <a href={href} target="_blank" rel="noreferrer">{String(value)}</a> } : {}),
       ...(formula ? { display: <span title={t('aiworkspace.data.cell.formulaTitle', { formula: formula.formula.$formula.expr })}>{formula.value === null ? `= ${formula.formula.$formula.expr}` : String(formula.value)} <span className="aiws-chip">{t('aiworkspace.table.record.formula')}</span></span> } : {}),
     }
@@ -162,43 +165,74 @@ function EditRecord({ recordId, sourceId, cellId, fields, titleField, rows, page
   )
 }
 
-function NewRecord({ sourceId, fields, canAppend, readOnlyReason, onClose }: TableRecordPanelProps) {
+function NewRecord({ fields, schemaId, canAppend, readOnlyReason, onInsert, onClose }: TableRecordPanelProps) {
   const { t } = useAiwsText()
   const store = useStore()
-  // the service fills a submitter field; references are not typed into a new record; a default starts filled in (§7.3)
-  const asked: DraftFieldDef[] = fields.filter((field) => !field.submitter && field.type !== 'object_ref')
-    .map((field) => ({ id: field.field_id, name: field.name, def: field, testId: `aiws-record-field-${field.field_id}`, ...(field.default !== undefined ? { fallback: field.default } : {}) }))
+  const asked: DraftFieldDef[] = fields.filter((field) => !field.submitter)
+    .map((field) => ({ id: field.field_id, name: field.name, def: field, testId: `aiws-record-field-${field.field_id}`, fallback: field.default }))
   const draft = useDraftRecord(asked)
+  const missing = missingRecordFields(store.core, fields, schemaId, draft.values)
+  const [expanded, setExpanded] = useState(false)
+  const visible = asked.filter((field) => expanded || missing.includes(field.id) || field.id in draft.drafts || field.id in draft.errors)
   const [status, setStatus] = useState<{ kind: 'error' | 'info'; text: string } | null>(null)
   const [round, setRound] = useState(0)
+  const [pending, setPending] = useState(false)
+  const submitting = useRef(false)
+  const [recordId, setRecordId] = useState(() => randomId('r'))
   const add = async (keepOpen: boolean) => {
-    const values = draft.build()
-    if (!values) { setStatus(null); return }
-    const typeRevs: Record<string, number> = {}
-    for (const id of Object.keys(values)) { const field = fields.find((item) => item.field_id === id); if (field) typeRevs[id] = field.type_rev }
-    const recordId = randomId('r')
-    const outcome = await store.submit({
-      editId: `record:${sourceId}:${recordId}`, label: t('aiworkspace.data.record.add'), mine: values, hasMine: true,
-      operations: [{ op: 'table.insert_records', source_id: sourceId, field_type_revs: typeRevs, records: [{ record_id: recordId, values }] }],
-    })
-    if (outcome.status !== 'accepted' && outcome.status !== 'saved_locally') { setStatus({ kind: 'error', text: t('aiworkspace.data.record.addFailed') }); return }
-    if (!keepOpen) { onClose(); return }
-    draft.reset()
-    setRound((n) => n + 1)
-    setStatus({ kind: 'info', text: t('aiworkspace.table.record.added') })
+    if (submitting.current || !canAppend) return
+    const errors = { ...draft.invalid }
+    for (const id of missing) errors[id] ??= t('aiworkspace.data.record.required', { name: fields.find((f) => f.field_id === id)?.name ?? id })
+    draft.setErrors(errors)
+    if (Object.keys(errors).length) { setStatus(null); return }
+    submitting.current = true
+    setPending(true)
+    try {
+      const outcome = await onInsert(recordId, draft.values)
+      if (outcome.status !== 'accepted' && outcome.status !== 'saved_locally') {
+        let message = t('aiworkspace.data.record.addFailed')
+        if (outcome.status === 'rejected') {
+          for (const error of outcome.errors ?? []) {
+            const field = error.data?.field_id ?? error.path?.match(/\/values\/([^/]+)$/)?.[1]
+            if (typeof field === 'string') errors[field] = error.detail ?? error.code
+          }
+          message = outcome.errors?.[0]?.detail ?? outcome.detail ?? message
+        } else if (outcome.status === 'conflict') {
+          for (const conflict of outcome.conflicts) {
+            const id = conflict.selector && 'field_id' in conflict.selector ? conflict.selector.field_id : undefined
+            if (typeof id === 'string') errors[id] = conflict.detail ?? conflict.code
+          }
+          message = outcome.conflicts[0]?.detail ?? outcome.code
+        } else message = outcome.detail
+        draft.setErrors(errors)
+        setStatus({ kind: 'error', text: message })
+        return
+      }
+      if (!keepOpen) { onClose(); return }
+      draft.reset()
+      setRound((n) => n + 1)
+      setRecordId(randomId('r'))
+      setStatus({ kind: 'info', text: t('aiworkspace.table.record.added') })
+    } catch (error) {
+      setStatus({ kind: 'error', text: describeError(error) })
+    } finally {
+      submitting.current = false
+      setPending(false)
+    }
   }
   return (
     <>
       <PanelHead title={t('aiworkspace.table.record.newTitle')} onClose={onClose} />
       <form className="aiws-table-record-body" onSubmit={(event) => { event.preventDefault(); void add(false) }}>
         {!canAppend && <div className="aiws-muted aiws-table-record-note">{readOnlyReason ?? t('aiworkspace.table.readOnly.noAppend')}</div>}
-        {asked.length === 0 && <div className="aiws-muted">{t('aiworkspace.data.record.noRequired')}</div>}
-        <DraftRecordForm key={round} fields={asked} draft={draft} ariaLabel={(name) => t('aiworkspace.data.record.newAria', { name })} />
+        {visible.length === 0 && <div className="aiws-muted">{t('aiworkspace.data.record.noRequired')}</div>}
+        <DraftRecordForm key={round} fields={visible.map((field) => missing.includes(field.id) ? { ...field, def: { ...field.def, required: true } } : field)} draft={draft} ariaLabel={(name) => t('aiworkspace.data.record.newAria', { name })} />
+        {!expanded && visible.length < asked.length && <button type="button" onClick={() => setExpanded(true)} data-testid="aiws-table-record-expand">{t('aiworkspace.table.record.expandFields')}</button>}
         {status && <div className={status.kind === 'error' ? 'aiws-error' : 'aiws-muted'} role={status.kind === 'error' ? 'alert' : 'status'} data-testid="aiws-table-record-status">{status.text}</div>}
         <div className="aiws-table-record-actions">
           <button type="button" onClick={onClose}>{t('aiworkspace.common.cancel')}</button>
-          <button type="button" data-testid="aiws-table-record-add-next" disabled={!canAppend} onClick={() => { void add(true) }}>{t('aiworkspace.table.record.addNext')}</button>
-          <button type="submit" className="is-primary" data-testid="aiws-table-record-add" disabled={!canAppend}>{t('aiworkspace.table.record.add')}</button>
+          <button type="button" data-testid="aiws-table-record-add-next" disabled={!canAppend || pending} onClick={() => { void add(true) }}>{t('aiworkspace.table.record.addNext')}</button>
+          <button type="submit" className="is-primary" data-testid="aiws-table-record-add" disabled={!canAppend || pending}>{t('aiworkspace.table.record.add')}</button>
         </div>
       </form>
     </>

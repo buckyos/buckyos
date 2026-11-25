@@ -460,6 +460,74 @@ async fn a_conversation_takes_the_current_prompt_after_its_history_is_compacted(
     assert_eq!(sd.state().unwrap().turns_completed, 3);
 }
 
+/// Chat route TODO §4 (D11): a conversation that was not compacted takes a
+/// changed prompt when it comes back after the provider's cache is gone,
+/// with its history brought to the target; not before, and not when the
+/// prompt is the same.
+#[tokio::test]
+async fn a_conversation_back_after_a_long_pause_takes_a_changed_prompt() {
+    let env = Env::new();
+    let agent = env.agent();
+    std::fs::write(env.agent_root.join("role.md"), "You are Jarvis, version one.").unwrap();
+    let mut spec = ui();
+    spec.freeze = true;
+    let sd = env.create_work(spec).await;
+    let llm = ScriptedLlm::new(|req, _| {
+        if render(&req.messages).contains("history compressor") {
+            return text("The user sent a long request and got an answer.");
+        }
+        text(&format!("answer in {}", if system_text(req).contains("version one") { "one" } else { "two" }))
+    });
+    let mut deps = env.deps(llm.clone());
+    // About 50k tokens: under the trigger of the 128k window, over its target.
+    let long = "long request ".repeat(16_000);
+    let mut texts = vec![long.as_str(), "within the hour"];
+    let turn = |text: String| {
+        let (agent, sid) = (agent.clone(), sd.sid().to_string());
+        async move { agent.sessions().post_input(&sid, &msg(&text)).await.unwrap() }
+    };
+    for (n, text) in texts.drain(..).enumerate() {
+        if n == 1 {
+            std::fs::write(env.agent_root.join("role.md"), "You are Jarvis, version two.").unwrap();
+        }
+        turn(text.to_string()).await;
+        drive(&sd, &deps, StopWhen::Idle).await;
+    }
+    assert!(applied(&sd, "prompt_refrozen").is_empty());
+    assert!(sd.summary_opt().unwrap().is_none());
+    assert_eq!(llm.count(), 2, "nothing was compressed");
+
+    // Back after the pause.
+    deps.options.prompt_cache_idle = std::time::Duration::ZERO;
+    turn("back again".into()).await;
+    drive(&sd, &deps, StopWhen::Idle).await;
+    let refrozen = applied(&sd, "prompt_refrozen");
+    assert_eq!(refrozen.len(), 1);
+    assert_eq!((&refrozen[0]["changed"], &refrozen[0]["reason"]), (&json!(["role.md"]), &json!("idle")));
+    let compactions: Vec<String> = read_worklog(&sd)
+        .into_iter()
+        .filter_map(|e| match e.body {
+            WorklogBody::Compaction { made_by, .. } => Some(made_by),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(compactions, ["prompt_refrozen"]);
+    let answers: Vec<String> = read_worklog(&sd)
+        .into_iter()
+        .filter_map(|e| match e.body {
+            WorklogBody::Outcome { report, .. } => report,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answers, ["answer in one", "answer in one", "answer in two"]);
+
+    // The prompt is the same: coming back changes nothing.
+    turn("once more".into()).await;
+    drive(&sd, &deps, StopWhen::Idle).await;
+    assert_eq!(applied(&sd, "prompt_refrozen").len(), 1);
+    assert_eq!(sd.state().unwrap().turns_completed, 4);
+}
+
 /// A conversation given a manual of its own (the Agent browser's
 /// conversation and `browser`) has it besides its class's, also when its
 /// prompt is frozen again; another conversation does not.

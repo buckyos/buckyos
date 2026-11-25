@@ -11,7 +11,7 @@
 | `notice` | 告诉用户一件事，不需要回答 | msg-center 中这条消息的记录（已读、归档） |
 | `input` | 向用户提问，需要回答 | 另挂的 TaskMgr 人工任务（HumanSet，schema `human.input/v1`）；回答就是任务结果 |
 
-Desktop 移动端状态栏的铃铛（蓝色计数）列出该用户所有 `open` 的通知（`notify.list {status: [open]}`），点击打开对应卡片。用户在 MessageHub 的“系统通知”里看到通知：按对用户的重要程度分为三个会话——**待办**（`todo`）、**Agent**（`agent`）、**应用通知**（`app`），每条通知是其中一张卡片，可以原地回答、确认或忽略。统一链接 `https://<zone host>/messagehub?notify=<notify_id>` 打开这张卡片。
+Desktop 移动端状态栏的铃铛（蓝色计数）列出该用户所有 `open` 的通知（`notify.list {status: [open]}`，计数来自 `notify.summary`），点击打开对应卡片。“设置 → 通知”里按应用开关（§4.1）。用户在 MessageHub 的“系统通知”里看到通知：按对用户的重要程度分为三个会话——**待办**（`todo`）、**Agent**（`agent`）、**应用通知**（`app`），每条通知是其中一张卡片，可以原地回答、确认或忽略。统一链接 `https://<zone host>/messagehub?notify=<notify_id>` 打开这张卡片。
 
 ## 2. 方法
 
@@ -25,6 +25,8 @@ kRPC 服务 `msg-center`（`/kapi/msg-center`）：
 | `notify.cancel {notify_id, reason?}` | 发送方、系统服务 | 撤销；`input` 的任务以 Canceled 关闭 |
 | `notify.ack {notify_id, on_behalf?}` | 目标用户 | `notice` 标为已读 |
 | `notify.dismiss {notify_id}` | 目标用户 | `notice` 忽略（归档） |
+| `notify.summary {}` | 用户自己（系统页面）、系统服务 | 角标用的计数，见 §2.4 |
+| `notify.list_apps {}`、`notify.set_app {app_instance_id, enabled}` | 同上 | 按应用的通知开关，见 §4.1 |
 
 回答 `input` 不走 msg-center，而是直接向 TaskMgr 提交任务结果（`commit_result`，带 `expected_revision`，先到先得）。SDK 的 `answer_notify` / `answerNotify` 封装了这一步；`notice` 调用它时等同于 `ack` / `dismiss`。
 
@@ -87,10 +89,20 @@ kRPC 服务 `msg-center`（`/kapi/msg-center`）：
 
 参数都可选：`status`（数组）、`kind`、`category`、`agent_did`、`app_id`、`session_id`、`goal_id`、`since_ms`、`cursor`、`limit`。只返回调用方所属用户的通知（系统服务可以用 `to_user` 指定用户）。按创建时间倒序；有更多时返回 `next_cursor`。
 
+### 2.4 `notify.summary`
+
+```json
+{ "notify": { "open": 3, "todo": 1, "agent": 1, "app": 1 }, "messages": { "unread": 12 } }
+```
+
+- `notify.open` 等于 `notify.list {status: [open]}` 的总数，三个分类之和等于它。
+- `messages.unread` 是用户全部会话的未读记录数，不含免打扰的会话（`ui.muted`）、`sysnotify:*` 会话和对方是系统通知发送者的会话，与 Desktop 状态栏的口径一致。
+- 只有用户自己在系统页面里（用户会话、token 的 target 是系统服务）和系统服务（必须带 `to_user`）可以调用；App 和 Agent 会被拒绝。
+
 ## 3. 投递（不属于契约，可能变化）
 
 - 每条通知在目标用户的分类会话（`sysnotify:todo|agent|app`）里有一条主记录，发送者是“系统通知发送者”（Zone DID）。这三个会话不能打字。
-- 来自 Agent 的通知还会按等级另投到用户与该 Agent 已有的会话里（原生或 Telegram）：`quiet` 不另投；`normal` 投到来源会话；`timely` 再加最近活跃的会话；`urgent` 投到全部会话。未读只落在用户最可能看的那一处。
+- 来自 Agent 的通知还会按等级另投到用户与该 Agent 已有的会话里（原生或 Telegram）：`quiet` 不另投；`normal` 投到来源会话，没有来源会话时投到这个 Agent 的默认会话，Goal 发的总投默认会话；`timely` 再加默认会话；`urgent` 投到全部会话和默认会话。默认会话总是存在：用户没设过时由系统选定，被删掉之后由下一次用到它的通知或主入口新建。默认会话是 Telegram 会话时，这些通知经 Telegram 到用户。未读只落在用户最可能看的那一处。
 - 非 Agent 来源的通知只有主记录（`quiet` 时为已读）。
 
 ## 4. 权限
@@ -102,6 +114,28 @@ kRPC 服务 `msg-center`（`/kapi/msg-center`）：
 | 系统服务 | 可以通知任何用户、指定 `todo`、读取和撤销任何通知 |
 
 RBAC 资源是 `obj://msg-center/notify`（`users`、`admin`、`app`、`frame` 组有读写权限）。回答 `input` 的权限由 TaskMgr 判断：目标用户是任务的 assignee。
+
+### 4.1 应用的通知权限
+
+普通应用要在 AppDoc 的 `permissions` 里声明才能发通知：
+
+```json
+{ "scope_path": "msg-center/notify", "required": false, "actions": ["write"], "exp": null }
+```
+
+服务端只看 `scope_path` 和 `exp`，`actions` 用于展示。安装时这一项默认批准（`required: false` 时用户可以取消勾选），升级到第一个声明它的版本时也默认批准。之后每个用户在设置里按应用开关；没有设过时等于安装时有没有批准。开关存在 msg-center（该用户的 owner UI state，`session_id = notify-apps`、`state_key = <app_instance_id>`），应用自己改不了。
+
+`notify.send` 的检查：
+
+| 调用方 | 检查 |
+|---|---|
+| App 主体，或用户会话但 target 是该 App（浏览器中的 App 页面） | 没声明、声明过期或应用已不在，返回 `NOTIFY_NOT_DECLARED`；用户关了，返回 `NOTIFY_DISABLED`（带 `data.app_instance_id`） |
+| 系统服务、设备、系统页面里的用户会话 | 不检查 |
+| Agent，Agent 构造的 App（AppId 就是本 Zone 某个 Agent 的 AgentId）及其页面 | 不检查 |
+
+读、列出、撤销、`ack`、`dismiss` 不受开关影响。没有声明的旧应用不照顾，发通知会被拒绝。
+
+`notify.list_apps {}` 返回 `{ apps: [{ app_instance_id, app_id, owner_user_id, show_name?, app_icon_url?, installed, declared, enabled, last_sent_at_ms? }] }`：用户能用的、声明了通知的应用，加上给他发过通知的应用（包括已卸载的和现在没声明的，这两种开不了）。`enabled` 表示现在发会不会被接受。`notify.set_app` 返回改后的这一行，没声明的应用返回 `NOTIFY_NOT_DECLARED`。调用方限制与 `notify.summary` 相同。
 
 ## 5. 消息数据
 
@@ -179,3 +213,4 @@ await msgCenter.notifyCancel(view.notify_id, 'no_longer_needed')
 - 不要为等待回答写没有截止时间的循环；`wait_notify` 必须给 `deadline`。
 - 不要自己另存通知状态：`input` 看任务，`notice` 看 msg-center 的记录。
 - 不要用它代替会话消息：通知不会出现在任何对话历史里。
+- 不要在收到 `NOTIFY_DISABLED` 后重试：用户关掉了这个应用的通知。

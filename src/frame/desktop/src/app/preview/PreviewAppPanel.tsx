@@ -19,14 +19,16 @@ import {
   type PreviewOpenWithRequest,
 } from '../../components/ContentPreview'
 import { refIdentity } from '../../components/preview/session'
-import type { PreviewShareRequest } from '../../components/preview/types'
+import type { ContentRef, PreviewShareRequest } from '../../components/preview/types'
 import { useI18n } from '../../i18n/provider'
 import { desktopUIStore } from '../../models/DesktopUIDataModel'
 import { SHARE_DIALOG_PATH, useSystemDialog } from '../../sysdlg'
 import type { AppContentLoaderProps } from '../types'
 import { OpenWithSheet } from '../content/OpenWithSheet'
 import { shareParamsOf } from '../content/share'
+import { useAppPath } from '../pathContext'
 import { openPreviewInNewWindow } from './launch'
+import { previewPath } from './path'
 import { PreviewLanding } from './PreviewLanding'
 import { PreviewSettingsDialog } from './PreviewSettingsDialog'
 import { previewSettingsStore, usePreviewSettings } from './settings'
@@ -55,7 +57,8 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
   const [openWithState, setOpenWithState] = useState<{ requestId: string; request: PreviewOpenWithRequest } | null>(null)
   const previewRef = useRef<ContentPreviewHandle | null>(null)
   const systemDialog = useSystemDialog()
-  const [mobileTitle, setMobileTitle] = useState<{ requestId: string; title: string; subtitle: string } | null>(null)
+  const [mobileTitle, setMobileTitle] = useState<{ requestId: string; title: string; subtitle: string; source: ContentRef } | null>(null)
+  useAppPath((payload && previewPath(mobileTitle?.requestId === payload.requestId ? { ...payload, source: mobileTitle.source } : payload)) ?? '/')
   useMobileTitleOverride(isMobile && mobileTitle?.requestId === payload?.requestId && mobileTitle ? { title: mobileTitle.title, subtitle: mobileTitle.subtitle } : null)
 
   useEffect(() => {
@@ -183,7 +186,7 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
         onItemChanged={(item) => {
           // Open with… belongs to the item it was asked for.
           setOpenWithState((prev) => (prev && refIdentity(prev.request.item.source) !== refIdentity(item.source) ? null : prev))
-          setMobileTitle({ requestId: payload.requestId, title: item.title, subtitle: item.count > 1 ? t('preview.counter', '{{index}} of {{count}}', { index: item.index + 1, count: item.count }) : '' })
+          setMobileTitle({ requestId: payload.requestId, title: item.title, subtitle: item.count > 1 ? t('preview.counter', '{{index}} of {{count}}', { index: item.index + 1, count: item.count }) : '', source: item.source })
           if (!windowId) return
           desktopUIStore.updateWindow(windowId, { title: pinned ? `${item.title} · ${t('previewApp.kept', 'Kept')}` : item.title })
           previewWindowManager.touch(windowId, { currentKey: refIdentity(item.source) })

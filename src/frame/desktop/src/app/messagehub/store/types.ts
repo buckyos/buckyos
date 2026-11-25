@@ -7,7 +7,7 @@ import type { ConversationMessageReader } from '../../../components/conversation
 import type { MessageObject } from '../../../components/conversation/model/msgobj'
 import type { createSessionSchema } from '../sessionModel'
 import type { createGroupSchema } from '../groupModel'
-import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, GroupInvitationView, GroupSessionInfo, GroupSessionParticipants, MessageHubContext, ReadReceipt, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
+import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, GroupProfileInput, GroupInvitationView, GroupSessionInfo, GroupSessionParticipants, MessageHubContext, ReadReceipt, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
 
 export interface ConnectionChoice {
   id: string
@@ -21,6 +21,11 @@ export type OwnerStatus =
   | { phase: 'ready'; refreshing?: boolean }
   | { phase: 'denied' }
   | { phase: 'error'; message: string }
+
+export interface DefaultSessionOptions {
+  /** The viewer is going to write: a native chat when an Agent's default is on a channel, which is read-only here. */
+  writable?: boolean
+}
 
 export type ManageAction = 'archive' | 'restore' | 'delete'
 
@@ -67,8 +72,18 @@ export interface MessageHubStore {
    */
   addPeer(context: MessageHubContext, did: string, info?: { name?: string; type?: 'person' | 'agent' }): void
   sessions(context: MessageHubContext, entityId?: string, lifecycle?: Session['lifecycle']): Session[]
+  /** Where the entity's main entry leads. An Agent's is its stored default, as far as it is known here: null otherwise. */
   defaultSession(context: MessageHubContext, entityId: string): Session | null
-  ensureDefaultSession(context: MessageHubContext, entityId: string): Promise<Session | null>
+  /** An Agent's default, chosen or created by msg-center when none is stored, and listed here; null for any other entity. */
+  agentDefaultSession(context: MessageHubContext, entityId: string, options?: DefaultSessionOptions): Promise<Session | null>
+  /** The session the main entry opens: restored from the archive, or created when there is none. */
+  ensureDefaultSession(context: MessageHubContext, entityId: string, options?: DefaultSessionOptions): Promise<Session | null>
+  /** Reads an Agent's stored default and its conversations on channels. */
+  loadConversations(context: MessageHubContext, entityId: string): Promise<void>
+  /** Makes `session` (the owner's own or one of `channelSessions`) the default of its Agent: its main entry, and where the Agent's notifications go. */
+  setDefaultSession(context: MessageHubContext, session: Session): Promise<void>
+  /** An Agent's conversations with the owner on channels of other platforms, read from the Agent's mailbox (`readingContext`): read-only. */
+  channelSessions(context: MessageHubContext, entityId: string): Session[]
   connections(context: MessageHubContext, entityId: string): ConnectionChoice[]
   reader(context: MessageHubContext, sessionId: string): ConversationMessageReader
   historyStatus(context: MessageHubContext, sessionId: string): 'idle' | 'loading' | 'ready' | 'error'
@@ -124,8 +139,8 @@ export interface MessageHubStore {
   ensureGroup(context: MessageHubContext, groupDid: string, refresh?: boolean): Promise<void>
   /** Creates the group and invites the members; resolves to the group DID (its entity id). */
   createGroup(context: MessageHubContext, input: z.infer<typeof createGroupSchema>): Promise<string>
-  /** `group.apply_config` on `profile` with the group's current revision. */
-  updateGroupProfile(context: MessageHubContext, groupDid: string, profile: { name: string; description: string }): Promise<void>
+  /** `group.apply_config` on `profile` (and `default_session.history_before_join` when given) with the group's current revision. */
+  updateGroupProfile(context: MessageHubContext, groupDid: string, profile: GroupProfileInput): Promise<void>
   /** Invites each DID; resolves to the DIDs whose invitation failed, with the reason. */
   inviteGroupMembers(context: MessageHubContext, groupDid: string, memberDids: string[]): Promise<Array<{ did: string; reason: string }>>
   removeGroupMember(context: MessageHubContext, groupDid: string, memberDid: string): Promise<void>

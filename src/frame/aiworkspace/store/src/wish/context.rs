@@ -271,7 +271,7 @@ pub fn translate_fields(s: &Value, fields: &[FieldRow], handles: &Handles, table
 fn selected_rows(snap: &WishSnapshot, table: &EntityRow, selector: Option<&Value>, view: Option<&EntityRow>) -> WsResult<(Option<Vec<String>>, Vec<Value>)> {
     let def = match (view, selector.filter(|s| s["kind"] == json!("table_query"))) {
         (Some(cell), _) => ViewDef { fields: None, ..ViewDef::of_cell(cell) },
-        (None, Some(s)) => ViewDef { group: None, manual_order: None, ..ViewDef::of_params(s) },
+        (None, Some(s)) => ViewDef { group: None, row_order: None, ..ViewDef::of_params(s) },
         _ => ViewDef::default(),
     };
     let fields = def.fields.clone();
@@ -1399,6 +1399,9 @@ impl Stage {
             let ctx = self.snap.ctx();
             if let Ok(Some(v)) = aiworkspace_core::sqlview::cell_view(&ctx, &self.snap.access, c, aiworkspace_core::sqlview::Projection::Display) {
                 out.push_str(&format!("\nThe view as SQL (ws_query): {}", v.sql));
+                if !v.params.is_empty() {
+                    out.push_str(&format!("\nparams: {}", Value::Array(v.params)));
+                }
             }
         }
         Ok(clip(out, MAX_TOOL_CHARS))
@@ -1491,6 +1494,9 @@ impl Stage {
     pub fn ws_query(&mut self, args: &Value) -> WsResult<String> {
         let sql = args.get("sql").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("sql required: one SELECT, a table named by its path (\"/data/…\"), handle (\"@T1\") or id"))?;
         let mut params = json!({ "sql": sql, "max_rows": args.get("max_rows").and_then(Value::as_u64).unwrap_or(MAX_TOOL_ROWS as u64).clamp(1, 200) });
+        if let Some(bindings) = args.get("params") {
+            params["params"] = bindings.clone();
+        }
         if let Some(t) = args.get("tables").filter(|t| t.is_object()) {
             params["tables"] = t.clone();
         }
@@ -1536,7 +1542,7 @@ impl Stage {
                     let cell = ctx.entity(cid)?.filter(|c| c.alive()).ok_or_else(|| WsError::new(Code::DependencyUnavailable, format!("table view {cid} no longer exists")))?;
                     Some(ViewDef { fields: None, ..ViewDef::of_cell(&cell) })
                 }
-                Some(s) if s["kind"] == json!("table_query") => Some(ViewDef { group: None, manual_order: None, ..ViewDef::of_params(s) }),
+                Some(s) if s["kind"] == json!("table_query") => Some(ViewDef { group: None, row_order: None, ..ViewDef::of_params(s) }),
                 _ => None,
             };
             let ddl = aiworkspace_core::sqlview::manifest_table_ddl(&ctx, &self.snap.access, &table, name, cols, view.as_ref())?;

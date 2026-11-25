@@ -9,13 +9,18 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 
+use crate::domain::runtime::{DomainRuntime, NODE_DAEMON_RPC_PATH};
+
 const SHARED_RING_DRAIN_BATCH: usize = 128;
 #[cfg(target_os = "linux")]
 const SHARED_RING_WAIT_TIMEOUT_MS: u64 = 500;
 #[cfg(not(target_os = "linux"))]
 const SHARED_RING_WAIT_TIMEOUT_MS: u64 = 1;
 
-pub async fn start_node_kevent_service(service: Arc<KEventService>) {
+pub async fn start_node_kevent_service(
+    service: Arc<KEventService>,
+    domain_runtime: Arc<DomainRuntime>,
+) {
     info!(
         "start kevent service on http port {} and native tcp port {} for source_node={}",
         KEVENT_SERVICE_MAIN_PORT,
@@ -40,6 +45,10 @@ pub async fn start_node_kevent_service(service: Arc<KEventService>) {
     let add_result = runner.add_http_server("/kapi/kevent".to_string(), http_server);
     if let Err(err) = add_result {
         error!("Failed to add kevent http server: {}", err);
+        return;
+    }
+    if let Err(err) = runner.add_http_server(NODE_DAEMON_RPC_PATH.to_string(), domain_runtime) {
+        error!("Failed to add node_daemon http server: {}", err);
         return;
     }
 

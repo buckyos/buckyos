@@ -530,6 +530,7 @@ mod tests {
         assert!(rbac::enforce("alice", "app:notes", notify, "read", None).await);
         assert!(rbac::enforce("alice", "system:control-panel", notify, "read", None).await);
         assert!(rbac::enforce("ood1", "system:aiworkspace", notify, "write", None).await);
+        assert!(rbac::enforce("alice", "system:control-panel", "obj://msg-center/owners/did:bns:alice", "read", None).await);
         assert!(
             !rbac::enforce(
                 "alice",

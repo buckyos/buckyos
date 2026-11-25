@@ -25,6 +25,26 @@ export const messageHubLaunchSchema = z.object({
   share: sharedLaunchSchema.optional(),
 })
 
+export const MESSAGE_HUB_LINK_KIND = 'messagehub-link'
+
+/** A launch that is an address of MessageHub: the query of `/messagehub?…`. */
+export const messageHubLinkSchema = z.object({ kind: z.literal(MESSAGE_HUB_LINK_KIND), search: z.string().max(4096) })
+
+/** The address of a launch (the reverse of reading `/messagehub?…`). */
+export function messageHubLinkParams(launch: z.infer<typeof messageHubLaunchSchema>): URLSearchParams {
+  const params = new URLSearchParams()
+  const observe = launch.context.mode === 'observe'
+  for (const [key, value] of Object.entries({ entityId: launch.entityId, sessionId: launch.sessionId, messageId: launch.messageId, ownerDid: observe ? launch.context.ownerDid : null, mode: observe ? 'observe' : null })) {
+    if (value) params.set(key, value)
+  }
+  if (launch.share) params.set('share', JSON.stringify(launch.share))
+  return params
+}
+
+export function messageHubLinkShare(params: URLSearchParams): SharedLaunch | undefined {
+  try { return sharedLaunchSchema.parse(JSON.parse(params.get('share') ?? '')) } catch { return undefined }
+}
+
 /** Partial context from a route / launch; the viewer is always the logged-in user. */
 export interface MessageHubContextRequest {
   ownerDid?: string

@@ -4,12 +4,14 @@
 
 目标：Zone A（下游）的 AICC 把 Zone B（上游）的 AICC 当成一个 Provider Instance。A 的应用、Agent、AIWorkspace 照常调用 A 的 AICC。A 的路由选中“来自 B 的模型”时，请求经跨 Zone kRPC 交给 B 的 AICC 执行，B 再用自己的 API key 调用真实厂商。开放给谁、开放哪些模型、给多少额度，都由 B 的管理员决定。
 
+> **2026-11-23 修订**：AICC 不自动换模型或 Provider，Provider 不可用就修 Provider，fallback 只来自管理员手工配置（[aicc_router.md §9](../doc/aicc/aicc_router.md#9-fallback-与失败处理)、[改造 TODO](aicc-explicit-fallback-todo.md)）。本文原来写的“允许 failover”已按此改为“返回真实错误”。
+
 相关文档：[Provider 冻结设计](../doc/aicc/frozen_provider_implementation.md)、[Trait/Protocol 冻结设计](../doc/aicc/frozen_trait_protocol.md)、[用户接口冻结文档](../doc/aicc/frozen_user_api.md)、[Token 额度](../doc/aicc/aicc_token_quota.md)、[跨 Zone 通信](../doc/sdk/cross-zone-communication.md)。
 
 ## 0. 结论先行
 
 1. **能做，而且可以不改冻结架构的形状。** 上游 AICC 在下游就是三样东西：一个新的 Known Provider（暂名 `zone-aicc`）、一个新的 Protocol Adapter（`aicc-krpc`，wire 就是上游的公共 kRPC）、一个新的 discovery（读上游的模型列表）。不需要新的“大 Provider trait”。
-2. **建议“精确模型直通”。** 下游的库存就是上游对它可见的精确模型。路由、failover、额度都在下游做，上游只执行固定的 exact model，不再路由第二次。不建议把逻辑模型（`llm.chat`）整个委托给上游。
+2. **建议“精确模型直通”。** 下游的库存就是上游对它可见的精确模型。路由、管理员配置的 fallback、额度都在下游做，上游只执行固定的 exact model，不再路由第二次。不建议把逻辑模型（`llm.chat`）整个委托给上游。
 3. **鉴权复用现有的跨 Zone 断言登录。** msg-center 和 HomeStation 已经在用 `CrossZoneClient`：下游用本机设备密钥签一个断言，上游 verify-hub 据此发 External 会话。上游要改两处：跨 Zone 白名单加入 `aicc`；AICC 不再一律拒绝 External 会话，而是查“对外授权”。
 4. **第一期只做 Immediate**，覆盖 LLM、embedding、decision、图片等同步方法。流式和原生长任务（视频）的结果都在上游 TaskMgr 里，跨 Zone 读不到，需要上游 AICC 新增任务观察接口，放到第二期。
 5. **媒体输入一律在下游转成字节内联**，因为上游读不到下游的 Named Object。这受上游 32 MiB 请求体上限约束。上游产出的 artifact 是上游 Zone 里的 Named Object，需要上游新开“按 obj_id 读取”的通道。
@@ -67,7 +69,7 @@ Zone A 应用 / Agent ──kRPC──> A.AICC ──路由──> exact model "
                                                          B.AICC ──> OpenAI
 ```
 
-- **下游负责：** 路由和 failover、本 Zone 用户的可见性和额度、用量记录、把产物存进自己的 bucket。
+- **下游负责：** 路由和管理员配置的 fallback、本 Zone 用户的可见性和额度、用量记录、把产物存进自己的 bucket。
 - **上游负责：** 对外授权（谁能用、能用哪些模型、多少额度）、真实调用、自己的用量记录。
 - 上游收到的是固定的 exact model，不做二次路由。这就是 typed inference 现有的语义。
 
@@ -90,7 +92,7 @@ Zone A 应用 / Agent ──kRPC──> A.AICC ──路由──> exact model "
   - `DiscoveredModel` 目前没有原厂身份字段，有两种补法：加字段，或由 discovery 生成实例级 `model_driver_overrides`。倾向加字段，更直接。
   - 如果下游 catalog 里没有这个原厂模型（上游 metadata 比下游新），该模型不进入可执行库存，只保留诊断。这和现有规则一致。
 - **variant：** 上游 typed inference 不接受 `provider_options`，所以下游不能靠 adapter options 设置 reasoning effort，只能选上游已有的 variant exact model。下游只保留上游实际列出的 variant。需要确认 `InventoryBuilder` 能否按 discovery 结果限定 variant 集合，不能就补上（Z0-5）。
-- 同一原厂模型经上游多个实例出现（比如官方渠道和 OpenRouter 各一个），在下游是不同的 exact model，正好可以互为 failover。
+- 同一原厂模型经上游多个实例出现（比如官方渠道和 OpenRouter 各一个），在下游是不同的 exact model，互不自动切换；需要备用时由下游管理员配置 fallback。
 
 ### 3.4 上游的模型列表接口
 
@@ -165,7 +167,7 @@ External DID 在上游没有账户，而现有的可见性、额度、用量、�
 
 | 情况 | 第一期 | 说明 |
 | --- | --- | --- |
-| Immediate | 做 | 上游返回 `succeeded` 和结果。下游超时要比普通 Provider 长（跨 Zone，且上游可能还会 failover），网关空闲超时要在 DV 里实测（Z0-7） |
+| Immediate | 做 | 上游返回 `succeeded` 和结果。下游超时要比普通 Provider 长（跨 Zone，且上游可能还会对同一模型重试），网关空闲超时要在 DV 里实测（Z0-7） |
 | 上游返回 `running` | 排除 | 上游有些 operation 是原生长任务（视频、OpenAI background）。discovery 根据执行模式只保留能 Immediate 的组合。万一仍收到 running，按 provider_error 失败，并记下上游 task_id |
 | NativeTask（视频等） | 第二期 | 需要上游新增任务观察接口：`task.get` 返回状态和最终结果，权限限于任务创建者；`cancel` 已有。下游 `NativeTaskCodec` 的 submit / status / result / cancel 映射到这些方法 |
 | Stream | 第二期 | 需要上游新增流式数据端点，形式类似 `artifact/open`，例如 `POST /kapi/aicc/task/events`（NDJSON，带游标），把上游 task data 里的 delta 推回来，下游转成 `ProtocolEvent::Delta`。现有调用方（xllm）只用 Immediate，所以优先级低 |
@@ -191,11 +193,11 @@ External DID 在上游没有账户，而现有的可见性、额度、用量、�
 
 | 上游错误 | 下游处理 |
 | --- | --- |
-| `quota_exhausted`、`quota_budget_exceeded`、`budget_exceeded` | **不能原样透传。** 否则下游调用方（xllm、OpenDAN）会以为是用户自己的额度用完，并去提示 owner。要映射成 provider 错误（上游额度不足），允许 failover，details 带上游的 reset 时间；该 Provider 的健康状态标记为额度耗尽，直到 reset |
-| `resource_not_permitted` | 上游收回了授权：按 provider 错误处理，允许 failover，并触发一次库存刷新 |
+| `quota_exhausted`、`quota_budget_exceeded`、`budget_exceeded` | **不能原样透传。** 否则下游调用方（xllm、OpenDAN）会以为是用户自己的额度用完，并去提示 owner。要映射成 provider 错误（上游额度不足），details 带上游的 reset 时间；该 Provider 的健康状态标记为额度耗尽，直到 reset |
+| `resource_not_permitted` | 上游收回了授权：按 provider 错误处理，并触发一次库存刷新 |
 | `context_length_exceeded` | 原样透传，语义相同且不可重试 |
-| `invalid_request`、`schema_validation_failed`、`invalid_method`、`unsupported_*` | 下游已经校验过还被拒，基本是两边版本不一致：按 provider 错误处理，允许 failover，Provider 健康状态记为“合同不兼容” |
-| `provider_error`、`timeout`、`no_provider_available` | 透传 `retriable` 和 retry-after，允许 failover |
+| `invalid_request`、`schema_validation_failed`、`invalid_method`、`unsupported_*` | 下游已经校验过还被拒，基本是两边版本不一致：按 provider 错误处理，Provider 健康状态记为“合同不兼容” |
+| `provider_error`、`timeout`、`no_provider_available` | 透传 `retriable` 和 retry-after；只对同一模型重试 |
 | kRPC `NoPermission`、token 错误 | 凭据错误，Provider 标为 unhealthy。`CrossZoneClient` 已有一次自动重登 |
 | 网络不可达 | 和普通 Provider 的网络错误一样 |
 
@@ -279,7 +281,7 @@ External DID 在上游没有账户，而现有的可见性、额度、用量、�
 - **合同测试：** 同一进程起两个 AICC。上游用 `AiccServerHandler` 加一个假 Provider，下游用 mock transport 指向它。覆盖 discovery、命名还原、每个 Immediate method、§3.11 的错误映射、provider_state 回放、产物下载、幂等重发。
 - **鉴权测试：** 未授权的 External 会话返回 `resource_not_permitted`；授权后可见性和额度生效；token 过期后能重新登录。
 - **防环测试：** A、B 互相配置，确认 discovery 里不出现对方转来的模型。
-- **DV：** 用 PVE 三 Zone 环境（VM 300–303）。alice 配真实 key 做上游，bob 添加 Provider。跑一轮 xllm / OpenDAN Agent 对话、一次图片生成、一次 embedding，确认上游的用量和额度可见；断开上游，确认 failover。
+- **DV：** 用 PVE 三 Zone 环境（VM 300–303）。alice 配真实 key 做上游，bob 添加 Provider。跑一轮 xllm / OpenDAN Agent 对话、一次图片生成、一次 embedding，确认上游的用量和额度可见；断开上游，确认返回真实错误且不自动换模型，配置了 fallback 时才切换。
 
 ## 7. 风险
 

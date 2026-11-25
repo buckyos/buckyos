@@ -1,10 +1,18 @@
 import { ContentRegistryClient, emptyDefaults, type ContentRegistry } from 'buckyos/content'
+import { readAppWindowDeclaration } from 'buckyos/open-app'
+import { windowManifestOf } from '../app/windowDeclaration'
 import type { AppDefinition } from '../models/ui'
 
 export const contentFixtureEnabled = () => new URLSearchParams(location.search).has('contentApps')
+/** `?contentApps=<JSON>`: the window the notes App declares in its AppDoc. */
+function declaredWindow() {
+  const { window } = JSON.parse(new URLSearchParams(location.search).get('contentApps') ?? '') as { window?: unknown }
+  return window ? windowManifestOf(readAppWindowDeclaration(window)) : {}
+}
 export const contentFixtureApps = (base: AppDefinition): AppDefinition[] => ['notes', 'reader'].map(name => ({
   ...base, id: `${name}-fixture`, appInstanceId: `${name}.fixture.bns.did@owner`,
   labelKey: name, summaryKey: '', text: { title: `${name === 'notes' ? 'Notebook' : 'Reader'} Fixture` }, tier: 'external', webHosts: [`${name}-fixture`],
+  ...(name === 'notes' ? { manifest: { ...base.manifest, ...declaredWindow() } } : {}),
 }))
 const registry: ContentRegistry = { schema_version: 1, handlers: Object.fromEntries(['notes', 'reader'].map(name => {
   const instance = `${name}.fixture.bns.did@owner`

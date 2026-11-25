@@ -45,11 +45,22 @@
       "description": "`[reply]`: the reply contract of a behavior's context. The final reply (an assistant text without tool calls) is one JSON value matching `schema`: the provider enforces it natively where it can, the host checks it and asks for one correction (`OutputSpec::Json { max_repairs: Some(1) }`). Function call loop only.",
       "properties": {
         "asks_field": {
-          "description": "An array field of the reply that must list every question the context asked the user (`ask_user`), one entry each.",
+          "description": "A field the host adds to the reply: every question the context asked the user (`ask_user`) with the user's answer, as the notification holds them. The schema does not declare it.",
           "type": [
             "string",
             "null"
           ]
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReplyContract"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Checks of the reply a schema cannot state, by name."
         },
         "schema": {
           "description": "JSON Schema of the reply (an object schema)."
@@ -200,6 +211,18 @@
         }
       },
       "type": "object"
+    },
+    "ReplyContract": {
+      "description": "Host checks of a reply beyond its schema (`[reply] contract`).",
+      "oneOf": [
+        {
+          "description": "The result of an intent analysis: a report, and with each outcome what it claims — the work session this context created, a goal there is, the goal or plan the request was handed to.",
+          "enum": [
+            "intent_analysis"
+          ],
+          "type": "string"
+        }
+      ]
     }
   },
   "description": "`extensions.opendan.behaviors.<name>`: entry configuration of a behavior.",

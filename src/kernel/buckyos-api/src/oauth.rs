@@ -51,6 +51,57 @@ pub struct PublicOAuthSource {
     pub display_name: String,
 }
 
+pub const OAUTH_SUBJECTS_PREFIX: &str = "services/control_panel/oauth/subjects";
+/// Deleted login sources. Sessions, grants and account bindings name a source by
+/// its ID, identity domain and issuer, so a deleted source's namespace stays
+/// reserved: only the same source can be added again, and then its existing
+/// bindings sign in again.
+pub const RETIRED_OAUTH_SOURCES_KEY: &str = "services/control_panel/oauth/retired_sources";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetiredOAuthSource {
+    pub id: String,
+    pub kind: OAuthSourceKind,
+    pub webhost: String,
+    pub issuer: String,
+}
+
+impl RetiredOAuthSource {
+    pub fn of(source: &OAuthSource) -> Self {
+        Self {
+            id: source.id.clone(),
+            kind: source.kind,
+            webhost: source.webhost.clone(),
+            issuer: source.issuer.clone(),
+        }
+    }
+
+    pub fn claims(&self, source: &OAuthSource) -> bool {
+        self.id == source.id || self.webhost == source.webhost || self.issuer == source.issuer
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VerifiedOAuth {
+    pub source_id: String,
+    pub issuer: String,
+    pub sub: String,
+    pub email: String,
+    pub label: String,
+    pub did: String,
+    pub webhost: String,
+}
+
+/// `services/control_panel/oauth/subjects/<oauth_subject_key>`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OAuthSubject {
+    pub identity: VerifiedOAuth,
+    pub did: String,
+    pub email: String,
+    #[serde(skip)]
+    pub bound_user: Option<String>,
+}
+
 pub fn oauth_subject_key(issuer: &str, sub: &str) -> String {
     let hash = Sha256::digest(serde_json::to_vec(&(issuer, sub)).expect("strings serialize"));
     format!("{hash:x}")

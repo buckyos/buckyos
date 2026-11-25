@@ -7,7 +7,7 @@ import { useI18n } from '../../i18n/provider'
 import { useWindowDialog } from '../../desktop/windows/dialogs'
 import { useMessageHubStore } from './store'
 import { DialogFocus, hubButtonClass, hubInputClass, hubPrimaryButtonClass } from '../../components/conversation/DialogFocus'
-import { groupSharedStateSchema, memberStateSchema, NATIVE_CONNECTION_LABEL, presentationSchema, sessionDescription } from './sessionModel'
+import { groupSharedStateSchema, isChannelSession, memberStateSchema, NATIVE_CONNECTION_LABEL, presentationSchema, sessionDescription } from './sessionModel'
 import { confirmGroupAction } from '../../components/conversation/confirmDialog'
 import { useNetworkDialogs } from '../../components/network/dialogs'
 import { friendlyDidName } from './api/projection'
@@ -16,6 +16,7 @@ import { groupErrorText } from '../../components/conversation/model/groupNotice'
 import type { Entity, GroupInfo, GroupSessionInfo, MessageHubContext, Session, SessionAccess } from './types'
 import { MemberAvatar } from './HubAvatar'
 import { useCurrentIdentity } from '../../sso/identity'
+import { confirmDefaultChange } from './defaultChange'
 import { ExclusiveInviteForm } from './ExclusiveInviteDialog'
 import { useGuestText } from './guest/text'
 import { GroupExtensionPanels } from './extensions/GroupExtensionPanels'
@@ -43,9 +44,10 @@ export function SessionDetails({ session, entity, context, access, showActions, 
     [t('messagehub.lastActivity'), session.lastActiveAt ? new Date(session.lastActiveAt).toLocaleString() : '—'],
     ...Object.entries({ sessionId: session.id, ownerDid: session.ownerDid, origin: session.origin, attribution: session.attributionEvidence ?? 'seed', ...session.binding }).map(([key, value]) => [key, String(value)]),
   ]
+  const channel = isChannelSession(context, session)
   const notices = [...new Set([
     access.readOnlyReason ? t(`messagehub.reason.${access.readOnlyReason}`) : '',
-    !access.canManage ? t('messagehub.reason.agent_observer') : '',
+    !access.canManage && !channel ? t('messagehub.reason.agent_observer') : '',
     (session.requestCount ?? 0) > 0 ? t('messagehub.requestBanner', undefined, { count: session.requestCount ?? 0 }) : '',
     entity.type === 'group' && session.binding.kind === 'native' ? t('messagehub.group.ownerCanRead') : '',
   ])].filter(Boolean)
@@ -62,6 +64,7 @@ export function SessionDetails({ session, entity, context, access, showActions, 
         {description && <p className="mt-2 whitespace-pre-wrap break-words text-[13px]" data-testid="session-description">{description}</p>}
         <div className="mt-2 flex flex-wrap gap-1.5 empty:hidden">
           {session.lifecycle === 'archived' && <DetailBadge>{t('messagehub.archived')}</DetailBadge>}
+          {session.memoryMode && session.memoryMode !== 'normal' && <span title={t(`messagehub.memoryMode.${session.memoryMode}Hint`)}><DetailBadge>{t(`messagehub.memoryMode.${session.memoryMode}`)}</DetailBadge></span>}
           {access.mode !== 'read_write' && <DetailBadge>{t('messagehub.readOnly')}</DetailBadge>}
           {session.binding.kind === 'tunnel' && <DetailBadge>{session.binding.connectionName}</DetailBadge>}
           {groupSession?.hasGuests && <span className="rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent)_12%,transparent)] px-2 py-0.5 text-xs text-[color:var(--cp-accent)]" data-testid="guest-badge">{t('messagehub.group.hasGuests')}</span>}
@@ -72,6 +75,7 @@ export function SessionDetails({ session, entity, context, access, showActions, 
       {groupSession && <GroupDisplaySection display={groupSession.display} session={groupSession.key} nameOf={nameOf} testId="session-display" />}
       {groupSession && <GroupHooksSection hooks={groupSession.hooks} />}
       {group && groupSession && <GroupExtensionPanels panels={groupSession.panels} context={{ groupDid: group.did, sessionId: groupSession.sessionId, session: groupSession.key, locale }} hostDid={group.hostDid} allowOrigins={store.isMock ? mockPanelOrigins() : undefined} />}
+      {entity.type === 'agent' && context.mode === 'self' && context.ownerDid === context.viewerDid && <DefaultSessionSection session={session} entity={entity} context={context} />}
       <DetailSection title={t('messagehub.members')}>
         {group ? <GroupSessionParticipantList session={session} context={context} group={group} fallback={localMembers} /> : localMembers}
       </DetailSection>
@@ -100,6 +104,26 @@ export function SessionDetails({ session, entity, context, access, showActions, 
     <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1"><h2 className="text-sm font-medium">{t('messagehub.sessionDetails')}</h2><button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={onClose}><X size={18} /></button></header>
     <div className="shell-scrollbar flex-1 space-y-6 overflow-y-auto p-4 text-sm">{body}</div>
   </section>
+}
+
+/** Whether this session is the Agent's default (its main entry, and where its notifications go), and making it so. */
+function DefaultSessionSection({ session, entity, context }: { session: Session; entity: Entity; context: MessageHubContext }) {
+  const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog()
+  const [pending, setPending] = useState(false), [failed, setFailed] = useState(false)
+  const current = store.defaultSession(context, entity.id)?.id === session.id
+  const set = async () => {
+    setPending(true); setFailed(false)
+    try {
+      if (await confirmDefaultChange(dialog, t, store, context, entity.id, session)) await store.setDefaultSession(context, session)
+    } catch { setFailed(true) } finally { setPending(false) }
+  }
+  return <DetailSection title={t('messagehub.defaultSession.title')}>
+    <div className="space-y-2" data-testid="default-session" data-default={current ? 'yes' : 'no'}>
+      <p className="text-[13px] text-[color:var(--cp-muted)]">{t(`messagehub.defaultSession.${current ? 'current' : 'hint'}`, undefined, { name: entity.name })}</p>
+      {!current && <button type="button" className={hubButtonClass} disabled={pending} onClick={() => void set()}>{t('messagehub.defaultSession.set')}</button>}
+      {failed && <p role="alert" className="text-xs text-[color:var(--cp-danger)]">{t('messagehub.operationFailed')}</p>}
+    </div>
+  </DetailSection>
 }
 
 function DetailSection({ title, children }: { title: string; children: ReactNode }) {

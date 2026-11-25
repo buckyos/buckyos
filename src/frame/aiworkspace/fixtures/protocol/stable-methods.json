@@ -72,6 +72,7 @@
             "head_seq": "number",
             "live_sessions": "number",
             "opened_at": null,
+            "owner": "boolean",
             "owner_principal": "string",
             "public": "boolean",
             "published": "boolean",

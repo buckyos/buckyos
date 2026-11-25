@@ -7,7 +7,9 @@ import {
   useMediaQuery,
 } from '@mui/material'
 import { contentDescriptor, parseSystemOpen } from 'buckyos/content'
+import { parseSystemOpenApp } from 'buckyos/open-app'
 import { openContent } from '../app/content/open'
+import { openAppRequest } from '../app/openApp'
 import { OpenWithHost, requestOpenWith } from '../app/content/OpenWithSheet'
 import { openPreview } from '../app/preview/launch'
 import { agentGuide } from '../app/agent-setup/guide'
@@ -297,6 +299,19 @@ export function DesktopRoute() {
     else if (open.target === 'chooser') requestOpenWith({ source, session, name: hints.name ?? contentDescriptor(source).name ?? '', mediaType: hints.mime, size: hints.size, exclude: open.from })
     else void openContent({ source, session }, { name: hints.name, mime: hints.mime, size: hints.size })
   }, [snap.status, searchParams])
+
+  // Another App's page that is not in the desktop (`/?open-app=<app>&path=…&window=…&mode=…`).
+  const openAppHandled = useRef(false)
+  useEffect(() => {
+    if (snap.status !== 'success' || openAppHandled.current || !searchParams.has('open-app')) return
+    openAppHandled.current = true
+    const request = parseSystemOpenApp(searchParams)
+    const params = new URLSearchParams(searchParams)
+    for (const name of ['open-app', 'path', 'window', 'mode']) params.delete(name)
+    setSearchParams(params, { replace: true })
+    const reply = request && openAppRequest(request, isMobile ? navigate : undefined)
+    if (reply && !reply.ok) store.setSnackbar(t('webFrame.unableToOpen', undefined, { app: request.app }))
+  }, [snap.status, searchParams, setSearchParams, isMobile, navigate, store, t])
 
   // The Agent setup wizard comes back here after a sign-in (`?agent_setup=<source>[&agent_id=]`).
   const agentSetupHandled = useRef(false)

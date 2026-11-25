@@ -52,7 +52,7 @@ test('message tray lists unread conversations, hides their content on request an
   expect(errors).toEqual([])
 })
 
-test('the message preview setting lives in Settings > Appearance', async ({ page }) => {
+test('the message preview setting lives in Settings > Notifications', async ({ page }) => {
   await page.goto('/?scenario=normal')
   await page.evaluate(() => window.localStorage.setItem('buckyos.desktop.messagePreview', 'hidden'))
   await page.reload()
@@ -62,7 +62,7 @@ test('the message preview setting lives in Settings > Appearance', async ({ page
   await page.keyboard.press('Escape')
 
   await page.getByTestId('desktop-app-settings').tap()
-  await page.getByText('Appearance', { exact: true }).first().click()
+  await page.getByText('Notifications', { exact: true }).first().click()
   const toggle = page.getByRole('switch', { name: 'Show message content in the status bar' })
   await expect(toggle).not.toBeChecked()
   await toggle.check()

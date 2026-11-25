@@ -2644,10 +2644,12 @@ impl ControlPanelServer {
             .permissions
             .iter()
             .filter(|permission| {
-                !spec.permission.iter().any(|installed| {
-                    installed.scope_path == permission.scope_path
-                        && installed.actions == permission.actions
-                })
+                // 通知默认开、随时可关，不要求重新确认。
+                permission.scope_path != buckyos_api::APP_PERMISSION_NOTIFY
+                    && !spec.permission.iter().any(|installed| {
+                        installed.scope_path == permission.scope_path
+                            && installed.actions == permission.actions
+                    })
             })
             .cloned()
             .collect::<Vec<_>>();

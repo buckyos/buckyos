@@ -61,6 +61,7 @@ pub fn records() -> Vec<(&'static str, Value)> {
             record_id: Some("r-102".into()),
             tunnel: None,
             context: false,
+            trigger: None,
         },
     )
     .unwrap();
@@ -262,6 +263,8 @@ pub fn chat_background(records: &[(String, Value)]) -> Vec<libopendan::runner::b
         active: &[],
         events: &events,
         tunnel: None,
+                reply_mode: Default::default(),
+                compacted_at_ms: 0,
     });
     select(candidates, &Default::default(), BATCH_MS).0
 }

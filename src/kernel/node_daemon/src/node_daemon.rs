@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 
 use buckyos_api::*;
 use buckyos_kit::*;
+use cyfs_dns_provider::SystemDnsLookup;
 use cyfs_gateway_api::{SnClient, SnZoneInfoResp};
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use name_client::*;
@@ -30,6 +31,10 @@ use crate::boot::{
     merge_zone_locker_bypass_into_gateway_config, write_boot_node_gateway_config,
     write_boot_node_gateway_info, zone_locker_bypass_hosts, NodeRole,
 };
+use crate::domain::plan::SnNames;
+use crate::domain::remote::LocalOwnerKey;
+use crate::domain::runtime::{DomainRuntime, NodeFacts, RuntimeZone};
+use crate::domain::service::{DnsServices, DomainService, IdentityCertificates};
 use crate::finder::{add_discovered_device_cache, DiscoveredNode, NodeFinder};
 use crate::gateway_name_provider::register_node_gateway_name_provider;
 use crate::gateway_tunnel_probe::probe_key_tunnels_via_gateway;
@@ -59,6 +64,7 @@ enum NodeDaemonErrors {
 
 type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
+const PUBLISH_README: &str = include_str!("../../../rootfs/data/srv/publish/readme");
 const SN_ZONE_INFO_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 // Zone Document 的 Boot 阶段解析（resolve + accept 状态机、Last Known Good
@@ -1146,7 +1152,70 @@ fn sn_api_url_for_device(
         .or_else(|| device_doc.ddns_sn_url.clone())
 }
 
-fn generate_sn_device_credentials(
+/// `public.<zone>/readme` tells that the Zone is up; it may have been removed
+/// from the kept data.
+fn restore_publish_readme(publish_dir: &Path) -> std::io::Result<bool> {
+    let path = publish_dir.join("readme");
+    if path.exists() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(publish_dir)?;
+    std::fs::write(&path, PUBLISH_README)?;
+    Ok(true)
+}
+
+fn build_domain_runtime(
+    node_identity: &LocalNodeIdentityConfig,
+    device_doc: &DeviceDocument,
+    device_private_key: &EncodingKey,
+    zone_document: &ZoneDocument,
+) -> std::result::Result<Arc<DomainRuntime>, String> {
+    let roots = buckyos_api::identity_roots()?;
+    let owner_name = node_identity.owner_did.id.clone();
+    let facts = NodeFacts {
+        hostname: zone_document_hostname(zone_document),
+        net_id: device_doc.net_id.clone().unwrap_or_default(),
+        public_ips: device_doc.ips.clone(),
+        owner_name: owner_name.clone(),
+        start_config: roots.security_root.join(START_CONFIG_FILE),
+        security_root: roots.security_root.clone(),
+        state_file: buckyos_kit::get_buckyos_service_local_data_dir("node_daemon")
+            .join("domain_state.json"),
+    };
+    let service = zone_document
+        .sn
+        .as_deref()
+        .and_then(SnNames::from_sn_host)
+        .map(|names| {
+            DomainService::new(
+                names,
+                SystemDnsLookup::new(),
+                Arc::new(DnsServices),
+                Arc::new(LocalOwnerKey {
+                    owner_name: owner_name.clone(),
+                    key: node_identity.owner_public_key.clone(),
+                }),
+                Arc::new(IdentityCertificates {
+                    roots: roots.clone(),
+                }),
+            )
+            .with_stored(roots.security_root)
+        });
+    let device_doc = device_doc.clone();
+    let device_private_key = device_private_key.clone();
+    let zone_document = zone_document.clone();
+    let sn_url = sn_api_url_for_device(&device_doc, &zone_document);
+    let zone = RuntimeZone {
+        owner_name,
+        sn_url,
+        sn_device: Arc::new(move || {
+            generate_sn_device_credentials(&device_doc, &device_private_key, &zone_document)
+        }),
+    };
+    Ok(Arc::new(DomainRuntime::new(facts, service, Arc::new(zone))))
+}
+
+pub(crate) fn generate_sn_device_credentials(
     device_doc: &DeviceDocument,
     device_private_key: &EncodingKey,
     zone_document: &ZoneDocument,
@@ -1828,6 +1897,11 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         if product.container_enabled() { "enabled" } else { "disabled" }
     );
     crate::paios_images::spawn_preload();
+    match restore_publish_readme(&get_buckyos_publish_dir()) {
+        Ok(true) => info!("restored the missing readme of the public directory"),
+        Ok(false) => {}
+        Err(error) => warn!("restore the public readme failed: {error}"),
+    }
 
     init_name_lib(&real_machine_config.web3_bridge)
         .await
@@ -2055,6 +2129,8 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         String::from("start cyfs_gateway for boot failed!")
     })?;
 
+    let local_device_doc = device_doc.clone();
+    let local_device_key = device_private_key.clone();
     unsafe {
         std::env::set_var(
             "BUCKYOS_ZONE_DOC",
@@ -2272,9 +2348,19 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         node_identity.zone_did.to_host_name()
     );
 
+    let domain_runtime = build_domain_runtime(
+        &node_identity,
+        &local_device_doc,
+        &local_device_key,
+        &zone_document,
+    )?;
+    // The gateway holds the certificate and the DNS credential.
+    if zone_document.get_default_zone_gateway().as_deref() == Some(device_name.as_str()) {
+        domain_runtime.spawn();
+    }
     let kevent_service = get_kevent_service(&device_name);
     tokio::task::spawn(async move {
-        start_node_kevent_service(kevent_service).await;
+        start_node_kevent_service(kevent_service, domain_runtime).await;
         warn!("kevent service returned, node_daemon will continue without kevent http endpoint");
     });
 
@@ -2329,6 +2415,18 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn a_missing_public_readme_is_restored() {
+        let root = tempfile::tempdir().unwrap();
+        let publish = root.path().join("data/srv/publish");
+        assert!(restore_publish_readme(&publish).unwrap());
+        let path = publish.join("readme");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), PUBLISH_README);
+        std::fs::write(&path, "the user's own").unwrap();
+        assert!(!restore_publish_readme(&publish).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "the user's own");
+    }
 
     const TEST_OWNER_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr

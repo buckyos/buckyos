@@ -7,6 +7,7 @@ import type {
   WindowLaunch,
 } from '../../models/ui'
 import { AppContentRenderer } from '../../app/registry'
+import { WindowAppPath } from './WindowAppPath'
 import type { DesktopAppItem } from '../../app/types'
 import {
   WindowDialogProvider,
@@ -77,18 +78,20 @@ export function MobileWindowSheet({
                 : { paddingTop: topInset > 0 ? topInset + 14 : 14 }
             }
           >
-            <AppContentRenderer
-              activityLog={activityLog}
-              app={app}
-              windowId={windowId}
-              launch={launch}
-              layoutState={layoutState}
-              locale={locale}
-              onSaveSettings={onSaveSettings}
-              runtimeContainer={runtimeContainer}
-              themeMode={themeMode}
-              windowAppearance={windowAppearance}
-            />
+            <WindowAppPath windowId={windowId} launchId={launch?.requestId}>
+              <AppContentRenderer
+                activityLog={activityLog}
+                app={app}
+                windowId={windowId}
+                launch={launch}
+                layoutState={layoutState}
+                locale={locale}
+                onSaveSettings={onSaveSettings}
+                runtimeContainer={runtimeContainer}
+                themeMode={themeMode}
+                windowAppearance={windowAppearance}
+              />
+            </WindowAppPath>
           </div>
         </div>
       </WindowDialogProvider>

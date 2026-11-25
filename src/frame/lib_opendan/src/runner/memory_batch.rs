@@ -73,6 +73,7 @@ pub fn budget(kind: SessionKind) -> Budget {
 pub(super) fn wanted(sh: &Shared, cfg: &SessionConfig, state: &SessionState, new_input: bool) -> bool {
     sh.deps.options.load_hints
         && cfg.session.policy.load_hints
+        && cfg.session.policy.memory.reads()
         && matches!(cfg.session.kind, SessionKind::Ui | SessionKind::Work)
         && (!state.bootstrap_done || new_input)
 }

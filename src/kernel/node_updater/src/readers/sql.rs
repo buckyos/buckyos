@@ -714,6 +714,29 @@ pub(super) fn named(ctx: &mut Context) -> Result<(), Failure> {
     Ok(())
 }
 
+fn check_workspace_layout<'a>(
+    ctx: &Context,
+    db: &Database,
+    base: &[&'a str],
+    extensions: &[(&str, &'a str)],
+) -> Result<(), Failure> {
+    let mut ddl = base.to_vec();
+    for &(name, extension) in extensions {
+        let present: bool = db
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=?1)",
+                [name],
+                |row| row.get(0),
+            )
+            .map_err(|e| ctx.error(db.src.display(), e))?;
+        if present {
+            ddl.push(extension);
+        }
+    }
+    check_layout(ctx, db, &reference(ctx, &ddl)?)
+}
+
 pub(super) fn workspaces(ctx: &mut Context) -> Result<(), Failure> {
     use aiworkspace_store::schema::{DOC_DDL, LOCAL_ADDED_DDL, LOCAL_DDL};
     let data = ctx.root.join("data/aiworkspace");
@@ -768,22 +791,27 @@ pub(super) fn workspaces(ctx: &mut Context) -> Result<(), Failure> {
         if stored_id != id {
             return Err(ctx.unsupported(dir.display(), "workspace identity mismatch"));
         }
-        let expected_local = reference(ctx, &[LOCAL_DDL, LOCAL_ADDED_DDL])?;
-        let mut doc_ddl = vec![DOC_DDL];
-        if doc
-            .conn
-            .query_row(
-                "SELECT count(*) FROM sqlite_schema WHERE name='session_events'",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_err(|e| ctx.error(dir.display(), e))?
-            != 0
-        {
-            doc_ddl.push(aiworkspace_store::session::EVENTS_DDL);
-        }
-        check_layout(ctx, &doc, &reference(ctx, &doc_ddl)?)?;
-        check_layout(ctx, &local, &expected_local)?;
+        check_workspace_layout(
+            ctx,
+            &doc,
+            &[DOC_DDL],
+            &[
+                ("session_events", aiworkspace_store::session::EVENTS_DDL),
+                (
+                    "table_records_created",
+                    aiworkspace_store::schema::RECORD_ORDER_INDEX,
+                ),
+            ],
+        )?;
+        check_workspace_layout(
+            ctx,
+            &local,
+            &[LOCAL_DDL, LOCAL_ADDED_DDL],
+            &[(
+                "registered_entries",
+                aiworkspace_store::entries::REGISTERED_ENTRIES_DDL,
+            )],
+        )?;
     }
     Ok(())
 }

@@ -12,12 +12,14 @@ import type {
   WindowAppearancePreferences,
 } from '../../models/ui'
 import { AppContentRenderer } from '../../app/registry'
+import { WindowAppPath } from './WindowAppPath'
 import { DesktopWindowContainer } from './DesktopWindowContainer'
 import {
   desktopWindowTransform,
   getDesktopWindowPositionBounds,
   getDesktopWindowWorkspaceBounds,
 } from './geometry'
+import { resolveDesktopWindowSizing } from './model'
 import type {
   DesktopWindowDataModel,
   DesktopWindowLayerDataModel,
@@ -275,18 +277,20 @@ const DesktopWindowSlot = memo(function DesktopWindowSlot({
       uiModel={windowItem}
       windowAppearance={windowAppearance}
     >
-      <AppContentRenderer
-        activityLog={activityLog}
-        app={windowItem.app}
-        windowId={windowId}
-        launch={windowItem.launch}
-        layoutState={layoutState}
-        locale={locale}
-        onSaveSettings={onSaveSettings}
-        runtimeContainer={runtimeContainer}
-        themeMode={themeMode}
-        windowAppearance={windowAppearance}
-      />
+      <WindowAppPath windowId={windowId} launchId={windowItem.launch?.requestId}>
+        <AppContentRenderer
+          activityLog={activityLog}
+          app={windowItem.app}
+          windowId={windowId}
+          launch={windowItem.launch}
+          layoutState={layoutState}
+          locale={locale}
+          onSaveSettings={onSaveSettings}
+          runtimeContainer={runtimeContainer}
+          themeMode={themeMode}
+          windowAppearance={windowAppearance}
+        />
+      </WindowAppPath>
     </DesktopWindowContainer>
   )
 })
@@ -413,6 +417,7 @@ export function DesktopWindowLayer({
         return
       }
 
+      const sizing = resolveDesktopWindowSizing(windowItem.app)
       sessionRef.current = {
         kind: 'resize',
         id: windowItem.id,
@@ -422,8 +427,8 @@ export function DesktopWindowLayer({
         clientY: event.clientY,
         moved: false,
         direction,
-        minWidth: windowItem.app.manifest.desktopWindow?.minWidth ?? 420,
-        minHeight: windowItem.app.manifest.desktopWindow?.minHeight ?? 280,
+        minWidth: sizing.minWidth,
+        minHeight: sizing.minHeight,
         startWidth: windowItem.width,
         startHeight: windowItem.height,
         startX: event.clientX,

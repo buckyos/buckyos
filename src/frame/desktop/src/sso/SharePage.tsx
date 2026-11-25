@@ -75,22 +75,40 @@ export default function SharePage() {
       setBusy(false)
     }
   }
+  /** Clears `did_error` too: the next sign-in starts from a browser that speaks for nobody. */
+  const switchAccount = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      await endSessionInPlace()
+      window.history.replaceState(window.history.state, '', invitationReturnUrl(window.location.href))
+      reload()
+    } catch {
+      setError(t('sso.userInvite.signOutFailed', 'Could not sign out. Try again.'))
+    } finally {
+      setBusy(false)
+    }
+  }
   const recipient = data?.share.audience.kind === 'directed' ? data.share.audience.did : undefined
   const required = data?.identities.required_source
-  const providers = data?.share.methods.oauth
+  // The callbacks refuse a proof while another account is signed in here, so only switching helps.
+  const sessionConflict = signedIn && !!data?.identities.mismatches?.includes('session')
+  const providers = data?.share.methods.oauth && !sessionConflict
     ? data.providers.filter((p) => !required || required === p.id)
     : []
   const back = invitationReturnUrl(window.location.href)
+  const didError = new URLSearchParams(window.location.search).get('did_error')
+  const interrupted = didError === null
+    ? null
+    : didError === 'identity_conflict'
+    ? t(
+      'sso.share.identityConflict',
+      'This browser is signed in as another account. Switch accounts, then sign in as the invited identity.',
+    )
+    : t('sso.share.interrupted', 'Sign-in did not complete. You can retry this invitation or switch accounts.')
   return (
     <AuthPageFrame title={t('sso.share.title', 'Resource invitation')} testId='sso-share-page'>
-      {new URLSearchParams(window.location.search).has('did_error') && (
-        <Alert severity='warning'>
-          {t(
-            'sso.share.interrupted',
-            'Sign-in did not complete. You can retry this invitation or switch accounts.',
-          )}
-        </Alert>
-      )}
+      {interrupted && <Alert severity='warning' data-testid='sso-share-interrupted'>{interrupted}</Alert>}
       {error && <Alert severity='error' role='alert'>{error}</Alert>}
       {!data && !error && <CircularProgress size={24} />}
       {data && (
@@ -106,7 +124,7 @@ export default function SharePage() {
           {data.share.unavailable_reason && <Alert severity='warning'>{data.share.unavailable_reason}</Alert>}
           {recipient && <p>{t('sso.share.recipient', 'Recipient: {{did}}', { did: recipient })}</p>}
           {!!data.identities.mismatches?.length && (
-            <Alert severity='warning'>
+            <Alert severity='warning' data-testid='sso-share-mismatch'>
               {t(
                 'sso.share.mismatch',
                 'This invitation is for a different identity. Switch accounts or cancel.',
@@ -127,7 +145,12 @@ export default function SharePage() {
             )
           )}
           {signedIn && (
-            <Button onClick={() => void endSessionInPlace().then(reload)}>
+            <Button
+              variant={sessionConflict ? 'contained' : 'text'}
+              disabled={busy}
+              onClick={() => void switchAccount()}
+              data-testid='sso-share-switch'
+            >
               {t('sso.share.switch', 'Switch account')}
             </Button>
           )}
@@ -163,10 +186,10 @@ export default function SharePage() {
                   {t('sso.entry.method.selfRegister', 'Create an account here')}
                 </Button>
               ))}
-          {!required && data.share.methods.did_login && data.didEnabled && (
+          {!sessionConflict && !required && data.share.methods.did_login && data.didEnabled && (
             <DidLoginForm redirectUrl={back} requiredDid={recipient} purpose='share' inviteId={inviteId} />
           )}
-          {required && providers.length === 0 && (
+          {!sessionConflict && required && providers.length === 0 && (
             <Alert severity='warning'>
               {t('sso.share.sourceDisabled', 'The login provider for this invitation is disabled.')}
             </Alert>

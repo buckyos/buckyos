@@ -23,11 +23,13 @@ export function AccountAppearanceSync({ userId }: { userId: string }) {
     globalSettingsStore.subscribe,
     () => globalSettingsStore.getSnapshot().desktopIconSize,
   )
+  const accent = useSyncExternalStore(globalSettingsStore.subscribe, () => globalSettingsStore.getSnapshot().accent)
+  const mobileFeed = useSyncExternalStore(globalSettingsStore.subscribe, () => globalSettingsStore.getSnapshot().mobileFeed)
   const wallpaper = useWallpaperSnapshot().account
 
   const local = useMemo<AccountAppearance>(
-    () => ({ theme: themeMode, locale: preferredLocale, iconSize, window: windowAppearance, wallpaper }),
-    [themeMode, preferredLocale, iconSize, windowAppearance, wallpaper],
+    () => ({ theme: themeMode, locale: preferredLocale, iconSize, window: windowAppearance, wallpaper, accent, mobileFeed }),
+    [themeMode, preferredLocale, iconSize, windowAppearance, wallpaper, accent, mobileFeed],
   )
 
   const localRef = useRef(local)
@@ -50,6 +52,8 @@ export function AccountAppearanceSync({ userId }: { userId: string }) {
       if (patch.iconSize) globalSettingsStore.setDesktopIconSize(patch.iconSize)
       if (patch.window) desktopStore.setWindowAppearance(patch.window)
       if (patch.wallpaper) wallpaperStore.applyAccount(patch.wallpaper)
+      if (patch.accent !== undefined) globalSettingsStore.setAccent(patch.accent)
+      if (patch.mobileFeed) globalSettingsStore.setMobileFeed(patch.mobileFeed)
     })
     engine.current = sync
     void sync.refresh(true)

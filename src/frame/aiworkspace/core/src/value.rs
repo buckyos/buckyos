@@ -83,6 +83,8 @@ pub struct FieldDef {
     pub options: Option<Vec<OptionDef>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_types: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_purpose: Option<ReferencePurpose>,
     /// The default currency of a `currency` field (ISO 4217 code), given to values written without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
@@ -96,6 +98,22 @@ pub struct FieldDef {
     /// field's type, filled in by `table.insert_records`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferencePurpose {
+    Image,
+    Canvas,
+}
+
+impl ReferencePurpose {
+    pub fn target_type(self) -> &'static str {
+        match self {
+            Self::Image => "buckyos.asset-ref",
+            Self::Canvas => "buckyos.container",
+        }
+    }
 }
 
 pub const TEXT_MAX_UTF16: usize = 65_536;
@@ -168,6 +186,11 @@ impl FieldDef {
         }
         if self.target_types.is_some() && self.ty != FieldType::ObjectRef {
             return bad("target_types is only valid on object_ref fields".into());
+        }
+        if let Some(purpose) = self.ref_purpose {
+            if self.ty != FieldType::ObjectRef || self.target_types.as_ref().is_some_and(|types| types.as_slice() != [purpose.target_type()]) {
+                return bad("ref_purpose requires an object_ref with a matching target type".into());
+            }
         }
         match (&self.currency, self.ty) {
             (Some(c), FieldType::Currency) if is_currency_code(c) => {}

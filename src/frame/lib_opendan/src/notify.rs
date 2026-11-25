@@ -355,6 +355,102 @@ pub fn notify_event(data: &NotifyDeliveredData, session: &str) -> (String, Agent
     )
 }
 
+/// What the user answered, in the words of the card (option labels, text).
+pub fn answer_text(view: &NotifyView) -> Option<String> {
+    let result = view.result.as_ref()?;
+    let options = prompt_options(&view.prompt);
+    let option = result.option().map(|o| {
+        options.iter().find(|x| x.value == o).map_or(o, |x| x.label.as_str()).to_string()
+    });
+    let text = option
+        .into_iter()
+        .chain(result.text().map(str::to_string))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
+}
+
+/// The bus record of a closed question for the conversation `session` it
+/// was shown in: its own key, the source of the notification.
+pub fn notify_closed_event(view: &NotifyView, session: &str) -> (String, AgentEvent) {
+    let at = view
+        .closed_at_ms
+        .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+        .map(|t| format!(" at {}", t.format("%Y-%m-%dT%H:%M:%SZ")))
+        .unwrap_or_default();
+    let title = view.prompt.title.clone().unwrap_or_default();
+    let what = match (view.status, answer_text(view)) {
+        (NotifyStatus::Answered, Some(answer)) => format!("the user answered{at}: {}", cut(&answer, 600)),
+        (status, _) => format!(
+            "{}{at}{}",
+            status.as_str(),
+            view.closed_reason.as_deref().map(|r| format!(" ({})", cut(r, 120))).unwrap_or_default()
+        ),
+    };
+    let summary = format!(
+        "[notify {}] {} — {what}; `agent-session notify show {}` has the whole question and answer",
+        view.notify_id,
+        cut(&title, 160),
+        view.notify_id
+    );
+    (
+        format!("notify-closed:{}:{session}", view.notify_id),
+        AgentEvent {
+            subscription_id: Some(NOTIFY_SUBSCRIPTION.to_string()),
+            source: EventSource::new("system", format!("{NOTIFY_SOURCE_ID}:{}", view.notify_id)),
+            event: NOTIFY_EVENT_CLOSED.to_string(),
+            seq: None,
+            summary,
+            data_ref: None,
+            // Beside the delivery, which may not have been shown yet.
+            terminal: true,
+            call_id: None,
+        },
+    )
+}
+
+/// The UI sessions a closed question is told to: the current session of
+/// every conversation its card was shown in and of its source conversation,
+/// except the session that asked (the answer is its task's result).
+pub async fn conversations_of(agent: &dyn AgentStateClient, view: &NotifyView) -> Vec<RegistryEntry> {
+    let mut wanted: Vec<(String, Option<String>)> = view
+        .deliveries
+        .iter()
+        .filter(|d| d.ok)
+        .map(|d| (d.to.clone(), d.to_session.clone()))
+        .collect();
+    wanted.extend(view.source.conversation.iter().map(|c| (c.to.clone(), c.to_session.clone())));
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let query = RegistryQuery {
+        kind: Some(SessionKind::Ui),
+        ..Default::default()
+    };
+    let mut current: std::collections::BTreeMap<(String, Option<String>), (u64, RegistryEntry)> = Default::default();
+    for entry in agent.sessions().query(&query).await.unwrap_or_default() {
+        if entry.status.run_state == RunState::Finished {
+            continue;
+        }
+        let Ok(cfg) = crate::session::SessionDir::open(&entry.location).and_then(|sd| sd.config()) else {
+            continue;
+        };
+        let Some(out) = cfg.channels.outbound else {
+            continue;
+        };
+        let key = (out.to, out.to_session);
+        let at = cfg.session.created_at_ms;
+        if wanted.contains(&key) && current.get(&key).is_none_or(|(latest, _)| *latest <= at) {
+            current.insert(key, (at, entry));
+        }
+    }
+    current
+        .into_values()
+        .map(|(_, entry)| entry)
+        .filter(|e| view.source.session_id.as_deref() != Some(e.session_id.as_str()))
+        .collect()
+}
+
 // ----------------------------------------------------------------------
 // LocalNotify
 // ----------------------------------------------------------------------

@@ -3,8 +3,10 @@
  * on that origin (`auth.prepare_app_launch { service_id: 'aiworkspace', redirect_url }`, the way Apps are launched);
  * the browser is sent to the callback, which sets this origin's cookies and lands on the page. Anyone else — the mock
  * runtime, the dev override against a standalone backend, a page already on a Workspace host (it holds its own
- * session), a guest — goes to the page directly. */
+ * session), a guest, a page in the BuckyOS client (it loads `/sso_callback` only for sign-ins it started, and signs
+ * the Workspace page in itself when that page asks for `/login`) — goes to the page directly. */
 
+import { getRuntimeEnvironment } from 'buckyos'
 import { isMockRuntime } from '../../runtime'
 import { requestServiceLaunch } from '../../api/app_launch'
 import { AiwsClient } from './api/client'
@@ -18,7 +20,7 @@ function devOverride(): boolean {
 /** Where the browser should go to open `url` as the current Desktop user: the one-time callback, or the page. */
 export async function workspaceLaunchUrl(url: string): Promise<string> {
   url = workspaceLinkForLocale(url, document.documentElement.lang || 'en')
-  if (isMockRuntime() || devOverride() || onWorkspaceHost()) return url
+  if (isMockRuntime() || devOverride() || onWorkspaceHost() || getRuntimeEnvironment().container !== 'browser') return url
   const launch = await requestServiceLaunch('aiworkspace', url).catch(() => null)
   return launch?.status === 'ready' ? launch.callback_url : url
 }

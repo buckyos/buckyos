@@ -93,11 +93,31 @@ fn target_types(def: &FieldDef) -> Option<Vec<&str>> {
     def.target_types.as_ref().map(|t| t.iter().map(String::as_str).collect())
 }
 
+pub(crate) fn check_field_reference(p: &Planner, def: &FieldDef, value: &Value) -> WsResult<()> {
+    let target = p.check_ref_target(value, target_types(def).as_deref())?;
+    let Some(purpose) = def.ref_purpose else { return Ok(()) };
+    if !crate::value::reference_is_local(value) || value["version"]["mode"] != "live_head" || value["selector"]["kind"].as_str().is_some_and(|s| s != "entity") {
+        return Err(WsError::invalid_schema("ref_purpose requires a live workspace entity"));
+    }
+    let Some(target) = target else {
+        if p.env.import { return Ok(()) }
+        return Err(WsError::invalid_schema("reference target unavailable"));
+    };
+    let valid = target.type_id == purpose.target_type() && match purpose {
+        crate::value::ReferencePurpose::Image => target.payload.get("media_type").and_then(Value::as_str).is_some_and(|mime| mime.starts_with("image/")),
+        crate::value::ReferencePurpose::Canvas => target.payload.get("kind").and_then(Value::as_str) == Some("surface"),
+    };
+    if !valid {
+        return Err(WsError::invalid_schema("reference target does not match the field purpose").with_data(json!({"field_id":def.field_id})));
+    }
+    Ok(())
+}
+
 /// Normalize one cell value; object references must point at something the caller may read.
 fn norm_value(p: &Planner, def: &FieldDef, v: &Value) -> WsResult<Value> {
     let n = def.normalize(v)?;
     if def.ty == FieldType::ObjectRef && !n.is_null() {
-        p.check_ref_target(&n, target_types(def).as_deref())?;
+        check_field_reference(p, def, &n)?;
     }
     Ok(n)
 }
@@ -306,7 +326,7 @@ fn insert_records(p: &mut Planner, op: &Value) -> OpResult {
             }
             let n = norm_value(p, &f.def, v).map_err(|e| e.at(format!("/records/{i}/values/{fid}")))?;
             if f.def.ty == FieldType::ObjectRef && !n.is_null() {
-                p.ov.add_ref(value_ref_edge(&sid, rid, fid, &n));
+                p.ov.add_ref(value_ref_edge(&sid, rid, &f.def, &n));
             }
             rec.values.insert(fid.clone(), n);
             rec.revs.insert(fid.clone(), seq);
@@ -337,7 +357,8 @@ fn insert_records(p: &mut Planner, op: &Value) -> OpResult {
         }
         for f in fields.values() {
             if f.def.required && !rec.values.contains_key(&f.field_id) {
-                return Err(WsError::invalid_schema(format!("field {} is required", f.field_id)).at(format!("/records/{i}/values")));
+                return Err(WsError::invalid_schema(format!("field {} is required", f.field_id))
+                    .with_data(json!({ "field_id": f.field_id })).at(format!("/records/{i}/values")));
             }
         }
         if let Some(meta) = r.get("meta").filter(|m| !m.is_null()) {
@@ -445,7 +466,7 @@ fn set_values(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
             }
             if f.def.ty == FieldType::ObjectRef {
                 if let Some(o) = old.as_ref().filter(|o| o.is_object()) {
-                    p.ov.del_ref(value_ref_edge(&sid, rid, fid, o));
+                    p.ov.del_ref(value_ref_edge(&sid, rid, &f.def, o));
                 }
             }
             rec.values.remove(fid);
@@ -456,10 +477,10 @@ fn set_values(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
             let n = norm_value(p, &f.def, raw).map_err(|e| e.at(format!("/values/{i}/value")))?;
             if f.def.ty == FieldType::ObjectRef {
                 if let Some(o) = old.as_ref().filter(|o| o.is_object()) {
-                    p.ov.del_ref(value_ref_edge(&sid, rid, fid, o));
+                    p.ov.del_ref(value_ref_edge(&sid, rid, &f.def, o));
                 }
                 if n.is_object() {
-                    p.ov.add_ref(value_ref_edge(&sid, rid, fid, &n));
+                    p.ov.add_ref(value_ref_edge(&sid, rid, &f.def, &n));
                 }
             }
             rec.values.insert(fid.to_string(), n.clone());
@@ -516,7 +537,7 @@ fn record_refs(p: &Planner, rec: &RecordRow) -> WsResult<Vec<RefEdge>> {
     for f in p.ov.fields(&rec.source_id)? {
         if f.alive() && f.def.ty == FieldType::ObjectRef {
             if let Some(v) = rec.values.get(&f.field_id).filter(|v| v.is_object()) {
-                out.push(value_ref_edge(&rec.source_id, &rec.record_id, &f.field_id, v));
+                out.push(value_ref_edge(&rec.source_id, &rec.record_id, &f.def, v));
             }
         }
     }
@@ -618,7 +639,10 @@ fn restore_records(p: &mut Planner, op: &Value) -> OpResult {
             }
             if f.def.ty == FieldType::ObjectRef {
                 if let Some(v) = rec.values.get(&f.field_id).filter(|v| v.is_object()) {
-                    p.check_ref_target(v, target_types(&f.def).as_deref())?;
+                    let target = crate::value::reference_entity_id(v).unwrap_or("");
+                    if f.def.ref_purpose.is_none() || p.ov.entity(target)?.is_some_and(|e| e.alive()) {
+                        check_field_reference(p, &f.def, v)?;
+                    }
                 }
             }
         }
@@ -747,7 +771,7 @@ fn add_field(p: &mut Planner, op: &Value) -> OpResult {
             r.revs.insert(def.field_id.clone(), seq);
             r.rev = seq;
             if def.ty == FieldType::ObjectRef && b.is_object() {
-                p.ov.add_ref(value_ref_edge(&sid, &r.record_id, &def.field_id, b));
+                p.ov.add_ref(value_ref_edge(&sid, &r.record_id, &def, b));
             }
             filled += 1;
         }
@@ -911,7 +935,7 @@ fn field_refs(p: &Planner, sid: &str, f: &FieldRow) -> WsResult<Vec<RefEdge>> {
         p.ov.scan_records(sid, &mut |r| {
             if r.alive() {
                 if let Some(v) = r.values.get(&f.field_id).filter(|v| v.is_object()) {
-                    out.push(value_ref_edge(sid, &r.record_id, &f.field_id, v));
+                    out.push(value_ref_edge(sid, &r.record_id, &f.def, v));
                 }
             }
             Ok(true)
@@ -1211,7 +1235,7 @@ fn migrate_field(p: &mut Planner, op: &Value) -> OpResult {
     {
         let o = to_json.as_object_mut().unwrap();
         // the default is converted below, like the records' values
-        for k in ["scale", "options", "target_types", "currency", "default"] {
+        for k in ["scale", "options", "target_types", "ref_purpose", "currency", "default"] {
             o.remove(k);
         }
         for (k, v) in to {

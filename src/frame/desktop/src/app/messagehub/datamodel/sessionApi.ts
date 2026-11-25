@@ -1,213 +1,39 @@
 import { accessDenialOf, buckyos, type AccessDenial, type EntryDescriptor, type DID, type NotifyCategory, type NotifyKind, type NotifyStatus, type ndn } from 'buckyos'
 import { fetchUserDetail } from '../../../api/user_mgr'
+import type { ConversationMemoryMode } from '../../../components/conversation/backendTypes'
 import type { NotifyView } from '../notify/model'
 import { groupErrorCode } from '../../../components/conversation/model/groupNotice'
+import { accountDidOf } from '../../../shared/controlPanel/account.ts'
+import type {
+  Contact,
+  DefaultSession,
+  GroupDocEnvelope,
+  GroupMemberRecord,
+  GroupsByMember,
+  ListSessionRequest,
+  ListSessionsRequest,
+  MailboxKind,
+  MailboxRecord,
+  MailboxRecordPage,
+  MailboxRecordWithObject,
+  OwnerSessionState,
+  PeerConversations,
+  PostSendResult,
+  RecipientState,
+  SessionMessagePage,
+  SessionSummaryPage,
+  UiSessionStateEntry,
+} from '../../../shared/messagehub/wire.ts'
+
+export type * from '../../../shared/messagehub/wire.ts'
 
 /**
- * Thin client for the msg-center RPC surface used by MessageHub. Wire shapes
- * mirror the Rust structs in src/kernel/buckyos-api/src/msg_center_client.rs
- * (`msg.*`, `ui_session.*`, `contact.*`, `group.*`) and msg_notify.rs (`notify.*`).
+ * Thin client for the msg-center RPC surface used by MessageHub. The wire
+ * shapes MessageHub shares with Activity are in shared/messagehub/wire.ts;
+ * the others mirror the same Rust structs and msg_notify.rs (`notify.*`).
  */
 
 const MSG_CENTER_SERVICE = 'msg-center'
-
-/* ── Wire types ── */
-
-export type MailboxKind = 'INBOX' | 'SENT' | 'GROUP_INBOX' | 'REQUEST_BOX'
-export type RecipientState = 'UNREAD' | 'READING' | 'READ' | 'ARCHIVED' | 'DELETED'
-export type DeliveryState = 'WAIT' | 'SENDING' | 'SENT' | 'FAILED' | 'DEAD'
-export type SessionMessageDirection = 'in' | 'out'
-export type SessionDeliveryOverall = 'sending' | 'delivered' | 'partial_failed' | 'failed'
-export type SessionLifecycle = 'active' | 'archived'
-export type SessionListLifecycleFilter = 'active' | 'archived' | 'all'
-export type SessionListOrder = 'updated' | 'activity'
-
-export interface DeliveryError {
-  error_code?: string
-  message: string
-  retryable: boolean
-  duplicate_risk: boolean
-}
-
-export interface SessionDeliveryTarget {
-  target_did: DID
-  state: DeliveryState
-  attempts: number
-  external_msg_id?: string
-  last_error?: DeliveryError
-}
-
-/** Aggregated delivery view of one outbound message. */
-export interface SessionDeliveryView {
-  overall: SessionDeliveryOverall
-  per_target?: SessionDeliveryTarget[]
-}
-
-export interface IngressContext {
-  transport_did?: DID
-  platform?: string
-  chat_id?: string
-  source_account_id?: string
-  context_id?: string
-  contact_mgr_owner?: DID
-}
-
-/** A mailbox owner's reference to one immutable ndn.MsgObject. */
-export interface MailboxRecord {
-  mailbox: string
-  record_id: string
-  owner: DID
-  box_kind: MailboxKind
-  msg_id: string
-  msg_kind?: string
-  state: RecipientState
-  from: DID
-  from_name?: string
-  to: DID
-  session_id?: string
-  sort_key: number
-  tags?: string[]
-  ingress?: IngressContext
-  created_at_ms: number
-  updated_at_ms: number
-}
-
-export interface MailboxRecordWithObject {
-  record: MailboxRecord
-  msg?: ndn.MsgObject | null
-}
-
-/** Owner-scoped session metadata (`msg.get_session_state`). */
-export interface OwnerSessionState {
-  owner: DID
-  session_id: string
-  lifecycle: SessionLifecycle
-  registered: boolean
-  origin?: string
-  peer_did?: DID
-  binding?: unknown
-  title?: string
-  archived_at_ms?: number
-  delete_watermark_sort_key?: number
-  delete_watermark_record_id?: string
-  deleted_at_ms?: number
-  created_at_ms: number
-  updated_at_ms: number
-}
-
-export interface SessionSummary {
-  session_id: string
-  last_record?: MailboxRecordWithObject
-  unread_count: number
-  updated_at_ms: number
-  /** Last effective message activity; registration time for empty sessions. */
-  last_activity_ms: number
-  request_count: number
-  lifecycle: SessionLifecycle
-  state?: OwnerSessionState
-}
-
-export interface SessionSummaryPage {
-  items?: SessionSummary[]
-  next_cursor_updated_at_ms?: number
-  next_cursor_session_id?: string
-}
-
-/** One timeline entry of `msg.list_session`. */
-export interface SessionMessageItem {
-  record_id: string
-  msg_id: string
-  direction: SessionMessageDirection
-  box_kind: MailboxKind
-  sort_key: number
-  from: DID
-  to: DID
-  recipient_state?: RecipientState
-  delivery?: SessionDeliveryView
-  msg?: ndn.MsgObject | null
-}
-
-export interface SessionMessagePage {
-  items?: SessionMessageItem[]
-  next_cursor_sort_key?: number
-  next_cursor_record_id?: string
-}
-
-export interface ListSessionsRequest {
-  owner: DID
-  limit?: number
-  cursor_updated_at_ms?: number
-  cursor_session_id?: string
-  with_object?: boolean
-  lifecycle?: SessionListLifecycleFilter
-  order_by?: SessionListOrder
-}
-
-export interface ListSessionRequest {
-  owner: DID
-  session_id: string
-  limit?: number
-  cursor_sort_key?: number
-  cursor_record_id?: string
-  descending?: boolean
-  with_object?: boolean
-}
-
-export interface PostSendDelivery {
-  delivery_id: string
-  transport_did: DID
-  target_did: DID
-  transport: { kind: 'native' } | { kind: 'tunnel'; platform: string; tunnel_instance_id: string }
-}
-
-export interface PostSendResult {
-  ok: boolean
-  msg_id: string
-  deliveries?: PostSendDelivery[]
-  reason?: string
-}
-
-export interface UiSessionStateEntry {
-  session_id: string
-  key: string
-  value: unknown
-  updated_at_ms: number
-}
-
-export interface AccountBinding {
-  platform: string
-  account_id: string
-  display_id: string
-  tunnel_instance_id: string
-  account_type?: string
-  endpoint_did?: DID
-  last_active_at: number
-  meta?: Record<string, string>
-}
-
-export type AccessGroupLevel = 'block' | 'stranger' | 'temporary' | 'allow'
-
-export interface Contact {
-  did: DID
-  name: string
-  avatar?: string
-  note?: string
-  source: string
-  is_verified: boolean
-  bindings?: AccountBinding[]
-  access_level: AccessGroupLevel
-  temp_grants?: Array<{ context_id: string; granted_at: number; expires_at: number }>
-  friend_state?: 'none' | 'outgoing_pending' | 'incoming_pending' | 'friend'
-  tags?: string[]
-  created_at: number
-  updated_at: number
-}
-
-export interface MailboxRecordPage {
-  items?: MailboxRecordWithObject[]
-  next_cursor_sort_key?: number
-  next_cursor_record_id?: string
-}
 
 /* ── Errors ── */
 
@@ -261,10 +87,8 @@ export async function fetchOwnerDid(): Promise<string | null> {
   if (!userId) return null
   const { data, error } = await fetchUserDetail({ userId })
   if (error) throw classifyError(error)
-  const did = data?.local_profile?.did ?? data?.profile?.did
-  if (typeof did !== 'string' || !did.startsWith('did:')) {
-    throw new MessageHubApiError('user profile has no owner DID', 'permission_denied')
-  }
+  const did = accountDidOf(data)
+  if (!did) throw new MessageHubApiError('user profile has no owner DID', 'permission_denied')
   return did
 }
 
@@ -292,12 +116,18 @@ export function msgCenterServiceUrl(): string {
 export const listSessions = (request: ListSessionsRequest) => call<SessionSummaryPage | null>('msg.list_sessions', request as unknown as Record<string, unknown>).then(page => page ?? {})
 export const listSessionMessages = (request: ListSessionRequest) => call<SessionMessagePage | null>('msg.list_session', request as unknown as Record<string, unknown>).then(page => page ?? {})
 export const getSessionState = (owner: DID, sessionId: string) => call<OwnerSessionState | null>('msg.get_session_state', { owner, session_id: sessionId })
-export const createSession = (input: { owner: DID; peer_did: DID; title?: string; binding?: unknown; session_id?: string; origin?: string }) => call<OwnerSessionState>('msg.create_session', input as unknown as Record<string, unknown>)
+export const createSession = (input: { owner: DID; peer_did: DID; title?: string; binding?: unknown; session_id?: string; origin?: string; set_default?: boolean; memory_mode?: ConversationMemoryMode }) => call<OwnerSessionState>('msg.create_session', input as unknown as Record<string, unknown>)
 export const archiveSession = (owner: DID, sessionId: string) => call<OwnerSessionState>('msg.archive_session', { owner, session_id: sessionId })
 export const restoreSession = (owner: DID, sessionId: string) => call<OwnerSessionState>('msg.restore_session', { owner, session_id: sessionId })
 export const deleteSession = (owner: DID, sessionId: string) => call<OwnerSessionState>('msg.delete_session', { owner, session_id: sessionId })
 /** Hides the records the session holds now from the owner; the session itself, its title and UI state stay. */
 export const clearSession = (owner: DID, sessionId: string) => call<OwnerSessionState>('msg.clear_session', { owner, session_id: sessionId })
+
+/** The stored default of the owner with an Agent and their conversations with it, most recent first. */
+export const listConversations = (owner: DID, peer: DID) => call<Partial<PeerConversations> | null>('msg.list_conversations', { owner, peer_did: peer }).then((result): PeerConversations => ({ ...result, conversations: result?.conversations ?? [] }))
+/** The default, chosen or created when none is stored; `native`: a chat of the owner's own when the default is on a channel. */
+export const getDefaultSession = (owner: DID, peer: DID, native: boolean) => call<DefaultSession>('msg.get_default_session', { owner, peer_did: peer, ...(native ? { native } : {}) })
+export const setDefaultSession = (owner: DID, peer: DID, to: DID, toSession?: string) => call<DefaultSession>('msg.set_default_session', { owner, peer_did: peer, to, ...(toSession !== undefined ? { to_session: toSession } : {}) })
 
 /* ── Records ── */
 
@@ -332,38 +162,6 @@ export const listContacts = (contactMgrOwner?: DID) => call<Contact[] | null>('c
 export const getContact = (did: DID, contactMgrOwner?: DID) => call<Contact | null>('contact.get_contact', contactMgrOwner ? { did, contact_mgr_owner: contactMgrOwner } : { did })
 
 /* ── Self-host Group v2 (msg_center/doc/group-v2-backend.md) ── */
-
-export interface GroupDoc {
-  id: DID
-  owner: DID
-  controller: DID
-  host: DID
-  profile?: { name?: unknown; description?: unknown } | null
-  join_policy?: string
-  revision: string
-  lifecycle: 'active' | 'archived' | 'deleted'
-}
-
-export interface GroupDocEnvelope {
-  obj_id: string
-  doc: GroupDoc
-}
-
-export interface JoinedGroupSummary {
-  group_did: DID
-  stopped?: boolean
-  doc_cache?: GroupDocEnvelope | GroupDoc | null
-}
-
-export interface GroupMemberRecord {
-  member_did: DID
-  role: 'owner' | 'admin' | 'member'
-  state: 'invited' | 'pending_admin_approval' | 'active' | 'left' | 'removed' | 'rejected' | 'expired' | 'revoked'
-  entity_kind: string
-  invitation_id?: string | null
-  invited_by?: DID | null
-  expires_at_ms?: number | null
-}
 
 /** Shared state of a Group Session (`group.get_shared_state`); text fields are absent when unset. */
 export interface GroupSharedState {
@@ -401,6 +199,9 @@ export interface GroupPanelDecl {
 }
 
 export interface GroupSessionRules {
+  history?: 'all' | 'from_join'
+  /** With `from_join`, how many messages from before joining a new participant sees. */
+  history_before_join?: number
   receipts?: string
   edit?: { edit_window_ms?: number | null; recall_window_ms?: number | null }
   allow_guests?: boolean
@@ -450,15 +251,7 @@ export interface GroupReadMarkers {
 const key = (idempotencyKey: string) => ({ idempotency_key: idempotencyKey })
 const session = (sessionId: string | undefined) => sessionId !== undefined ? { session_id: sessionId } : {}
 
-/** A Session invitation waiting for the caller's acceptance (msg-center `list_by_member`). */
-export interface PendingSessionInvitation {
-  group_did: DID
-  group_name?: string | null
-  session_id: string
-  title?: string | null
-  invited_by?: DID
-}
-export const listGroupsByMember = () => call<{ items?: GroupDocEnvelope[]; joined?: JoinedGroupSummary[]; invitations?: Array<{ group_did?: DID; doc?: GroupDoc; member?: Partial<GroupMemberRecord> }>; session_invitations?: PendingSessionInvitation[] } | null>('group.list_by_member', {}).then(result => result ?? {})
+export const listGroupsByMember = () => call<GroupsByMember | null>('group.list_by_member', {}).then(result => result ?? {})
 export const getGroupDoc = (groupDid: DID) => call<GroupDocEnvelope>('group.get_doc', { group_did: groupDid })
 export const getGroupConfig = (groupDid: DID) => call<GroupConfig>('group.get_config', { group_did: groupDid })
 /** Members of a hosted group plus the owner transfer still waiting for its target (members only; the public doc never carries it). */

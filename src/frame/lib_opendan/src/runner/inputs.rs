@@ -193,6 +193,23 @@ pub(super) async fn todo_update_queued(sh: &Shared) -> bool {
     })
 }
 
+/// Messages the session reads while it works ([`SessionPolicy`]
+/// `reads_messages`), queued and not taken in yet.
+pub(super) async fn unread_messages(sh: &Shared) -> bool {
+    if !sh.session.lock().await.config.session.policy.reads_messages {
+        return false;
+    }
+    let Ok(fetched) = fetch_inputs(sh).await else {
+        return false;
+    };
+    let s = sh.session.lock().await;
+    fetched.iter().any(|m| {
+        !s.state.source(&m.src).is_consumed(m.index)
+            && !s.state.recent_keys.contains(&m.key)
+            && m.msg().is_some_and(|x| !x.delivery.context)
+    })
+}
+
 /// Changes of subscribed sessions (pull mode: compare the registry rev, not
 /// event delivery), merged into `pending_events` like any Observe event.
 async fn poll_session_subscriptions(sh: &Shared, s: &mut Session) -> Result<bool> {
@@ -651,6 +668,24 @@ async fn apply_control(
             }
         }
         ControlCommand::Retract { .. } => {}
+        ControlCommand::ReplyMode { mode } => {
+            let applied = s.config.session.kind == SessionKind::Ui && !finished;
+            let before = s.state.reply_mode;
+            if applied {
+                s.state.reply_mode = *mode;
+            }
+            bodies.push(WorklogBody::ControlApplied {
+                input: m.input_ref(),
+                command: "reply_mode".into(),
+                detail: json!({
+                    "mode": mode,
+                    "before": before,
+                    "from": m.from,
+                    "applied": applied,
+                    "refused": (!applied).then_some("only a conversation has a reply mode"),
+                }),
+            });
+        }
         ControlCommand::GoalSkills { add, remove } => {
             match super::goal::apply_skills_control(&mut s.state, add, remove) {
                 Ok(()) => bodies.push(WorklogBody::ControlApplied {
@@ -742,11 +777,19 @@ async fn apply_control(
             };
             let input_id = m.input_ref().id();
             match super::consolidation::perceive(sh, s, &m.key, &input_id, args).await {
-                Ok(receipt) => bodies.push(WorklogBody::ControlApplied {
-                    input: m.input_ref(),
-                    command: "perceive".into(),
-                    detail: serde_json::to_value(&receipt).unwrap_or(Value::Null),
-                }),
+                Ok(receipt) => {
+                    let mut detail = serde_json::to_value(&receipt).unwrap_or(Value::Null);
+                    if receipt.reference.is_some() {
+                        // What the history names once it is compressed.
+                        detail["turn"] = json!(s.state.current_turn());
+                        detail["summary"] = json!(summary);
+                    }
+                    bodies.push(WorklogBody::ControlApplied {
+                        input: m.input_ref(),
+                        command: "perceive".into(),
+                        detail,
+                    })
+                }
                 Err(OpenDanError::InvalidArgument(reason)) => {
                     bodies.push(WorklogBody::InputRejected {
                         input: m.input_ref(),

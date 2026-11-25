@@ -86,6 +86,10 @@ function playCandidates(ctx: ActionContext): ActionCandidate[] {
   ]
 }
 
+/** 播放 belongs to free canvases (presentation paths and path editing are there): on a flow page it is shown
+ * disabled, and a click says to switch to a free canvas. */
+const playReason = ({ shell }: ActionContext) => (shell.topMode === 'canvas' && shell.activeSurface !== null && shell.activeSurface.layout?.mode !== 'free' ? aiwsT('aiworkspace.framework.play.flowPage') : null)
+
 /** Without a path, 播放 leads whoever may structure the canvas to path editing. */
 const canEditPaths = (ctx: ActionContext) => caps(ctx).includes('structure') && !ctx.shell.phone && ctx.shell.topMode === 'canvas' && ctx.mode !== 'presentation_edit'
 
@@ -119,7 +123,7 @@ export const BUILTIN_ACTIONS: ActionDef[] = [
     menu: { group: 'workspace', order: 50, id: 'import' }, run: ({ shell }) => shell.openDialog({ kind: 'import' }) },
   { id: 'ws.export', label: () => aiwsT('aiworkspace.framework.ws.export'), phone: true, visible: member,
     menu: { group: 'workspace', order: 60, id: 'export', hint: () => aiwsT('aiworkspace.shell.menu.exportPackageHint') },
-    reason: (ctx) => (caps(ctx).includes('export') ? null : aiwsT('aiworkspace.shell.menu.noExportPermission')), run: ({ shell }) => shell.openDialog({ kind: 'export' }) },
+    reason: ({ store }) => (store.session.info().owner ? null : aiwsT('aiworkspace.perm.ownerOnlyShort')), run: ({ shell }) => shell.openDialog({ kind: 'export' }) },
   // the home card's cover (Q37): a picture its managers choose, a Workspace setting
   { id: 'ws.cover', label: () => aiwsT('aiworkspace.cover.menu'), phone: true, visible: member,
     menu: { group: 'workspace', order: 65, id: 'cover' },
@@ -313,6 +317,7 @@ export const BUILTIN_ACTIONS: ActionDef[] = [
   // 播放 (§4.2): the presentation paths and the guides; one starts at once, several drop down; none: path editing for
   // whoever may structure the canvas, nothing for anyone else. A phone plays guides only.
   { id: 'collab.play', label: () => aiwsT('aiworkspace.framework.play.label'), icon: 'play', zone: { zone: 'collab', order: 10, testId: 'aiws-collab-play' },
+    reason: playReason, explain: true,
     visible: (ctx) => playCandidates(ctx).some((c) => !c.separator && !c.extra) || canEditPaths(ctx),
     tip: (ctx) => (playCandidates(ctx).length === 0 ? aiwsT('aiworkspace.framework.play.editPaths') : aiwsT('aiworkspace.framework.play.label')),
     pressed: ({ shell, mode }) => shell.guide !== null || mode === 'presentation_edit',

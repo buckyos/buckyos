@@ -1697,6 +1697,87 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
+    #[test]
+    fn a_booted_zone_serves_its_device_document() {
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "zone_did_resolver::tests::booted_zone_device_document_fixture",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("BUCKYOS_ROOT", root.path())
+            .env("BUCKYOS_TEST_BOOTED_ZONE", "1")
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.status.success() && text.contains("1 passed"), "{text}");
+    }
+
+    // Its own process: the store is opened once, under BUCKYOS_ROOT.
+    #[tokio::test]
+    #[ignore = "subprocess fixture of a_booted_zone_serves_its_device_document"]
+    async fn booted_zone_device_document_fixture() {
+        if std::env::var_os("BUCKYOS_TEST_BOOTED_ZONE").is_none() {
+            return;
+        }
+        let (owner_pem, owner_public) = name_lib::generate_ed25519_key_pair();
+        let owner_key = jsonwebtoken::EncodingKey::from_ed_pem(owner_pem.as_bytes()).unwrap();
+        let owner_jwk: Jwk = serde_json::from_value(owner_public).unwrap();
+        let (_, device_public) = name_lib::generate_ed25519_key_pair();
+        let mut device =
+            DeviceDocument::new_by_jwk("ood1", serde_json::from_value(device_public).unwrap());
+        device.id = DID::new("web", "ood1.home.example.com");
+        device.owner = DID::new("bns", "alice");
+        device.zone_did = Some(DID::new("web", "home.example.com"));
+        let device_jwt = device.encode(Some(&owner_key)).unwrap().to_string();
+        let mut zone = ZoneDocument::new(
+            DID::new("web", "home.example.com"),
+            DID::new("bns", "alice"),
+            owner_jwk.clone(),
+        );
+        zone.hostname = "home.example.com".to_string();
+        zone.oods = vec!["ood1".parse().unwrap()];
+        let zone_jwt = zone.encode(Some(&owner_key)).unwrap().to_string();
+        {
+            let store = SYS_STORE.lock().await;
+            let config = serde_json::to_string(&ZoneConfig::new(zone_jwt)).unwrap();
+            store.create("boot/config", &config).await.unwrap();
+            store.create("devices/ood1/doc", &device_jwt).await.unwrap();
+        }
+
+        let response = ZoneDidResolver {}
+            .serve_request(
+                http::Request::builder()
+                    .uri("/.well-known/did.json")
+                    .header(http::header::HOST, "ood1.home.example.com")
+                    .body(
+                        http_body_util::Full::new(bytes::Bytes::new())
+                            .map_err(|never| match never {})
+                            .boxed(),
+                    )
+                    .unwrap(),
+                StreamInfo::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, device_jwt.as_bytes());
+        let served = EncodedDocument::from_str(String::from_utf8(body.to_vec()).unwrap()).unwrap();
+        let key = jsonwebtoken::DecodingKey::from_jwk(&owner_jwk).unwrap();
+        assert_eq!(DeviceDocument::decode(&served, Some(&key)).unwrap(), device);
+        let (_, other) = name_lib::generate_ed25519_key_pair();
+        let other: Jwk = serde_json::from_value(other).unwrap();
+        let other = jsonwebtoken::DecodingKey::from_jwk(&other).unwrap();
+        assert!(DeviceDocument::decode(&served, Some(&other)).is_err());
+    }
+
     const TEST_JWK: &str =
         r#"{"kty":"OKP","crv":"Ed25519","x":"qJdNEtscIYwTo-I0K7iPEt_UZdBDRd4r16jdBfNR0tM"}"#;
     // 与 TEST_JWK 不同的合法形状 Ed25519 公钥（32 字节全零），模拟权威源 key rotation

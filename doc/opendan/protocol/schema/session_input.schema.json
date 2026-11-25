@@ -334,6 +334,25 @@
           "type": "object"
         },
         {
+          "description": "UI sessions: how the final reply is given from now on.",
+          "properties": {
+            "command": {
+              "enum": [
+                "reply_mode"
+              ],
+              "type": "string"
+            },
+            "mode": {
+              "$ref": "#/definitions/ReplyMode"
+            }
+          },
+          "required": [
+            "command",
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Goal Sessions: change the Goal's current skills (applied by the driver to the Goal State it owns).",
           "properties": {
             "add": {
@@ -439,6 +458,17 @@
             "null"
           ]
         },
+        "trigger": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MsgTrigger"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A group message that started a turn: what let it through."
+        },
         "tunnel": {
           "description": "DID of the ingress tunnel.",
           "type": [
@@ -448,6 +478,42 @@
         }
       },
       "type": "object"
+    },
+    "MsgTrigger": {
+      "description": "Why a group message reached the session.",
+      "properties": {
+        "member": {
+          "description": "Another member than the owner.",
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "The condition ([`crate::group_trigger`]).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "ReplyMode": {
+      "description": "How a UI session's final reply is given. The model changes it (`agent-session ctl reply-mode`); it holds for the session, a new one starts with the default.",
+      "oneOf": [
+        {
+          "description": "The final text is the JSON of the behavior's `[reply]` schema.",
+          "enum": [
+            "schema"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The final text is what the user reads; a reply with a topic or artifacts goes through `submit_reply`.",
+          "enum": [
+            "compat"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "SessionMsg": {
       "description": "`type = \"msg\"` payload: the message object as it is plus what a MsgObject does not carry by design.",

@@ -196,6 +196,12 @@ pub struct RunnerOptions {
     /// of them, whichever comes first.
     pub max_retry_attempts: u32,
     pub max_retry_duration: Duration,
+    /// A conversation idle for this long has lost the provider's prompt
+    /// cache: coming back to one whose prompt changed meanwhile rebuilds its
+    /// context. No request asks for a cache of its own (AICC sends no
+    /// `cache_control`); what providers keep by themselves is gone after an
+    /// hour at most.
+    pub prompt_cache_idle: Duration,
     /// Throttle of activity heartbeat commits during a run.
     pub heartbeat_interval: Duration,
     /// Active sessions rendered into a turn.
@@ -261,6 +267,7 @@ impl Default for RunnerOptions {
             retry_backoff_cap: Duration::from_secs(600),
             max_retry_attempts: 6,
             max_retry_duration: Duration::from_secs(1800),
+            prompt_cache_idle: Duration::from_secs(3600),
             heartbeat_interval: Duration::from_secs(60),
             active_sessions_limit: 8,
             change_budget: 16,

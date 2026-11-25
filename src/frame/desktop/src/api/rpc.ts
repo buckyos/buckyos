@@ -1,5 +1,17 @@
 import { buckyos } from 'buckyos'
 
+export type RpcResult<T> = { data: T | null; error: unknown }
+
+/** A shared call as the pages take it: `{ data, error }` instead of a rejection. */
+export const settle = async <T>(call: Promise<T>): Promise<RpcResult<T>> => {
+  try {
+    return { data: await call, error: null }
+  } catch (error) {
+    console.error(error)
+    return { data: null, error }
+  }
+}
+
 export interface RpcCallOptions {
   sessionToken?: string | null
 }

@@ -87,6 +87,19 @@ fun_instance:用户安装的,只在工作流中存在的扩展应用,比如为�
 /config/security/verify-hub/key
 系统启动时构造的verify-hub私钥，公钥在boot/config里
 
+/config/system/domain_hosting
+自有域名的托管方式和证书来源（`DomainHosting`：必填 `schema_version` = 1，`mode` = sn | manual | dns_api，`certificate` = acme | upload，`domain`，dns_api 时还有 `provider` 和 `credential_id`，可选 `acme_issuer`）。激活时写在 `start_config.json` 的 `domain_hosting`，scheduler 首次启动时写入 system-config，之后由 node_daemon 更新（Desktop 设置的 Zone 页）。默认域名没有这个 key。不含 token 和私钥。
+
+### 节点本机的域名凭据与证书（不进 system-config）
+
+`$BUCKYOS_ROOT/security/dns_credentials/<credential_id>.json`
+DNS 服务商的 token，必填 `schema` = `buckyos.dns_credential.v1`，root 属主、0600（目录 0700）。只有 dns_api 托管才有，用于 ACME DNS-01、写记录和修复记录。网关配置只引用路径。不进 `start_config.json`、system-config 和日志。丢了可以到服务商后台重新申请。
+
+`$BUCKYOS_ROOT/local/identity/<域名>/`、`$BUCKYOS_ROOT/local/identity/_.<域名>/`
+`<域名>` 和 `*.<域名>` 的证书 `server.fullchain.pem` 与 `server.meta.json`；私钥 `server.private.pem` 在 `$BUCKYOS_ROOT/security/` 的同名目录（0600）。`server.meta.json` 的 `renewal.manager`：`acme` 由系统续期，丢了可以重新签发；`manual` 是用户上传的，系统不续期、不替换，丢了要向 CA 重新下载或重签，备份要包含它。
+
+备份脚本 `etc/backup.py` 包含上面两类文件。
+
 /config/system/rbac/policy 系统RBAC动态策略尾部，由调度器根据系统当前用户、节点、服务生成；完整RBAC配置由API runtime用内置默认配置与该尾部合成
 
 cyfs://$zone_id/srv/library/ 

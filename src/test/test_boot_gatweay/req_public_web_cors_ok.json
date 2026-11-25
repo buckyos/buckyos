@@ -1,0 +1,11 @@
+{
+  "input": {
+    "RESP": {
+      "content-type": "text/plain"
+    }
+  },
+  "id": "server:buckyos_public_web:post_hook_point:main",
+  "output": [
+    "RESP"
+  ]
+}

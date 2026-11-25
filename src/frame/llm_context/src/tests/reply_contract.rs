@@ -134,6 +134,70 @@ async fn the_host_validator_takes_part() {
     assert!(last_text(&llm.seen()[1]).contains("artifact missing.txt does not exist"));
 }
 
+/// A host whose reply mode the model changes while the run goes on.
+#[derive(Default)]
+struct ModeHost {
+    text: std::sync::atomic::AtomicBool,
+    /// The mode changes once the model was asked to correct its reply.
+    switch_on_hint: bool,
+}
+
+#[async_trait]
+impl OutputValidator for ModeHost {
+    async fn validate(&self, reply: &Value) -> Result<(), String> {
+        match reply["reply"].as_str() {
+            Some("refused") => Err("refused by the host".into()),
+            _ => Ok(()),
+        }
+    }
+
+    async fn accepts_text(&self) -> bool {
+        self.text.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn repair_hint(&self) -> Option<String> {
+        self.text.store(self.switch_on_hint, std::sync::atomic::Ordering::SeqCst);
+        Some("HINT: there is a compatible mode".into())
+    }
+}
+
+async fn run_with(host: ModeHost, replies: &[&str]) -> (ContextOutput, Arc<ScriptedRecordingLlm>) {
+    let llm = Arc::new(ScriptedRecordingLlm::new(
+        replies.iter().map(|r| text_response(r)).collect(),
+    ));
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
+        .with_output_validator(Arc::new(host));
+    let mut ctx = LLMContext::new(contract_request(), deps);
+    let LLMContextOutcome::Done { output, .. } = ctx.run().await else {
+        panic!("expected Done");
+    };
+    (output, llm)
+}
+
+#[tokio::test]
+async fn the_host_may_take_a_plain_text() {
+    // Asked for a correction, the model changes the mode: its next text is
+    // the reply, and the provider is not asked for JSON any more.
+    let host = ModeHost { switch_on_hint: true, ..Default::default() };
+    let (output, llm) = run_with(host, &["plain words", "plain words again"]).await;
+    assert_eq!(output, ContextOutput::Text { content: "plain words again".into() });
+    assert_eq!(llm.json(), [true, false]);
+    assert!(last_text(&llm.seen()[1]).ends_with("HINT: there is a compatible mode"));
+    // Without the change the second failure is the end.
+    let (output, _) = run_with(ModeHost::default(), &["plain words", "plain words again"]).await;
+    assert!(matches!(output, ContextOutput::Invalid { .. }), "{output:?}");
+    // In the mode from the start: text as it is, the contract still works,
+    // and what the host refuses about it is still corrected.
+    let text = || ModeHost { text: true.into(), switch_on_hint: true };
+    let (output, llm) = run_with(text(), &["just text"]).await;
+    assert_eq!(output, ContextOutput::Text { content: "just text".into() });
+    assert_eq!(llm.json(), [false]);
+    let (output, _) = run_with(text(), &[r#"{"reply": "hi"}"#]).await;
+    assert_eq!(output, ContextOutput::Json { content: json!({"reply": "hi"}) });
+    let (output, _) = run_with(text(), &[r#"{"reply": "refused"}"#, "then text"]).await;
+    assert_eq!(output, ContextOutput::Text { content: "then text".into() });
+}
+
 #[tokio::test]
 async fn a_fork_replies_in_its_own_contract() {
     // The parent ran once under its contract.

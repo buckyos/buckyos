@@ -52,7 +52,6 @@ export interface DesktopPayload {
 
 - `buckyos.prototype.locale.v1`：语言
 - `buckyos.prototype.theme.v1`：主题
-- `buckyos.prototype.runtime.v1`：运行容器（`browser | desktop-app | mobile-app`）
 - `buckyos.layout.desktop.v2` / `buckyos.layout.mobile.v2`：按 form factor 分开的布局状态
 - `buckyos.window-appearance.v1`：窗口标题栏/背景透明度
 - `buckyos.window-geometry.desktop.v1`：按 `appId` 记录的桌面窗口几何信息
@@ -60,6 +59,7 @@ export interface DesktopPayload {
 不持久化的运行态数据：
 
 - `WindowRecord[]` 本身不直接落盘
+- 运行容器（`browser | desktop-app | mobile-app`）由 websdk `getRuntimeEnvironment()` 得出；`buckyos.debug.runtimeContainer` 只供调试时假装在别的容器里
 - `SystemSidebarDataModel` 全部为运行时派生
 - SWR 加载状态与错误状态不持久化
 
@@ -182,14 +182,16 @@ export const defaultWindowAppearancePreferences = {
 
 ```ts
 export interface DesktopWindowSizing {
-  width: number
-  height: number
+  width?: number
+  height?: number
   minWidth?: number
   minHeight?: number
 }
 
 export interface WindowManifest {
   defaultMode: DisplayMode
+  instance?: 'single' | 'multi'
+  resizable?: boolean
   allowMinimize: boolean
   allowMaximize: boolean
   allowClose: boolean
@@ -222,6 +224,7 @@ export interface AppDefinition {
 - `contentPadding` 已用于窗口容器，`none` 表示内容全出血。
 - `mobileRedirectPath` 已实际生效；在移动端点击应用时，如果存在该字段，会直接导航而不是开窗口。
 - `desktopWindow` 定义桌面端窗口默认宽高与最小尺寸。
+- `instance`（缺省单窗口）、`resizable`（缺省可调整）与应用的窗口声明对应，互转在 `app/windowDeclaration.ts`（需求文档 §21.4）。
 - `supportedFormFactors` / `showInLauncher` 已被桌面逻辑消费，但当前 mock `appCatalog` 里还没有显式设置这些字段，默认行为分别是：
   - `supportedFormFactors` 未设置时，视为同时支持 desktop/mobile
   - `showInLauncher` 未设置时，视为显示在 launcher
@@ -235,6 +238,11 @@ export interface WindowRecord {
   state: WindowState
   minimizedOrder: number | null
   titleKey: string
+  title?: string
+  windowPath: string
+  path?: string
+  lastActive: number
+  launch?: WindowLaunch
   x: number
   y: number
   width: number
@@ -263,6 +271,7 @@ export interface DesktopWindowLayerDataModel {
   - 否则一律落到 `maximized`
 - 因此 `fullscreen` 目前仍是 manifest 能力声明，不是单独持久化运行态。
 - `minimizedOrder` 用于侧边栏切换顺序。
+- `id` 是 `appWindowId(zone, 应用实例, windowPath)`；`path` 是系统应用报告的当前页面；`lastActive` 只增不减，决定“最近用过的窗口”（`zIndex` 会重新编号）。打开规则见需求文档 §16.4。
 - 几何信息会按 `appId` 写入 `buckyos.window-geometry.desktop.v1`，下次重新打开同一 app 时复用。
 
 ### 3.6 侧边栏派生模型
@@ -382,7 +391,6 @@ const defaultWallpaper = {
 export const systemPreferencesInputSchema = z.object({
   locale: z.enum(['en', 'zh-CN', 'ja', 'ko', 'fr', 'de', 'es', 'ar']),
   theme: z.enum(['light', 'dark']),
-  runtimeContainer: z.enum(['browser', 'desktop-app', 'mobile-app']),
   deadZoneTop: z.coerce.number().int().min(0).max(96),
   deadZoneBottom: z.coerce.number().int().min(0).max(120),
   deadZoneLeft: z.coerce.number().int().min(0).max(72),
@@ -400,7 +408,6 @@ export const systemPreferencesInputSchema = z.object({
 - `applySettings()` 会同时更新：
   - 语言
   - 主题
-  - 运行容器
   - 布局中的 `deadZone`（写入仍有效，但只对移动端布局产生可见效果）
   - 窗口外观偏好
 
@@ -410,7 +417,6 @@ export const systemPreferencesInputSchema = z.object({
 {
   locale: 'en',
   theme: 'light',
-  runtimeContainer: 'browser',
   deadZoneTop: 0,
   deadZoneBottom: 8,
   deadZoneLeft: 5,
@@ -426,7 +432,6 @@ export const systemPreferencesInputSchema = z.object({
 {
   locale: 'it',
   theme: 'system',
-  runtimeContainer: 'tablet-app',
   deadZoneTop: -1,
   deadZoneBottom: 240,
   deadZoneLeft: 100,

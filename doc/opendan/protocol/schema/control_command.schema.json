@@ -32,6 +32,25 @@
       ],
       "type": "object"
     },
+    "ReplyMode": {
+      "description": "How a UI session's final reply is given. The model changes it (`agent-session ctl reply-mode`); it holds for the session, a new one starts with the default.",
+      "oneOf": [
+        {
+          "description": "The final text is the JSON of the behavior's `[reply]` schema.",
+          "enum": [
+            "schema"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The final text is what the user reads; a reply with a topic or artifacts goes through `submit_reply`.",
+          "enum": [
+            "compat"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "StopScope": {
       "description": "What a `stop` ends.",
       "oneOf": [
@@ -504,6 +523,25 @@
       },
       "required": [
         "command"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "UI sessions: how the final reply is given from now on.",
+      "properties": {
+        "command": {
+          "enum": [
+            "reply_mode"
+          ],
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/definitions/ReplyMode"
+        }
+      },
+      "required": [
+        "command",
+        "mode"
       ],
       "type": "object"
     },

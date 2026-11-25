@@ -1,7 +1,9 @@
+import { readAppWindowDeclaration } from 'buckyos/open-app'
 import type { AppSummary } from '../api/app_mgr'
 import type { AppDefinition, AppDisplayText } from '../models/ui'
 import { isLauncherApp } from '../models/ui'
 import { DEFAULT_PRESENTATION_LOCALE, didDisplayName, firstText, pickLocalized, resolveImageReference } from '../presentation/model'
+import { windowManifestOf } from './windowDeclaration'
 
 export const DESKTOP_BUILTIN_APP_IDS = new Set([
   'ai-center',
@@ -93,7 +95,10 @@ export function createBackendAppDefinitionMapper(catalog: AppDefinition[], optio
         ...(webHosts.length > 0 ? { contentPadding: 'none' as const } : {}),
       },
     }
-    const definition = catalogEntry ?? fallback
+    const base = catalogEntry ?? fallback
+    const definition: AppDefinition = summary.window
+      ? { ...base, manifest: { ...base.manifest, ...windowManifestOf(readAppWindowDeclaration(summary.window)) } }
+      : base
     const text = backendAppText(summary, Boolean(catalogEntry))
     const iconBase = webHosts[0] && options.zoneHost
       ? `${options.protocol ?? 'https:'}//${webHosts[0]}.${options.zoneHost}/`

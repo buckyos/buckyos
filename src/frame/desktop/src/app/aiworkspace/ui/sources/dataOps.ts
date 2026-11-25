@@ -1,5 +1,6 @@
 /* Labels and data-creation operations of the data tree (non-component helpers). */
 
+import { ordinaryTableOps } from '../fieldOps'
 import { randomId } from '../../api/ids'
 import { SYSTEM_IDS, type EntityEnvelope, type Json, type Operation } from '../../api/types'
 import { aiwsT, localizedLabels } from '../../i18n'
@@ -54,7 +55,7 @@ export function newDataOps(store: WorkspaceStore, parentId: string, kind: NewDat
   switch (kind) {
     case 'dir': return [create(randomId('dir'), 'buckyos.dir', { members: {} })]
     case 'folder': return [create(randomId('f'), 'buckyos.container', { kind: 'folder', title: title || aiwsT('aiworkspace.data.default.folder') })]
-    case 'table': return [create(randomId('s'), 'buckyos.table-source', { title_field_id: 'title', fields: [{ field_id: 'title', name: aiwsT('aiworkspace.data.default.title'), type: 'text', required: true }, { field_id: 'done', name: aiwsT('aiworkspace.data.default.done'), type: 'boolean' }] })]
+    case 'table': return ordinaryTableOps(randomId('s'), parentId, key, name)
     case 'richtext': return [create(randomId('t'), 'buckyos.richtext', { content: { type: 'doc', content: [{ type: 'paragraph', attrs: { block_id: randomId('b') }, content: title ? [{ type: 'text', text: title }] : [] }] } })]
     case 'record': return [create(randomId('o'), 'buckyos.record', { schema: { properties: [
       { key: 'name', name: aiwsT('aiworkspace.data.default.name'), type: 'text' }, { key: 'date', name: aiwsT('aiworkspace.data.default.date'), type: 'date' },

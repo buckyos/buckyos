@@ -87,6 +87,19 @@ pub struct MsgDelivery {
     /// it carries no request of its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub context: bool,
+    /// A group message that started a turn: what let it through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<MsgTrigger>,
+}
+
+/// Why a group message reached the session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MsgTrigger {
+    /// The condition ([`crate::group_trigger`]).
+    pub reason: String,
+    /// Another member than the owner.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub member: bool,
 }
 
 impl MsgDelivery {
@@ -96,6 +109,7 @@ impl MsgDelivery {
             && self.record_id.is_none()
             && self.tunnel.is_none()
             && !self.context
+            && self.trigger.is_none()
     }
 }
 
@@ -250,6 +264,10 @@ pub enum ControlCommand {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         mentions: Vec<String>,
     },
+    /// UI sessions: how the final reply is given from now on.
+    ReplyMode {
+        mode: super::ReplyMode,
+    },
     /// Goal Sessions: change the Goal's current skills (applied by the
     /// driver to the Goal State it owns).
     GoalSkills {
@@ -295,6 +313,7 @@ const CONTROL_COMMANDS: &[&str] = &[
     "unsubscribe",
     "activity",
     "perceive",
+    "reply_mode",
     "goal_skills",
 ];
 
@@ -310,6 +329,7 @@ impl ControlCommand {
             ControlCommand::Unsubscribe { .. } => "unsubscribe",
             ControlCommand::Activity { .. } => "activity",
             ControlCommand::Perceive { .. } => "perceive",
+            ControlCommand::ReplyMode { .. } => "reply_mode",
             ControlCommand::GoalSkills { .. } => "goal_skills",
         }
     }

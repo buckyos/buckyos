@@ -1,78 +1,12 @@
 import { RotateCw } from "lucide-react";
-import {
-  Box,
-  Button,
-  FormControl,
-  MenuItem,
-  Select,
-  Stack,
-  Typography,
-  type SelectChangeEvent,
-} from "@mui/material";
+import { Box, Button, FormControl, MenuItem, Select, Stack, Typography } from "@mui/material";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import type { RegionProbeStatus } from "../types";
-import { StatusLine, type Tone } from "./ui";
+import type { RegionProbe } from "./useRegionProbe";
+import { StatusLine, mono, type Tone } from "./ui";
 
-type Props = {
-  preference: string;
-  status: RegionProbeStatus | null;
-  locked: boolean;
-  onPreferenceChange: (preference: string) => void;
-  onRetry: () => void;
-};
-
-const RegionProbePanel = ({
-  preference,
-  status,
-  locked,
-  onPreferenceChange,
-  onRetry,
-}: Props) => {
+const Panel = ({ children, control }: { children: ReactNode; control?: ReactNode }) => {
   const { t } = useTranslation();
-  const isRunning = !status || status.phase === "idle" || status.phase === "running";
-  const selectedRegion = preference === "auto" ? status?.region : preference;
-  const regions = [...(status?.available_regions || [])];
-  if (
-    preference !== "auto" &&
-    !regions.some((region) => region.region_id === preference)
-  ) {
-    regions.push({ region_id: preference, priority: 0 });
-  }
-
-  const statusText = (() => {
-    if (preference !== "auto") {
-      return t("region_manual_status", {
-        defaultValue: "Using manually selected Region: {{region}}",
-        region: preference,
-      });
-    }
-    if (isRunning) {
-      return t("region_probe_detecting", "Detecting the nearest Region…");
-    }
-    if (selectedRegion) {
-      return t("region_probe_selected", {
-        defaultValue: "Detected Region: {{region}}",
-        region: selectedRegion,
-      });
-    }
-    return t(
-      "region_probe_unavailable",
-      "Region detection is unavailable. Registration will continue with automatic server fallback.",
-    );
-  })();
-
-  const handleChange = (event: SelectChangeEvent<string>) => {
-    onPreferenceChange(event.target.value);
-  };
-
-  const tone: Tone = preference !== "auto" ? "accent" : isRunning ? "muted" : selectedRegion ? "success" : "warning";
-  const detail = [
-    preference === "auto" && status?.confidence === "low" ? t("region_probe_low_confidence", "Low confidence.") : "",
-    preference === "auto" && status?.source === "cache" ? t("region_probe_cached", "Cached result.") : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-
   return (
     <Box
       sx={{
@@ -89,44 +23,94 @@ const RegionProbePanel = ({
       >
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-            {t("region_probe_title", "Network Region")}
+            {t("region_probe_title")}
           </Typography>
-          <StatusLine tone={tone} live={preference === "auto" && isRunning}>
-            {statusText}
-            {detail ? ` ${detail}` : ""}
-          </StatusLine>
+          {children}
         </Box>
+        {control}
+      </Stack>
+    </Box>
+  );
+};
 
+/** An account that already exists: SN has assigned its relay and activation cannot change it. */
+export const CurrentRelayPanel = ({ relay }: { relay: string | null }) => {
+  const { t } = useTranslation();
+  return (
+    <Panel>
+      <StatusLine tone={relay ? "success" : "muted"}>
+        {relay ? t("region_current_relay", { relay }) : t("region_server_assigned")}
+      </StatusLine>
+      <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 0.5 }}>
+        {t("region_existing_account")}
+      </Typography>
+    </Panel>
+  );
+};
+
+const RegionProbePanel = ({ probe }: { probe: RegionProbe }) => {
+  const { t } = useTranslation();
+  const { status, preference } = probe;
+  const running = !status || status.phase === "idle" || status.phase === "running";
+  const selected = preference === "auto" ? status?.region ?? null : preference;
+  const regionName = (id: string) => t(`region_name_${id}`, { defaultValue: id });
+  const latency = (id: string) => {
+    const score = status?.regions.find((region) => region.region_id === id)?.score_ms;
+    return typeof score === "number" ? `${Math.round(score)} ms` : null;
+  };
+  const described = (id: string) => [regionName(id), latency(id)].filter(Boolean).join(" · ");
+
+  const ids = (status?.available_regions ?? []).map((region) => region.region_id);
+  if (preference !== "auto" && !ids.includes(preference)) ids.push(preference);
+
+  const tone: Tone = running ? "muted" : selected ? "success" : "warning";
+  const text = running
+    ? t("region_probe_detecting")
+    : preference !== "auto"
+      ? t("region_manual_status", { region: described(preference) })
+      : selected
+        ? t("region_probe_selected", { region: described(selected) })
+        : t("region_server_assigned");
+
+  return (
+    <Panel
+      control={
         <Stack direction="row" spacing={1} alignItems="center">
-          <FormControl size="small" sx={{ minWidth: { xs: 0, sm: 200 }, flex: { xs: 1, sm: "none" } }}>
+          <FormControl size="small" sx={{ minWidth: { xs: 0, sm: 220 }, flex: { xs: 1, sm: "none" } }}>
             <Select
               value={preference}
-              onChange={handleChange}
-              disabled={locked}
-              inputProps={{ "aria-label": t("region_preference_label", "Region") }}
+              onChange={(event) => probe.choose(event.target.value)}
+              inputProps={{ "aria-label": t("region_preference_label") }}
+              renderValue={(value) => (value === "auto" ? t("region_auto_option") : regionName(value))}
               sx={{ height: 40, fontSize: 14 }}
             >
-              <MenuItem value="auto">{t("region_auto_option", "Auto (recommended)")}</MenuItem>
-              {regions.map((region) => (
-                <MenuItem key={region.region_id} value={region.region_id} sx={{ fontFamily: "var(--cp-font-mono)", fontSize: 13 }}>
-                  {region.region_id}
+              <MenuItem value="auto">{t("region_auto_option")}</MenuItem>
+              {ids.map((id) => (
+                <MenuItem key={id} value={id} sx={{ justifyContent: "space-between", gap: 3 }}>
+                  <span>{regionName(id)}</span>
+                  <Box component="span" sx={{ ...mono, fontSize: 13, color: "text.secondary" }}>
+                    {latency(id) ?? t("region_no_latency")}
+                  </Box>
                 </MenuItem>
               ))}
             </Select>
           </FormControl>
-          {!isRunning && !selectedRegion && (
-            <Button
-              variant="outlined"
-              startIcon={<RotateCw size={16} strokeWidth={1.75} />}
-              onClick={onRetry}
-              disabled={locked}
-            >
-              {t("retry_button", "Retry")}
-            </Button>
-          )}
+          <Button
+            variant="outlined"
+            startIcon={<RotateCw size={16} strokeWidth={1.75} />}
+            onClick={probe.retry}
+            disabled={running}
+            sx={{ flexShrink: 0 }}
+          >
+            {t("region_probe_again")}
+          </Button>
         </Stack>
-      </Stack>
-    </Box>
+      }
+    >
+      <StatusLine tone={tone} live={running}>
+        {text}
+      </StatusLine>
+    </Panel>
   );
 };
 

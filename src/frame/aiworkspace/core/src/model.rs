@@ -263,6 +263,7 @@ pub const REF_KINDS: &[(&str, &str, &str, &str)] = &[
     ("owns", "live", "strong", "the data was created with this Block on a canvas: it follows the Block when the last bind goes (D05)"),
     ("embed", "live", "strong", "a rich text block embeds this entity (object_embed)"),
     ("value", "live", "strong", "a table cell or record property holds an object_ref to this entity"),
+    ("value_link", "live", "weak", "an image or canvas field links to its target"),
     ("body", "live", "strong", "a table record's body rich text"),
     ("def", "live", "strong", "a Block uses this Block definition"),
     ("asset", "fixed", "strong", "an AssetRef or a directory member names this content object"),

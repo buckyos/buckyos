@@ -183,6 +183,27 @@ servers:
     type: dir
     root_path: ../data/srv/publish/
 
+  # public.<zone> is anonymous, so pages of any origin may read it (the activation
+  # page checks /readme). A post hook has no REQ: it sits on a server of this host only.
+  buckyos_public_web:
+    type: http
+    hook_point:
+      main:
+        priority: 1
+        blocks:
+          default:
+            priority: 1
+            block: |
+              call-server "buckyos_public";
+    post_hook_point:
+      main:
+        priority: 1
+        blocks:
+          cors:
+            priority: 1
+            block: |
+              map-add RESP access-control-allow-origin "*";
+
   node_gateway:
     type: http
     # Serves HTTP/1.1 and HTTP/2 on every connection (the protocol is told by the connection preface).
@@ -483,7 +504,7 @@ servers:
             priority: 170
             block: |
               #echo "forward_to_public block";
-              call-server "buckyos_public";
+              call-server "buckyos_public_web";
 
           forward_to_kevent:
             priority: 180

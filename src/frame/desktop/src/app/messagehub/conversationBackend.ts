@@ -21,6 +21,7 @@ const info = (session: Session): ConversationSessionInfo => ({
   lastActiveAt: session.lastActiveAt,
   lifecycle: session.lifecycle,
   native: session.binding.kind === 'native',
+  memoryMode: session.memoryMode ?? 'normal',
 })
 
 export function createConversationBackend(): ConversationBackend {
@@ -62,12 +63,12 @@ export function createConversationBackend(): ConversationBackend {
     },
     async ensureDefaultSession(entityId) {
       await ensureReady()
-      const session = await store.ensureDefaultSession(context(), entityId)
+      const session = await store.ensureDefaultSession(context(), entityId, { writable: true })
       return session ? info(session) : null
     },
-    async createSession(entityId, title) {
+    async createSession(entityId, title, options) {
       await ensureReady()
-      return info(await store.create(context(), { entityId, title, connection: 'native' }))
+      return info(await store.create(context(), { entityId, title, connection: 'native', ...options }))
     },
     deleteSession: (sessionId) => store.manage(context(), sessionId, 'delete'),
     async send(sessionId, { text, attachments = [] }) {

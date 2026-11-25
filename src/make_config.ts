@@ -809,7 +809,6 @@ export function copyIdentityOutputs(
   startConfig.device_mini_doc_jwt = localIdentity.deviceMiniDocJwt;
   startConfig.ood_jwt = localIdentity.deviceDocJwt;
   startConfig.enabled_features ??= {};
-  startConfig.ai_provider_config ??= {};
   delete startConfig.BUCKYOS_ROOT;
   delete startConfig.gateway_type;
   delete startConfig.private_key;

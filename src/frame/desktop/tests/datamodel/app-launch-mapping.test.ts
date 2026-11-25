@@ -195,3 +195,15 @@ Deno.test('backend app mapping remains linear through one million entries', () =
     )
   }
 })
+
+Deno.test('an App window follows its AppDoc declaration, and what it does not declare follows the defaults', () => {
+  const toDefinition = createBackendAppDefinitionMapper([])
+  const declared = toDefinition(summary({ web_hosts: ['notes'], window: { instance: 'multi', resizable: false, allow_maximize: false, width: 480, height: 360, mobile_header: 'compact' } })).manifest
+  assertEquals(
+    [declared.instance, declared.resizable, declared.allowMaximize, declared.allowMinimize, declared.desktopWindow, declared.mobileStatusBarMode, declared.contentPadding],
+    ['multi', false, false, true, { width: 480, height: 360 }, 'compact', 'none'],
+    'declared window',
+  )
+  const undeclared = toDefinition(summary({ web_hosts: ['notes'], window: null })).manifest
+  assertEquals([undeclared.instance, undeclared.resizable, undeclared.allowMaximize], [undefined, undefined, true], 'undeclared window')
+})

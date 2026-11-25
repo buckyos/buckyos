@@ -28,19 +28,17 @@ pub fn save_sn_zone_info(zone_info: &SnZoneInfoResp) -> Result<(), String> {
     save_sn_zone_info_in(get_buckyos_system_etc_dir().as_path(), zone_info)
 }
 
-fn save_sn_zone_info_in(etc_dir: &Path, zone_info: &SnZoneInfoResp) -> Result<(), String> {
+pub(crate) fn save_sn_zone_info_in(etc_dir: &Path, zone_info: &SnZoneInfoResp) -> Result<(), String> {
     let path = etc_dir.join(SN_ZONE_INFO_FILE_NAME);
     let content = serde_json::to_vec_pretty(zone_info)
         .map_err(|error| format!("serialize {} failed: {}", path.display(), error))?;
     atomic_write(path.as_path(), &content)
 }
 
+/// The access method decides alone: a fixed public address needs no relay,
+/// `wan_dyn` keeps one as a fallback, everything else is reached through it.
 pub fn device_requires_sn_keep_tunnel(device_doc: &DeviceDocument) -> bool {
-    let declared_wan = device_doc
-        .net_id
-        .as_deref()
-        .is_some_and(|net_id| net_id.starts_with("wan"));
-    !declared_wan || device_doc.ips.is_empty()
+    device_doc.net_id.as_deref() != Some("wan")
 }
 
 pub fn relay_node_for_keep_tunnel(
@@ -104,36 +102,34 @@ mod tests {
     }
 
     #[test]
-    fn addressless_wan_devices_keep_an_explicit_sn_fallback() {
-        for net_id in [Some("wan"), Some("wan_dyn"), Some("wan_custom")] {
-            let addressless = device(net_id, &[]);
-            assert!(device_requires_sn_keep_tunnel(&addressless));
+    fn a_fixed_wan_address_connects_no_relay() {
+        for ips in [&[][..], &["203.0.113.10"], &["2001:db8::10"]] {
+            let fixed = device(Some("wan"), ips);
+            assert!(!device_requires_sn_keep_tunnel(&fixed));
             assert_eq!(
                 relay_node_for_keep_tunnel(
-                    &addressless,
+                    &fixed,
                     Some("sn.example.com"),
-                    Some(&zone_info(Some(" relay.example.com "))),
+                    Some(&zone_info(Some("relay.example.com"))),
                 ),
-                Some("relay.example.com".to_string())
+                None
             );
         }
     }
 
     #[test]
-    fn signed_fixed_wan_addresses_preserve_direct_only_bootstrap() {
-        for net_id in [Some("wan"), Some("wan_dyn"), Some("wan_custom")] {
-            for ip in ["203.0.113.10", "2001:db8::10"] {
-                let fixed = device(net_id, &[ip]);
-                assert!(!device_requires_sn_keep_tunnel(&fixed));
-                assert_eq!(
-                    relay_node_for_keep_tunnel(
-                        &fixed,
-                        Some("sn.example.com"),
-                        Some(&zone_info(Some("relay.example.com"))),
-                    ),
-                    None
-                );
-            }
+    fn a_dynamic_wan_address_keeps_the_relay_as_a_fallback() {
+        for ips in [&[][..], &["203.0.113.10"]] {
+            let dynamic = device(Some("wan_dyn"), ips);
+            assert!(device_requires_sn_keep_tunnel(&dynamic));
+            assert_eq!(
+                relay_node_for_keep_tunnel(
+                    &dynamic,
+                    Some("sn.example.com"),
+                    Some(&zone_info(Some(" relay.example.com "))),
+                ),
+                Some("relay.example.com".to_string())
+            );
         }
     }
 

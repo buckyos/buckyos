@@ -1,0 +1,201 @@
+{
+  "fields": {
+    "cloudflare": {
+      "api_token": "API Token"
+    },
+    "godaddy": {
+      "access_token": "Personal Access Token"
+    },
+    "route53": {
+      "access_key_id": "Access key ID",
+      "secret_access_key": "Secret access key",
+      "hosted_zone_id": "Hosted zone ID"
+    },
+    "porkbun": {
+      "api_key": "API Key",
+      "secret_api_key": "Secret Key"
+    },
+    "ionos": {
+      "api_key": "API Key (префикс.Secret)"
+    },
+    "ovh": {
+      "region": "Регион",
+      "application_key": "Application key",
+      "application_secret": "Application secret",
+      "consumer_key": "Consumer key"
+    },
+    "hetzner": {
+      "api_token": "API token"
+    },
+    "gandi": {
+      "personal_access_token": "Personal Access Token"
+    },
+    "digitalocean": {
+      "api_token": "Personal access token"
+    },
+    "google_cloud": {
+      "service_account_json": "Ключ сервисного аккаунта (JSON)",
+      "project_id": "ID проекта"
+    },
+    "azure": {
+      "tenant_id": "ИД каталога (клиента)",
+      "client_id": "ИД приложения (клиента)",
+      "client_secret": "Значение секрета клиента",
+      "subscription_id": "ИД подписки",
+      "resource_group": "Группа ресурсов"
+    },
+    "namecom": {
+      "username": "Имя пользователя",
+      "api_token": "API token"
+    },
+    "hostinger": {
+      "api_token": "API token"
+    },
+    "desec": {
+      "api_token": "Token"
+    },
+    "inwx": {
+      "username": "Имя пользователя",
+      "password": "Пароль",
+      "shared_secret": "Shared secret (Mobile-TAN)"
+    },
+    "netcup": {
+      "customer_number": "Номер клиента (только Legacy API)",
+      "api_key": "API Key",
+      "api_password": "Legacy API Password (только Legacy API)"
+    },
+    "transip": {
+      "login": "Имя учётной записи",
+      "private_key": "Закрытый ключ (Private Key)"
+    },
+    "alidns": {
+      "access_key_id": "AccessKey ID",
+      "access_key_secret": "AccessKey Secret"
+    },
+    "dnspod": {
+      "secret_id": "SecretId",
+      "secret_key": "SecretKey"
+    },
+    "sakura": {
+      "access_token": "アクセストークン (Access token)",
+      "access_token_secret": "アクセストークンシークレット (Access token secret)"
+    }
+  },
+  "steps": {
+    "cloudflare": [
+      "Откройте страницу токенов по ссылке здесь: права Zone > DNS > Edit и Zone > Zone > Read уже заполнены, иначе добавьте их сами.",
+      "Ограничьте токен одной зоной, которую используете здесь, а не всеми зонами.",
+      "Не задавайте «Token expiration» и «Client IP Address Filtering»: узел пользуется токеном постоянно, а его адрес может меняться.",
+      "Нажмите «Continue to summary», затем «Create Token» и скопируйте токен: он показывается один раз."
+    ],
+    "godaddy": [
+      "Войдите на developer.godaddy.com/personal-access-token и нажмите «Generate Token».",
+      "В «Permissions» раскройте «Domains & DNS» и выберите только domains.domain:read и domains.dns:update.",
+      "В «Expires After» выберите 1 year, самый долгий срок, и замените токен до этой даты.",
+      "Нажмите «Create Token» и «Copy Token»: токен показывается один раз."
+    ],
+    "route53": [
+      "В Route 53 откройте свою зону и скопируйте её Hosted zone ID.",
+      "В IAM выберите «Policies» > «Create policy» > «JSON» и вставьте политику из doc/user/dns-providers/route53.md в репозитории BuckyOS: она разрешает только эту зону и имена, которые пишет BuckyOS.",
+      "Создайте пользователя IAM без доступа к консоли и прикрепите к нему эту политику.",
+      "У пользователя откройте «Security credentials» > «Create access key» > «Other» и скопируйте оба значения: Secret access key показывается один раз."
+    ],
+    "porkbun": [
+      "Откройте «ACCOUNT» > «API Access», введите название и выберите разрешение «Manage, but no purchases».",
+      "Ограничьте ключ своим доменом, а IP-адреса оставьте пустыми: адрес узла может меняться.",
+      "Нажмите «Create API Key» и скопируйте API Key и Secret Key: Secret Key показывается один раз.",
+      "Откройте «ACCOUNT» > «Domain Management», у домена нажмите «Details» и включите «API Access»."
+    ],
+    "ionos": [
+      "В первый раз подключите доступ к API на my.ionos.com/shop/product/ionos-api (сайт IONOS вашей страны).",
+      "Откройте developer.hosting.ionos.com/keys и нажмите «Create New Key».",
+      "Скопируйте Public Prefix и Secret и введите их через точку (префикс.Secret): Secret показывается один раз."
+    ],
+    "ovh": [
+      "Откройте страницу своего региона и войдите: auth.eu.ovhcloud.com/api/createToken (Европа), auth.ca.ovhcloud.com/api/createToken (Канада и Азиатско-Тихоокеанский регион) или auth.us.ovhcloud.com/api/createToken (США).",
+      "В «Validity» выберите «Unlimited» и не ограничивайте IP-адреса.",
+      "В «Rights» добавьте GET, POST, PUT и DELETE для /domain/zone/example.com/*, заменив example.com своим доменом.",
+      "Нажмите «Create keys» и скопируйте application key, application secret и consumer key."
+    ],
+    "hetzner": [
+      "Откройте console.hetzner.com и проект с DNS-зоной домена: токены старой DNS Console больше не работают.",
+      "Откройте «Security» > «API tokens» > «Generate API token» и выберите «Read & Write».",
+      "Скопируйте токен: повторно он не показывается и действует на весь проект."
+    ],
+    "gandi": [
+      "Откройте настройки своего имени пользователя, затем «View my personal access tokens», и нажмите «Create a token».",
+      "В «Expires in» выберите 1 year, самый долгий срок, и замените токен до этой даты.",
+      "Выберите «Restrict to selected products», укажите свой домен и разрешите «Manage domain name technical configurations».",
+      "Нажмите «Create» и скопируйте токен: он показывается один раз."
+    ],
+    "digitalocean": [
+      "Откройте «API» > «Tokens» и нажмите «Generate New Token».",
+      "В «Expiration» выберите самый долгий срок и замените токен до его окончания.",
+      "Выберите «Custom Scopes» и отметьте create, read, update и delete для «domain»: ограничить токен одним доменом нельзя.",
+      "Нажмите «Generate Token» и скопируйте токен: он показывается один раз."
+    ],
+    "google_cloud": [
+      "В проекте с DNS-зоной откройте «IAM & Admin» > «Service Accounts» и создайте сервисный аккаунт.",
+      "Дайте ему роль «DNS Administrator» (roles/dns.admin).",
+      "В сервисном аккаунте откройте «Keys» > «Add key» > «Create new key» и выберите JSON.",
+      "Вставьте всё содержимое скачанного файла: ID проекта есть в файле, поле можно не заполнять."
+    ],
+    "azure": [
+      "В «Entra ID» > «Регистрация приложений» нажмите «Новая регистрация», затем скопируйте ИД каталога (клиента) и ИД приложения (клиента).",
+      "Откройте «Сертификаты и секреты» > «Создать секрет клиента», выберите самый долгий срок (не более 24 месяцев) и скопируйте значение, а не идентификатор секрета.",
+      "На портале Azure откройте DNS-зону > «Управление доступом (IAM)» > «Добавить назначение ролей» и дайте приложению роль «DNS Zone Contributor».",
+      "Скопируйте ИД подписки и группу ресурсов из обзора DNS-зоны.",
+      "Замените секрет клиента до окончания срока."
+    ],
+    "namecom": [
+      "Откройте «Account Settings» > «Security» > «API Tokens» и создайте токен Production.",
+      "Не добавляйте белый список IP: адрес узла может меняться.",
+      "Если включена двухэтапная проверка, внизу страницы «Security» включите «name.com API Access».",
+      "Введите имя пользователя name.com и токен."
+    ],
+    "hostinger": [
+      "Откройте hpanel.hostinger.com/profile/api и нажмите «New».",
+      "Введите название, выберите самый долгий срок и замените токен до этой даты.",
+      "Нажмите «Generate» и скопируйте токен: он показывается один раз и имеет права вашего пользователя."
+    ],
+    "desec": [
+      "Войдите на desec.io и откройте «Token Management».",
+      "Создайте токен и оставьте «Can create domains» и «Can delete domains» выключенными.",
+      "В расширенных настройках оставьте «Maximum age», «Maximum unused period» и подсети клиентов пустыми.",
+      "Скопируйте токен: он показывается один раз."
+    ],
+    "inwx": [
+      "По возможности используйте дополнительную учётную запись, которая управляет только DNS и не использует Mobile-TAN.",
+      "Введите имя пользователя и пароль этой учётной записи.",
+      "Если в ней включён Mobile-TAN, введите также shared secret: он показывается только при включении Mobile-TAN."
+    ],
+    "netcup": [
+      "В Customer Control Panel откройте домен и посмотрите, какая у него вкладка, «CloudDNS» или «DNS», затем откройте «Master Data» > «API».",
+      "Вкладка «CloudDNS»: в «API Keys» нажмите «Creating an API Key» и введите здесь только этот API Key.",
+      "Вкладка «DNS»: в «Legacy API Keys» нажмите «Creating an API Key», затем «Regenerating API Password»: пароль показывается один раз и заменяет пароль, которым пользуются другие программы.",
+      "Вкладка «DNS»: введите номер клиента, Legacy API Key и Legacy API Password."
+    ],
+    "transip": [
+      "Откройте значок профиля > «My account» > «API» и включите «Status».",
+      "Добавьте Key Pair и выключите «Whitelisted IP»: адрес узла может меняться.",
+      "Скопируйте закрытый ключ целиком, вместе со строками BEGIN и END: он показывается один раз.",
+      "Введите имя своей учётной записи TransIP."
+    ],
+    "alidns": [
+      "В консоли RAM откройте «Identities» > «Users» > «Create User» и выберите доступ по постоянному AccessKey.",
+      "Дайте пользователю политику из doc/user/dns-providers/alidns.md в репозитории BuckyOS: она разрешает только ваш домен.",
+      "Скопируйте AccessKey ID и AccessKey Secret: Secret показывается один раз.",
+      "Не задавайте политику сетевого доступа: адрес узла может меняться."
+    ],
+    "dnspod": [
+      "В Tencent Cloud CAM откройте «User List» и создайте подпользователя с программным доступом.",
+      "В консоли DNSPod откройте домен > «Permission Management» > «CAM permission management» > «add sub-account» и дайте подпользователю «Full Read/Write».",
+      "В «User List» откройте подпользователя, затем «API Key», создайте ключ и скопируйте SecretId и SecretKey: SecretKey показывается один раз."
+    ],
+    "sakura": [
+      "В панели управления откройте «APIキー» в меню слева, нажмите «APIキーの作成» и выберите тип «リソース操作» (операции с ресурсами).",
+      "В «アクセスレベル» (уровень доступа) выберите «設定編集» (изменение настроек).",
+      "Нажмите «作成» и скопируйте アクセストークン и アクセストークンシークレット: секрет показывается один раз."
+    ]
+  }
+}

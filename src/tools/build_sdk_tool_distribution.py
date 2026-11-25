@@ -128,7 +128,7 @@ def build(args: argparse.Namespace) -> None:
     rootfs = args.rootfs.resolve()
     rootfs.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="buckyos-tool-distribution-") as temporary:
-        staging = Path(temporary) / "buckyos-tool"
+        staging = Path(temporary).resolve(strict=True) / "buckyos-tool"
         staging.mkdir()
         extract_npm_tarball(tarball, staging)
         package_json = json.loads(

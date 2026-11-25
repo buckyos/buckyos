@@ -6,6 +6,9 @@
 //! (controls are applied, Observe events are merged into `pending_events`
 //! and saved) and refreshes the activity heartbeat.
 //!
+//! A Work that reads messages while it works (`reads_messages`) stops here
+//! for one: the run is kept, the message is its next input in the same Turn.
+//!
 //! Nothing else is injected here: reaching a checkpoint, finishing a tool
 //! call or receiving an Observe event never puts a message or an event into
 //! the context. The one exception is the host's own `<<budget>>` line when
@@ -84,24 +87,32 @@ impl SessionCheckpointHook {
         super::reports::sync_xml(sh, &self.run, snapshot).await?;
         // Controls, rejected records, Observe events. msg / Input events
         // stay queued for the next controlled input.
-        route_inputs(sh, true).await?;
+        let routed = route_inputs(sh, true).await?;
         Box::pin(super::goal::stop_if_dormant(sh, true)).await?;
-        let (stop, turn_stop, paused) = {
+        let (stop, turn_stop, paused, message) = {
             let s = sh.session.lock().await;
             (
                 s.state.stop_requested,
                 s.state.turn_stop_requested,
                 s.state.paused.is_some(),
+                s.config.session.policy.reads_messages
+                    && s.state.child_call().is_none()
+                    && routed
+                        .candidates
+                        .iter()
+                        .any(|m| m.msg().is_some_and(|x| !x.delivery.context)),
             )
         };
-        if stop || turn_stop || paused {
+        if stop || turn_stop || paused || message {
             if let Some(h) = sh.interrupt.lock().expect("interrupt lock").as_ref() {
                 h.interrupt(if stop {
                     "session stop requested"
                 } else if turn_stop {
                     "turn stop requested"
-                } else {
+                } else if paused {
                     super::outcome::PAUSE_REASON
+                } else {
+                    super::outcome::MESSAGE_REASON
                 });
             }
             return Ok(());

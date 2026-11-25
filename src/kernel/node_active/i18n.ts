@@ -160,14 +160,15 @@ i18next
     supportedLngs: LANGUAGE_OPTIONS.map((option) => option.code), // 支持的语言列表
     load: 'currentOnly',
     backend: {
-      loadPath: (languages: readonly string[] | string) => {
-        const lang = Array.isArray(languages) ? languages[0] : languages;
-        return `${getLanguageResource(lang)}.json`;
+      loadPath: (languages: readonly string[] | string, namespaces: readonly string[] | string) => {
+        const lang = getLanguageResource(Array.isArray(languages) ? languages[0] : languages);
+        const ns = Array.isArray(namespaces) ? namespaces[0] : namespaces;
+        return ns === 'common' ? `${lang}.json` : `${ns}/${lang}.json`;
       },
       crossDomain: false,
       withCredentials: false
     },
-    ns: ['common'], 
+    ns: ['common', 'dns_providers'],
     defaultNS: 'common',
     detection: {
       // 语言检测选项
@@ -185,6 +186,8 @@ i18next
     const language = getCurrentLanguage();
     syncDocumentLanguage(language);
     console.log("i18n initialized with language:", language);
+    // The activation service is gone once the node is activated; by then every language has to be here.
+    return i18next.loadLanguages(LANGUAGE_OPTIONS.map((option) => option.code));
   }).catch((error) => {
     console.error("i18n initialization failed:", error);
   });

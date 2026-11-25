@@ -115,7 +115,7 @@ Agent 在一个 Turn 内向用户提问（OpenDAN `agent-session ask-user`）时
 App 给 Zone 用户发的通知（System Notify，对 App 的接口见 [System Notify.md](System%20Notify.md)）是 `kind = notify` 的 MsgObject，`content.machine = {intent: "buckyos.notify", data: NotifyMessageData}`（`version, notify_id, kind: notice|input, category: todo|agent|app, level, home, source, prompt, task_id?, url, expires_at_ms?`），正文是给不认识 intent 的客户端看的纯文本，最后一行是处理链接 `https://<zone host>/messagehub?notify=<id>`。
 
 - **主记录**：msg-center 以“系统通知发送者”（Zone DID）直接写进目标用户的 INBOX，不走联系人分级（否则会进 RequestBox），会话为用户自己的 `sysnotify:todo|agent|app`（首次用到时用 `msg.create_session` 那套登记，`origin = sysnotify`，peer 为系统通知发送者，标题“待办 / Agent / 应用通知”；不是对话，MessageHub 不给输入框）。幂等键 `notify:<id>:home`，`data.home = true`。
-- **另投**（只对 Agent 来源）：Agent 以自己的 DID `post_send` 到用户与它的已有私聊会话（原生或 Telegram，不进群），`data.home = false`；候选会话取自该 Agent 的 INBOX：用户在其中说过话的会话，回复坐标按用户最近一条消息（`to = 发送者 / ingress principal 对应的 endpoint`，`to_session` 同那条消息）。等级：`quiet` 不另投；`normal` 投 `source.conversation` 对应的会话；`timely` 再加最近活跃的会话；`urgent` 投全部。主记录 `quiet` 写入即已读、`urgent` 未读、`normal / timely` 有另投时已读否则未读：未读只落在用户最可能看的那一处。幂等键 `notify:<id>:<agent inbox session>`。
+- **另投**（只对 Agent 来源）：Agent 以自己的 DID `post_send` 到用户与它的已有私聊会话（原生或 Telegram，不进群），`data.home = false`；候选会话取自该 Agent 的 INBOX：用户在其中说过话的会话，回复坐标按用户最近一条消息（`to = 发送者 / ingress principal 对应的 endpoint`，`to_session` 同那条消息）。等级：`quiet` 不另投；`normal` 投 `source.conversation` 对应的会话，没有来源会话时投默认会话（§5.8.1，没有就在这时选定或新建），Goal 发的（`source.goal_id`）总投默认会话、不投创建它的聊天；`timely` 再加默认会话；`urgent` 投全部会话和默认会话。默认会话是通道会话而通道已不在时，改投主聊天（`get_default_session {native: true}` 的那个），默认不变。主记录 `quiet` 写入即已读、`urgent` 未读、`normal / timely` 有另投时已读否则未读：未读只落在用户最可能看的那一处。幂等键 `notify:<id>:<agent inbox session>`。
 - **观察记录**：每份另投成功后，msg-center 在 Agent 自己的 INBOX `<agent>/<会话>` 写一条 `kind = event`、`from = to = agent`、`intent = buckyos.notify.delivered` 的记录（`NotifyDeliveredData`：通知要点、`reply_route`、`delivered_msg_id`），同样不走联系人分级。OpenDAN Loader 把它转成该会话 UI Session 的 `_notify` 半订阅事件。
 - **状态的真相**：`notice` 看记录（主记录写入时未读、或原生副本，任一已读即 `read`；`notify.ack` 全部标已读；`notify.dismiss` 全部归档；过期 / 撤销也归档）；`input` 另挂 TaskMgr HumanSet 任务（`human.input/v1`，assignee 为目标用户，msg-center 为创建者并授权：用户 `ReadResult`，请求方 principal `ReadMeta/ReadInput/ReadResult/Control`），回答直接向 TaskMgr `commit_result`（`expected_revision`，先到先得），msg-center 只读任务。
 - `kind = notify` 计入会话活跃（§5.8 的 activity 口径、解除归档）。
@@ -691,6 +691,25 @@ DELETED 仅被 Session 查询过滤。它们不能代替上述会话级操作。
 操作需有幂等结果、并发新消息边界、授权及重启恢复，不能用未完成的一串逐记录写入报告成功。
 共享 MsgObject 及附件仍可能被其它 mailbox/delivery 引用，对象物理回收另按引用规则处理，不承诺擦除所有副本。
 
+### 5.8.1 默认会话与记忆模式（2026-11-23 已实现）
+
+每个 owner 和每个对方之间总有一个默认会话，owner 可以指定。它是 Desktop 里这个 Agent 的主入口，也是 Agent 通知的投递目标（§2.1.3）。服务自动选的和 owner 指定的没有区别。
+
+- 记的是对话：`{to, to_session}`，与通知的 `source.conversation` 同一写法，另带 `session_id`、`platform`、`set_at_ms`。原生会话的 `to` 是 owner 自己，`session_id` 是 owner 的会话；通道会话（例如 `tg:<bot>:<chat>`）只在对方的信箱里。通道在 Agent 侧换到新的 UI session，默认仍是这个对话。
+- 存在 `owner_ui_session_states`，`session_id = default:<peer>`、`state_key = default_session`，不加表。
+- `msg.create_session { …, set_default: true }`：新会话同时成为默认。
+- `msg.get_default_session { owner, peer_did, native? }`：总会返回一个 `DefaultSession`，没有时在这次调用里补上并存下来：
+  - 从没有过默认：取 owner 与对方最早创建的原生会话，跳过 App 创建的（`ui.source` 非空）和绑定通道的；活跃的先于归档的，登记过的先于没登记的；一个都没有就新建（`origin = manual`，无标题）。
+  - 默认会话已被删除：新建一个，不改用别的聊天。
+  - `native: true`：默认是通道会话时，按“从没有过默认”的规则返回一个可写的原生会话，默认不变。
+  - 会写数据，所以按 owner 写授权。归档的默认会话原样返回，由调用方恢复。
+- `msg.set_default_session { owner, peer_did, to, to_session? }`：只接受 owner 与对方已有的会话（登记给该对方或有其记录的原生会话；owner 说过话的通道会话）。返回 `DefaultSession`。
+- `msg.list_conversations { owner, peer_did }`：只读，不补默认。`{ default?, conversations }`，`conversations` 是 owner 说过话的会话（取自对方的信箱，原生和通道都算，最近的在前）。
+- `msg.delete_session` 删掉默认会话时，记下“默认已删除”，`list_conversations` 不再给 `default`。下一次要用默认会话时自动新建：owner 的 `get_default_session`，或非 `quiet` 的 Agent 通知。归档不影响。
+- 授权：读同 owner 读，写只允许 owner 本人。
+
+记忆模式 `memory_mode: normal | no_write | no_read_write` 在 `msg.create_session` 时给出，随 `OwnerSessionState` 返回，存在该会话的 `owner_ui_session_states`（`state_key = memory_mode`）。Agent 的 Loader 在这个会话第一次开 UI session（以及每次换代）时读它，见 `doc/opendan`。
+
 ### 5.9 请求处理与 UI 同步边界
 
 - REQUEST_BOX 已存在，UI 需保留每条记录的 box_kind 并提供请求入口与准入操作。
@@ -847,6 +866,7 @@ get_next_delivery(transport_did, lock_on_take, with_object)
 # 系统通知（§2.1.3；App 契约见 System Notify.md）
 notify.send(req) / notify.get(notify_id) / notify.list(filter)
 notify.ack(notify_id, on_behalf?) / notify.dismiss(notify_id) / notify.cancel(notify_id, reason?)
+notify.summary() / notify.list_apps() / notify.set_app(app_instance_id, enabled)
 ```
 
 群聊 read receipt（`MsgReceiptObj`，per-reader）见 Self-Host-Group 文档；其存储同样遵守"独立对象 + 索引"模式。

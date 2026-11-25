@@ -115,7 +115,7 @@ type ServiceSetting = {
 
 AppDoc candidate schema 是输入预检，不做签名、Object ID、包图或权威验证，语法通过仍返回待接入的文本导入提示。它不能成为任意文档安装成功的依据。
 
-默认输入来源是 `mock/fixtures.ts::defaultInput`：首选节点、main 必需组件、必需权限、data/cache 必需挂载、关闭的可选 external/metrics、LANG 默认值、空敏感 API_KEY、auto_start=true。编辑回填使用当前 draft.input；刷新时敏感值清空，重新检查。
+默认输入来源是 `mock/fixtures.ts::defaultInput`：首选节点、main 必需组件、必需权限和通知权限（`msg-center/notify`，与服务端安装计划的缺省一致）、data/cache 必需挂载、关闭的可选 external/metrics、LANG 默认值、空敏感 API_KEY、auto_start=true。编辑回填使用当前 draft.input；刷新时敏感值清空，重新检查。
 
 合法样本：选择 worker 并保留 main；授权可选 wan 原条目；启用已声明 external 只读目录；关闭自动启动。非法样本：只选 worker、把必需权限 write 改成 read、删除 data 映射、设置 BUCKYOS_APP_INSTANCE_ID、重复暴露端口、向未知节点提交。Playwright 使用独立样本验证这些跨字段拒绝。
 

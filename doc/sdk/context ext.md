@@ -355,7 +355,7 @@ Preview PRD §8 的支持级别直接由解析结果推导，不再各自维护�
 
 | `entry.type` | 方式 | 适用意图 | 说明 |
 |---|---|---|---|
-| `web` | **launch**：拉起 App 页面 | `open`、`create` | `path` 相对 App 的 Web host（`https://$appid.$zonehost/`），支持占位符 `{source}` `{session}` `{mode}`；桌面内 App 用 `buckyos://app/<app_id>?...` 深链接等价表达 |
+| `web` | **launch**：拉起 App 页面 | `open`、`create` | `path` 相对 App 的 Web host（`https://$appid.$zonehost/`），支持占位符 `{source}` `{session}` `{mode}`；从外部拉起客户端时用 `buckyos://app.open?v=1&zone=<zone 主机>&app=<app_id>&path=…` 等价表达（语法见 BuckyOSApp 的《外部调用协议》§2.5） |
 | `embed` | **embed**：宿主在沙箱 iframe 中加载 | `preview`（renderer）、`cell.view`、`cell.edit` | `path` 相对 App Web host；宿主与组件只通过 `postMessage` 协议通信（§9） |
 | `rpc` | **invoke**：调用 App Service 端点 | `preview`（converter）、`convert`、`enrich`、`enumerate` | `endpoint` 是 AppDoc `service_endpoints` 的 key，`method` 是 kRPC 方法名；长任务走 task-manager，可取消 |
 
@@ -426,7 +426,7 @@ interface OpenBinding {
   priority: number;
 }
 
-interface OpenRequest {               // 展开到 entry.path 的占位符，或以 buckyos:// 深链接传递
+interface OpenRequest {               // 展开到 entry.path 的占位符
   source: ContentRef;
   session?: PreviewSessionContext;    // 与 Preview PRD §12 同构，App 可忽略
   mode?: "view" | "edit";
@@ -495,7 +495,7 @@ type CellWidgetMessage =
 | Preview Component / Preview App | Preview Planner 改为基于 `resolve(preview)`；“使用其他应用打开”改为 `resolve(open)`；错误态“安装支持组件”指向市场中声明了对应选择器的 App |
 | File Browser | 图标视图用 `resolve(icon)`；双击 / 右键“打开方式”用 `resolve(open)`；缩略图用 `preview` + `thumbnail`；Meta 面板未来用 `enrich` |
 | AI Canvas | 单元格 / 自定义块渲染改为 `resolve(cell.view | cell.edit)`；`CanvasWidgetSDK` 收敛为 §9.4 协议 |
-| 桌面 Shell（`src/frame/desktop`） | `buckyos://app/<app_id>?...` 深链接处理 `open` 的 launch；窗口策略仍由 Shell 决定 |
+| 桌面 Shell（`src/frame/desktop`）、BuckyOS 客户端 | 应用的 https 地址和（客户端）`buckyos://app.open?…` 处理 `open` 的 launch；窗口策略由统一的打开规则（websdk `buckyos/open-app`）决定 |
 
 ---
 

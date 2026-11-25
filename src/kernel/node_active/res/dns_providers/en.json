@@ -1,0 +1,201 @@
+{
+  "fields": {
+    "cloudflare": {
+      "api_token": "API Token"
+    },
+    "godaddy": {
+      "access_token": "Personal Access Token"
+    },
+    "route53": {
+      "access_key_id": "Access key ID",
+      "secret_access_key": "Secret access key",
+      "hosted_zone_id": "Hosted zone ID"
+    },
+    "porkbun": {
+      "api_key": "API Key",
+      "secret_api_key": "Secret Key"
+    },
+    "ionos": {
+      "api_key": "API Key (prefix.secret)"
+    },
+    "ovh": {
+      "region": "Region",
+      "application_key": "Application key",
+      "application_secret": "Application secret",
+      "consumer_key": "Consumer key"
+    },
+    "hetzner": {
+      "api_token": "API token"
+    },
+    "gandi": {
+      "personal_access_token": "Personal Access Token"
+    },
+    "digitalocean": {
+      "api_token": "Personal access token"
+    },
+    "google_cloud": {
+      "service_account_json": "Service account key (JSON)",
+      "project_id": "Project ID"
+    },
+    "azure": {
+      "tenant_id": "Directory (tenant) ID",
+      "client_id": "Application (client) ID",
+      "client_secret": "Client secret value",
+      "subscription_id": "Subscription ID",
+      "resource_group": "Resource group"
+    },
+    "namecom": {
+      "username": "Username",
+      "api_token": "API token"
+    },
+    "hostinger": {
+      "api_token": "API token"
+    },
+    "desec": {
+      "api_token": "Token"
+    },
+    "inwx": {
+      "username": "Username",
+      "password": "Password",
+      "shared_secret": "Shared secret (Mobile-TAN)"
+    },
+    "netcup": {
+      "customer_number": "Customer number (Legacy API only)",
+      "api_key": "API Key",
+      "api_password": "Legacy API Password (Legacy API only)"
+    },
+    "transip": {
+      "login": "Account name",
+      "private_key": "Private key"
+    },
+    "alidns": {
+      "access_key_id": "AccessKey ID",
+      "access_key_secret": "AccessKey Secret"
+    },
+    "dnspod": {
+      "secret_id": "SecretId",
+      "secret_key": "SecretKey"
+    },
+    "sakura": {
+      "access_token": "Access token",
+      "access_token_secret": "Access token secret"
+    }
+  },
+  "steps": {
+    "cloudflare": [
+      "Use the link here to open the token page with two permissions filled in, Zone > DNS > Edit and Zone > Zone > Read; add them yourself if they are missing.",
+      "Limit the token to the one zone you use here, not all zones.",
+      "Do not set \"Token expiration\" or \"Client IP Address Filtering\": the node keeps using this token and its address can change.",
+      "Choose \"Continue to summary\" and \"Create Token\", then copy the token; it is shown only once."
+    ],
+    "godaddy": [
+      "Sign in at developer.godaddy.com/personal-access-token and choose \"Generate Token\".",
+      "Under \"Permissions\", expand \"Domains & DNS\" and select only domains.domain:read and domains.dns:update.",
+      "Set \"Expires After\" to 1 year, the longest choice, and replace the token before that date.",
+      "Choose \"Create Token\" and \"Copy Token\"; it is shown only once."
+    ],
+    "route53": [
+      "In Route 53, open your hosted zone and copy its hosted zone ID.",
+      "In IAM, choose \"Policies\" > \"Create policy\" > \"JSON\" and paste the policy from doc/user/dns-providers/route53.md in the BuckyOS repository; it allows only this zone and the names BuckyOS writes.",
+      "Create an IAM user without console access and attach that policy.",
+      "Open the user, then \"Security credentials\" > \"Create access key\" > \"Other\", and copy both values; the secret access key is shown only once."
+    ],
+    "porkbun": [
+      "Open \"ACCOUNT\" > \"API Access\", enter a title, and choose the permission \"Manage, but no purchases\".",
+      "Limit the key to your domain, and leave the IP addresses empty because the node's address can change.",
+      "Choose \"Create API Key\" and copy the API Key and the Secret Key; the Secret Key is shown only once.",
+      "Open \"ACCOUNT\" > \"Domain Management\", choose \"Details\" next to the domain, and turn on \"API Access\"."
+    ],
+    "ionos": [
+      "The first time, sign up for API access at my.ionos.com/shop/product/ionos-api (use the IONOS site of your country).",
+      "Open developer.hosting.ionos.com/keys and choose \"Create New Key\".",
+      "Copy the Public Prefix and the Secret and enter them joined by a dot (prefix.secret); the Secret is shown only once."
+    ],
+    "ovh": [
+      "Open the key page of your region and sign in: auth.eu.ovhcloud.com/api/createToken (Europe), auth.ca.ovhcloud.com/api/createToken (Canada and Asia-Pacific) or auth.us.ovhcloud.com/api/createToken (United States).",
+      "Set \"Validity\" to \"Unlimited\" and do not restrict IP addresses.",
+      "Under \"Rights\", add GET, POST, PUT and DELETE for /domain/zone/example.com/*, with your own domain instead of example.com.",
+      "Choose \"Create keys\" and copy the application key, application secret and consumer key."
+    ],
+    "hetzner": [
+      "Open console.hetzner.com and the project that holds the domain's DNS zone; tokens of the old DNS Console no longer work.",
+      "Open \"Security\" > \"API tokens\" > \"Generate API token\" and choose \"Read & Write\".",
+      "Copy the token; it cannot be shown again, and it reaches everything in that project."
+    ],
+    "gandi": [
+      "Open the settings of your username, then \"View my personal access tokens\", and choose \"Create a token\".",
+      "Set \"Expires in\" to 1 year, the longest choice, and replace the token before that date.",
+      "Choose \"Restrict to selected products\", pick your domain, and allow \"Manage domain name technical configurations\".",
+      "Choose \"Create\" and copy the token; it is shown only once."
+    ],
+    "digitalocean": [
+      "Open \"API\" > \"Tokens\" and choose \"Generate New Token\".",
+      "Under \"Expiration\", choose the longest period, and replace the token before it ends.",
+      "Choose \"Custom Scopes\" and select create, read, update and delete for \"domain\"; a token cannot be limited to one domain.",
+      "Choose \"Generate Token\" and copy it; it is shown only once."
+    ],
+    "google_cloud": [
+      "In the project that holds the DNS zone, open \"IAM & Admin\" > \"Service Accounts\" and create a service account.",
+      "Give it the \"DNS Administrator\" role (roles/dns.admin).",
+      "Open the service account, then \"Keys\" > \"Add key\" > \"Create new key\", and choose \"JSON\".",
+      "Paste the whole content of the downloaded file; the project ID is in it, so that field can stay empty."
+    ],
+    "azure": [
+      "In \"Entra ID\" > \"App registrations\", choose \"New registration\", then copy the directory (tenant) ID and the application (client) ID.",
+      "Open \"Certificates & secrets\" > \"New client secret\", choose the longest expiration (at most 24 months), and copy the Value, not the Secret ID.",
+      "In the Azure portal, open your DNS zone > \"Access control (IAM)\" > \"Add role assignment\" and give the app the \"DNS Zone Contributor\" role.",
+      "Copy the subscription ID and the resource group from the overview of the DNS zone.",
+      "Replace the client secret before it expires."
+    ],
+    "namecom": [
+      "Open \"Account Settings\" > \"Security\" > \"API Tokens\" and create a production token.",
+      "Do not add an IP whitelist, because the node's address can change.",
+      "If two-step verification is on, turn on \"name.com API Access\" at the bottom of the \"Security\" page.",
+      "Fill in your name.com username and the token."
+    ],
+    "hostinger": [
+      "Open hpanel.hostinger.com/profile/api and choose \"New\".",
+      "Enter a name, choose the longest expiration, and replace the token before that date.",
+      "Choose \"Generate\" and copy the token; it is shown only once and has the same permissions as your user."
+    ],
+    "desec": [
+      "Sign in at desec.io and open \"Token Management\".",
+      "Generate a new token and leave \"Can create domains\" and \"Can delete domains\" off.",
+      "In the advanced settings, leave \"Maximum age\", \"Maximum unused period\" and the client subnets empty.",
+      "Copy the token; it is shown only once."
+    ],
+    "inwx": [
+      "Use a sub-account that can only manage DNS and has no Mobile-TAN, if you can.",
+      "Enter the username and password of that account.",
+      "If the account uses Mobile-TAN, also enter the shared secret, which is shown only when Mobile-TAN is turned on."
+    ],
+    "netcup": [
+      "In the Customer Control Panel, open the domain to see whether it has a \"CloudDNS\" tab or a \"DNS\" tab, then open \"Master Data\" > \"API\".",
+      "CloudDNS tab: choose \"Creating an API Key\" in \"API Keys\" and enter only that API key here.",
+      "DNS tab: in \"Legacy API Keys\", choose \"Creating an API Key\" and then \"Regenerating API Password\"; the password is shown only once and replaces the one other programs use.",
+      "DNS tab: enter the customer number, the Legacy API key and the Legacy API password."
+    ],
+    "transip": [
+      "Open the profile icon > \"My account\" > \"API\" and turn \"Status\" on.",
+      "Add a key pair and turn \"Whitelisted IP\" off, because the node's address can change.",
+      "Copy the whole private key, including the BEGIN and END lines; it is shown only once.",
+      "Fill in the name of your TransIP account."
+    ],
+    "alidns": [
+      "In the RAM console, open \"Identities\" > \"Users\" > \"Create User\" and choose access with a permanent AccessKey.",
+      "Give the user the custom policy from doc/user/dns-providers/alidns.md in the BuckyOS repository; it allows only your domain.",
+      "Copy the AccessKey ID and the AccessKey Secret; the secret is shown only once.",
+      "Do not add a network access policy, because the node's address can change."
+    ],
+    "dnspod": [
+      "In Tencent Cloud CAM, open \"User List\" and create a sub-user with programmatic access.",
+      "In the DNSPod console, open the domain > \"Permission Management\" > \"CAM permission management\" > \"add sub-account\" and give the sub-user \"Full Read/Write\".",
+      "Open the sub-user in \"User List\", then \"API Key\", create a key, and copy the SecretId and SecretKey; the SecretKey is shown only once."
+    ],
+    "sakura": [
+      "In the control panel, open \"APIキー\" in the left menu, choose \"APIキーの作成\", and select the resource operation type (リソース操作).",
+      "Set the access level (アクセスレベル) to \"設定編集\" (edit settings).",
+      "Choose \"作成\" (create) and copy the access token and the access token secret; the secret is shown only once."
+    ]
+  }
+}

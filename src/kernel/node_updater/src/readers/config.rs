@@ -34,7 +34,7 @@ pub(super) fn open(ctx: &mut Context) -> Result<(), Failure> {
     Ok(())
 }
 
-fn decode<T: DeserializeOwned>(ctx: &Context, key: &str, bytes: &[u8]) -> Result<T, Failure> {
+pub(super) fn decode<T: DeserializeOwned>(ctx: &Context, key: &str, bytes: &[u8]) -> Result<T, Failure> {
     serde_json::from_slice(bytes).map_err(|e| ctx.unsupported(key, e))
 }
 
@@ -43,12 +43,14 @@ pub(super) fn kernel(ctx: &mut Context) -> Result<(), Failure> {
         BUCKYOS_INFO_KEY,
         BUCKYOS_DEV_CONFIG_KEY,
         ZONE_PRESENTATION_KEY,
+        DOMAIN_HOSTING_KEY,
     ] {
         if let Some(v) = ctx.snapshot.get(key.as_bytes()) {
             match key {
                 BUCKYOS_INFO_KEY => decode::<BuckyOSInfo>(ctx, key, v)?.validate(),
                 BUCKYOS_DEV_CONFIG_KEY => decode::<BuckyOSDevConfig>(ctx, key, v)?.validate(),
-                _ => decode::<ZonePresentationConfig>(ctx, key, v)?.validate(),
+                ZONE_PRESENTATION_KEY => decode::<ZonePresentationConfig>(ctx, key, v)?.validate(),
+                _ => decode::<DomainHosting>(ctx, key, v)?.validate(),
             }
             .map_err(|e| ctx.unsupported(key, e))?;
         }

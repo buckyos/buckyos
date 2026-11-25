@@ -1,0 +1,476 @@
+/**
+ * Pure projection from msg-center wire data to the UI DataModel
+ * (`UI_DATAMODEL.md` §3). No I/O: everything the projection needs is passed
+ * in, so the rules are unit-testable with Deno fixtures.
+ */
+import { notifyCategoryFromSessionId, type NotifyCategory } from 'buckyos'
+import { didDisplayName, usableImageUrl } from '../presentation/model.ts'
+import { formatVoiceDuration, isActionMessage, messageNotify, messageVoice, type MessageObject } from './msgobj.ts'
+import type { CreationPolicy, Entity, EntityDetail, MessagePreview, Session, SessionBinding } from './types.ts'
+import type { Contact, MailboxRecordWithObject, PeerConversation, SessionSummary } from './wire.ts'
+
+/** UI container for sessions without a determinable peer. Not a DID, never a send target. */
+export const UNASSIGNED_ENTITY_ID = 'messagehub:unassigned'
+
+export interface ProjectionLabels {
+  direct: string
+  /** Title of a group's default session. */
+  groupMain: string
+  untitled: string
+  unassigned: string
+  unassignedDescription: string
+  you: string
+  previewImage: string
+  previewAttachment: string
+  /** A voice note without text, followed by its duration. */
+  previewVoice?: string
+  previewUnavailable: string
+  /** Name of the system notify sender's entity. */
+  systemNotify?: string
+  /** Titles of the notification sessions. */
+  notifyCategories?: Partial<Record<NotifyCategory, string>>
+}
+
+export interface ProjectionInput {
+  ownerDid: string
+  summaries: SessionSummary[]
+  contacts: Contact[]
+  /** Zone agent DIDs from the control panel (may be empty). */
+  agentDids: string[]
+  /** Owner-scoped `ui.title` overrides by session id. */
+  personalTitles: Record<string, string>
+  /** Self-host groups the owner participates in, by group DID. */
+  groups: Record<string, { name: string }>
+  /** DIDs listed before any conversation exists (`addPeer`). */
+  peers?: Array<{ did: string; name?: string; type?: 'person' | 'agent' }>
+  /** Shared titles of named group sessions, by local session key. */
+  groupSessionTitles: Record<string, string>
+  policies: Record<string, CreationPolicy>
+  labels: ProjectionLabels
+  /** Accounts kept out of the entity list on top of the owner (buckyos#638): the logged-in user and `root`. */
+  hiddenAccounts?: HiddenAccounts
+}
+
+export interface HiddenAccounts {
+  dids?: string[]
+  /** Zone usernames; `root` is always hidden. */
+  usernames?: string[]
+}
+
+const ALWAYS_HIDDEN_USERNAMES = ['root']
+
+/**
+ * Whether an account stays out of the entity list: the owner, the DIDs in
+ * `hidden.dids`, and zone users (`did:bns:` / `did:web:` label or a
+ * `zone_user` contact name) called `root` or one of `hidden.usernames`.
+ * Sessions with such an account stay reachable through `entityById`.
+ */
+export function isHiddenAccount(account: { did: string; name?: string; tags?: readonly string[] }, ownerDid: string, hidden: HiddenAccounts = {}): boolean {
+  const { did } = account
+  if (did === ownerDid || hidden.dids?.includes(did)) return true
+  const usernames = [...ALWAYS_HIDDEN_USERNAMES, ...(hidden.usernames ?? []).map(name => name.trim()).filter(Boolean)]
+  if (/^did:(web|bns):/.test(did) && usernames.includes(shortDid(did).split('.')[0] ?? '')) return true
+  return account.tags?.includes('zone_user') === true && usernames.includes(account.name?.trim() ?? '')
+}
+
+export interface ProjectedOwner {
+  entities: Entity[]
+  sessions: Session[]
+  details: Record<string, EntityDetail>
+  names: Record<string, string>
+  /** Loadable contact pictures by DID, the owner's own included. */
+  avatars: Record<string, string>
+  /** O(1) lookups over `entities` / `sessions` (same objects, summary order kept). */
+  entityById: Map<string, Entity>
+  sessionsByEntity: Map<string, Session[]>
+}
+
+export interface SessionAttribution {
+  peerDid: string | null
+  isGroup: boolean
+  evidence: 'registered' | 'group_tag' | 'group_message' | 'direct' | 'message' | 'record' | 'none'
+}
+
+export interface TunnelDidParts {
+  accountId: string
+  accountType: string
+  tunnelInstanceId: string
+}
+
+export function parseTunnelDid(did: string): TunnelDidParts | null {
+  if (!did.startsWith('did:msgtunnel:')) return null
+  const parts = did.slice('did:msgtunnel:'.length).split('.')
+  if (parts.length < 3) return null
+  const tunnelInstanceId = parts[parts.length - 1]
+  const accountType = parts[parts.length - 2]
+  const accountId = parts.slice(0, -2).join('.')
+  if (!tunnelInstanceId || !accountType || !accountId) return null
+  return { accountId, accountType, tunnelInstanceId }
+}
+
+export function shortDid(did: string): string {
+  const tunnel = parseTunnelDid(did)
+  if (tunnel) return `${tunnel.accountId} · ${platformOfInstance(tunnel.tunnelInstanceId)}`
+  return didDisplayName(did)
+}
+
+export function friendlyDidName(did: string, isAgent: boolean): string {
+  const short = shortDid(did)
+  if (parseTunnelDid(did) || !/^did:(web|bns):/.test(did)) return short
+  const label = short.split('.')[0]
+  if (!label) return short
+  return isAgent ? label.charAt(0).toUpperCase() + label.slice(1) : label
+}
+
+export function platformOfInstance(tunnelInstanceId: string): string {
+  const lower = tunnelInstanceId.toLowerCase()
+  if (lower.startsWith('tg') || lower.includes('telegram')) return 'telegram'
+  if (lower.includes('mail')) return 'email'
+  return tunnelInstanceId
+}
+
+/** Map an endpoint / alias DID to the contact that owns it. */
+export function canonicalizeDid(did: string, contacts: readonly Contact[]): string {
+  for (const contact of contacts) {
+    if (contact.did === did) return contact.did
+    if (contact.bindings?.some(binding => binding.endpoint_did === did)) return contact.did
+  }
+  return did
+}
+
+function groupTag(record: MailboxRecordWithObject | undefined): string | null {
+  const tag = record?.record.tags?.find(item => item.startsWith('group:'))
+  return tag ? tag.slice('group:'.length) : null
+}
+
+/**
+ * §3.2.1: registered peer → group tag / group message target → `dm:` peer →
+ * original message endpoints relative to the owner → record fields (weak
+ * evidence) → unassigned.
+ */
+export function attributeSession(summary: SessionSummary, ownerDid: string): SessionAttribution {
+  const registeredPeer = summary.state?.peer_did
+  if (summary.state?.registered && registeredPeer) return { peerDid: registeredPeer, isGroup: summary.state.origin === 'group', evidence: 'registered' }
+  const record = summary.last_record
+  const tagged = groupTag(record)
+  if (tagged) return { peerDid: tagged, isGroup: true, evidence: 'group_tag' }
+  const msg = record?.msg ?? undefined
+  if (msg?.kind === 'group_msg') {
+    const target = msg.to[0]
+    return target ? { peerDid: target, isGroup: true, evidence: 'group_message' } : { peerDid: null, isGroup: true, evidence: 'none' }
+  }
+  if (summary.session_id.startsWith('dm:')) {
+    const peer = summary.session_id.slice('dm:'.length)
+    return peer ? { peerDid: peer, isGroup: false, evidence: 'direct' } : { peerDid: null, isGroup: false, evidence: 'none' }
+  }
+  if (msg && record) {
+    if (record.record.box_kind === 'SENT') {
+      const targets = [...new Set(msg.to)]
+      if (targets.length === 1) return { peerDid: targets[0], isGroup: false, evidence: 'message' }
+      return { peerDid: null, isGroup: false, evidence: 'none' }
+    }
+    if (msg.from && msg.from !== ownerDid) return { peerDid: msg.from, isGroup: false, evidence: 'message' }
+    return { peerDid: null, isGroup: false, evidence: 'none' }
+  }
+  if (registeredPeer) return { peerDid: registeredPeer, isGroup: false, evidence: 'registered' }
+  if (record) {
+    // Without the object only the record projection is available; SENT
+    // keeps just the first target and inbound `to` is the owner itself.
+    if (record.record.box_kind === 'SENT') return { peerDid: record.record.to, isGroup: false, evidence: 'record' }
+    if (record.record.from !== ownerDid) return { peerDid: record.record.from, isGroup: false, evidence: 'record' }
+  }
+  return { peerDid: null, isGroup: false, evidence: 'none' }
+}
+
+export function summarizeMessage(msg: MessageObject | null | undefined, labels: ProjectionLabels): string {
+  if (!msg) return labels.previewUnavailable
+  const content = msg.content.content ?? ''
+  if (isActionMessage(msg)) return content || labels.previewUnavailable
+  // A notification reads as its title; the plain-text body is for clients that do not know the intent.
+  const notifyTitle = messageNotify(msg)?.prompt.title?.trim()
+  if (notifyTitle) return notifyTitle.length > 120 ? `${notifyTitle.slice(0, 120)}…` : notifyTitle
+  const refs = msg.content.refs ?? []
+  const dataRef = refs.find(ref => ref.target.type === 'data_obj')
+  const format = msg.content.format ?? 'text/plain'
+  const isText = format.startsWith('text/')
+  const voice = messageVoice(msg)
+  if (voice && dataRef && !content.trim()) return `${labels.previewVoice ?? labels.previewAttachment} ${formatVoiceDuration(voice.duration_ms)}`
+  if (dataRef && !content.trim()) {
+    const label = dataRef.label ? ` ${dataRef.label}` : ''
+    return `${format.startsWith('image/') ? labels.previewImage : labels.previewAttachment}${label}`
+  }
+  if (isText || content.trim()) {
+    const line = content.split('\n').find(item => item.trim())?.trim() ?? ''
+    return line.length > 120 ? `${line.slice(0, 120)}…` : line
+  }
+  return `${labels.previewAttachment} ${format}`
+}
+
+interface EntitySeed {
+  id: string
+  type: Entity['type']
+  name: string
+  domain: 'managed' | 'external'
+  contact?: Contact
+  sources: Set<string>
+  /** The system notify sender: the peer of the `sysnotify:*` sessions. */
+  systemNotify?: boolean
+}
+
+function bindingFor(peerDid: string, contacts: readonly Contact[], summary: SessionSummary | null): SessionBinding {
+  const registered = summary?.state?.registered ? summary.state.binding : undefined
+  if (registered && typeof registered === 'object' && (registered as { kind?: string }).kind === 'tunnel') {
+    const binding = registered as Record<string, unknown>
+    if (typeof binding.tunnelInstanceId !== 'string' || !binding.tunnelInstanceId || typeof binding.endpointDid !== 'string' || !binding.endpointDid) return { kind: 'unknown' }
+    return {
+      kind: 'tunnel', tunnelInstanceId: binding.tunnelInstanceId, endpointDid: binding.endpointDid,
+      connectionName: typeof binding.connectionName === 'string' ? binding.connectionName : binding.tunnelInstanceId,
+      remoteContextId: typeof binding.remoteContextId === 'string' ? binding.remoteContextId : undefined,
+      supportsMultipleSessions: binding.supportsMultipleSessions === true,
+      canCreateRemoteSession: binding.canCreateRemoteSession === true,
+      canSend: binding.canSend === true, connected: binding.connected === true,
+      revision: typeof binding.revision === 'number' ? binding.revision : undefined,
+    }
+  }
+  if (registered && typeof registered === 'object' && (registered as { kind?: string }).kind === 'unknown') return { kind: 'unknown' }
+  if (registered && typeof registered === 'object' && (registered as { kind?: string }).kind === 'native') {
+    const target = (registered as { targetDid?: string }).targetDid ?? peerDid
+    return { kind: 'native', targetDid: target }
+  }
+  const tunnel = parseTunnelDid(peerDid)
+  if (tunnel) {
+    const contact = contacts.find(item => item.did === peerDid || item.bindings?.some(binding => binding.endpoint_did === peerDid))
+    const binding = contact?.bindings?.find(item => item.endpoint_did === peerDid)
+    const platform = binding?.platform ?? platformOfInstance(tunnel.tunnelInstanceId)
+    return {
+      kind: 'tunnel',
+      tunnelInstanceId: tunnel.tunnelInstanceId,
+      endpointDid: peerDid,
+      connectionName: `${platform} · ${tunnel.tunnelInstanceId}`,
+      remoteContextId: summary && !summary.session_id.startsWith('dm:') ? summary.session_id : undefined,
+      supportsMultipleSessions: false,
+      canCreateRemoteSession: false,
+      canSend: true,
+      connected: true,
+    }
+  }
+  return { kind: 'native', targetDid: peerDid }
+}
+
+function platformName(platform: string): string {
+  return platform.charAt(0).toUpperCase() + platform.slice(1)
+}
+
+/** An Agent's conversation with the owner on a channel, listed among the owner's sessions with the Agent. */
+export function channelSession(agentDid: string, conversation: PeerConversation): Session {
+  const name = platformName(conversation.platform)
+  return {
+    id: conversation.session_id,
+    ownerDid: agentDid,
+    entityId: agentDid,
+    binding: {
+      kind: 'tunnel',
+      tunnelInstanceId: parseTunnelDid(conversation.to)?.tunnelInstanceId ?? conversation.platform,
+      endpointDid: conversation.to,
+      connectionName: name,
+      remoteContextId: conversation.to_session,
+      supportsMultipleSessions: false,
+      canCreateRemoteSession: false,
+      canSend: false,
+      connected: true,
+    },
+    origin: 'connection',
+    lifecycle: 'active',
+    createdAt: 0,
+    shared: { title: '', description: '', updatedAt: 0 },
+    members: {},
+    title: name,
+    type: 'chat',
+    source: conversation.platform,
+    lastActiveAt: conversation.last_active_at_ms,
+    unreadCount: 0,
+  }
+}
+
+export function projectOwner(input: ProjectionInput): ProjectedOwner {
+  const { ownerDid, contacts, labels } = input
+  const contactByDid = new Map(contacts.map(contact => [contact.did, contact]))
+  const agentSet = new Set(input.agentDids)
+  const seeds = new Map<string, EntitySeed>()
+  const names: Record<string, string> = {}
+
+  const ensureSeed = (did: string, hint?: { isGroup?: boolean; fromName?: string }): EntitySeed => {
+    const existing = seeds.get(did)
+    if (existing) {
+      if (hint?.isGroup) existing.type = 'group'
+      return existing
+    }
+    const contact = contactByDid.get(did)
+    const tunnel = parseTunnelDid(did)
+    const group = input.groups[did]
+    const isGroup = hint?.isGroup === true || !!group || tunnel?.accountType === 'group' || tunnel?.accountType === 'channel'
+    const isZoneUser = contact?.tags?.includes('zone_user') === true
+    const isAgent = !isGroup && !isZoneUser && (agentSet.has(did) || contact?.tags?.includes('agent') === true)
+    const type: Entity['type'] = isGroup ? 'group' : isAgent ? 'agent' : 'person'
+    const domain: EntitySeed['domain'] = tunnel ? 'external' : group || isZoneUser || did.startsWith('did:bns:') || isAgent ? 'managed' : 'external'
+    const name = contact?.name?.trim() || group?.name || hint?.fromName?.trim() || friendlyDidName(did, isAgent)
+    const seed: EntitySeed = { id: did, type, name, domain, contact, sources: new Set() }
+    if (tunnel) seed.sources.add(platformOfInstance(tunnel.tunnelInstanceId))
+    contact?.bindings?.forEach(binding => seed.sources.add(binding.platform))
+    if (!tunnel) seed.sources.add('buckyos')
+    seeds.set(did, seed)
+    names[did] = name
+    return seed
+  }
+
+  const avatars: Record<string, string> = {}
+  for (const contact of contacts) {
+    const avatar = usableImageUrl(contact.avatar)
+    if (avatar) avatars[contact.did] = avatar
+  }
+  for (const contact of contacts) {
+    if (contact.did === ownerDid) { names[ownerDid] = contact.name || labels.you; continue }
+    ensureSeed(contact.did)
+  }
+  for (const did of input.agentDids) ensureSeed(did)
+  for (const did of Object.keys(input.groups)) ensureSeed(did, { isGroup: true })
+  for (const peer of input.peers ?? []) {
+    if (seeds.has(peer.did) || peer.did === ownerDid) continue
+    const seed = ensureSeed(peer.did, { fromName: peer.name })
+    if (peer.type === 'agent') seed.type = 'agent'
+    if (!parseTunnelDid(peer.did)) seed.domain = 'managed'
+  }
+  names[ownerDid] ??= labels.you
+
+  const sessions: Session[] = []
+  const sessionsByEntity = new Map<string, Session[]>()
+  for (const summary of input.summaries) {
+    // A notification session without a record is not shown.
+    const notifyCategory = notifyCategoryFromSessionId(summary.session_id)
+    if (notifyCategory && !summary.last_record) continue
+    const attribution = attributeSession(summary, ownerDid)
+    const rawPeer = attribution.peerDid
+    const peerDid = rawPeer ? canonicalizeDid(rawPeer, contacts) : null
+    const entityId = peerDid ?? UNASSIGNED_ENTITY_ID
+    if (peerDid) {
+      const seed = ensureSeed(peerDid, { isGroup: attribution.isGroup, fromName: summary.last_record?.record.from_name })
+      if (notifyCategory) {
+        seed.systemNotify = true
+        seed.type = 'service'
+        seed.domain = 'managed'
+        seed.name = labels.systemNotify ?? seed.name
+        names[peerDid] = seed.name
+      }
+    }
+    const binding: SessionBinding = peerDid ? bindingFor(rawPeer ?? peerDid, contacts, summary) : { kind: 'unknown' }
+    const msg = summary.last_record?.msg ?? undefined
+    const lastMessage: MessagePreview | undefined = summary.last_record
+      ? { senderName: attribution.isGroup && msg ? (msg.from === ownerDid ? labels.you : names[canonicalizeDid(msg.from, contacts)] ?? shortDid(msg.from)) : undefined, text: summarizeMessage(msg, labels), timestamp: summary.last_record.record.sort_key }
+      : undefined
+    // A notification session is titled by its category in the viewer's language, not by its registered title.
+    const registeredTitle = summary.state?.registered && !notifyCategory ? summary.state.title?.trim() || input.groupSessionTitles[summary.session_id] || '' : ''
+    // `thread.topic` is a display hint only; the session key is always the
+    // server-side `session_id` (derived from `to_session` since MsgObject v2).
+    const topic = msg?.thread?.topic?.trim()
+    const derivedTitle = notifyCategory ? labels.notifyCategories?.[notifyCategory] ?? notifyCategory
+      : topic && topic !== summary.session_id && !summary.session_id.startsWith('dm:') ? topic
+      : summary.session_id.startsWith('dm:') ? labels.direct
+      : attribution.isGroup && peerDid && summary.session_id === peerDid ? labels.groupMain
+      : attribution.isGroup && peerDid && summary.state?.origin === 'group' ? labels.untitled
+      : attribution.isGroup && peerDid ? names[peerDid] ?? shortDid(peerDid)
+      : binding.kind === 'tunnel' ? `${binding.connectionName}`
+      : peerDid ? labels.direct : labels.untitled
+    const session: Session = {
+      id: summary.session_id,
+      ownerDid,
+      entityId,
+      binding,
+      origin: summary.state?.registered ? (summary.state.origin === 'connection' || summary.state.origin === 'remote_context' ? summary.state.origin : 'manual') : binding.kind === 'tunnel' ? 'connection' : peerDid ? 'remote_context' : 'unknown',
+      lifecycle: summary.lifecycle ?? 'active',
+      createdAt: summary.state?.created_at_ms ?? 0,
+      shared: { title: registeredTitle, description: '', updatedAt: summary.state?.updated_at_ms ?? 0 },
+      members: {},
+      lastMessage,
+      title: derivedTitle,
+      type: 'chat',
+      source: binding.kind === 'tunnel' ? platformOfInstance(binding.tunnelInstanceId) : 'buckyos',
+      lastActiveAt: summary.last_activity_ms || summary.state?.created_at_ms || 0,
+      unreadCount: summary.unread_count,
+      requestCount: summary.request_count,
+      attributionEvidence: attribution.evidence,
+      ...(summary.state?.memory_mode && summary.state.memory_mode !== 'normal' ? { memoryMode: summary.state.memory_mode } : {}),
+    }
+    sessions.push(session)
+    const list = sessionsByEntity.get(entityId) ?? []
+    list.push(session)
+    sessionsByEntity.set(entityId, list)
+  }
+
+  const entities: Entity[] = []
+  const details: Record<string, EntityDetail> = {}
+  const toEntity = (seed: EntitySeed): Entity => {
+    const own = sessionsByEntity.get(seed.id) ?? []
+    const latest = [...own].sort((a, b) => b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))[0]
+    const entity: Entity = {
+      id: seed.id,
+      type: seed.type,
+      name: seed.name,
+      avatar: avatars[seed.id],
+      statusText: seed.contact?.access_level === 'stranger' ? 'stranger' : undefined,
+      isOnline: undefined,
+      isPinned: false,
+      isMuted: false,
+      unreadCount: own.reduce((sum, session) => sum + session.unreadCount, 0),
+      requestCount: own.reduce((sum, session) => sum + (session.requestCount ?? 0), 0),
+      tags: [...new Set(seed.contact?.tags ?? [])].sort(),
+      lastMessage: latest?.lastMessage,
+      lastActiveAt: latest?.lastActiveAt ?? 0,
+      source: [...seed.sources][0],
+      sources: [...seed.sources],
+      domain: seed.domain,
+      sessionCount: own.length,
+      ...(seed.systemNotify ? { systemNotify: true } : {}),
+    }
+    details[seed.id] = {
+      ...entity,
+      bio: seed.contact?.note ?? undefined,
+      note: seed.contact?.note ?? undefined,
+      bindings: (seed.contact?.bindings ?? []).map(binding => ({ platform: binding.platform, accountId: binding.account_id, displayId: binding.display_id })),
+      createdAt: seed.contact?.created_at ?? 0,
+      accessLevel: seed.contact?.access_level,
+      isVerified: seed.contact?.is_verified,
+      contactSource: seed.contact?.source,
+    }
+    return entity
+  }
+  const hiddenEntities: Entity[] = []
+  for (const seed of seeds.values()) {
+    const entity = toEntity(seed)
+    if (!seed.systemNotify && isHiddenAccount({ did: seed.id, name: seed.name, tags: seed.contact?.tags }, ownerDid, input.hiddenAccounts)) hiddenEntities.push(entity)
+    else entities.push(entity)
+  }
+  const unassigned = sessionsByEntity.get(UNASSIGNED_ENTITY_ID) ?? []
+  if (unassigned.length > 0) {
+    const latest = [...unassigned].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]
+    const container: Entity = {
+      id: UNASSIGNED_ENTITY_ID,
+      type: 'service',
+      name: labels.unassigned,
+      drilldownDescription: labels.unassignedDescription,
+      unreadCount: unassigned.reduce((sum, session) => sum + session.unreadCount, 0),
+      requestCount: unassigned.reduce((sum, session) => sum + (session.requestCount ?? 0), 0),
+      tags: [],
+      lastMessage: latest?.lastMessage,
+      lastActiveAt: latest?.lastActiveAt ?? 0,
+      sources: [],
+      domain: 'external',
+      sessionCount: unassigned.length,
+      sessionCreation: { policy: 'deny', canCreate: false, unavailableReason: 'binding_unknown' },
+    }
+    entities.push(container)
+    details[container.id] = { ...container, bindings: [], createdAt: 0 }
+    names[UNASSIGNED_ENTITY_ID] = container.name
+  }
+  entities.sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.name.localeCompare(b.name))
+  return { entities, sessions, details, names, avatars, entityById: new Map([...entities, ...hiddenEntities].map(entity => [entity.id, entity])), sessionsByEntity }
+}

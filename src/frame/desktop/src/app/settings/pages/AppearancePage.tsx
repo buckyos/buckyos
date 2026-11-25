@@ -1,14 +1,18 @@
-import { Button, FormControlLabel, Switch, Slider, TextField } from '@mui/material'
+import { Button, Slider, TextField } from '@mui/material'
 import { useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
 import { useSettingsSnapshot, useSettingsStore } from '../hooks/use-settings-store'
 import { Section } from '../components/shared/Section'
 import { WallpaperSection } from '../components/WallpaperSection'
+import { ZoneColorSection } from '../components/ZoneColorSection'
+import { mobileFeeds, type MobileFeed } from '../../../shared/appearance/model.ts'
 import { localeLabels } from '../../../mock/data'
 import type { AppContentLoaderProps } from '../../types'
 import type { GridDensity } from '../../../models/layout'
 import type { SupportedLocale, SystemPreferencesInput, ThemeMode } from '../../../models/ui'
 import { useDesktopUIStore, useDesktopUISnapshot } from '../../../models/DesktopUIDataModel'
+
+const mobileFeedLabels: Record<MobileFeed, string> = { homestation: 'HomeStation', activity: 'All activity' }
 
 const iconSizeOptions: { value: GridDensity; label: string }[] = [
   { value: 'small', label: 'Small' },
@@ -25,7 +29,6 @@ function currentPreferences(appProps: AppContentLoaderProps, locale: SupportedLo
   return {
     locale,
     theme: appProps.themeMode === 'dark' ? 'dark' : 'light',
-    runtimeContainer: appProps.runtimeContainer as SystemPreferencesInput['runtimeContainer'],
     deadZoneTop: appProps.layoutState.deadZone.top,
     deadZoneBottom: appProps.layoutState.deadZone.bottom,
     deadZoneLeft: appProps.layoutState.deadZone.left,
@@ -72,7 +75,7 @@ function OpacitySlider({
 
 export function AppearancePage({ appProps }: AppearancePageProps) {
   const { t, preferredLocale } = useI18n()
-  const { desktopIconSize, messagePreview } = useSettingsSnapshot()
+  const { desktopIconSize, mobileFeed } = useSettingsSnapshot()
   const store = useSettingsStore()
   const desktop = useDesktopUIStore()
   const { layoutState } = useDesktopUISnapshot()
@@ -114,6 +117,8 @@ export function AppearancePage({ appProps }: AppearancePageProps) {
         </div>
       </Section>
 
+      <ZoneColorSection />
+
       <WallpaperSection pageCount={appProps.layoutState.pages.length} />
 
       <Section title={t('settings.appearance.desktop', 'Desktop')}>
@@ -149,23 +154,6 @@ export function AppearancePage({ appProps }: AppearancePageProps) {
         </TextField>
       </Section>
 
-      <Section title={t('settings.appearance.notifications', 'Notifications')}>
-        <FormControlLabel
-          control={
-            <Switch
-              checked={messagePreview}
-              onChange={(event) => store.setMessagePreview(event.target.checked)}
-              inputProps={{ 'aria-label': t('settings.appearance.messagePreview', 'Show message content in the status bar') }}
-              data-testid="settings-message-preview"
-            />
-          }
-          label={t('settings.appearance.messagePreview', 'Show message content in the status bar')}
-        />
-        <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
-          {t('settings.appearance.messagePreviewHint', 'When off, the message list only says who wrote and how many messages are new. Applies to this device.')}
-        </p>
-      </Section>
-
       <Section title={t('settings.appearance.windows', 'Windows')}>
         <div className="space-y-3 sm:w-1/2">
           <OpacitySlider
@@ -181,6 +169,26 @@ export function AppearancePage({ appProps }: AppearancePageProps) {
             testId="settings-background-opacity"
           />
         </div>
+      </Section>
+
+      <Section title={t('settings.mobileFeed.title', 'BuckyOS APP on your phone')}>
+        <TextField
+          select
+          size="small"
+          className="w-full sm:w-1/2"
+          label={t('settings.mobileFeed.label', 'Feed tab opens on')}
+          helperText={t('settings.mobileFeed.hint', 'What the feed tab shows first; you can switch between the two there.')}
+          value={mobileFeed}
+          onChange={(event) => store.setMobileFeed(event.target.value as MobileFeed)}
+          SelectProps={{ native: true }}
+          inputProps={{ 'data-testid': 'settings-mobile-feed' }}
+        >
+          {mobileFeeds.map((feed) => (
+            <option key={feed} value={feed}>
+              {t(`settings.mobileFeed.${feed}`, mobileFeedLabels[feed])}
+            </option>
+          ))}
+        </TextField>
       </Section>
     </div>
   )

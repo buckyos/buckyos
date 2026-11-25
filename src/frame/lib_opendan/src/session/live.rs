@@ -203,8 +203,11 @@ impl Session {
                 at_ms: crate::now_ms(),
             }),
             last_error: self.state.last_error.clone(),
-            topic: Some(self.state.topic.clone())
-                .filter(|t| !t.title.trim().is_empty() || !t.tags.is_empty()),
+            // A conversation that leaves nothing in Memory shows no topic.
+            topic: Some(self.state.topic.clone()).filter(|t| {
+                self.config.session.policy.memory.writes()
+                    && (!t.title.trim().is_empty() || !t.tags.is_empty())
+            }),
             updated_at_ms: self.state.updated_at_ms,
         }
     }

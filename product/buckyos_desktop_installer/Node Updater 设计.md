@@ -79,7 +79,22 @@ Desktop 的 System Config 将应用配置和系统内核配置保存在本机 `$
 
 每次正式发布前，各模块负责人核对本模块的持久化 schema。发生变化时，确认模块能否自行读取历史数据。需要离线迁移时，由熟悉业务的模块负责人提供对应的转换。发布记录应列出每个正式发布的 BuckyOS 版本及各模块随该版本交付的 schema，内部测试期间出现、从未正式发布的格式不计入历史兼容范围。
 
-后续可在 Git commit hook 中使用 reader 注册文件匹配本次提交涉及的文件。命中时，触发“此次变更是否需要升级 schema”的审计，由模块负责人确认是否调整版本标记和补充迁移代码。
+审计不依赖 Git commit hook，按以下步骤进行：
+
+1. 业务照常提交代码。
+2. 定期 review `readers.toml`，每周版本前必须 review 一次。在仓库根目录运行 `python3 .github/scripts/audit-node-readers.py`，列出本仓和各依赖仓库自上次 review 以来动过的已登记格式。
+3. 脚本只看已登记的文件，review 还要找出新的持久化数据：新增的 system-config key、数据库和表、节点本地文件。有新数据时补登记，确认它带有版本标记。
+4. 无论有没有改动，review 后都更新 `readers.toml`。有改动时，继续完成 Node Updater 的开发和测试。
+
+| `readers.toml` 字段 | 含义 |
+| --- | --- |
+| `[review].commit` | 本次 review 覆盖到的 buckyos 提交，即 reader 所依据的仓库版本（完整 SHA） |
+| `[review].date` | 本次 review 的日期 |
+| `[review].changed` | 最近一次改动登记或 reader 代码的 review 日期。本次没有改动时保留原值 |
+| `[review].conclusion` | review 结论，没有改动也要写明 |
+| `[audited_sources]` | 各依赖仓库已核对到的提交（完整 SHA） |
+
+构建时检查这些字段，并在依赖仓库解析到的提交与登记不同时给出警告。`commit`、`date`、`changed` 随 `node_updater --identity` 输出，写入发布包的 `release.json`。
 
 ### 6. 返回值与历史兼容
 

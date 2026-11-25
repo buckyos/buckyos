@@ -605,6 +605,9 @@ pub struct AgentSettings {
     /// to its HomeStation so other Agents can learn from it.
     #[serde(default = "default_true")]
     pub auto_share_results: bool,
+    /// Group chat, while `allow_group` is on.
+    #[serde(default, skip_serializing_if = "GroupChatSettings::is_default")]
+    pub group_chat: GroupChatSettings,
     /// Credentials of the Agent's sync tasks (task id → name → value), set
     /// only by the owner (`sync.set_secret`) and handed to the task's
     /// program; the Agent can read them too (a known risk).
@@ -627,8 +630,39 @@ impl Default for AgentSettings {
             default_runtime_id: None,
             homestation: true,
             auto_share_results: true,
+            group_chat: GroupChatSettings::default(),
             sync_secrets: BTreeMap::new(),
         }
+    }
+}
+
+/// How far back a request in a group reads unless set otherwise.
+pub const DEFAULT_GROUP_CONTEXT: u32 = 20;
+pub const MAX_GROUP_CONTEXT: u32 = 200;
+
+/// What starts a turn of an Agent in a group and what it reads. Read again
+/// for every group message.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupChatSettings {
+    /// Conditions, any one of which lets a message start a turn:
+    /// `{"type"?: "message", "who": "owner" | "everyone" | [member DIDs],
+    /// "how": "mention" | "reply"}`. Entries the host does not know are never
+    /// met. Missing: the owner's mention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triggers: Option<Vec<serde_json::Value>>,
+    /// How many of the group's latest messages a request takes along
+    /// (default [`DEFAULT_GROUP_CONTEXT`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_messages: Option<u32>,
+}
+
+impl GroupChatSettings {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    pub fn context_messages(&self) -> usize {
+        self.context_messages.unwrap_or(DEFAULT_GROUP_CONTEXT).min(MAX_GROUP_CONTEXT) as usize
     }
 }
 

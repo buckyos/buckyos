@@ -5,13 +5,13 @@
 
 import { ServiceFailure } from '../api/client'
 import { describeError, type WorkspaceSession } from '../api/session'
-import type { CommitEvent, Diagnostic, FilterNode, Json, QueryParams, QueryRow, SortSpec } from '../api/types'
+import type { CommitEvent, Diagnostic, FilterNode, Json, QueryParams, QueryRow, RowOrder, SortSpec } from '../api/types'
 import { Emitter } from '../state/emitter'
 
 const PAGE = 200
 const MAX_PAGE = 1000
 
-export interface PagerQuery { viewId?: string; sourceId: string; filter: FilterNode | null; sorts: SortSpec[] | null; orderDependsOnData: boolean }
+export interface PagerQuery { viewId?: string; rowOrder?: RowOrder; sourceId: string; filter: FilterNode | null; sorts: SortSpec[] | null; orderDependsOnData: boolean }
 
 export interface PagerSnapshot {
   rows: readonly QueryRow[]
@@ -94,6 +94,7 @@ export class TablePager {
     return {
       ...(this.query.viewId ? { view_id: this.query.viewId } : { source_id: this.query.sourceId }),
       ...(this.query.filter ? { filter: this.query.filter } : {}),
+      ...(this.query.rowOrder ? { row_order: this.query.rowOrder } : {}),
       ...(this.query.sorts ? { sorts: this.query.sorts } : {}),
       limit,
       ...(cursor ? { cursor } : {}),

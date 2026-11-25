@@ -126,6 +126,11 @@ interface ConversationComposerProps {
    */
   sendBlocked?: boolean
   /**
+   * Texts the host carries out as commands instead of sending them (the text alone, without attachments, reply or
+   * edit), even while sending is blocked.
+   */
+  commands?: Record<string, () => void>
+  /**
    * The answer state's Stop: closes the Turn that asked (`session.stop`,
    * turn scope). Without it the button sends the `/stop` command as text.
    */
@@ -139,7 +144,7 @@ const ConversationComposerInner = forwardRef<
   ConversationComposerHandle,
   ConversationComposerProps
 >(function ConversationComposer(
-  { placeholder, maxHeight, onSendMessage, onQueueChange, initialDraft = '', initialAttachments = [], onAttachmentsChange, onDraftChange, relation = null, onCancelRelation, answer = null, mentionCandidates = [], canMentionAll = false, allowFiles = true, sendBlocked = false, onStopTurn, onReleaseAttachments },
+  { placeholder, maxHeight, onSendMessage, onQueueChange, initialDraft = '', initialAttachments = [], onAttachmentsChange, onDraftChange, relation = null, onCancelRelation, answer = null, mentionCandidates = [], canMentionAll = false, allowFiles = true, sendBlocked = false, commands, onStopTurn, onReleaseAttachments },
   ref,
 ) {
   const { t } = useI18n()
@@ -436,21 +441,22 @@ const ConversationComposerInner = forwardRef<
     void drainSendQueue()
   }, [drainSendQueue, relation, onCancelRelation, picked, mentionAll, answer, reportQueue])
 
+  const draftText = inputValue.trim()
+  const command = attachments.length === 0 && !relation && commands && Object.hasOwn(commands, draftText) ? commands[draftText] : undefined
   const handleSend = useCallback(() => {
-    const text = inputValue.trim()
-
-    if (sendBlocked || (!text && attachments.length === 0)) {
+    if (!command && (sendBlocked || (!draftText && attachments.length === 0))) {
       return
     }
 
-    enqueue(text, attachments)
+    if (command) command()
+    else enqueue(draftText, attachments)
     setOversizeNames([])
     setInputValue('')
     latestDraft.current = ''
     flushDraft()
     setAttachments([])
     inputRef.current?.focus()
-  }, [attachments, enqueue, flushDraft, inputValue, sendBlocked])
+  }, [attachments, command, draftText, enqueue, flushDraft, sendBlocked])
 
   const sendVoice = useCallback((file: File, voice: VoiceNote) => {
     enqueue('', [createAttachmentItem({ file, voice })])
@@ -846,7 +852,7 @@ const ConversationComposerInner = forwardRef<
           {showVoice ? <VoiceRecorder onSend={sendVoice} onActiveChange={handleRecordingChange} /> : (
             <button
               onClick={handleSend}
-              disabled={!hasDraft || sendBlocked}
+              disabled={!hasDraft || (sendBlocked && !command)}
               data-blocked={sendBlocked || undefined}
               className="group flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center disabled:cursor-not-allowed"
               type="button"
@@ -856,10 +862,10 @@ const ConversationComposerInner = forwardRef<
               <span
                 className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
                 style={{
-                  background: hasDraft && !sendBlocked
+                  background: hasDraft && (!sendBlocked || command)
                     ? 'var(--cp-message-self-bg)'
                     : 'color-mix(in srgb, var(--cp-text) 8%, transparent)',
-                  color: hasDraft && !sendBlocked ? 'var(--cp-message-self-text)' : 'color-mix(in srgb, var(--cp-muted) 70%, transparent)',
+                  color: hasDraft && (!sendBlocked || command) ? 'var(--cp-message-self-text)' : 'color-mix(in srgb, var(--cp-muted) 70%, transparent)',
                 }}
               >
                 <Send size={16} />

@@ -3,11 +3,12 @@ use async_trait::async_trait;
 use bns_client::{BnsIndexerApi, BnsIndexerClient};
 use buckyos_api::*;
 use buckyos_http_server::{
-    serve_http_by_rpc_handler, server_err, HttpServer, Runner, ServerError, ServerErrorCode,
-    ServerResult, StreamInfo,
+    serve_http_by_rpc_handler_with_limit, server_err, HttpServer, Runner, ServerError,
+    ServerErrorCode, ServerResult, StreamInfo,
 };
 use buckyos_kit::*;
 use bytes::Bytes;
+use cyfs_dns_provider::SystemDnsLookup;
 use cyfs_gateway_api::{
     SnBnsPublishDocumentContent, SnBnsPublishDocumentReq, SnClient, SnDeviceOnlineReportReq,
     SnZoneInfoResp,
@@ -19,22 +20,38 @@ use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
 use log::*;
 use name_client::{
-    select_authority_current, NameClient, ResolveOpts, Revision, SourceRef, GLOBAL_NAME_CLIENT,
+    select_authority_current, IdentityRoots, NameClient, ResolveOpts, Revision, SourceRef,
+    GLOBAL_NAME_CLIENT,
 };
 use name_lib::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::{Debug, Formatter};
 use std::net::IpAddr;
+use std::path::PathBuf;
 use std::process::exit;
 use std::result::Result;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::domain::check::{CheckReport, DomainBinding};
+use crate::domain::plan::{validate_public_ips, DomainSetup, NetId, SnNames};
+use crate::domain::remote::{
+    read_owner_document, AccountBinding, BnsOwnerKeys, SnChallenge,
+};
+use crate::domain::service::{
+    credential_of, install_domain, remove_credential, remove_other_credentials, run_challenge,
+    ApplyCredential, ApplyResponse, CertificateTool, CommitRequest, DnsServices, DomainCommit,
+    DomainService, IdentityCertificates, InspectCertificateResponse, InspectDomainResponse,
+    PlanResponse, Trial,
+};
+use crate::domain::DomainError;
 use crate::region_probe::RegionProbeController;
-use crate::sn_zone_info::save_sn_zone_info;
+use crate::sn_zone_info::save_sn_zone_info_in;
+use crate::zone_boot_resolve::replace_last_known_zone_state_in;
 
 const ACTIVE_SERVICE_MAIN_PORT: u16 = 3182;
 const DEFAULT_RTCP_PORT: u32 = 2980;
@@ -42,11 +59,47 @@ const MAX_INLINE_DOCUMENT: usize = 4096;
 const OWNER_DERIVATION_PATH: &str = "m/9777'/0'/0'";
 const EVM_DERIVATION_PATH: &str = "m/44'/60'/0'/0/0";
 const PROJECTION_DEADLINE: Duration = Duration::from_secs(60);
+pub(crate) const START_CONFIG_FILE: &str = "start_config.json";
+/// Certificates travel as base64 in the request.
+const MAX_REQUEST_BODY: usize = 2 * 1024 * 1024;
+const CHECK_TRIAL_WAIT: Duration = Duration::from_secs(8);
+/// A browser gives up on a request after 5 minutes (Firefox): the trials of one
+/// commit stay well below.
+const COMMIT_TRIAL_WAIT: Duration = Duration::from_secs(200);
+const SN_TRIAL_STEP_WAIT: Duration = Duration::from_secs(100);
 
 fn parse_params<T: DeserializeOwned>(value: Value, type_name: &str) -> Result<T, RPCErrors> {
     serde_json::from_value(value).map_err(|error| {
         RPCErrors::ParseRequestError(format!("Failed to parse {}: {}", type_name, error))
     })
+}
+
+/// A type error quotes the value it found; here that may be a secret.
+pub(crate) fn parse_secret_params<T: DeserializeOwned>(
+    value: Value,
+    type_name: &str,
+) -> Result<T, RPCErrors> {
+    serde_json::from_value(value).map_err(|error| {
+        let text = error.to_string();
+        let names_fields = ["missing field", "unknown field", "duplicate field"]
+            .iter()
+            .any(|prefix| text.starts_with(prefix));
+        RPCErrors::ParseRequestError(format!(
+            "Failed to parse {}: {}",
+            type_name,
+            if names_fields { text.as_str() } else { "invalid value" }
+        ))
+    })
+}
+
+macro_rules! impl_from_secret_json {
+    ($type:ty) => {
+        impl $type {
+            pub fn from_json(value: Value) -> Result<Self, RPCErrors> {
+                parse_secret_params(value, stringify!($type))
+            }
+        }
+    };
 }
 
 macro_rules! impl_from_json {
@@ -115,7 +168,8 @@ pub struct GatewayTopology {
     pub rtcp_port: u32,
     #[serde(default = "default_true")]
     pub support_container: bool,
-    pub uses_sn_relay: bool,
+    /// `wan` only: the fixed addresses the owner signs.
+    pub public_ips: Vec<IpAddr>,
     pub sn_url: String,
 }
 
@@ -127,7 +181,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct WebOwnerMaterial {
     pub mnemonic_words: Vec<String>,
     pub owner_public_jwk: Value,
@@ -140,6 +194,19 @@ pub struct WebOwnerMaterial {
 struct ActiveServiceConfig {
     sn_base_host: String,
     http_schema: String,
+    /// ACME directory of custom domains instead of Let's Encrypt production.
+    #[serde(default)]
+    acme_issuer: Option<String>,
+}
+
+impl ActiveServiceConfig {
+    fn sn_url(&self) -> String {
+        format!("{}://sn.{}/kapi/sn", self.http_schema, self.sn_base_host)
+    }
+
+    fn bns_url(&self) -> String {
+        format!("{}://bns.{}/kapi/bns", self.http_schema, self.sn_base_host)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -188,7 +255,7 @@ impl_from_json!(StartRegionProbeReq);
 pub struct GetRegionProbeStatusReq {}
 impl_from_json!(GetRegionProbeStatusReq);
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DeviceKeyPair {
     pub public_key: Value,
     pub private_key: String,
@@ -214,15 +281,15 @@ pub struct AssembleZoneDocumentReq {
 }
 impl_from_json!(AssembleZoneDocumentReq);
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignWebActiveDocumentsReq {
     pub mnemonic_words: Vec<String>,
     pub prepared: PreparedActiveDocuments,
 }
-impl_from_json!(SignWebActiveDocumentsReq);
+impl_from_secret_json!(SignWebActiveDocumentsReq);
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalSystemSettings {
     pub admin_password_hash: String,
@@ -233,14 +300,10 @@ pub struct LocalSystemSettings {
     #[serde(default)]
     pub enabled_features: Value,
     #[serde(default)]
-    pub ai_provider_config: Value,
-    #[serde(default)]
-    pub owner_telegram_account_id: String,
-    #[serde(default)]
     pub host_account: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SnCommitConfig {
     pub sn_url: String,
@@ -250,6 +313,17 @@ pub struct SnCommitConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DomainCommitConfig {
+    pub setup: DomainSetup,
+    #[serde(default)]
+    pub credential_id: Option<String>,
+    #[serde(default)]
+    pub certificate_id: Option<String>,
+    pub accept_warnings: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CommitActiveReq {
     pub owner_document: OwnerDocument,
     pub prepared: PreparedActiveDocuments,
@@ -257,8 +331,111 @@ pub struct CommitActiveReq {
     pub device_private_key: String,
     pub system_settings: LocalSystemSettings,
     pub sn: SnCommitConfig,
+    /// Exactly when `names.use_self_domain`.
+    pub domain: Option<DomainCommitConfig>,
 }
-impl_from_json!(CommitActiveReq);
+impl_from_secret_json!(CommitActiveReq);
+
+macro_rules! impl_redacted_debug {
+    ($type:ident { $($field:ident),* }) => {
+        impl Debug for $type {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!($type))
+                    $(.field(stringify!($field), &self.$field))*
+                    .finish_non_exhaustive()
+            }
+        }
+    };
+}
+
+impl_redacted_debug!(WebOwnerMaterial { owner_public_jwk, evm_address });
+impl_redacted_debug!(DeviceKeyPair { public_key });
+impl_redacted_debug!(SignWebActiveDocumentsReq { prepared });
+impl_redacted_debug!(LocalSystemSettings { guest_access, enabled_features, host_account });
+impl_redacted_debug!(SnCommitConfig { sn_url, bns_url });
+impl_redacted_debug!(CommitActiveReq { prepared, system_settings, sn, domain });
+impl_redacted_debug!(ApplyDomainRecordsReq { setup, provider, credential_id, confirm });
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeriveWebOwnerMaterialReq {
+    pub mnemonic_words: Vec<String>,
+}
+impl_from_secret_json!(DeriveWebOwnerMaterialReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoadOwnerDocumentReq {
+    pub owner_name: String,
+}
+impl_from_json!(LoadOwnerDocumentReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListPublicAddressesReq {}
+impl_from_json!(ListPublicAddressesReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListDnsProvidersReq {}
+impl_from_json!(ListDnsProvidersReq);
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InspectDomainReq {
+    pub domain: String,
+    pub net_id: NetId,
+    pub owner_name: String,
+    #[serde(default)]
+    pub access_token: Option<String>,
+}
+impl_from_secret_json!(InspectDomainReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanDomainRecordsReq {
+    pub setup: DomainSetup,
+}
+impl_from_json!(PlanDomainRecordsReq);
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApplyDomainRecordsReq {
+    pub setup: DomainSetup,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub fields: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub credential_id: Option<String>,
+    pub confirm: Vec<String>,
+}
+impl_from_secret_json!(ApplyDomainRecordsReq);
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckDomainRecordsReq {
+    pub setup: DomainSetup,
+    #[serde(default)]
+    pub access_token: Option<String>,
+    #[serde(default)]
+    pub credential_id: Option<String>,
+    #[serde(default)]
+    pub certificate_id: Option<String>,
+}
+impl_from_secret_json!(CheckDomainRecordsReq);
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InspectCertificateReq {
+    pub domain: String,
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub pfx_password: Option<String>,
+}
+impl_from_secret_json!(InspectCertificateReq);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommitActiveResp {
@@ -271,19 +448,228 @@ struct ActiveServer {
     device_mini_info: DeviceMiniInfo,
     config: ActiveServiceConfig,
     region_probe: RegionProbeController,
+    domain: Arc<DomainService>,
+    target: ActivationTarget,
+}
+
+/// The services a commit talks to and what it leaves behind.
+#[derive(Clone)]
+struct ActivationTarget {
+    sn_url: String,
+    bns_url: String,
+    paths: ActivationPaths,
+    /// `None`: the process's own.
+    name_client: Option<Arc<NameClient>>,
+    exit_when_done: bool,
+}
+
+impl ActivationTarget {
+    fn local(config: &ActiveServiceConfig, roots: IdentityRoots) -> Self {
+        Self {
+            sn_url: config.sn_url(),
+            bns_url: config.bns_url(),
+            paths: ActivationPaths {
+                etc_dir: get_buckyos_system_etc_dir(),
+                roots,
+            },
+            name_client: None,
+            exit_when_done: true,
+        }
+    }
+
+    fn name_client(&self) -> Option<&NameClient> {
+        self.name_client
+            .as_deref()
+            .or_else(|| GLOBAL_NAME_CLIENT.get())
+    }
+}
+
+fn active_error(error: DomainError) -> RPCErrors {
+    error.into_rpc_error("active")
+}
+
+fn apply_credential(req: &ApplyDomainRecordsReq) -> Result<ApplyCredential, RPCErrors> {
+    match (&req.provider, &req.fields, &req.credential_id) {
+        (Some(provider), Some(fields), None) => Ok(ApplyCredential::New(credential_of(
+            provider.clone(),
+            fields.clone(),
+            req.endpoint.clone(),
+        ))),
+        (None, None, Some(id)) if req.endpoint.is_none() => Ok(ApplyCredential::Known(id.clone())),
+        _ => Err(RPCErrors::ParseRequestError(
+            "apply needs either provider and fields or credential_id".to_string(),
+        )),
+    }
+}
+
+/// Public addresses of this machine's interfaces.
+fn public_addresses() -> Vec<IpAddr> {
+    let mut addresses = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|interface| interface.ip())
+        .filter(is_public_address)
+        .collect::<Vec<_>>();
+    addresses.sort();
+    addresses.dedup();
+    addresses
+}
+
+fn is_public_address(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                || ip.is_multicast()
+                || ip.is_documentation()
+                || a == 0
+                || a >= 240
+                || (a == 100 && (64..128).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 198 && (18..20).contains(&b)))
+        }
+        // Global unicast without the documentation prefix.
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            segments[0] & 0xe000 == 0x2000 && !(segments[0] == 0x2001 && segments[1] == 0xdb8)
+        }
+    }
+}
+
+/// `wan_dyn` is named in the mini document: the SN answers the reported
+/// address for it. The others are answered by `gateway_ips` or the relay.
+fn device_mini_document(
+    device_document: &DeviceDocument,
+    net_id: &str,
+    iat: u64,
+) -> DeviceMiniDocument {
+    let mut document = DeviceMiniDocument::new_by_device_document(device_document);
+    document.extra_info.insert("iat".to_string(), json!(iat));
+    if net_id == "wan_dyn" {
+        document
+            .extra_info
+            .insert("net_id".to_string(), json!(net_id));
+    }
+    document
 }
 
 impl ActiveServer {
-    fn new(config: ActiveServiceConfig) -> Self {
-        let sn_url = format!(
-            "{}://sn.{}/kapi/sn",
-            config.http_schema, config.sn_base_host
-        );
+    fn new(
+        config: ActiveServiceConfig,
+        domain: Arc<DomainService>,
+        target: ActivationTarget,
+    ) -> Self {
         Self {
             device_mini_info: DeviceMiniInfo::default(),
+            region_probe: RegionProbeController::new(config.sn_url()),
             config,
-            region_probe: RegionProbeController::new(sn_url),
+            domain,
+            target,
         }
+    }
+
+    fn sn_client(&self, access_token: &str) -> Arc<SnClient> {
+        Arc::new(SnClient::new_krpc(
+            self.target.sn_url.as_str(),
+            Some(access_token.to_string()),
+        ))
+    }
+
+    fn binding(&self, access_token: Option<&str>) -> Option<AccountBinding> {
+        access_token
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .map(|token| AccountBinding {
+                sn: self.sn_client(token),
+            })
+    }
+
+    async fn inspect_domain(
+        &self,
+        req: InspectDomainReq,
+    ) -> Result<InspectDomainResponse, RPCErrors> {
+        let binding = self.binding(req.access_token.as_deref());
+        self.domain
+            .inspect_domain(
+                &req.domain,
+                req.net_id,
+                &req.owner_name,
+                binding.as_ref().map(|binding| binding as &dyn DomainBinding),
+            )
+            .await
+            .map_err(active_error)
+    }
+
+    async fn plan_domain_records(
+        &self,
+        req: PlanDomainRecordsReq,
+    ) -> Result<PlanResponse, RPCErrors> {
+        self.domain.plan(&req.setup).await.map_err(active_error)
+    }
+
+    async fn apply_domain_records(
+        &self,
+        req: ApplyDomainRecordsReq,
+    ) -> Result<ApplyResponse, RPCErrors> {
+        let credential = apply_credential(&req)?;
+        self.domain
+            .apply(&req.setup, credential, &req.confirm)
+            .await
+            .map_err(active_error)
+    }
+
+    async fn check_domain_records(
+        &self,
+        req: CheckDomainRecordsReq,
+    ) -> Result<CheckReport, RPCErrors> {
+        let binding = self.binding(req.access_token.as_deref());
+        self.domain
+            .check(
+                &req.setup,
+                binding.as_ref().map(|binding| binding as &dyn DomainBinding),
+                req.credential_id.as_deref(),
+                req.certificate_id.as_deref(),
+                Trial::Run(CHECK_TRIAL_WAIT),
+            )
+            .await
+            .map_err(active_error)
+    }
+
+    async fn inspect_certificate(
+        &self,
+        req: InspectCertificateReq,
+    ) -> Result<InspectCertificateResponse, RPCErrors> {
+        self.domain
+            .inspect_certificate(&req.domain, &req.files, req.pfx_password)
+            .await
+            .map_err(active_error)
+    }
+
+    fn derive_web_owner_material(
+        &self,
+        req: DeriveWebOwnerMaterialReq,
+    ) -> Result<WebOwnerMaterial, RPCErrors> {
+        let words = req
+            .mnemonic_words
+            .iter()
+            .map(|word| word.trim().to_lowercase())
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>();
+        web_owner_material(words.join(" ").as_str())
+            .map_err(|_| active_error(DomainError::new("mnemonic_invalid", "")))
+    }
+
+    async fn load_owner_document(&self, req: LoadOwnerDocumentReq) -> Result<Value, RPCErrors> {
+        let owner_name = req.owner_name.trim().to_lowercase();
+        let document = read_owner_document(self.target.bns_url.as_str(), owner_name.as_str())
+            .await
+            .map_err(active_error)?
+            .ok_or_else(|| active_error(DomainError::new("owner_not_found", owner_name)))?;
+        Ok(json!({ "owner_document": document }))
     }
 
     async fn auto_fill_device_mini_info(&mut self) {
@@ -296,20 +682,7 @@ impl ActiveServer {
     fn generate_web_owner_material(&self) -> Result<WebOwnerMaterial, RPCErrors> {
         let mnemonic = generate_buckyos_mnemonic()
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        let owner = derive_bucky_key_from_mnemonic(mnemonic.as_str(), None, 0)
-            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        let evm = derive_evm_key_from_mnemonic(mnemonic.as_str(), None, 0)
-            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        Ok(WebOwnerMaterial {
-            mnemonic_words: mnemonic
-                .split_whitespace()
-                .map(ToString::to_string)
-                .collect(),
-            owner_public_jwk: owner.public_jwk,
-            owner_derivation_path: OWNER_DERIVATION_PATH.to_string(),
-            evm_address: evm.address,
-            evm_derivation_path: EVM_DERIVATION_PATH.to_string(),
-        })
+        web_owner_material(mnemonic.as_str())
     }
 
     async fn prepare_active_documents(
@@ -334,15 +707,10 @@ impl ActiveServer {
         };
         let ood =
             OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, ood_net_id, None);
-        let sn_relay_host = if req.topology.uses_sn_relay {
-            Some(sn_host_from_url(req.topology.sn_url.as_str())?)
-        } else {
-            None
-        };
         let boot_document = ZoneBootDocument {
             id: Some(req.names.zone_did.clone()),
             oods: vec![ood],
-            sn: sn_relay_host,
+            sn: Some(sn_host_from_url(req.topology.sn_url.as_str())?),
             exp,
             owner: None,
             owner_key: None,
@@ -359,17 +727,15 @@ impl ActiveServer {
         device_document.net_id = Some(req.topology.net_id.clone());
         device_document.rtcp_port = Some(req.topology.rtcp_port);
         device_document.support_container = req.topology.support_container;
-        device_document.ddns_sn_url = if req.topology.uses_sn_relay {
-            Some(req.topology.sn_url.clone())
-        } else {
-            None
-        };
+        device_document.ddns_sn_url = Some(req.topology.sn_url.clone());
+        device_document.ips = req.topology.public_ips.clone();
         device_document.iat = device_iat;
         device_document.exp = exp;
-        let mut device_mini_document = DeviceMiniDocument::new_by_device_document(&device_document);
-        device_mini_document
-            .extra_info
-            .insert("iat".to_string(), json!(device_mini_iat));
+        let device_mini_document = device_mini_document(
+            &device_document,
+            req.topology.net_id.as_str(),
+            device_mini_iat,
+        );
         let mut device_info = DeviceInfo::from_device_doc(&device_document);
         device_info
             .auto_fill_by_system_info()
@@ -467,10 +833,32 @@ impl ActiveServer {
 
     async fn commit_active(&self, req: CommitActiveReq) -> Result<CommitActiveResp, RPCErrors> {
         validate_commit_request(&req, &self.config)?;
-        if req.prepared.names.use_self_domain {
-            wait_for_device_authority(&req).await?;
-        }
-        let bns_client = BnsIndexerClient::new_bns_server_url(req.sn.bns_url.as_str(), None);
+        let sn_client = self.sn_client(req.sn.access_token.as_str());
+        let domain_commit = match req.domain.as_ref() {
+            None => None,
+            Some(domain) => {
+                let binding = AccountBinding {
+                    sn: sn_client.clone(),
+                };
+                Some(
+                    self.domain
+                        .prepare_commit(
+                            &CommitRequest {
+                                setup: &domain.setup,
+                                credential_id: domain.credential_id.as_deref(),
+                                certificate_id: domain.certificate_id.as_deref(),
+                                accept_warnings: domain.accept_warnings,
+                            },
+                            Some(&binding),
+                            self.config.acme_issuer.clone(),
+                            Trial::Run(COMMIT_TRIAL_WAIT),
+                        )
+                        .await
+                        .map_err(active_error)?,
+                )
+            }
+        };
+        let bns_client = BnsIndexerClient::new_bns_server_url(self.target.bns_url.as_str(), None);
         let projected = bns_client
             .resolve_document(req.prepared.names.bns_publish_name.as_str(), "owner")
             .await
@@ -486,18 +874,6 @@ impl ActiveServer {
             &req.prepared.names.zone_did,
             req.signed_documents.zone_document.iat,
         )?;
-        let sn_client =
-            SnClient::new_krpc(req.sn.sn_url.as_str(), Some(req.sn.access_token.clone()));
-
-        if req.prepared.names.use_self_domain {
-            let domain = req.prepared.names.access_hostname.as_str();
-            let result = sn_client.bind_domain(domain).await?;
-            if result.domain != domain {
-                return Err(RPCErrors::ReasonError(
-                    "SN verified a different custom domain".to_string(),
-                ));
-            }
-        }
 
         if needs_owner_publish {
             let owner_value = serde_json::to_value(&effective_owner)
@@ -601,7 +977,9 @@ impl ActiveServer {
             .await?;
         }
 
-        wait_for_device_authority(&req).await?;
+        if req.prepared.device_document.id.method == "bns" {
+            wait_for_device_authority(self.target.name_client(), &req).await?;
+        }
 
         let device_key_did = device_key_did_from_doc(&req.prepared.device_document)?;
         sn_client
@@ -613,6 +991,17 @@ impl ActiveServer {
             .await?;
         let zone_info = sn_client.get_zone_info().await?;
         validate_sn_zone_info(&req, &zone_info)?;
+
+        if let Some(commit) = domain_commit.as_ref() {
+            if commit.hosting.mode == DomainHostingMode::Sn && commit.hosting.uses_acme() {
+                self.check_sn_challenge(
+                    sn_client.clone(),
+                    device_key_did,
+                    commit.hosting.domain.as_str(),
+                )
+                .await?;
+            }
+        }
 
         let owner_value = serde_json::to_value(&effective_owner)
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
@@ -629,9 +1018,21 @@ impl ActiveServer {
             ));
         }
 
-        persist_activation(&req, &effective_owner, &zone_info)?;
+        persist_activation(
+            &self.target.paths,
+            self.domain.certificates(),
+            &req,
+            &effective_owner,
+            &zone_info,
+            domain_commit.as_ref(),
+        )?;
+        crate::host_account::save_in(
+            &self.target.paths.etc_dir,
+            req.system_settings.host_account.as_str(),
+        )
+        .map_err(RPCErrors::ReasonError)?;
 
-        if let Some(name_client) = GLOBAL_NAME_CLIENT.get() {
+        if let Some(name_client) = self.target.name_client() {
             // 激活时签出的 Zone Document 以本机配置 trust 候选投递(不改变 latest)。
             if let Err(error) = name_client
                 .commit_candidate_doc(
@@ -649,15 +1050,54 @@ impl ActiveServer {
             warn!("Name client not initialized; skip activated zone document cache projection");
         }
 
-        tokio::task::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            exit(0);
-        });
+        if self.target.exit_when_done {
+            tokio::task::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                exit(0);
+            });
+        }
 
         Ok(CommitActiveResp {
             status: "completed".to_string(),
             access_hostname: req.prepared.names.access_hostname,
         })
+    }
+
+    /// The SN only takes records of a registered device, so the trial of an SN
+    /// hosted domain waits for `device.register`. Nothing of this node's
+    /// identity is written yet.
+    async fn check_sn_challenge(
+        &self,
+        sn: Arc<SnClient>,
+        device_did: String,
+        domain: &str,
+    ) -> Result<(), RPCErrors> {
+        let mut timing = self.domain.timing();
+        timing.authoritative = timing.authoritative.min(SN_TRIAL_STEP_WAIT);
+        timing.public = timing.public.min(SN_TRIAL_STEP_WAIT);
+        let trial = tokio::spawn(run_challenge(
+            self.domain.lookup.clone(),
+            Arc::new(SnChallenge { sn, device_did }),
+            domain.to_string(),
+            vec![self.domain.names.name_server()],
+            timing,
+        ));
+        let failure = match trial.await {
+            Ok(outcome) => outcome.failure,
+            Err(error) => {
+                return Err(active_error(DomainError::new(
+                    "sn_challenge_failed",
+                    error.to_string(),
+                )))
+            }
+        };
+        match failure {
+            None => Ok(()),
+            Some(failure) => Err(active_error(DomainError::new(
+                "sn_challenge_failed",
+                format!("{}: {}", failure.code, failure.detail),
+            ))),
+        }
     }
 
     async fn handle_get_mini_device_info(
@@ -676,8 +1116,28 @@ impl ActiveServer {
     }
 }
 
-async fn wait_for_device_authority(req: &CommitActiveReq) -> Result<(), RPCErrors> {
-    let client = GLOBAL_NAME_CLIENT.get().ok_or_else(|| {
+fn web_owner_material(mnemonic: &str) -> Result<WebOwnerMaterial, RPCErrors> {
+    let owner = derive_bucky_key_from_mnemonic(mnemonic, None, 0)
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    let evm = derive_evm_key_from_mnemonic(mnemonic, None, 0)
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    Ok(WebOwnerMaterial {
+        mnemonic_words: mnemonic
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect(),
+        owner_public_jwk: owner.public_jwk,
+        owner_derivation_path: OWNER_DERIVATION_PATH.to_string(),
+        evm_address: evm.address,
+        evm_derivation_path: EVM_DERIVATION_PATH.to_string(),
+    })
+}
+
+async fn wait_for_device_authority(
+    client: Option<&NameClient>,
+    req: &CommitActiveReq,
+) -> Result<(), RPCErrors> {
+    let client = client.ok_or_else(|| {
         RPCErrors::ReasonError("Device authority validation requires NameClient".into())
     })?;
     let deadline = Instant::now() + PROJECTION_DEADLINE;
@@ -836,12 +1296,8 @@ fn validate_topology(topology: &GatewayTopology) -> Result<(), RPCErrors> {
             "SN control-plane URL is required".to_string(),
         ));
     }
-    if topology.net_id == "wan" && topology.uses_sn_relay {
-        return Err(RPCErrors::ReasonError(
-            "WAN topology cannot use SN relay".to_string(),
-        ));
-    }
-    Ok(())
+    validate_public_ips(topology.net_id.as_str(), &topology.public_ips)
+        .map_err(RPCErrors::ReasonError)
 }
 
 fn validate_prepared_relationships(prepared: &PreparedActiveDocuments) -> Result<(), RPCErrors> {
@@ -889,11 +1345,7 @@ fn validate_prepared_relationships(prepared: &PreparedActiveDocuments) -> Result
         },
         None,
     );
-    let expected_sn = if topology.uses_sn_relay {
-        Some(sn_host_from_url(topology.sn_url.as_str())?)
-    } else {
-        None
-    };
+    let expected_sn = Some(sn_host_from_url(topology.sn_url.as_str())?);
     if boot.oods != vec![expected_ood] || boot.sn != expected_sn {
         return Err(RPCErrors::ReasonError(
             "BootDocument OOD/SN topology mismatch".to_string(),
@@ -901,7 +1353,7 @@ fn validate_prepared_relationships(prepared: &PreparedActiveDocuments) -> Result
     }
     let expected_device_did =
         build_device_did("ood1", &names.zone_did).map_err(RPCErrors::ReasonError)?;
-    let expected_ddns_sn_url = topology.uses_sn_relay.then(|| topology.sn_url.clone());
+    let expected_ddns_sn_url = Some(topology.sn_url.clone());
     if device.id != expected_device_did {
         return Err(RPCErrors::ReasonError(format!(
             "DeviceDocument id mismatch: expected {:?}, got {:?}",
@@ -955,10 +1407,14 @@ fn validate_prepared_relationships(prepared: &PreparedActiveDocuments) -> Result
             expected_ddns_sn_url, device.ddns_sn_url
         )));
     }
-    let mut expected_device_mini = DeviceMiniDocument::new_by_device_document(device);
-    expected_device_mini
-        .extra_info
-        .insert("iat".to_string(), json!(device_mini_iat));
+    if device.ips != topology.public_ips {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument ips mismatch: expected {:?}, got {:?}",
+            topology.public_ips, device.ips
+        )));
+    }
+    let expected_device_mini =
+        device_mini_document(device, topology.net_id.as_str(), device_mini_iat);
     if prepared.device_mini_document != expected_device_mini {
         return Err(RPCErrors::ReasonError(
             "DeviceMiniDocument differs from DeviceDocument".to_string(),
@@ -1247,6 +1703,12 @@ fn assemble_zone_document_internal(
     zone_document.owner = prepared.names.owner_did.clone();
     zone_document.iat = next_document_iat("DeviceDocument", prepared.device_document.iat)?;
     zone_document.hostname = prepared.names.access_hostname.clone();
+    if !prepared.topology.public_ips.is_empty() {
+        zone_document.extra_info.insert(
+            "gateway_ips".to_string(),
+            json!(prepared.topology.public_ips),
+        );
+    }
     zone_document.devices.insert(
         prepared.device_document.name.clone(),
         prepared.device_document.clone(),
@@ -1388,6 +1850,7 @@ fn validate_commit_request(
     req.prepared.names.validate(&req.owner_document)?;
     validate_topology(&req.prepared.topology)?;
     validate_commit_endpoints(req, config)?;
+    validate_domain_commit(req)?;
     validate_prepared_relationships(&req.prepared)?;
     verify_signed_documents(&req.prepared, &req.signed_documents)?;
     validate_document_times(&req.prepared)?;
@@ -1412,6 +1875,29 @@ fn validate_commit_request(
         req.system_settings.host_account.as_str(),
         &crate::host_account::available_accounts(),
     )
+}
+
+fn validate_domain_commit(req: &CommitActiveReq) -> Result<(), RPCErrors> {
+    let names = &req.prepared.names;
+    if req.domain.is_some() != names.use_self_domain {
+        return Err(RPCErrors::ReasonError(
+            "domain goes with use_self_domain, and only with it".to_string(),
+        ));
+    }
+    let Some(setup) = req.domain.as_ref().map(|domain| &domain.setup) else {
+        return Ok(());
+    };
+    let topology = &req.prepared.topology;
+    if setup.domain != names.access_hostname
+        || setup.owner_name != names.owner_name
+        || setup.net_id.as_str() != topology.net_id
+        || setup.public_ips != topology.public_ips
+    {
+        return Err(RPCErrors::ReasonError(
+            "domain setup differs from the prepared documents".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_host_account(account: &str, available: &[String]) -> Result<(), RPCErrors> {
@@ -1597,8 +2083,12 @@ async fn wait_for_json_projection(
     )))
 }
 
-fn build_start_config(req: &CommitActiveReq, owner_document: &OwnerDocument) -> Value {
-    json!({
+fn build_start_config(
+    req: &CommitActiveReq,
+    owner_document: &OwnerDocument,
+    hosting: Option<&DomainHosting>,
+) -> Value {
+    let mut config = json!({
         "schema": buckyos_api::START_CONFIG_SCHEMA,
         "user_name": owner_document.name,
         "owner_document": owner_document,
@@ -1612,57 +2102,90 @@ fn build_start_config(req: &CommitActiveReq, owner_document: &OwnerDocument) -> 
         "admin_password_hash": req.system_settings.admin_password_hash,
         "guest_access": req.system_settings.guest_access,
         "friend_passcode": req.system_settings.friend_passcode,
-        "enabled_features": req.system_settings.enabled_features,
-        "ai_provider_config": req.system_settings.ai_provider_config,
-        "owner_telegram_account_id": req.system_settings.owner_telegram_account_id.trim()
-    })
+        "enabled_features": req.system_settings.enabled_features
+    });
+    if let Some(hosting) = hosting {
+        config[buckyos_api::START_CONFIG_DOMAIN_HOSTING] = json!(hosting);
+    }
+    config
 }
 
+#[derive(Clone)]
+struct ActivationPaths {
+    etc_dir: PathBuf,
+    roots: IdentityRoots,
+}
+
+/// The credential and the certificate go first, the identity that marks the
+/// node as activated after them.
 fn persist_activation(
+    paths: &ActivationPaths,
+    certificates: &dyn CertificateTool,
     req: &CommitActiveReq,
     effective_owner: &OwnerDocument,
     zone_info: &SnZoneInfoResp,
+    domain: Option<&DomainCommit>,
 ) -> Result<(), RPCErrors> {
-    let etc_dir = get_buckyos_system_etc_dir();
-    let start_config = serde_json::to_vec_pretty(&build_start_config(req, effective_owner))
-        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-    let security_root = identity_roots()
-        .map_err(RPCErrors::ReasonError)?
-        .security_root;
+    if let Some(domain) = domain {
+        install_domain(&paths.roots.security_root, certificates, domain)
+            .map_err(RPCErrors::ReasonError)?;
+    }
+    let credential_id = domain.and_then(|domain| domain.hosting.credential_id.as_deref());
+    if let Err(error) = write_activation(paths, req, effective_owner, zone_info, domain) {
+        if let Some(id) = credential_id {
+            remove_credential(&paths.roots.security_root, id);
+        }
+        return Err(RPCErrors::ReasonError(error));
+    }
+    remove_other_credentials(&paths.roots.security_root, credential_id);
+    replace_last_known_zone_state_in(
+        paths.etc_dir.as_path(),
+        &req.signed_documents.zone_document,
+    );
+    Ok(())
+}
+
+fn write_activation(
+    paths: &ActivationPaths,
+    req: &CommitActiveReq,
+    effective_owner: &OwnerDocument,
+    zone_info: &SnZoneInfoResp,
+    domain: Option<&DomainCommit>,
+) -> Result<(), String> {
+    let etc_dir = paths.etc_dir.as_path();
+    let start_config = serde_json::to_vec_pretty(&build_start_config(
+        req,
+        effective_owner,
+        domain.map(|domain| &domain.hosting),
+    ))
+    .map_err(|error| error.to_string())?;
     atomic_write(
-        security_root.join("start_config.json").as_path(),
+        paths.roots.security_root.join(START_CONFIG_FILE).as_path(),
         &start_config,
-    )
-    .map_err(RPCErrors::ReasonError)?;
-    save_sn_zone_info(zone_info).map_err(RPCErrors::ReasonError)?;
-    save_zone_document_jwt(
-        etc_dir.as_path(),
-        req.signed_documents.zone_document_jwt.as_str(),
-    )
-    .map_err(RPCErrors::ReasonError)?;
+    )?;
+    save_sn_zone_info_in(etc_dir, zone_info)?;
+    save_zone_document_jwt(etc_dir, req.signed_documents.zone_document_jwt.as_str())?;
 
     let device = &req.prepared.device_document;
     let node_identity = LocalNodeIdentityConfig::new(
         req.prepared.names.zone_did.clone(),
         req.prepared.names.owner_did.clone(),
-        effective_owner.get_default_key().ok_or_else(|| {
-            RPCErrors::ReasonError("OwnerDocument default key is missing".to_string())
-        })?,
+        effective_owner
+            .get_default_key()
+            .ok_or_else(|| "OwnerDocument default key is missing".to_string())?,
         device.name.clone(),
         device.id.clone(),
         req.signed_documents.zone_document.iat as u32,
     );
-    save_local_device_identity(
-        etc_dir.as_path(),
+    save_local_device_identity_for_roots(
+        etc_dir,
+        &paths.roots,
         &node_identity,
         device,
         req.signed_documents.device_document_jwt.as_str(),
         req.signed_documents.device_mini_document_jwt.as_str(),
         req.device_private_key.as_str(),
-    )
-    .map_err(RPCErrors::ReasonError)?;
-    crate::host_account::save(req.system_settings.host_account.as_str())
-        .map_err(RPCErrors::ReasonError)?;
+    )?;
     Ok(())
 }
 
@@ -1701,6 +2224,42 @@ impl RPCHandler for ActiveServer {
                 json!({ "accounts": crate::host_account::available_accounts() }),
                 seq,
             ),
+            "derive_web_owner_material" => {
+                let params = DeriveWebOwnerMaterialReq::from_json(req.params)?;
+                rpc_success(self.derive_web_owner_material(params)?, seq)
+            }
+            "load_owner_document" => {
+                let params = LoadOwnerDocumentReq::from_json(req.params)?;
+                rpc_success(self.load_owner_document(params).await?, seq)
+            }
+            "list_public_addresses" => {
+                ListPublicAddressesReq::from_json(req.params)?;
+                rpc_success(json!({ "addresses": public_addresses() }), seq)
+            }
+            "list_dns_providers" => {
+                ListDnsProvidersReq::from_json(req.params)?;
+                rpc_success(json!({ "providers": DomainService::list_providers() }), seq)
+            }
+            "inspect_domain" => {
+                let params = InspectDomainReq::from_json(req.params)?;
+                rpc_success(self.inspect_domain(params).await?, seq)
+            }
+            "plan_domain_records" => {
+                let params = PlanDomainRecordsReq::from_json(req.params)?;
+                rpc_success(self.plan_domain_records(params).await?, seq)
+            }
+            "apply_domain_records" => {
+                let params = ApplyDomainRecordsReq::from_json(req.params)?;
+                rpc_success(self.apply_domain_records(params).await?, seq)
+            }
+            "check_domain_records" => {
+                let params = CheckDomainRecordsReq::from_json(req.params)?;
+                rpc_success(self.check_domain_records(params).await?, seq)
+            }
+            "inspect_certificate" => {
+                let params = InspectCertificateReq::from_json(req.params)?;
+                rpc_success(self.inspect_certificate(params).await?, seq)
+            }
             "start_region_probe" => {
                 let params = StartRegionProbeReq::from_json(req.params)?;
                 rpc_success(self.region_probe.start(params.force).await, seq)
@@ -1738,7 +2297,7 @@ impl HttpServer for ActiveServer {
         info: StreamInfo,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
         if *req.method() == Method::POST {
-            return serve_http_by_rpc_handler(req, info, self).await;
+            return serve_http_by_rpc_handler_with_limit(req, info, self, MAX_REQUEST_BODY).await;
         }
         if *req.method() == Method::GET && req.uri().path() == "/device" {
             return self.handle_get_mini_device_info(req).await;
@@ -1765,7 +2324,7 @@ impl HttpServer for ActiveServer {
 pub async fn start_node_active_service() {
     let active_server_dir = get_buckyos_system_bin_dir().join("node-active");
     let config_path = active_server_dir.join("active_config.json");
-    let config = match std::fs::read(&config_path)
+    let config: ActiveServiceConfig = match std::fs::read(&config_path)
         .map_err(|error| error.to_string())
         .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
     {
@@ -1779,7 +2338,26 @@ pub async fn start_node_active_service() {
         }
     };
     let runner = Runner::new(ACTIVE_SERVICE_MAIN_PORT);
-    let mut active_server = ActiveServer::new(config);
+    let roots = match identity_roots() {
+        Ok(roots) => roots,
+        Err(error) => {
+            error!("Failed to load identity roots: {}", error);
+            return;
+        }
+    };
+    let domain = Arc::new(DomainService::new(
+        SnNames::new(config.sn_base_host.as_str()),
+        SystemDnsLookup::new(),
+        Arc::new(DnsServices),
+        Arc::new(BnsOwnerKeys {
+            bns_url: config.bns_url(),
+        }),
+        Arc::new(IdentityCertificates {
+            roots: roots.clone(),
+        }),
+    ));
+    let target = ActivationTarget::local(&config, roots);
+    let mut active_server = ActiveServer::new(config, domain, target);
     active_server.auto_fill_device_mini_info().await;
     let active_server = Arc::new(active_server);
     if let Err(error) = runner.add_http_server("/kapi/active".to_string(), active_server.clone()) {
@@ -1801,6 +2379,14 @@ pub async fn start_node_active_service() {
         error!("active server stopped: {:?}", error);
     }
 }
+
+#[cfg(test)]
+#[path = "active_commit_tests.rs"]
+mod commit_tests;
+
+#[cfg(test)]
+#[path = "active_sn_tests.rs"]
+mod sn_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1840,8 +2426,16 @@ mod tests {
             net_id: "nat".to_string(),
             rtcp_port: DEFAULT_RTCP_PORT,
             support_container: true,
-            uses_sn_relay: true,
+            public_ips: Vec::new(),
             sn_url: "https://sn.example.com/kapi/sn".to_string(),
+        }
+    }
+
+    fn topology_of(net_id: &str, public_ips: &[&str]) -> GatewayTopology {
+        GatewayTopology {
+            net_id: net_id.to_string(),
+            public_ips: public_ips.iter().map(|ip| ip.parse().unwrap()).collect(),
+            ..topology()
         }
     }
 
@@ -1849,6 +2443,95 @@ mod tests {
         ActiveServiceConfig {
             sn_base_host: "example.com".to_string(),
             http_schema: "https".to_string(),
+            acme_issuer: None,
+        }
+    }
+
+    fn active_server() -> ActiveServer {
+        let config = active_service_config();
+        let target = ActivationTarget::local(
+            &config,
+            identity_roots_for_buckyos_root(std::path::Path::new("/nonexistent")),
+        );
+        ActiveServer::new(
+            config,
+            Arc::new(crate::domain::testing::fake_service()),
+            target,
+        )
+    }
+
+    const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    async fn signed_documents(
+        domain: Option<&str>,
+        topology: GatewayTopology,
+    ) -> (PreparedActiveDocuments, SignedActiveDocuments, String) {
+        let owner = owner_document(MNEMONIC);
+        let names = ActiveNameMapping::derive(
+            &owner,
+            domain.unwrap_or("alice.web3.example.com"),
+            domain.is_some(),
+        );
+        let (device_private_key, device_public_key) = generate_ed25519_key_pair();
+        let server = active_server();
+        let prepared = server
+            .prepare_active_documents(PrepareActiveDocumentsReq {
+                owner_document: owner,
+                names,
+                topology,
+                device_public_key,
+            })
+            .await
+            .unwrap();
+        validate_prepared_relationships(&prepared).unwrap();
+        let signed = server
+            .sign_web_active_documents(SignWebActiveDocumentsReq {
+                mnemonic_words: MNEMONIC.split_whitespace().map(ToString::to_string).collect(),
+                prepared: prepared.clone(),
+            })
+            .unwrap();
+        verify_signed_documents(&prepared, &signed).unwrap();
+        (prepared, signed, device_private_key)
+    }
+
+    fn commit_request(
+        prepared: &PreparedActiveDocuments,
+        signed: SignedActiveDocuments,
+        device_private_key: &str,
+        domain: Option<DomainCommitConfig>,
+    ) -> CommitActiveReq {
+        CommitActiveReq {
+            owner_document: prepared.owner_document.clone(),
+            prepared: prepared.clone(),
+            signed_documents: signed,
+            device_private_key: device_private_key.to_string(),
+            system_settings: LocalSystemSettings {
+                admin_password_hash: "required-admin-hash".to_string(),
+                guest_access: false,
+                friend_passcode: String::new(),
+                enabled_features: json!({}),
+                host_account: String::new(),
+            },
+            sn: SnCommitConfig {
+                sn_url: "https://sn.example.com/kapi/sn/".to_string(),
+                bns_url: "https://bns.example.com/kapi/bns".to_string(),
+                access_token: "secret-access-token".to_string(),
+            },
+            domain,
+        }
+    }
+
+    fn sn_zone_info() -> SnZoneInfoResp {
+        SnZoneInfoResp {
+            code: 0,
+            zone: "alice".to_string(),
+            bns_name: "alice".to_string(),
+            relay_sn: Some("relay.example.com".to_string()),
+            self_cert: false,
+            cert_checked_at: None,
+            cert_expires_at: None,
+            source_version: Some("v2".to_string()),
+            updated_at: 1,
         }
     }
 
@@ -1860,7 +2543,7 @@ mod tests {
         let owner = owner_document(mnemonic);
         let names = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
         let (_, device_public_key) = generate_ed25519_key_pair();
-        let server = ActiveServer::new(active_service_config());
+        let server = active_server();
         let prepared = server
             .prepare_active_documents(PrepareActiveDocumentsReq {
                 owner_document: owner,
@@ -1894,66 +2577,85 @@ mod tests {
     }
 
 
-    #[tokio::test]
-    async fn custom_web_authority_is_available_before_node_boot_and_rejects_stale_artifacts() {
-        use name_client::{CacheBackend, NameClientConfig, WebProvider};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::sync::RwLock;
+    struct PublishedDevice(std::sync::Mutex<Option<EncodedDocument>>);
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (pem, public) = generate_ed25519_key_pair();
-        let key = EncodingKey::from_ed_pem(pem.as_bytes()).unwrap();
-        let device_did = DID::new("web", &format!("127.0.0.1%3A{port}"));
-        let mut device = new_device_config_by_jwk_with_did(
-            "ood1", serde_json::from_value(public).unwrap(), &device_did,
-        ).unwrap();
-        device.owner = DID::new("bns", "alice");
-        device.zone_did = Some(DID::new("web", "home.example.com"));
-        let jwt = device.encode(Some(&key)).unwrap().to_string();
-        let published = Arc::new(RwLock::new(Some(jwt.clone())));
-        let state = published.clone();
-        let task = tokio::spawn(async move {
-            loop {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = vec![0; 8192];
-                let len = stream.read(&mut request).await.unwrap();
-                let request_line = String::from_utf8_lossy(&request[..len]).to_string();
-                assert!(
-                    request_line.starts_with("GET /.well-known/device.json ")
-                        || request_line.starts_with("GET /.well-known/did.json "),
-                    "unexpected request: {request_line}"
-                );
-                let body = state.read().await.clone();
-                let status = if body.is_some() { "200 OK" } else { "404 Not Found" };
-                let body = body.unwrap_or_default();
-                let response = format!("HTTP/1.1 {status}\r\nContent-Type: application/jwt\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-                stream.write_all(response.as_bytes()).await.unwrap();
+    #[async_trait]
+    impl name_client::Source for PublishedDevice {
+        fn id(&self) -> String {
+            "published-device".to_string()
+        }
+
+        async fn get_document(
+            &self,
+            _did: &DID,
+            _doc_type: &DidDocType,
+            _revision: &Revision,
+            _opts: &ResolveOpts,
+        ) -> name_client::SourceAnswer {
+            let answer = name_client::SourceAnswer::new(SourceRef::provider(
+                self.id(),
+                name_client::SourceTier::Authority,
+            ));
+            match self.0.lock().unwrap().clone() {
+                Some(document) => answer.with_body(document, name_client::Carrier::Body),
+                None => answer,
             }
-        });
+        }
+    }
+
+    #[tokio::test]
+    async fn the_published_bns_device_is_accepted_and_stale_ones_are_not() {
+        use name_client::{CacheBackend, NameClientConfig};
+
+        let owner = derive_bucky_key_from_mnemonic(MNEMONIC, None, 0).unwrap();
+        let key = EncodingKey::from_ed_pem(owner.private_key_pem.as_bytes()).unwrap();
+        let (_, public) = generate_ed25519_key_pair();
+        let mut device = new_device_config_by_jwk_with_did(
+            "ood1",
+            serde_json::from_value(public).unwrap(),
+            &DID::new("bns", "ood1.alice"),
+        )
+        .unwrap();
+        device.owner = DID::new("bns", "alice");
+        device.zone_did = Some(DID::new("bns", "alice"));
+        let jwt = device.encode(Some(&key)).unwrap().to_string();
+        let published = Arc::new(PublishedDevice(std::sync::Mutex::new(Some(
+            EncodedDocument::Jwt(jwt.clone()),
+        ))));
         let client = NameClient::new(NameClientConfig {
-            cache_backend: CacheBackend::Memory, enable_zone_locker: false, ..Default::default()
+            cache_backend: CacheBackend::Memory,
+            enable_zone_locker: false,
+            ..Default::default()
         });
-        client.set_method_authority("web", Arc::new(WebProvider::new_with_scheme("http")));
+        client.set_method_authority("bns", published.clone());
+        client.lock_document(
+            DID::new("bns", "alice"),
+            DidDocType::Owner,
+            EncodedDocument::JsonLd(serde_json::to_value(owner_document(MNEMONIC)).unwrap()),
+            name_client::LockOptions {
+                scope: "test".to_string(),
+                simulate_history: true,
+                ..Default::default()
+            },
+        );
+        let publish = |document: Option<EncodedDocument>| *published.0.lock().unwrap() = document;
+
         check_device_authority(&client, &device, &jwt).await.unwrap();
-        *published.write().await = None;
+        publish(None);
         assert!(check_device_authority(&client, &device, &jwt).await.is_err());
-        *published.write().await = Some(device.encode(Some(&key)).unwrap().to_json_value().unwrap().to_string());
+        let json = device.encode(Some(&key)).unwrap().to_json_value().unwrap();
+        publish(Some(EncodedDocument::JsonLd(json)));
         assert!(check_device_authority(&client, &device, &jwt).await.is_err());
         let mut replaced = device.clone();
         replaced.iat += 1;
         let replacement = replaced.encode(Some(&key)).unwrap().to_string();
-        *published.write().await = Some(replacement.clone());
+        publish(Some(EncodedDocument::Jwt(replacement.clone())));
         assert!(check_device_authority(&client, &device, &jwt).await.is_err());
         check_device_authority(&client, &replaced, &replacement).await.unwrap();
         replaced.exp = buckyos_get_unix_timestamp() - 1;
         let expired = replaced.encode(Some(&key)).unwrap().to_string();
-        *published.write().await = Some(expired.clone());
+        publish(Some(EncodedDocument::Jwt(expired.clone())));
         assert!(check_device_authority(&client, &replaced, &expired).await.is_err());
-        *published.write().await = Some(jwt.clone());
-        check_device_authority(&client, &device, &jwt).await.unwrap();
-        task.abort();
-        let _ = task.await;
     }
 
     #[test]
@@ -1966,6 +2668,74 @@ mod tests {
         assert!(GenerateWebOwnerMaterialReq::from_json(json!({"extra": true})).is_err());
         assert!(StartRegionProbeReq::from_json(json!({"extra": true})).is_err());
         assert!(GetRegionProbeStatusReq::from_json(json!({"extra": true})).is_err());
+        assert!(ListPublicAddressesReq::from_json(json!({})).is_ok());
+        assert!(ListPublicAddressesReq::from_json(json!({"extra": true})).is_err());
+        assert!(ListDnsProvidersReq::from_json(json!({})).is_ok());
+        assert!(ListDnsProvidersReq::from_json(json!({"extra": true})).is_err());
+        let words = json!({"mnemonic_words": ["abandon"]});
+        assert!(DeriveWebOwnerMaterialReq::from_json(words).is_ok());
+        assert!(DeriveWebOwnerMaterialReq::from_json(json!({})).is_err());
+        assert!(LoadOwnerDocumentReq::from_json(json!({"owner_name": "alice"})).is_ok());
+        assert!(LoadOwnerDocumentReq::from_json(json!({})).is_err());
+        let setup = json!({"domain": "home.example.org", "mode": "dns_api", "certificate": "acme",
+            "net_id": "nat", "public_ips": [], "owner_name": "alice"});
+        fn accepts<T>(
+            parse: impl Fn(Value) -> Result<T, RPCErrors>,
+            value: Value,
+        ) {
+            assert!(parse(value.clone()).is_ok(), "{value}");
+            let mut extra = value.clone();
+            extra["extra"] = json!(true);
+            assert!(parse(extra).is_err(), "{value}");
+            assert!(parse(json!({})).is_err(), "{value}");
+        }
+        accepts(
+            InspectDomainReq::from_json,
+            json!({"domain": "home.example.org", "net_id": "wan", "owner_name": "alice"}),
+        );
+        accepts(PlanDomainRecordsReq::from_json, json!({"setup": setup}));
+        accepts(
+            ApplyDomainRecordsReq::from_json,
+            json!({"setup": setup, "provider": "cloudflare", "fields": {"api_token": "x"}, "confirm": []}),
+        );
+        accepts(
+            ApplyDomainRecordsReq::from_json,
+            json!({"setup": setup, "credential_id": "x", "confirm": ["home.example.org"]}),
+        );
+        accepts(
+            CheckDomainRecordsReq::from_json,
+            json!({"setup": setup, "access_token": "t", "credential_id": "c", "certificate_id": null}),
+        );
+        accepts(
+            InspectCertificateReq::from_json,
+            json!({"domain": "home.example.org", "files": ["YQ=="]}),
+        );
+        accepts(
+            |value| parse_params::<DomainCommitConfig>(value, "DomainCommitConfig"),
+            json!({"setup": setup, "credential_id": "c", "accept_warnings": false}),
+        );
+        for error in [
+            DeriveWebOwnerMaterialReq::from_json(json!({"mnemonic_words": "secret words"})).err(),
+            ApplyDomainRecordsReq::from_json(
+                json!({"setup": setup, "provider": "x", "fields": "secret words", "confirm": []}),
+            )
+            .err(),
+            InspectCertificateReq::from_json(json!({"domain": "x", "files": "secret words"})).err(),
+        ] {
+            let error = error.unwrap().to_string();
+            assert!(!error.contains("secret"), "{error}");
+        }
+        let mut bad_setup = setup.clone();
+        bad_setup["token"] = json!("x");
+        assert!(PlanDomainRecordsReq::from_json(json!({"setup": bad_setup})).is_err());
+        assert!(serde_json::from_value::<LocalSystemSettings>(
+            json!({"admin_password_hash": "x", "ai_provider_config": {}})
+        )
+        .is_err());
+        assert!(serde_json::from_value::<GatewayTopology>(
+            json!({"net_id": "nat", "uses_sn_relay": true, "public_ips": [], "sn_url": "https://sn.example.com/kapi/sn"})
+        )
+        .is_err());
         assert!(PrepareActiveDocumentsReq::from_json(json!({})).is_err());
         assert!(AssembleZoneDocumentReq::from_json(json!({})).is_err());
         assert!(SignWebActiveDocumentsReq::from_json(json!({})).is_err());
@@ -2097,7 +2867,7 @@ mod tests {
         let owner = owner_document(mnemonic);
         let names = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
         let (_, device_public_key) = generate_ed25519_key_pair();
-        let server = ActiveServer::new(active_service_config());
+        let server = active_server();
         let prepared = server
             .prepare_active_documents(PrepareActiveDocumentsReq {
                 owner_document: owner,
@@ -2149,26 +2919,8 @@ mod tests {
         );
         assert!(signed.zone_document_jwt.len() < MAX_INLINE_DOCUMENT);
 
-        let mut commit_req = CommitActiveReq {
-            owner_document: prepared.owner_document.clone(),
-            prepared: prepared.clone(),
-            signed_documents: signed,
-            device_private_key: "not-persisted-in-start-config".to_string(),
-            system_settings: LocalSystemSettings {
-                admin_password_hash: "required-admin-hash".to_string(),
-                guest_access: false,
-                friend_passcode: String::new(),
-                enabled_features: json!({}),
-                ai_provider_config: json!({}),
-                owner_telegram_account_id: " 10001 ".to_string(),
-                host_account: String::new(),
-            },
-            sn: SnCommitConfig {
-                sn_url: "https://sn.example.com/kapi/sn/".to_string(),
-                bns_url: "https://bns.example.com/kapi/bns".to_string(),
-                access_token: "secret-access-token".to_string(),
-            },
-        };
+        let mut commit_req =
+            commit_request(&prepared, signed, "not-persisted-in-start-config", None);
         validate_commit_endpoints(&commit_req, &active_service_config()).unwrap();
         commit_req.sn.sn_url = "https://sn.other.example/kapi/sn".to_string();
         assert!(
@@ -2186,7 +2938,7 @@ mod tests {
                 .contains("default access hostname mismatch")
         );
         commit_req.prepared.names.access_hostname = "alice.web3.example.com".to_string();
-        let config = build_start_config(&commit_req, &prepared.owner_document);
+        let config = build_start_config(&commit_req, &prepared.owner_document, None);
         buckyos_api::validate_start_config_schema(&config).unwrap();
         let config_text = serde_json::to_string(&config).unwrap();
         for forbidden in [
@@ -2197,19 +2949,11 @@ mod tests {
         ] {
             assert!(!config_text.contains(forbidden));
         }
-        assert_eq!(config["owner_telegram_account_id"], "10001");
+        for removed in ["owner_telegram_account_id", "ai_provider_config", "domain_hosting"] {
+            assert!(config.get(removed).is_none(), "{removed}");
+        }
 
-        let mut zone_info = SnZoneInfoResp {
-            code: 0,
-            zone: "alice".to_string(),
-            bns_name: "alice".to_string(),
-            relay_sn: Some("relay.example.com".to_string()),
-            self_cert: false,
-            cert_checked_at: None,
-            cert_expires_at: None,
-            source_version: Some("v2".to_string()),
-            updated_at: 1,
-        };
+        let mut zone_info = sn_zone_info();
         validate_sn_zone_info(&commit_req, &zone_info).unwrap();
         zone_info.relay_sn = None;
         validate_sn_zone_info(&commit_req, &zone_info).unwrap();
@@ -2227,7 +2971,7 @@ mod tests {
         let owner = owner_document(mnemonic);
         let names = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
         let (_, device_public_key) = generate_ed25519_key_pair();
-        let server = ActiveServer::new(active_service_config());
+        let server = active_server();
         let mut prepared = server
             .prepare_active_documents(PrepareActiveDocumentsReq {
                 owner_document: owner,
@@ -2256,7 +3000,6 @@ mod tests {
         assert!(validate_prepared_relationships(&prepared).is_err());
         prepared.device_document.device_mini_document_jwt = None;
         prepared.topology.net_id = "wan".to_string();
-        prepared.topology.uses_sn_relay = false;
         assert!(validate_prepared_relationships(&prepared).is_err());
     }
 
@@ -2266,7 +3009,7 @@ mod tests {
         let owner = owner_document(mnemonic);
         let names = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
         let (_, device_public_key) = generate_ed25519_key_pair();
-        let server = ActiveServer::new(active_service_config());
+        let server = active_server();
         let prepared = server
             .prepare_active_documents(PrepareActiveDocumentsReq {
                 owner_document: owner,
@@ -2309,7 +3052,7 @@ mod tests {
             net_id: "nat".to_string(),
             rtcp_port: 2980,
             support_container: true,
-            uses_sn_relay: true,
+            public_ips: Vec::new(),
             sn_url: "https://sn.buckyos.ai/kapi/sn".to_string(),
         };
         assert!(validate_topology_for_product(&topology, &lite).is_err());
@@ -2318,4 +3061,333 @@ mod tests {
         assert!(validate_topology_for_product(&topology, &lite).is_ok());
     }
 
+    /// What the SN answers for the Zone, by the rules of cyfs-sn
+    /// `sn_resolver.rs`: `find_gateway_ips` (Zone document path
+    /// `gateway_ips`) first, then the reported address when
+    /// `device_document_network_type` (mini JWT payload path `net_id`) is
+    /// `wan_dyn` or `portmap`, the relay otherwise.
+    fn sn_answers(signed: &SignedActiveDocuments) -> String {
+        let payload = |jwt: &str| {
+            EncodedDocument::Jwt(jwt.to_string())
+                .to_json_value()
+                .unwrap()
+        };
+        let zone = payload(&signed.zone_document_jwt);
+        let gateway_ips = zone["gateway_ips"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|ip| ip.as_str().unwrap().parse::<IpAddr>().unwrap())
+            .collect::<Vec<_>>();
+        for other in ["gateway", "addresses"] {
+            assert!(zone.get(other).is_none());
+        }
+        if let Some(ip) = gateway_ips.iter().find(|ip| ip.is_ipv4()) {
+            return ip.to_string();
+        }
+        let mini = payload(zone["mini_device_jwts"]["ood1"].as_str().unwrap());
+        match mini.get("net_id").and_then(Value::as_str) {
+            Some("wan_dyn" | "portmap") => "reported".to_string(),
+            _ => "relay".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn every_access_method_publishes_what_the_sn_answers_from() {
+        for domain in [None, Some("home.example.org")] {
+            for (net_id, ips, answer) in [
+                ("nat", &[][..], "relay"),
+                ("portmap", &[], "relay"),
+                ("wan_dyn", &[], "reported"),
+                ("wan", &["203.0.113.7"], "203.0.113.7"),
+                ("wan", &["203.0.113.7", "2001:db8::7"], "203.0.113.7"),
+            ] {
+                let topology = topology_of(net_id, ips);
+                validate_topology(&topology).unwrap();
+                let (prepared, signed, _) = signed_documents(domain, topology.clone()).await;
+                assert_eq!(sn_answers(&signed), answer, "{domain:?} {net_id}");
+                assert_eq!(signed.zone_document.sn.as_deref(), Some("sn.example.com"));
+                assert_eq!(signed.boot_document.sn.as_deref(), Some("sn.example.com"));
+                assert_eq!(
+                    signed.device_document.ddns_sn_url.as_deref(),
+                    Some("https://sn.example.com/kapi/sn")
+                );
+                assert_eq!(signed.device_document.ips, topology.public_ips);
+                assert_eq!(signed.device_document.net_id.as_deref(), Some(net_id));
+                assert_eq!(
+                    crate::sn_zone_info::device_requires_sn_keep_tunnel(&signed.device_document),
+                    net_id != "wan",
+                );
+                assert_eq!(
+                    signed.zone_document.extra_info.contains_key("gateway_ips"),
+                    net_id == "wan"
+                );
+                assert_eq!(
+                    prepared.device_mini_document.extra_info.get("net_id"),
+                    (net_id == "wan_dyn").then(|| json!("wan_dyn")).as_ref()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_zone_document_stays_inline_with_gateway_addresses() {
+        let long = format!("{}.{}.example.org", "a".repeat(40), "b".repeat(40));
+        let (_, signed, _) = signed_documents(
+            Some(long.as_str()),
+            topology_of("wan", &["203.0.113.107", "2001:db8:1111:2222:3333:4444:5555:6666"]),
+        )
+        .await;
+        assert!(
+            signed.zone_document_jwt.len() < MAX_INLINE_DOCUMENT,
+            "{}",
+            signed.zone_document_jwt.len()
+        );
+    }
+
+    #[test]
+    fn public_ips_belong_to_wan() {
+        for bad in [
+            topology_of("wan", &[]),
+            topology_of("wan", &["2001:db8::7"]),
+            topology_of("wan", &["203.0.113.7", "203.0.113.8"]),
+            topology_of("nat", &["203.0.113.7"]),
+            topology_of("wan_dyn", &["203.0.113.7"]),
+        ] {
+            assert!(validate_topology(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn only_global_addresses_are_offered() {
+        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700::1111"] {
+            assert!(is_public_address(&ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "10.0.0.1", "192.168.1.2", "172.16.0.1", "100.64.0.1", "127.0.0.1", "169.254.1.1",
+            "198.18.0.1", "203.0.113.7", "0.0.0.0", "240.0.0.1", "::1", "fe80::1", "fd00::1",
+            "2001:db8::1",
+        ] {
+            assert!(!is_public_address(&ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[test]
+    fn owner_material_is_derived_again_from_the_mnemonic() {
+        let server = active_server();
+        let first = server
+            .derive_web_owner_material(DeriveWebOwnerMaterialReq {
+                mnemonic_words: MNEMONIC.split(' ').map(ToString::to_string).collect(),
+            })
+            .unwrap();
+        let expected = derive_bucky_key_from_mnemonic(MNEMONIC, None, 0).unwrap();
+        assert_eq!(first.owner_public_jwk, expected.public_jwk);
+        assert_eq!(first.mnemonic_words.len(), 12);
+        let error = server
+            .derive_web_owner_material(DeriveWebOwnerMaterialReq {
+                mnemonic_words: vec!["not".to_string(), "a-mnemonic".to_string()],
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("[active:mnemonic_invalid]"), "{error}");
+        assert!(!error.contains("a-mnemonic"), "{error}");
+    }
+
+    fn domain_setup(domain: &str, mode: &str, certificate: &str) -> DomainSetup {
+        serde_json::from_value(json!({
+            "domain": domain, "mode": mode, "certificate": certificate,
+            "net_id": "nat", "public_ips": [], "owner_name": "alice"
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_domain_setup_must_match_the_documents() {
+        let (prepared, signed, key) = signed_documents(Some("home.example.org"), topology()).await;
+        let config = |setup: DomainSetup| {
+            Some(DomainCommitConfig {
+                setup,
+                credential_id: None,
+                certificate_id: None,
+                accept_warnings: false,
+            })
+        };
+        let good = domain_setup("home.example.org", "sn", "acme");
+        let request = |domain| commit_request(&prepared, signed.clone(), &key, domain);
+        validate_commit_request(&request(config(good.clone())), &active_service_config()).unwrap();
+        let mut other_net = good.clone();
+        other_net.net_id = NetId::WanDyn;
+        let mut other_owner = good.clone();
+        other_owner.owner_name = "bob".to_string();
+        for domain in [
+            None,
+            config(domain_setup("other.example.org", "sn", "acme")),
+            config(other_net),
+            config(other_owner),
+        ] {
+            assert!(validate_commit_request(&request(domain), &active_service_config()).is_err());
+        }
+
+        let (prepared, signed, key) = signed_documents(None, topology()).await;
+        let mut request = commit_request(&prepared, signed, &key, None);
+        validate_commit_request(&request, &active_service_config()).unwrap();
+        request.domain = config(good);
+        assert!(validate_commit_request(&request, &active_service_config()).is_err());
+    }
+
+    use crate::domain::testing::{FakeCertificates, TEST_TOKEN};
+
+    fn commit_of(mode: &str, certificate: &str, credential_id: Option<&str>) -> DomainCommit {
+        let credential = credential_id.map(|_| {
+            credential_of(
+                "cloudflare".to_string(),
+                BTreeMap::from([("api_token".to_string(), TEST_TOKEN.to_string())]),
+                None,
+            )
+        });
+        DomainCommit {
+            hosting: serde_json::from_value(json!({
+                "schema_version": 1, "mode": mode, "certificate": certificate, "domain": "home.example.org",
+                "provider": credential.as_ref().map(|c| c.provider.clone()),
+                "credential_id": credential_id
+            }))
+            .unwrap(),
+            credential,
+            certificates: None,
+        }
+    }
+
+    fn activation_paths(root: &std::path::Path) -> ActivationPaths {
+        ActivationPaths {
+            etc_dir: root.join("etc"),
+            roots: identity_roots_for_buckyos_root(root),
+        }
+    }
+
+    #[tokio::test]
+    async fn activation_stores_the_hosting_and_not_the_token() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = activation_paths(root.path());
+        std::fs::create_dir_all(&paths.etc_dir).unwrap();
+        let old = paths.roots.security_root.join("dns_credentials/old-domain.json");
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, "{}").unwrap();
+
+        let (prepared, signed, key) = signed_documents(Some("home.example.org"), topology()).await;
+        let request = commit_request(&prepared, signed, &key, None);
+        let commit = commit_of("dns_api", "acme", Some("home-example-org-1"));
+        persist_activation(
+            &paths,
+            &FakeCertificates::default(),
+            &request,
+            &prepared.owner_document,
+            &sn_zone_info(),
+            Some(&commit),
+        )
+        .unwrap();
+
+        let start_config =
+            std::fs::read_to_string(paths.roots.security_root.join(START_CONFIG_FILE)).unwrap();
+        assert!(!start_config.contains(TEST_TOKEN));
+        let start_config: Value = serde_json::from_str(&start_config).unwrap();
+        let hosting: DomainHosting =
+            serde_json::from_value(start_config[START_CONFIG_DOMAIN_HOSTING].clone()).unwrap();
+        assert_eq!(hosting, commit.hosting);
+        hosting.validate().unwrap();
+        let credential = paths
+            .roots
+            .security_root
+            .join("dns_credentials/home-example-org-1.json");
+        assert!(std::fs::read_to_string(&credential).unwrap().contains(TEST_TOKEN));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&credential).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        assert!(!old.exists());
+        assert!(paths.etc_dir.join("node_identity.json").exists());
+    }
+
+    #[tokio::test]
+    async fn a_failed_activation_keeps_no_credential_and_no_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = activation_paths(root.path());
+        // etc is a file: nothing can be written into it.
+        std::fs::write(root.path().join("etc"), "x").unwrap();
+        let (prepared, signed, key) = signed_documents(Some("home.example.org"), topology()).await;
+        let request = commit_request(&prepared, signed, &key, None);
+        let commit = commit_of("dns_api", "acme", Some("home-example-org-1"));
+        assert!(persist_activation(
+            &paths,
+            &FakeCertificates::default(),
+            &request,
+            &prepared.owner_document,
+            &sn_zone_info(),
+            Some(&commit),
+        )
+        .is_err());
+        assert!(!paths
+            .roots
+            .security_root
+            .join("dns_credentials/home-example-org-1.json")
+            .exists());
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = activation_paths(root.path());
+        let certificates = FakeCertificates::failing();
+        let mut commit = commit_of("dns_api", "upload", Some("home-example-org-1"));
+        commit.certificates = Some(Vec::new());
+        assert!(persist_activation(
+            &paths,
+            &certificates,
+            &request,
+            &prepared.owner_document,
+            &sn_zone_info(),
+            Some(&commit),
+        )
+        .is_err());
+        assert!(!paths.roots.security_root.join(START_CONFIG_FILE).exists());
+        assert!(!paths.etc_dir.join("node_identity.json").exists());
+        assert!(!paths
+            .roots
+            .security_root
+            .join("dns_credentials/home-example-org-1.json")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn activation_leaves_a_zone_state_the_next_boot_starts_from() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = activation_paths(root.path());
+        std::fs::create_dir_all(&paths.etc_dir).unwrap();
+        let persist = |request: &CommitActiveReq| {
+            persist_activation(
+                &paths,
+                &FakeCertificates::default(),
+                request,
+                &request.owner_document,
+                &sn_zone_info(),
+                None,
+            )
+            .unwrap()
+        };
+        let boot = || {
+            let identity =
+                load_local_node_identity_config(&paths.etc_dir.join("node_identity.json")).unwrap();
+            crate::zone_boot_resolve::boot_without_network(&paths.etc_dir, &identity)
+        };
+        let (prepared, signed, key) = signed_documents(Some("home.example.org"), topology()).await;
+        let first = signed.zone_document.clone();
+        persist(&commit_request(&prepared, signed, &key, None));
+        assert_eq!(boot().unwrap(), first);
+
+        let (prepared, signed, key) =
+            signed_documents(Some("home.example.org"), topology_of("wan_dyn", &[])).await;
+        let second = signed.zone_document.clone();
+        assert_ne!(first, second);
+        persist(&commit_request(&prepared, signed, &key, None));
+        assert_eq!(boot().unwrap(), second);
+    }
 }

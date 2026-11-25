@@ -92,7 +92,7 @@ Agent 的网络身份应保持稳定。运行实现和模板是可扩展、可�
 
 预装的模板和引导入口面向 Zone 内每个可以创建 Agent 的用户，而不只面向 Zone Owner（见 §3.4）。
 
-Zone 激活向导同样遵守这条边界。激活时还没有任何 Agent 身份，因此不再收集 Jarvis 的 Telegram Bot Token 等 Agent 通道参数，这些参数改在 Agent 创建向导的第三步填写。激活时仍可选填 Owner 本人的 Telegram 账号：它属于 Owner 的 User Profile，正好供第三步检查使用。
+Zone 激活向导同样遵守这条边界。激活时还没有任何 Agent 身份，因此不再收集 Jarvis 的 Telegram Bot Token 等 Agent 通道参数，这些参数改在 Agent 创建向导的第三步填写。激活也不收集 Owner 本人的 Telegram 账号（2026-11-22 起，见 D2 的修订）：它属于 Owner 的 User Profile，在“用户与 Agent”里填写；第三步检查到缺少时提供去填写的入口。
 
 ## 3. 范围、默认值与统一入口
 
@@ -705,7 +705,7 @@ Owner-only 的来源检查应在进入常规 Agent 推理与工具执行前完�
 | 桌面入口的持久化 | 关联关系记在 Agent 自己的 Settings 中，桌面据此计算入口状态（B.9） | 按用户隔离；能显示 Agent 头像；换设备或浏览器后保持一致 |
 | Agent 主页的指向 | 已定，见 §9.1 | 始终指向本次创建的实例；目标不可用时有明确回退 |
 | Limited 用户的创建资格 | 本期不允许，见 §3.4 | 无论是否允许，都不能越过该用户自身的权限 |
-| 激活向导的通道步骤 | 删除 Bot Token；Owner 本人的 Telegram 账号保留为可选项（B.6） | 激活时不为尚不存在的 Agent 收集 Bot Token |
+| 激活向导的通道步骤 | 整个删除，Bot Token 和 Owner 本人的 Telegram 账号都不收集（B.6） | 激活时不为尚不存在的 Agent 收集 Bot Token；Owner 的账号在“用户与 Agent”里填 |
 | 通道身份 | 复用 User Profile 中的 Telegram 账号；msg-center 在入站时把对应的端点映射到 Owner（B.8） | 不能仅凭昵称或消息内容冒充 Owner；缺少身份时不开放通道选择 |
 | 群上下文组装 | Owner @Agent 时，附带同一群会话中最近 20 条已读消息，保留发言者身份（B.7） | 不是只传单条 Owner 消息，也不让上下文变成越权指令 |
 | 安装器与指南跳转 | 本期用 CLI 安装模板，“安装其他 Agent 模板”给出 CLI 说明和刷新操作；开发指南未交付时显示状态说明（B.3、B.9） | 优先复用现有入口，避免丢失草稿和失效帮助链接 |
@@ -793,7 +793,7 @@ Owner-only 的来源检查应在进入常规 Agent 推理与工具执行前完�
 | # | 决策 | 依据 |
 | --- | --- | --- |
 | D1 | Zone Owner、Admin、普通 User 都能为自己创建 Agent，规则与普通用户为自己安装 App 一致：只能为自己创建，不需要管理员，不需要提权确认 | 2026-10-09 用户确认 |
-| D2 | 激活向导删除 Jarvis Bot Token；Owner 本人的 Telegram 账号保留为可选项 | 2026-10-09 用户确认 |
+| D2 | 激活向导删除 Jarvis Bot Token；Owner 本人的 Telegram 账号保留为可选项。**2026-11-22 修订**：Owner 的 Telegram 账号步骤也删除，改在“用户与 Agent”里填（`notepads/node-active-custom-domain-todo.md` R6、§3.8.2） | 2026-10-09 用户确认；修订为 2026-11-22 owner 裁决 |
 | D3 | 共享策略交付前，“允许其他用户使用”开关禁用 | 2026-10-09 用户确认 |
 | D4 | 桌面入口打开 Loader 提供的 Agent 主页，Loader 不提供时打开 Users and Agents 中的 Agent 详情页 | 2026-10-09 用户确认 |
 | D5 | 创建 Agent = 基于模板为它构造一个独立的 App，作为创建者的 App 安装，再写入绑定到这个 App 实例的 AgentSpec。构造 App 的 AppDID 就是 AgentDID（B.2） | 2026-10-09 用户确认 |
@@ -976,7 +976,7 @@ p, agent, obj://config/users/{user}/agents/{agent}/profile,read|write,allow
 
 **激活**
 - 删除 `jarvis_msg_tunnel_config` 中的 Bot Token。涉及 `kernel/node_active/` 的 `types.ts`、`ActiveWizard.tsx`、`components/steps/JarvisMsgTunnelStep.tsx`、`active_lib.ts`，`kernel/node_daemon/src/active_server.rs`，`make_config.ts`、`active.ts`，以及 scheduler 的 `StartConfigSummary` 和 `build_msg_center_settings`。
-- Owner 的 Telegram 账号改为中性的可选字段，例如 `owner_telegram_account_id`，仍写入 `users/<owner>/profile` 的 `private_extra.system_contact.bindings`。写入时用裸账号 id，同时修正 `normalize_telegram_contact_account_id`。在激活界面中放在哪一步由实现决定。
+- ~~Owner 的 Telegram 账号改为中性的可选字段 `owner_telegram_account_id`~~。2026-11-22 起激活不再收集：`OwnerTelegramStep`、`owner_telegram_account_id` 和 scheduler 里对应的生成代码都删除。账号由 Owner 激活后在 Self 页 Social Accounts 填写（`user.set_msg_tunnel`），仍存在 `users/<owner>/profile` 的 `private_extra.system_contact.bindings`，用裸账号 id。
 - 激活写入的 msg-center 设置改为 `telegram_tunnel {enabled: true, gateway.mode: "bot_api", bindings: []}`，不再因为没有 token 而使用 `dry_run`。实现时需确认 `bot_api` 模式在没有任何绑定时可以正常运行。
 
 ### B.7 OpenDAN、libopendan 与 Jarvis 模板
@@ -1111,7 +1111,7 @@ p, agent, obj://config/users/{user}/agents/{agent}/profile,read|write,allow
 | --- | --- |
 | 共享类型与 RBAC | `kernel/buckyos-api/src/app_schema.rs`（扩展 `AgentInstallRecord`；新增 `AgentSettings`、`AgentProfile`、`AgentRuntimeInfo`、`AgentTemplateRecord` 与键函数）、`app_install.rs`（`SystemInstallSettings.agent_templates`）、`rbac_config.rs` |
 | control_panel | 新增 `frame/control_panel/src/agent_mgr.rs`（名称检查、模板、构造 PIKG、创建驱动、删除、模板更新、`agent.*` 方法）；`app_installer.rs`（`submit_internal_install`、模板分支）、`pre_install_reconciler.rs`、`pikg.rs`、`user_mgr.rs`、`main.rs` |
-| scheduler 与激活 | `kernel/scheduler/src/{system_config_builder,install_plan_executor,system_config_agent,main}.rs`、`rootfs/etc/scheduler/boot.template.toml`；`kernel/node_active/`（`OwnerTelegramStep.tsx` 取代 `JarvisMsgTunnelStep.tsx`）、`kernel/node_daemon/src/active_server.rs`、`make_config.ts`、`active.ts` |
+| scheduler 与激活 | `kernel/scheduler/src/{system_config_builder,install_plan_executor,system_config_agent,main}.rs`、`rootfs/etc/scheduler/boot.template.toml`；`kernel/node_active/`（`OwnerTelegramStep.tsx` 取代 `JarvisMsgTunnelStep.tsx`，2026-11-22 起也删除）、`kernel/node_daemon/src/active_server.rs`、`make_config.ts`、`active.ts` |
 | OpenDAN | `frame/opendan/src/{main,loader,records,rootfs,home,ui}.rs`；`frame/lib_opendan/src/{bridge/msg.rs,protocol/input.rs,runner/inputs.rs,runner/drive.rs,runner/input_view.rs,state/behaviors.rs}`；`apps/jarvis_agent/agent/{agent.toml,role.md,behaviors/groupchat_route.toml}` |
 | msg-center | 新增 `frame/msg_center/src/zone_agent.rs`；`owner_session.rs`、`group_service.rs`、`main.rs`、`msg_tunnel.rs`、`msg_center.rs`、`contact_mgr.rs`、`tg_tunnel.rs` |
 | 桌面 | 新增 `frame/desktop/src/app/agent-setup/`（向导、`guide.ts` 入口状态）、`api/account.ts`、`api/control_panel_mock.ts`、`i18n/agent-setup.ts`；改写 `api/user_mgr.ts`、`api/task_mgr.ts`、`app/users-agents/`、MessageHub 的 `agent_group_disabled` 提示 |

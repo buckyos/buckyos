@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useSyncExternalStore } from 'react'
 import { Navigate, RouterProvider, createBrowserRouter, useRouteError } from 'react-router-dom'
 import { DesktopBackground } from './desktop/DesktopBackground'
 import {
@@ -9,10 +9,10 @@ import { I18nProvider, useI18n } from './i18n/provider'
 import { PrototypeThemeProvider } from './theme/provider'
 import { DesktopRoute } from './desktop/DesktopRoute'
 import { isPortalRoot } from './app/homestation/links'
+import { standaloneFrame } from './app/standalone/frame'
 import { useDocumentBrand } from './presentation/documentHead'
 import { useZonePresentation } from './presentation/zone'
-import { getBootIdentity } from './sso/identity'
-import type { CurrentIdentity } from 'buckyos'
+import { getBootIdentity, usesRestrictedShell } from './sso/identity'
 
 // Standalone routes are code-split like the app panels: a visitor of `/`
 // should not download MessageHub / HomeStation / TaskCenter / the installer
@@ -47,6 +47,9 @@ const PrompterRoute = lazy(() =>
 const TaskCenterRoute = lazy(() =>
   import('./app/task-center/TaskCenterRoute').then((m) => ({ default: m.TaskCenterRoute })),
 )
+const StandaloneAppRoute = lazy(() =>
+  import('./app/standalone/StandaloneAppRoute').then((m) => ({ default: m.StandaloneAppRoute })),
+)
 const UserProfileRoute = lazy(() =>
   import('./userprofile').then((m) => ({ default: m.UserProfileRoute })),
 )
@@ -70,17 +73,6 @@ const UserInvitePage = lazy(() =>
   import('./sso/UserInvitePage').then((m) => ({ default: m.UserInvitePage })),
 )
 
-/**
- * The restricted shell at `/` is for External DIDs (no account here) and for sessions an exclusive
- * invite link opened. A Limited account signed in with its password keeps the Desktop: its own
- * settings, profile, address book and allowed Apps stay reachable, and what its session may not
- * use answers with a `session_kind_not_allowed` denial.
- */
-function usesRestrictedShell(identity: CurrentIdentity): boolean {
-  return identity.kind === 'external'
-    || (identity.kind === 'account' && identity.restricted && identity.auth_method === 'exclusive_invite')
-}
-
 function RootRoute() {
   const error = useRouteError()
   const { t } = useI18n()
@@ -97,6 +89,15 @@ function RootRoute() {
     </Suspense>
   ) : (
     <DesktopRoute />
+  )
+}
+
+/** A system app in a page of its own; a session that does not get the desktop gets its restricted shell here as well. */
+function AppRoute() {
+  return (
+    <Suspense fallback={null}>
+      {usesRestrictedShell(getBootIdentity()) ? <RestrictedHome /> : <StandaloneAppRoute />}
+    </Suspense>
   )
 }
 
@@ -169,6 +170,7 @@ const router = createBrowserRouter([
       </Suspense>
     ),
   },
+  { path: '/app/:appId/*', element: <AppRoute /> },
   {
     path: '/userprofile',
     element: (
@@ -247,9 +249,10 @@ function AppShell() {
 }
 
 function App() {
+  const appearance = useSyncExternalStore(standaloneFrame.subscribe, standaloneFrame.getAppearance)
   return (
-    <PrototypeThemeProvider>
-      <I18nProvider>
+    <PrototypeThemeProvider mode={appearance?.theme}>
+      <I18nProvider locale={appearance?.locale}>
         <DesktopBackgroundProvider>
           <AppShell />
         </DesktopBackgroundProvider>

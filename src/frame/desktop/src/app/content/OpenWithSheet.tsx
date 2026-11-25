@@ -57,7 +57,8 @@ export function OpenWithSheet({ target, onClose, preferFullApp, overlay = 'absol
   const [importing, setImporting] = useState<{ state: 'reading' } | { state: 'failed'; reason: string } | null>(null)
   useEffect(() => {
     let current = true
-    const hasApp = desktopUIStore.getSnapshot().apps.some(app => app.id === 'aiworkspace')
+    // The bytes are handed over in memory: only to a window of this page.
+    const hasApp = !desktopUIStore.isStandalone() && desktopUIStore.getSnapshot().apps.some(app => app.id === 'aiworkspace')
     if (hasApp) void import('../aiworkspace/ui/import/externalImport').then(m => { if (current) setImportable(m.importFormatOf(fileName, mediaType) !== null) })
     return () => { current = false }
   }, [fileName, mediaType])

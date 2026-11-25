@@ -114,6 +114,26 @@ pub(super) fn startup(ctx: &mut Context) -> Result<(), Failure> {
     Ok(())
 }
 
+/// The token `system/domain_hosting` refers to. Its owner can enter a lost one
+/// again, so only an existing file has to be readable.
+pub(super) fn dns_credential(ctx: &mut Context) -> Result<(), Failure> {
+    use buckyos_api::{DomainHosting, DOMAIN_HOSTING_KEY};
+    let Some(raw) = ctx.snapshot.get(DOMAIN_HOSTING_KEY.as_bytes()) else {
+        return Ok(());
+    };
+    let hosting: DomainHosting = config::decode(ctx, DOMAIN_HOSTING_KEY, raw)?;
+    let Some(id) = hosting.credential_id else {
+        return Ok(());
+    };
+    let path = cyfs_dns_provider::credential_path(ctx.security, &id)
+        .map_err(|e| ctx.unsupported(DOMAIN_HOSTING_KEY, e))?;
+    if ctx.exists(&path)? {
+        cyfs_dns_provider::load_credential(&path)
+            .map_err(|e| ctx.unsupported(path.display(), e))?;
+    }
+    Ok(())
+}
+
 pub(super) fn executor(ctx: &mut Context) -> Result<(), Failure> {
     let dir = ctx.root.join("local/node_daemon/executor");
     if !ctx.exists(&dir)? {

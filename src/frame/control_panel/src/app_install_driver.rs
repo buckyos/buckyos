@@ -10,7 +10,7 @@ use crate::app_install_engine::{
     ActivateOutcome, InstallStageDriver, InstallTaskView, ResolveOutcome,
 };
 use crate::app_install_planner::{
-    build_install_plan, default_install_params, ContentLocator, PlannerInput,
+    build_install_plan, default_install_params, inherited_permissions, ContentLocator, PlannerInput,
 };
 use crate::app_install_resolver::{
     bind_candidate_document, normalize_identifier, resolve_domain_alias, AppDidResolver,
@@ -56,11 +56,15 @@ pub fn work_root() -> PathBuf {
         .join(buckyos_api::CONTROL_PANEL_SERVICE_NAME)
 }
 
-fn inherit_upgrade_params(mut params: InstallParams, spec: &AppServiceSpec) -> InstallParams {
+fn inherit_upgrade_params(
+    mut params: InstallParams,
+    spec: &AppServiceSpec,
+    app_doc: &buckyos_api::AppDoc,
+) -> InstallParams {
     params.auto_start = spec.enable && spec.state != ServiceState::Stopped;
     params.expected_instance_count = spec.expected_instance_count;
     params.selected_components = spec.selected_components.clone();
-    params.permissions = spec.permission.clone();
+    params.permissions = inherited_permissions(&spec.permission, &spec.app_doc, app_doc);
     params.data_mount_points = spec.spec_config.data_mount_point.clone();
     params.local_cache_mount_points = spec.spec_config.local_cache_mount_point.clone();
     params.external_mount_points = spec.spec_config.external_mount_point.clone();
@@ -804,7 +808,7 @@ impl InstallStageDriver for ProductionInstallDriver {
                     "upgrade target has been deleted",
                 ));
             }
-            Some(inherit_upgrade_params(record.install_params, &spec))
+            Some(inherit_upgrade_params(record.install_params, &spec, &app_doc))
         } else {
             None
         };

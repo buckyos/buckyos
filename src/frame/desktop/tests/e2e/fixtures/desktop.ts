@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from '@playwright/test'
+import { basename, join } from 'node:path'
 
 /**
  * Opens an app the way a user reaches one that has no desktop shortcut: the taskbar's All apps panel.
@@ -98,6 +99,13 @@ export async function pinTaskbarApps(page: Page, appIds: string[]) {
 }
 
 export const MOCK_APP_LAUNCH_KEY = 'buckyos.mock.app-launch'
+
+/** Serve the installed WebSDK as modules on the fixture App's own origin. */
+export async function routeAppSdk(page: Page) {
+  await page.route(/-fixture\.localhost:4173\/sdk\//, route => route.fulfill({
+    contentType: 'text/javascript', path: join('node_modules/buckyos/dist', basename(new URL(route.request().url()).pathname)),
+  }))
+}
 
 /**
  * Serves a web App host the way the Gateway does for a desktop launch: `/sso_callback` sends the

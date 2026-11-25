@@ -5,12 +5,14 @@ use crate::owner_session::TokenVerifierSlot;
 use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, AccessDecision, AccessGroupLevel, AccountBinding, Contact,
-    ContactPatch, ContactQuery, DeliveryEnvelope, DeliveryError, DeliveryRecord,
+    ContactPatch, ContactQuery, DefaultSession, DeliveryEnvelope, DeliveryError, DeliveryRecord,
     DeliveryRecordWithObject, DeliveryReportResult, DeliverySnapshot, DeliveryState,
     DispatchResult, GrantTemporaryAccessResult, ImportContactEntry, ImportReport, IngressContext,
     KEventClient, MailboxAddress, MailboxKind, MailboxRecord, MailboxRecordPage,
-    MailboxRecordWithObject, MsgCenterCreateSessionReq, MsgCenterHandler, MsgEditCapability,
-    MsgReceiptObj, OwnerSessionState, PostSendDelivery, PostSendResult, ReadReceiptState,
+    MailboxRecordWithObject, MsgCenterCreateSessionReq, MsgCenterHandler,
+    MsgCenterGetDefaultSessionReq, MsgCenterListConversationsReq, MsgCenterSetDefaultSessionReq,
+    MsgEditCapability,
+    MsgReceiptObj, OwnerSessionState, PeerConversations, PostSendDelivery, PostSendResult, ReadReceiptState,
     RecipientState, SessionDeliveryOverall, SessionDeliveryTarget, SessionDeliveryView,
     SessionLifecycle, SessionListLifecycleFilter, SessionListOrder, SessionMessageDirection,
     SessionMessageItem, SessionMessagePage, SessionSummaryPage,
@@ -106,6 +108,8 @@ pub struct MessageCenter {
     pub(crate) notify_tasks: Arc<crate::notify::NotifyTasksSlot>,
     pub(crate) notify_identity: Arc<RwLock<Option<(DID, Option<String>)>>>,
     pub(crate) notify_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Changes of the owners' default sessions (`default_session.rs`).
+    pub(crate) default_lock: Arc<tokio::sync::Mutex<()>>,
     /// DID → Zone / profile / signing device Zone (`network_directory.rs`).
     pub(crate) directory: Arc<crate::network_directory::DirectorySlot>,
     /// OOD device key used to sign native messages of this Zone's users.
@@ -160,6 +164,7 @@ impl MessageCenter {
             notify_tasks: Arc::new(crate::notify::NotifyTasksSlot::default()),
             notify_identity: crate::notify::notify_identity_slot(),
             notify_lock: Arc::new(tokio::sync::Mutex::new(())),
+            default_lock: Arc::new(tokio::sync::Mutex::new(())),
             directory: Arc::new(Default::default()),
             zone_signer: Arc::new(Default::default()),
             custody: Arc::new(Default::default()),
@@ -3052,6 +3057,34 @@ impl MsgCenterHandler for MessageCenter {
     ) -> std::result::Result<Option<OwnerSessionState>, RPCErrors> {
         self.authorize_owner_read(&ctx, &owner).await?;
         self.get_session_state_internal(owner, session_id).await
+    }
+
+    async fn handle_list_conversations(
+        &self,
+        req: MsgCenterListConversationsReq,
+        ctx: RPCContext,
+    ) -> std::result::Result<PeerConversations, RPCErrors> {
+        self.authorize_owner_read(&ctx, &req.owner).await?;
+        self.list_conversations_internal(req).await
+    }
+
+    async fn handle_get_default_session(
+        &self,
+        req: MsgCenterGetDefaultSessionReq,
+        ctx: RPCContext,
+    ) -> std::result::Result<DefaultSession, RPCErrors> {
+        // It may have to create one.
+        self.authorize_owner_write(&ctx, &req.owner).await?;
+        self.get_default_session_internal(req).await
+    }
+
+    async fn handle_set_default_session(
+        &self,
+        req: MsgCenterSetDefaultSessionReq,
+        ctx: RPCContext,
+    ) -> std::result::Result<DefaultSession, RPCErrors> {
+        self.authorize_owner_write(&ctx, &req.owner).await?;
+        self.set_default_session_internal(req).await
     }
 
     async fn handle_update_record_state(

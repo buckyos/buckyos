@@ -29,13 +29,16 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::Row;
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 const NOTIFY_SWEEP_INTERVAL_SECS: u64 = 30;
 const IDEMPOTENCY_SCOPE_NOTIFY: &str = "notify";
 const NOTIFY_SESSION_ORIGIN: &str = "sysnotify";
-/// Latest records of a conversation looked at to find the user's last
-/// message in it.
+/// Owner-scoped UI state: the owner muted the session.
+const SESSION_MUTED_KEY: &str = "ui.muted";
+/// Latest chat messages of a conversation looked at to find the user's last
+/// one in it.
 const CONVERSATION_SCAN_RECORDS: usize = 30;
 const DEFAULT_LIST_LIMIT: usize = 50;
 const MAX_LIST_LIMIT: usize = 200;
@@ -340,6 +343,39 @@ impl NotifyStore {
             .collect()
     }
 
+    async fn unclosed_of(&self, owner: &DID) -> Result<Vec<NotifyRow>> {
+        let sql = self
+            .db
+            .render_sql("SELECT row_json FROM notifies WHERE state <> 'closed' AND owner_did = ?");
+        sqlx::query(&sql)
+            .bind(owner.to_string())
+            .fetch_all(self.db.pool())
+            .await
+            .map_err(db_error)?
+            .iter()
+            .map(Self::decode)
+            .collect()
+    }
+
+    /// Who sent `owner` something, with the time of their last one.
+    pub(crate) async fn requesters(&self, owner: &DID) -> Result<Vec<(String, u64)>> {
+        let sql = self.db.render_sql(
+            "SELECT requester, MAX(created_at_ms) AS last_at FROM notifies WHERE owner_did = ? GROUP BY requester",
+        );
+        sqlx::query(&sql)
+            .bind(owner.to_string())
+            .fetch_all(self.db.pool())
+            .await
+            .map_err(db_error)?
+            .iter()
+            .map(|row| {
+                let requester: String = row.try_get("requester").map_err(db_error)?;
+                let last_at: i64 = row.try_get("last_at").map_err(db_error)?;
+                Ok((requester, last_at.max(0) as u64))
+            })
+            .collect()
+    }
+
     /// Newest first, after `cursor = (created_at_ms, notify_id)`.
     async fn page(
         &self,
@@ -391,6 +427,11 @@ pub(crate) struct NotifyCaller {
     /// Bare app id, or `system:<service>`.
     pub app_id: Option<String>,
     pub agent_did: Option<DID>,
+    /// The App the call comes from (its service, or a user in its pages),
+    /// unless it is an Agent.
+    pub app_instance: Option<AppInstanceId>,
+    /// A user in a page of the system.
+    pub system_page: bool,
     pub task_principal: Option<(String, String)>,
 }
 
@@ -495,8 +536,19 @@ impl MessageCenter {
                     .await
                     .map_err(|e| denied(format!("cannot resolve user {sub}: {e}")))?;
                 let app_id = claims.target.appid_claim().to_string();
-                if claims.principal_kind == TokenPrincipalKind::App {
+                let is_app = claims.principal_kind == TokenPrincipalKind::App;
+                if is_app {
                     caller.agent_did = self.agent_of_app(&app_id, Some(&user_did)).await;
+                }
+                match &claims.target {
+                    AuthTarget::App { app_instance_id } => {
+                        let agent = caller.agent_did.is_some()
+                            || (!is_app && self.agent_of_app(&app_id, None).await.is_some());
+                        if !agent {
+                            caller.app_instance = Some(app_instance_id.clone());
+                        }
+                    }
+                    AuthTarget::System { .. } => caller.system_page = !is_app,
                 }
                 caller.app_id = Some(app_id);
                 caller.user_id = Some(sub);
@@ -535,16 +587,26 @@ impl MessageCenter {
             serde_json::from_value(params).map_err(|e| RPCErrors::ParseRequestError(e.to_string()))
         }
         let action = match method {
-            METHOD_NOTIFY_GET | METHOD_NOTIFY_LIST => "read",
+            METHOD_NOTIFY_GET | METHOD_NOTIFY_LIST | METHOD_NOTIFY_SUMMARY
+            | METHOD_NOTIFY_LIST_APPS => "read",
             METHOD_NOTIFY_SEND | METHOD_NOTIFY_ACK | METHOD_NOTIFY_DISMISS
-            | METHOD_NOTIFY_CANCEL => "write",
+            | METHOD_NOTIFY_CANCEL | METHOD_NOTIFY_SET_APP => "write",
             _ => return Err(RPCErrors::UnknownMethod(method.to_string())),
         };
         self.authorize_resource(&ctx, NOTIFY_RBAC_RESOURCE, action)
             .await?;
         let caller = self.notify_caller(&ctx).await?;
         let result = match method {
-            METHOD_NOTIFY_SEND => json!(self.notify_send(&caller, parse(params)?).await?),
+            METHOD_NOTIFY_SEND => {
+                let req = parse(params)?;
+                self.check_app_may_notify(&caller).await?;
+                json!(self.notify_send(&caller, req).await?)
+            }
+            METHOD_NOTIFY_SUMMARY => {
+                json!(self.notify_summary(&ctx, &caller, parse(params)?).await?)
+            }
+            METHOD_NOTIFY_LIST_APPS => json!(self.notify_list_apps(&caller, parse(params)?).await?),
+            METHOD_NOTIFY_SET_APP => json!(self.notify_set_app(&caller, parse(params)?).await?),
             METHOD_NOTIFY_GET => {
                 let req: NotifyGetReq = parse(params)?;
                 json!(self.notify_get(&caller, &req.notify_id).await?)
@@ -951,6 +1013,8 @@ impl MessageCenter {
             title: Some(category_title(category).to_string()),
             binding: None,
             origin: Some(NOTIFY_SESSION_ORIGIN.to_string()),
+            set_default: false,
+            memory_mode: SessionMemoryMode::Normal,
         })
         .await?;
         Ok(())
@@ -1014,20 +1078,9 @@ impl MessageCenter {
             let session_id = entry.session_id;
             let records = self
                 .msg_box_db
-                .list_visible_session_records(
-                    agent,
-                    &session_id,
-                    CONVERSATION_SCAN_RECORDS,
-                    None,
-                    None,
-                    true,
-                    None,
-                )
+                .list_received_chats(agent, &session_id, CONVERSATION_SCAN_RECORDS)
                 .await?;
             for record in records {
-                if record.box_kind != MailboxKind::Inbox || record.msg_kind != MsgObjKind::Chat {
-                    continue;
-                }
                 let speaker = Self::ingress_principal(record.ingress.as_ref())
                     .unwrap_or_else(|| record.from.clone());
                 if &speaker != user {
@@ -1083,20 +1136,25 @@ impl MessageCenter {
                 .find(|x| x.to == c.to && x.to_session == c.to_session)
                 .cloned()
         });
+        let default = self.default_conversation(&row.owner_did, &agent).await?;
         let mut planned: Vec<Conversation> = Vec::new();
         match row.level {
             NotifyLevel::Quiet => {}
-            NotifyLevel::Normal => planned.extend(source),
+            // A Goal speaks for itself, not for the chat it was once created
+            // in.
+            NotifyLevel::Normal if row.source.goal_id.is_some() => planned.push(default),
+            NotifyLevel::Normal => planned.push(source.unwrap_or(default)),
             NotifyLevel::Timely => {
                 planned.extend(source);
-                if let Some(latest) = candidates.first() {
-                    if !planned.iter().any(|p| p.session_id == latest.session_id) {
-                        planned.push(latest.clone());
-                    }
-                }
+                planned.push(default);
             }
-            NotifyLevel::Urgent => planned = candidates,
+            NotifyLevel::Urgent => {
+                planned = candidates;
+                planned.push(default);
+            }
         }
+        let mut seen = HashSet::new();
+        planned.retain(|c| seen.insert(c.session_id.clone()));
         Ok(planned)
     }
 
@@ -1205,7 +1263,7 @@ impl MessageCenter {
 
     /// Records the user may read: the home record (when written unread)
     /// and the native copies in the user's INBOX.
-    async fn notice_records(&self, row: &NotifyRow, all: bool) -> Result<Vec<MailboxRecord>> {
+    fn notice_record_ids(row: &NotifyRow, all: bool) -> Vec<String> {
         let mut ids = Vec::new();
         if let Some(home) = row.home.as_ref() {
             if all || row.home_unread {
@@ -1223,8 +1281,12 @@ impl MessageCenter {
                 "inbox",
             ));
         }
+        ids
+    }
+
+    async fn notice_records(&self, row: &NotifyRow, all: bool) -> Result<Vec<MailboxRecord>> {
         let mut out = Vec::new();
-        for id in ids {
+        for id in Self::notice_record_ids(row, all) {
             if let Some(record) = self.msg_box_db.get_record(&row.owner_did, &id).await? {
                 out.push(record);
             }
@@ -1395,6 +1457,93 @@ impl MessageCenter {
             }
         }
         Ok(NotifyListResult { items, next_cursor })
+    }
+
+    /// The counts behind badges: what `notify.list {status: [open]}` gives,
+    /// by category, and the unread records of the user's sessions as the
+    /// status bar counts them (no muted session, no system notification).
+    pub(crate) async fn notify_summary(
+        &self,
+        ctx: &RPCContext,
+        caller: &NotifyCaller,
+        req: NotifySummaryReq,
+    ) -> Result<NotifySummary> {
+        let (_, owner) = self
+            .notify_settings_user(caller, req.to_user.as_deref())
+            .await?;
+        if !caller.system {
+            self.authorize_owner_read(ctx, &owner).await?;
+        }
+        let mut notify = NotifyOpenCounts::default();
+        let read: HashSet<String> = self.msg_box_db.list_read_notify_records(&owner).await?;
+        for row in self.notifies.unclosed_of(&owner).await? {
+            let open = match row.kind {
+                NotifyKind::Notice => {
+                    !row.acked
+                        && !Self::notice_record_ids(&row, false)
+                            .iter()
+                            .any(|id| read.contains(id))
+                }
+                NotifyKind::Input => self.notify_view(&row).await?.status == NotifyStatus::Open,
+            };
+            if !open {
+                continue;
+            }
+            notify.open += 1;
+            match row.category {
+                NotifyCategory::Todo => notify.todo += 1,
+                NotifyCategory::Agent => notify.agent += 1,
+                NotifyCategory::App => notify.app += 1,
+            }
+        }
+        Ok(NotifySummary {
+            notify,
+            messages: MessageUnreadCounts {
+                unread: self.unread_messages(&owner).await?,
+            },
+        })
+    }
+
+    async fn unread_messages(&self, owner: &DID) -> Result<u64> {
+        let muted: HashSet<String> = self
+            .msg_box_db
+            .list_owner_ui_session_states_by_key(owner, SESSION_MUTED_KEY)
+            .await?
+            .into_iter()
+            .filter(|entry| entry.value == json!(true))
+            .map(|entry| entry.session_id)
+            .collect();
+        let states = self.msg_box_db.list_owner_sessions(owner).await?;
+        // The peers of the notification sessions are the notification sender.
+        let mut senders = HashSet::from([self.notify_identity().0]);
+        senders.extend(
+            states
+                .iter()
+                .filter(|s| NotifyCategory::from_session_id(&s.session_id).is_some())
+                .filter_map(|s| s.peer_did.clone()),
+        );
+        let mut excluded: HashSet<String> = senders
+            .iter()
+            .map(|sender| format!("dm:{}", sender.to_string()))
+            .collect();
+        excluded.extend(
+            states
+                .into_iter()
+                .filter(|s| s.peer_did.as_ref().is_some_and(|peer| senders.contains(peer)))
+                .map(|s| s.session_id),
+        );
+        Ok(self
+            .msg_box_db
+            .list_visible_session_index(owner)
+            .await?
+            .into_iter()
+            .filter(|entry| {
+                NotifyCategory::from_session_id(&entry.session_id).is_none()
+                    && !excluded.contains(&entry.session_id)
+                    && !muted.contains(&entry.session_id)
+            })
+            .map(|entry| entry.unread_count)
+            .sum())
     }
 
     fn row_matches(row: &NotifyRow, req: &NotifyListReq) -> bool {

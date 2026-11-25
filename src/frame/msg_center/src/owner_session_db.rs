@@ -12,12 +12,15 @@
 use crate::msg_box_db::{
     decode_err, decode_ui_session_state_row, row_to_mailbox_record, to_sql_i64, MsgBoxDbMgr,
 };
-use buckyos_api::{MailboxRecord, OwnerSessionState, SessionLifecycle, UiSessionStateEntry};
+use buckyos_api::{
+    MailboxRecord, OwnerSessionState, SessionLifecycle, SessionMemoryMode, UiSessionStateEntry,
+};
 use kRPC::RPCErrors;
 use name_lib::DID;
 use serde_json::Value;
 use sqlx::any::AnyRow;
 use sqlx::Row;
+use std::collections::HashSet;
 
 /// Per-session aggregate of the visible (post-watermark) records.
 #[derive(Debug, Clone)]
@@ -124,6 +127,9 @@ fn row_to_owner_session(row: &AnyRow) -> std::result::Result<OwnerSessionState, 
         delete_watermark_sort_key: optional_u64(row, "delete_watermark_sort_key")?,
         delete_watermark_record_id: optional_string(row, "delete_watermark_record_id")?,
         deleted_at_ms: optional_u64(row, "deleted_at_ms")?,
+        memory_mode: optional_string(row, "memory_mode_json")?
+            .and_then(|value| serde_json::from_str::<SessionMemoryMode>(&value).ok())
+            .unwrap_or_default(),
         created_at_ms: created_at_ms.max(0) as u64,
         updated_at_ms: updated_at_ms.max(0) as u64,
     })
@@ -135,6 +141,15 @@ const OWNER_SESSION_COLUMNS: &str = r#"
     created_at_ms, updated_at_ms
 "#;
 
+/// Owner-scoped UI state of a session: its `SessionMemoryMode`.
+pub const MEMORY_MODE_KEY: &str = "memory_mode";
+
+const MEMORY_MODE_COLUMN: &str = r#"
+    (SELECT u.value_json FROM owner_ui_session_states u
+      WHERE u.owner = owner_sessions.owner AND u.session_id = owner_sessions.session_id
+        AND u.state_key = 'memory_mode') AS memory_mode_json
+"#;
+
 impl MsgBoxDbMgr {
     pub async fn get_owner_session(
         &self,
@@ -142,7 +157,7 @@ impl MsgBoxDbMgr {
         session_id: &str,
     ) -> std::result::Result<Option<OwnerSessionState>, RPCErrors> {
         let sql = self.render_sql(&format!(
-            "SELECT {OWNER_SESSION_COLUMNS} FROM owner_sessions WHERE owner = ? AND session_id = ?"
+            "SELECT {OWNER_SESSION_COLUMNS}, {MEMORY_MODE_COLUMN} FROM owner_sessions WHERE owner = ? AND session_id = ?"
         ));
         let row = sqlx::query(&sql)
             .bind(owner.to_string())
@@ -165,7 +180,7 @@ impl MsgBoxDbMgr {
         owner: &DID,
     ) -> std::result::Result<Vec<OwnerSessionState>, RPCErrors> {
         let sql = self.render_sql(&format!(
-            "SELECT {OWNER_SESSION_COLUMNS} FROM owner_sessions WHERE owner = ? ORDER BY session_id ASC"
+            "SELECT {OWNER_SESSION_COLUMNS}, {MEMORY_MODE_COLUMN} FROM owner_sessions WHERE owner = ? ORDER BY session_id ASC"
         ));
         let rows = sqlx::query(&sql)
             .bind(owner.to_string())
@@ -412,6 +427,39 @@ LIMIT ?
         rows.iter().map(row_to_mailbox_record).collect()
     }
 
+    /// Latest chat messages received in a session, newest first. What else
+    /// the session holds (replies, notifications) does not count.
+    pub async fn list_received_chats(
+        &self,
+        owner: &DID,
+        session_id: &str,
+        limit: usize,
+    ) -> std::result::Result<Vec<MailboxRecord>, RPCErrors> {
+        let sql = self.render_sql(&format!(
+            r#"
+SELECT {} FROM mailbox_records
+WHERE owner = ? AND session_id = ? AND box_kind = 'INBOX' AND msg_kind = 'chat'
+  AND state != 'DELETED'
+ORDER BY sort_key DESC, record_id DESC
+LIMIT ?
+"#,
+            crate::msg_box_db::MAILBOX_COLUMNS
+        ));
+        let rows = sqlx::query(&sql)
+            .bind(owner.to_string())
+            .bind(session_id.to_string())
+            .bind(limit as i64)
+            .fetch_all(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to list received chats of {}: {}",
+                    session_id, error
+                ))
+            })?;
+        rows.iter().map(row_to_mailbox_record).collect()
+    }
+
     // ------------------------------------------------------------------
     // Owner-scoped UI session state
     // ------------------------------------------------------------------
@@ -514,6 +562,57 @@ ORDER BY state_key ASC
                 ))
             })?;
         rows.iter().map(decode_ui_session_state_row).collect()
+    }
+
+    /// Every session's state `key` of one owner.
+    pub async fn list_owner_ui_session_states_by_key(
+        &self,
+        owner: &DID,
+        key: &str,
+    ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors> {
+        let sql = self.render_sql(
+            r#"
+SELECT session_id, state_key, value_json, updated_at_ms
+FROM owner_ui_session_states
+WHERE owner = ? AND state_key = ?
+ORDER BY session_id ASC
+"#,
+        );
+        let rows = sqlx::query(&sql)
+            .bind(owner.to_string())
+            .bind(key.to_string())
+            .fetch_all(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to list owner ui session state {}: {}",
+                    key, error
+                ))
+            })?;
+        rows.iter().map(decode_ui_session_state_row).collect()
+    }
+
+    /// Ids of the notification records of `owner` that were read or archived.
+    pub async fn list_read_notify_records(
+        &self,
+        owner: &DID,
+    ) -> std::result::Result<HashSet<String>, RPCErrors> {
+        let sql = self.render_sql(
+            "SELECT record_id FROM mailbox_records WHERE owner = ? AND msg_kind = 'notify' AND state IN ('READ', 'ARCHIVED')",
+        );
+        let rows = sqlx::query(&sql)
+            .bind(owner.to_string())
+            .fetch_all(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("failed to list read notify records: {error}"))
+            })?;
+        rows.iter()
+            .map(|row| {
+                row.try_get("record_id")
+                    .map_err(|e| decode_err("record_id", &e))
+            })
+            .collect()
     }
 
     pub async fn delete_owner_ui_session_states(

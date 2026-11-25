@@ -9,7 +9,7 @@ import { DialogFocus, hubButtonClass, hubInputClass } from '../../components/con
 import { useMessageHubStore } from './store'
 import type { Entity, MessageHubContext } from './types'
 
-/** Picks the entity whose default session receives a copy of `message`. */
+/** Picks the entity whose default session (an Agent's: the one the viewer can write in) receives a copy of `message`. */
 export function ForwardMessageForm({ context, message, confirmationFor, onDone, onCancel }: { context: MessageHubContext; message: MessageObject; confirmationFor: (sessionId: string) => string | undefined; onDone: (entity: Entity, sessionId: string) => void; onCancel: () => void }) {
   const { t } = useI18n(), store = useMessageHubStore()
   const [query, setQuery] = useState('')
@@ -22,7 +22,7 @@ export function ForwardMessageForm({ context, message, confirmationFor, onDone, 
     if (busy.current) return
     busy.current = true; setPending(entity.id); setError('')
     try {
-      const session = await store.ensureDefaultSession(context, entity.id)
+      const session = await store.ensureDefaultSession(context, entity.id, { writable: true })
       if (!session) throw Error('session_missing')
       await store.forward(context, session.id, message, confirmationFor(session.id))
       onDone(entity, session.id)

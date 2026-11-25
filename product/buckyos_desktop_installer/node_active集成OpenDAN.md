@@ -10,6 +10,8 @@
 
 ---
 
+> 2026-11-22：激活向导里的 AI Provider 和 Telegram 步骤都已删除（owner 裁决 R6，`notepads/node-active-custom-domain-todo.md` §3.8.2）。AI 厂商 token 在 AI 中心添加，Telegram 账号在“用户与 Agent”里填。本文只作历史记录。
+
 ## 1. 背景
 
 当前 BuckyOS 设置向导已覆盖基础系统初始化，但以下能力仍依赖用户进入系统后在控制面板中完成配置：

@@ -17,7 +17,7 @@ use crate::session::runs::RunHandle;
 use crate::session::Session;
 
 use super::flush::{run_history_entries, FlushMarks};
-use super::history::maybe_compact;
+use super::history::{maybe_compact, HistoryLine};
 use super::inputs::side_effects_from_worklog;
 use super::live::{live_from_frame, remove_if_safe, suspend_run};
 use super::shared::{commit_and_report, report, ClosedTurn, LiveCtx, Shared};
@@ -26,6 +26,8 @@ const WAIT_USER_MSG: &str = "WAIT_USER_MSG";
 
 /// Interrupt reason of a run stopped by `control(pause)`.
 pub(super) const PAUSE_REASON: &str = "session paused";
+/// A message to read before the next inference (`reads_messages`).
+pub(super) const MESSAGE_REASON: &str = "a message arrived";
 
 /// A yield waits for the sub sessions the session must hear from; with
 /// none, a progress report alone does not finish the session.
@@ -87,6 +89,9 @@ pub(super) enum FinishKind {
     /// `control(pause)` stopped the run at an inference boundary: kept at
     /// its checkpoint, the Turn stays open, `resume` runs it on.
     Paused,
+    /// A message stopped the run at an inference boundary: kept at its
+    /// checkpoint, the message joins its open Turn.
+    Message,
 }
 
 impl FinishKind {
@@ -103,6 +108,7 @@ impl FinishKind {
             FinishKind::Interrupted => "interrupted",
             FinishKind::ContextLimit => "context_limit",
             FinishKind::Paused => "paused",
+            FinishKind::Message => "message",
         }
     }
 }
@@ -172,31 +178,37 @@ struct StructuredReply {
 /// Most tags a topic keeps (MEM §1120: a title and a few tags).
 const MAX_TOPIC_TAGS: usize = 8;
 
+/// `topic` of a structured reply.
+fn topic_of(v: &Value) -> Option<Topic> {
+    let t = v.get("topic").filter(|t| t.is_object())?;
+    let topic = Topic {
+        title: t
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+        tags: t
+            .get("tags")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .take(MAX_TOPIC_TAGS)
+            .collect(),
+    };
+    Some(topic).filter(|t| !t.title.is_empty() || !t.tags.is_empty())
+}
+
 impl StructuredReply {
     fn parse(v: &Value) -> Self {
         let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().trim().to_string();
-        let topic = v.get("topic").filter(|t| t.is_object()).map(|t| Topic {
-            title: t
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" "),
-            tags: t
-                .get("tags")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .take(MAX_TOPIC_TAGS)
-                .collect(),
-        });
         Self {
             reply: text("reply"),
-            topic: topic.filter(|t| !t.title.is_empty() || !t.tags.is_empty()),
+            topic: topic_of(v),
             artifacts: v
                 .get("artifacts")
                 .and_then(Value::as_array)
@@ -624,6 +636,16 @@ pub(super) async fn handle_context_outcome(
     lc: &mut LiveCtx,
     outcome: LLMContextOutcome,
 ) -> Result<Next> {
+    let next = Box::pin(interpret_outcome(sh, lc, outcome)).await;
+    sh.post_lock.lock().expect("post lock").take();
+    next
+}
+
+async fn interpret_outcome(
+    sh: &Arc<Shared>,
+    lc: &mut LiveCtx,
+    outcome: LLMContextOutcome,
+) -> Result<Next> {
     if let LLMContextOutcome::Done { behavior_result, .. } = &outcome {
         freeze_target(
             sh,
@@ -671,6 +693,10 @@ pub(super) async fn handle_context_outcome(
                 }
             );
             let mut reply_error = None;
+            let mut output = output;
+            if let ContextOutput::Json { content } = &mut output {
+                super::reports::complete_reply(sh, &lc.run, content).await;
+            }
             let text = match &output {
                 ContextOutput::Invalid { content, error } if contract => {
                     log::warn!(
@@ -850,7 +876,10 @@ pub(super) async fn handle_context_outcome(
         } => {
             next.usage = Some(usage.clone());
             snapshot = s;
-            if let Some(report) = super::reports::final_report(&lc.run)? {
+            let accepted = super::reports::final_report(&lc.run)?;
+            // A message that came with the final report: not the end then.
+            let reopened = accepted.is_some() && super::reports::reopen_for_message(sh, &lc.run).await?;
+            if let Some(report) = accepted.filter(|_| !reopened) {
                 next = classify_done(
                     &cfg,
                     lc.behavior,
@@ -878,6 +907,9 @@ pub(super) async fn handle_context_outcome(
                 next.turn_end = Some(TurnStatus::Stopped);
                 next.error = Some(json!({ "kind": "stopped", "message": reason, "recoverable": false }));
                 status = RunStatus::Interrupted;
+            } else if reason == MESSAGE_REASON || reopened {
+                next.kind = FinishKind::Message;
+                status = RunStatus::Paused;
             } else if reason == PAUSE_REASON {
                 // Kept at its checkpoint, the Turn open: `resume` runs it on.
                 next.kind = FinishKind::Paused;
@@ -1199,8 +1231,10 @@ async fn commit_run_end(
     let (mut bodies, _) = run_history_entries(&run_id, snapshot, behavior, marks, turn);
     if let Some(report) = &next.report {
         if next.kind != FinishKind::ProcessDone {
-            s.state.latest_report = Some(report.clone());
-            s.state.final_report = Some(report.clone());
+            if !report.is_reply() {
+                s.state.latest_report = Some(report.clone());
+                s.state.final_report = Some(report.clone());
+            }
             bodies.push(WorklogBody::ReportDelivery {
                 run_id: run_id.clone(),
                 turn,
@@ -1214,7 +1248,12 @@ async fn commit_run_end(
     // batch on, until they decay; other sessions see it through the
     // registry. A reply without one reinforces nothing (recall wiring TODO
     // §3.3).
-    if let Some(topic) = &next.topic {
+    let submitted_topic = next
+        .report
+        .as_ref()
+        .filter(|r| r.is_reply() && next.kind != FinishKind::ProcessDone)
+        .and_then(|r| topic_of(r.result.as_ref()?));
+    if let Some(topic) = next.topic.as_ref().or(submitted_topic.as_ref()) {
         super::memory_batch::apply_reply_topic(sh, s, topic);
     }
     // A plan that ends: what still runs of its TodoList ends stopped, and
@@ -1262,7 +1301,10 @@ async fn commit_run_end(
         let answer = next.answer.clone().unwrap_or_default();
         s.write_report(&sh.lease, &render_report(s, &answer, next))?;
     }
-    if !next.finished && next.kind != FinishKind::ProcessDone && next.report.is_some() {
+    if !next.finished
+        && next.kind != FinishKind::ProcessDone
+        && next.report.as_ref().is_some_and(|r| !r.is_reply())
+    {
         s.write_report(
             &sh.lease,
             &render_report(s, next.answer.as_deref().unwrap_or_default(), next),
@@ -1421,6 +1463,7 @@ async fn commit_run_end(
     // comes from `ctl perceive` only.
     sh.hints.store(&mut s.state);
     s.commit_state(&sh.lease)?; // commit point
+    sh.post_lock.lock().expect("post lock").take();
     crate::fault::point("finish_run:after_commit");
     Ok(RunEnded {
         run_id,
@@ -1533,12 +1576,33 @@ async fn after_run_end(
         .prompt
         .compact_ratio
         .unwrap_or(sh.deps.options.compact_ratio);
+    let record = run.record();
+    let prefix = run
+        .latest_snapshot()
+        .ok()
+        .flatten()
+        .map(|snap| {
+            let system: Vec<_> = snap
+                .request
+                .input
+                .into_iter()
+                .take_while(|m| m.role == buckyos_api::AiRole::System)
+                .collect();
+            super::history::estimate(&system)
+        })
+        .unwrap_or(0);
+    let line = HistoryLine::of_window(&cfg, &sh.deps.options, &record.config.limits, prefix).unwrap_or(
+        HistoryLine {
+            trigger: (f64::from(ratio) * f64::from(budget)) as u32,
+            target: budget / 2,
+        },
+    );
     let summarizer = sh.deps.summarizer.clone().map(|llm| super::history::Summarizer {
         llm,
-        model: run.record().config.summary_model(),
+        model: record.config.summary_model(),
     });
     if let Some(sm) = summarizer {
-        if let Err(e) = maybe_compact(&mut s, &sh.lease, Some(&sm), budget, ratio).await {
+        if let Err(e) = maybe_compact(&mut s, &sh.lease, Some(&sm), line).await {
             log::warn!("compaction of {sid}: {e}");
         }
     } else {
@@ -1549,8 +1613,7 @@ async fn after_run_end(
                 "run_id": run_id,
                 "phase": "after_run",
                 "reason": "no_summarizer",
-                "budget_tokens": budget,
-                "ratio": ratio,
+                "threshold_tokens": line.trigger,
             })
         );
     }

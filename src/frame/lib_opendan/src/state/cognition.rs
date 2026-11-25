@@ -14,6 +14,8 @@ use crate::memory::{Caller, Memory, MemoryConfig, MemoryQuery, MemoryRead, Query
 use super::fs_client::AgentLayout;
 use super::{Cognition, SessionRegistry};
 
+const MEMORY_NOT_READ: &str = "memory is not available here: the user created this conversation to neither read nor write memory, and the work it starts has the same setting";
+
 pub(super) struct FsCognition {
     layout: AgentLayout,
 }
@@ -23,15 +25,21 @@ impl FsCognition {
         Self { layout }
     }
 
-    /// The Memory identity of session `sid`, from its own configuration.
-    async fn caller(&self, sid: &str) -> Result<Caller> {
+    /// The Memory identity of session `sid`, from its own configuration;
+    /// `None`: the session does not read Memory.
+    async fn caller(&self, sid: &str) -> Result<Option<Caller>> {
         let registry = super::registry::FsRegistry::new(self.layout.clone(), None, None);
         let entry = registry
             .lookup(sid)
             .await?
             .ok_or_else(|| OpenDanError::NotFound(format!("session {sid}")))?;
         let cfg = crate::session::SessionDir::open(&entry.location)?.config()?;
-        Ok(crate::memory::session_caller(&cfg, None))
+        Ok(cfg
+            .session
+            .policy
+            .memory
+            .reads()
+            .then(|| crate::memory::session_caller(&cfg, None)))
     }
 
     async fn blocking<T: Send + 'static>(
@@ -51,13 +59,20 @@ impl Cognition for FsCognition {
     /// A store that cannot be read is an error, never an empty list
     /// (TD-01).
     async fn query(&self, sid: &str, q: &MemoryQuery) -> Result<QueryResult> {
-        let caller = self.caller(sid).await?;
+        let Some(caller) = self.caller(sid).await? else {
+            return Ok(QueryResult {
+                note: Some(MEMORY_NOT_READ.to_string()),
+                ..Default::default()
+            });
+        };
         let q = q.clone();
         self.blocking(move |m| m.query(&caller, &q)).await
     }
 
     async fn read(&self, sid: &str, reference: &str) -> Result<MemoryRead> {
-        let caller = self.caller(sid).await?;
+        let Some(caller) = self.caller(sid).await? else {
+            return Err(OpenDanError::InvalidArgument(MEMORY_NOT_READ.to_string()));
+        };
         let reference = reference.to_string();
         self.blocking(move |m| m.read(&caller, &reference)).await
     }

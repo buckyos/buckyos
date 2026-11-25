@@ -121,7 +121,7 @@ fn record_json(r: &RecordRow, live: &BTreeMap<String, FieldDef>) -> Value {
     let values: JsonMap = r.values.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
     let revs: JsonMap = r.revs.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (k.clone(), json!(v))).collect();
     let meta: JsonMap = r.meta.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
-    let mut out = json!({ "record_id": r.record_id, "rev": r.rev, "values": values, "revs": revs, "meta": meta });
+    let mut out = json!({ "record_id": r.record_id, "created_seq": r.created_seq, "rev": r.rev, "values": values, "revs": revs, "meta": meta });
     if let Some(b) = &r.body_entity_id {
         out["body_ref"] = json!({ "entity_id": b, "version": { "mode": "live_head" } });
     }

@@ -9,10 +9,11 @@ import { getMessageStableId, messageAgentTaskId, messageNotify, messageVoice, ty
 import { effectiveContent, foldMessageRelations, messageObjId, messageRelation, messageSummaryText } from '../../../components/conversation/history/relations'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, sharedStateSchema, memberStateSchema, NATIVE_CONNECTION_LABEL, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
 import { isMessageActivity } from '../../../components/conversation/model/activity'
-import { createGroupSchema, groupSessionId, groupSessionKey, inviteBlocked, participating } from '../groupModel'
+import { createGroupSchema, DEFAULT_HISTORY_BEFORE_JOIN, groupSessionId, groupSessionKey, inviteBlocked, MAX_HISTORY_BEFORE_JOIN, participating } from '../groupModel'
 import { GROUP_INVITATION_INTENT, withinWindow } from '../../../components/conversation/model/groupNotice'
+import { mockSource } from '../../../components/conversation/sessionSources'
 import { ensureDefaultSession } from '../store/defaultSession'
-import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupInfo, type GroupInvitation, type GroupMemberState, type GroupRole, type GroupSessionInfo, type GroupSessionParticipant, type GroupSessionParticipants, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
+import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupInfo, type GroupInvitation, type GroupMemberState, type GroupProfileInput, type GroupRole, type GroupSessionInfo, type GroupSessionParticipant, type GroupSessionParticipants, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
 import { createOutgoingMockMessage, getMockEntityDid, mockEntities, mockEntityDetails, mockMessageReaders, mockMessageSeeds, mockSessions } from './data'
 import { MOCK_SELF_DID } from '../../../components/conversation/mock/ids'
 import { isHiddenAccount } from '../api/projection'
@@ -22,7 +23,7 @@ import { MOCK_NOTIFY_SENDER, mockNotifyEntity, mockNotifyMessages, mockNotifySes
 import { translate } from '../translate'
 import { mockAgentPanel } from './agentpanel'
 import { didDisplayName } from '../../../presentation/model'
-import type { ConnectionChoice, MessageHubStore, OwnerStatus, SyncStatus } from '../store/types'
+import type { ConnectionChoice, DefaultSessionOptions, MessageHubStore, OwnerStatus, SyncStatus } from '../store/types'
 import type { OutgoingPayload, OutgoingUpload } from '../../../components/conversation/model/outgoing'
 import { registerNetworkMockHost, type NetworkMockGroup } from '../../../components/network/mock/hosts'
 import { canStage, pendingBubble } from '../store/outgoing'
@@ -69,6 +70,8 @@ interface MockGroup {
   sessions: Record<string, MockGroupSession>
   inviteLinks: Record<string, { requireApproval: boolean; revoked: boolean }>
   pendingTransfer?: { memberDid: string; transferId: string; expiresAt: number }
+  /** `default_session.history_before_join`; absent means the host's default. */
+  historyBeforeJoin?: number
   panels?: MockPanelDecl[]
   display?: GroupDisplayInfo
   /** `default_session.hooks`. */
@@ -91,10 +94,15 @@ type Snapshot = {
   uploads: Record<string, { name: string; blob: Blob; directory?: AttachmentDirectory }>
   /** The seed's pinned / muted entities; a flag holds until pin or mute is written for that entity, then its sessions' preferences decide as in the real store. */
   seedFlags?: Record<string, { isPinned?: boolean; isMuted?: boolean }>
+  /** The stored default with an Agent, by owner and Agent: the session's key, null once that session was deleted. */
+  defaults?: Record<string, { session: string | null }>
 }
 const allEntities = (entities: Entity[]): Entity[] => entities.flatMap(entity => [entity, ...allEntities(entity.children ?? [])])
 export const findEntity = (id: string) => allEntities(mockEntities).find(entity => entity.id === id)
 export const MOCK_AGENT_OWNER = getMockEntityDid('agent-coder')
+/** The viewer's Telegram conversation with that Agent, in the Agent's mailbox. */
+export const MOCK_TELEGRAM_SESSION = 'tg:agent-bot:4201'
+const MOCK_TELEGRAM_USER = 'did:msgtunnel:4201.user.tg-agent-bot'
 export const MOCK_PRODUCT_TEAM = getMockEntityDid('group-team')
 export const MOCK_HIKING_GROUP = 'did:buckyos:group:weekend-hiking'
 export const MOCK_BOOK_CLUB = 'did:buckyos:group:book-club'
@@ -173,6 +181,16 @@ function seedSnapshot(now: number): Snapshot {
       notice('msg-session-invite-reading', carol, 'session-carol-1', now - 40 * 60000, MOCK_BOOK_CLUB, 'session_invite', { session_id: 'reading', title: 'Reading list' }),
     ],
   }
+  sessions[sessionKey(MOCK_AGENT_OWNER, MOCK_TELEGRAM_SESSION)] = {
+    id: MOCK_TELEGRAM_SESSION, ownerDid: MOCK_AGENT_OWNER, entityId: MOCK_TELEGRAM_USER, title: 'Telegram', type: 'chat', source: 'telegram',
+    binding: { kind: 'tunnel', tunnelInstanceId: 'tg-agent-bot', endpointDid: MOCK_TELEGRAM_USER, remoteContextId: MOCK_TELEGRAM_SESSION, connectionName: 'Telegram', supportsMultipleSessions: false, canCreateRemoteSession: false, canSend: true, connected: true },
+    origin: 'connection', lifecycle: 'active', createdAt: now - 60 * 86400000, lastActiveAt: now - 26 * 3600000, unreadCount: 0, shared: { title: '', description: '', updatedAt: now - 60 * 86400000 }, members: {},
+  }
+  const telegram = (id: string, from: string, to: string, at: number, content: string): MessageObject => ({ from, to: [to], kind: 'chat', to_session: MOCK_TELEGRAM_SESSION, created_at_ms: at, ui_message_id: id, ui_session_id: MOCK_TELEGRAM_SESSION, content: { format: 'text/plain', content } })
+  messages[sessionKey(MOCK_AGENT_OWNER, MOCK_TELEGRAM_SESSION)] = [
+    telegram('msg-tg-1', MOCK_TELEGRAM_USER, MOCK_AGENT_OWNER, now - 26 * 3600000 - 60000, 'Remind me about the release on Friday.'),
+    telegram('msg-tg-2', MOCK_AGENT_OWNER, MOCK_TELEGRAM_USER, now - 26 * 3600000, 'I will remind you here on **Friday at 9:00**.'),
+  ]
   // System Notify: the three category sessions and a CodeAssistant conversation with copies.
   for (const session of mockNotifySessions(now)) sessions[sessionKey(session.ownerDid, session.id)] = session
   Object.assign(messages, mockNotifyMessages(now))
@@ -191,6 +209,11 @@ function openDatabase(): Promise<IDBDatabase> {
     request.onsuccess = () => resolve(request.result)
     request.onerror = () => reject(request.error)
   })
+}
+
+/** The order msg-center takes an Agent's native sessions in while no default is stored: active and registered first, then the earliest created. */
+function mainSessionOrder(sessions: Session[]): Session[] {
+  return sessions.filter(session => session.binding.kind === 'native').sort((a, b) => Number(a.lifecycle === 'archived') - Number(b.lifecycle === 'archived') || Number(!a.createdAt) - Number(!b.createdAt) || a.createdAt - b.createdAt || a.id.localeCompare(b.id))
 }
 
 export class MessageHubMockStore implements MessageHubStore {
@@ -372,6 +395,11 @@ export class MessageHubMockStore implements MessageHubStore {
         if (this.snapshot.messages[demoKey]) stored.messages[demoKey] ??= this.snapshot.messages[demoKey]
       }
     }
+    const telegramKey = sessionKey(MOCK_AGENT_OWNER, MOCK_TELEGRAM_SESSION)
+    if (stored && !stored.sessions[telegramKey]) {
+      stored.sessions[telegramKey] = this.snapshot.sessions[telegramKey]
+      stored.messages[telegramKey] = this.snapshot.messages[telegramKey]
+    }
     if (stored) this.snapshot = { ...stored, hidden: stored.hidden ?? {}, uploads: stored.uploads ?? {} }
     else await this.persist(this.snapshot)
     for (const [objId, upload] of Object.entries(this.snapshot.uploads)) { if (upload.directory) registerMockDirectory(objId, upload.directory); else registerMockUpload(objId, upload.name, upload.blob) }
@@ -446,9 +474,45 @@ export class MessageHubMockStore implements MessageHubStore {
   }
   defaultSession(context: MessageHubContext, entityId: string) {
     const entity = this.findEntity(context, entityId)
-    return entity ? selectDefaultSession(entity, this.sessions(context, entityId, 'active')) : null
+    if (!entity) return null
+    return this.isAgentOf(context, entity) ? this.storedDefault(context, entityId) : selectDefaultSession(entity, this.sessions(context, entityId, 'active'))
   }
-  ensureDefaultSession(context: MessageHubContext, entityId: string) { return ensureDefaultSession(this, context, entityId) }
+  private isAgentOf(context: MessageHubContext, entity: Entity | undefined) { return entity?.type === 'agent' && context.mode === 'self' }
+  private storedDefault(context: MessageHubContext, entityId: string): Session | null {
+    const key = this.snapshot.defaults?.[sessionKey(context.ownerDid, entityId)]?.session
+    if (!key) return null
+    const [owner, id] = JSON.parse(key) as [string, string]
+    return (owner === context.ownerDid ? this.sessions(context, entityId) : this.channelSessions(context, entityId)).find(session => session.id === id) ?? null
+  }
+  /** `msg.get_default_session`. */
+  async agentDefaultSession(context: MessageHubContext, entityId: string, options: DefaultSessionOptions = {}): Promise<Session | null> {
+    const entity = this.lookup(entityId)
+    if (!entity || !this.isAgentOf(context, entity)) return null
+    const current = this.storedDefault(context, entityId)
+    if (current && !(options.writable && current.ownerDid !== context.ownerDid)) return current
+    const stored = this.snapshot.defaults?.[sessionKey(context.ownerDid, entityId)]
+    const inheritMute = this.entities(context).find(item => item.id === entityId)?.isMuted === true
+    const earliest = stored && !current ? undefined : mainSessionOrder(this.sessions(context, entityId)).find(session => mockSource(context.ownerDid, session.id) === null)
+    return this.mutate(next => {
+      this.requireOwn(context)
+      const session = earliest ?? this.addSession(next, context, entity, { kind: 'native', targetDid: entityId }, '', '')
+      if (!earliest && inheritMute) next.preferences[viewerSessionKey(context, session.id)] = { ...defaultPreferences, muted: true }
+      if (!current) next.defaults = { ...next.defaults, [sessionKey(context.ownerDid, entityId)]: { session: sessionKey(context.ownerDid, session.id) } }
+      return session
+    })
+  }
+  ensureDefaultSession(context: MessageHubContext, entityId: string, options?: DefaultSessionOptions) { return ensureDefaultSession(this, context, entityId, options) }
+  async loadConversations() {}
+  setDefaultSession(context: MessageHubContext, session: Session) {
+    return this.mutate(next => {
+      this.requireOwn(context)
+      next.defaults = { ...next.defaults, [sessionKey(context.ownerDid, session.entityId)]: { session: sessionKey(session.ownerDid, session.id) } }
+    })
+  }
+  channelSessions(context: MessageHubContext, entityId: string): Session[] {
+    if (!this.canView(context) || context.mode !== 'self' || this.lookup(entityId)?.type !== 'agent') return []
+    return Object.values(this.snapshot.sessions).filter(session => session.ownerDid === entityId && session.binding.kind === 'tunnel').map(session => ({ ...session, entityId, unreadCount: 0 }))
+  }
   isOwnAgent(context: MessageHubContext, id: string): boolean {
     return context.mode === 'self' && context.ownerDid === context.viewerDid && context.ownerDid === MOCK_SELF_DID && id === MOCK_AGENT_OWNER
   }
@@ -527,12 +591,20 @@ export class MessageHubMockStore implements MessageHubStore {
       const binding = this.connections(context, entity.id).find(choice => choice.id === values.connection)?.binding
       const reason = creationReason(context, entity, this.policy(context, entity.id), binding)
       if (reason || !binding) throw Error(reason)
-      const now = this.now(), id = crypto.randomUUID()
-      const session: Session = { id, ownerDid: context.ownerDid, entityId: entity.id, title: entity.name, type: 'chat', binding: binding.kind === 'tunnel' ? { ...binding, remoteContextId: id } : binding, source: binding.kind === 'tunnel' ? binding.connectionName.split(' · ')[0].toLowerCase() : 'buckyos', origin: 'manual', lifecycle: 'active', createdAt: now, lastActiveAt: now, unreadCount: 0, shared: { title: values.title, description: values.description ?? '', updatedAt: now }, members: { [context.ownerDid]: { nickname: 'Me', updatedAt: now }, [entity.id]: { nickname: entity.name, updatedAt: now } } }
-      next.sessions[sessionKey(context.ownerDid, id)] = session
-      if (inheritMute) next.preferences[viewerSessionKey(context, id)] = { ...defaultPreferences, ...next.preferences[viewerSessionKey(context, id)], muted: true }
+      const session = this.addSession(next, context, entity, binding, values.title, values.description ?? '')
+      if (entity.type === 'agent') {
+        if (values.memoryMode && values.memoryMode !== 'normal') session.memoryMode = values.memoryMode
+        if (values.setDefault) next.defaults = { ...next.defaults, [sessionKey(context.ownerDid, entity.id)]: { session: sessionKey(context.ownerDid, session.id) } }
+      }
+      if (inheritMute) next.preferences[viewerSessionKey(context, session.id)] = { ...defaultPreferences, ...next.preferences[viewerSessionKey(context, session.id)], muted: true }
       return session
     })
+  }
+  private addSession(next: Snapshot, context: MessageHubContext, entity: Entity, binding: SessionBinding, title: string, description: string): Session {
+    const now = this.now(), id = crypto.randomUUID()
+    const session: Session = { id, ownerDid: context.ownerDid, entityId: entity.id, title: entity.name, type: 'chat', binding: binding.kind === 'tunnel' ? { ...binding, remoteContextId: id } : binding, source: binding.kind === 'tunnel' ? binding.connectionName.split(' · ')[0].toLowerCase() : 'buckyos', origin: 'manual', lifecycle: 'active', createdAt: now, lastActiveAt: now, unreadCount: 0, shared: { title, description, updatedAt: now }, members: { [context.ownerDid]: { nickname: 'Me', updatedAt: now }, [entity.id]: { nickname: entity.name, updatedAt: now } } }
+    next.sessions[sessionKey(context.ownerDid, id)] = session
+    return session
   }
   manage(context: MessageHubContext, id: string, action: 'archive' | 'restore' | 'delete') {
     return this.mutate(next => {
@@ -542,6 +614,8 @@ export class MessageHubMockStore implements MessageHubStore {
       next.deleted[key] = { at: this.now(), session: { ...session, title: this.lookup(session.entityId)?.name ?? '', shared: { title: '', description: '', updatedAt: this.now() }, members: {}, lastMessage: undefined, unreadCount: 0 } }
       next.withoutSeed[key] = true
       delete next.sessions[key]; delete next.messages[key]; delete next.delivery[key]
+      const stored = next.defaults?.[sessionKey(context.ownerDid, session.entityId)]
+      if (stored?.session === key) stored.session = null
       for (const collection of [next.preferences, next.drafts, next.draftAttachments]) for (const prefKey of Object.keys(collection)) {
         const [, owner, sessionId] = JSON.parse(prefKey) as string[]
         if (owner === context.ownerDid && sessionId === id) delete collection[prefKey]
@@ -883,6 +957,7 @@ export class MessageHubMockStore implements MessageHubStore {
       did: group.did, name: group.name, description: group.description, ownerDid: group.ownerDid, hostDid: group.hostDid, hosted: true, lifecycle: group.lifecycle, revision: group.revision, myRole, members, sessions: this.groupSessions(group),
       can: { ...noGroupCapabilities, invite: active, remove: active, createSession: active, approve: active, updateRole: myRole === 'owner' && group.lifecycle === 'active', moderate: active, updateConfig: active, manageSession: active, inviteGuest: active, updateSharedState: active, redactAny: active, mentionAll: active, transferOwner: myRole === 'owner' && group.lifecycle === 'active' },
       messageRules: { editWindowMs: EDIT_WINDOW_MS, recallWindowMs: RECALL_WINDOW_MS },
+      historyBeforeJoin: group.historyBeforeJoin ?? DEFAULT_HISTORY_BEFORE_JOIN,
       pendingTransfer: group.pendingTransfer,
     }
   }
@@ -977,14 +1052,16 @@ export class MessageHubMockStore implements MessageHubStore {
       return did
     })
   }
-  updateGroupProfile(context: MessageHubContext, groupDid: string, profile: { name: string; description: string }) {
+  updateGroupProfile(context: MessageHubContext, groupDid: string, profile: GroupProfileInput) {
     return this.mutate(next => {
       const group = this.requireGroup(next, context, groupDid)
       this.requireCapability(group, context.ownerDid, 'updateConfig')
       const name = profile.name.trim(), description = profile.description.trim()
+      const history = profile.historyBeforeJoin ?? group.historyBeforeJoin ?? DEFAULT_HISTORY_BEFORE_JOIN
       if (!name || name.length > 64) throw Error('invalid-group-name')
-      if (group.name === name && group.description === description) return
-      group.name = name; group.description = description; group.revision = crypto.randomUUID()
+      if (!Number.isInteger(history) || history < 0 || history > MAX_HISTORY_BEFORE_JOIN) throw Error('invalid-session-rules')
+      if (group.name === name && group.description === description && history === (group.historyBeforeJoin ?? DEFAULT_HISTORY_BEFORE_JOIN)) return
+      group.name = name; group.description = description; group.historyBeforeJoin = history; group.revision = crypto.randomUUID()
       this.groupLog(next, group, 'entity.config_changed', context.ownerDid)
     })
   }

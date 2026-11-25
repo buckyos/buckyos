@@ -350,6 +350,8 @@ export function ClusterManagerPage() {
   const nodes = zone?.devices ?? []
   const online = nodes.filter((device) => device.online).length
   const oods = nodes.filter((device) => device.is_ood).length
+  // The Zone document names the SN either way; only an OOD with a fixed public address is reached without it.
+  const viaSn = Boolean(zone?.sn) && !nodes.some((device) => device.is_ood && device.net_id === 'wan')
   const localDevice = nodes.find((device) => device.is_local) ?? null
 
   const tiles = [
@@ -362,7 +364,7 @@ export function ClusterManagerPage() {
     { label: t('settings.cluster.domain', 'Domain'), value: zone?.hostname ?? '—', icon: Globe },
     {
       label: t('settings.cluster.access', 'Access'),
-      value: zone ? (zone.sn ? t('settings.cluster.viaSn', 'Via SN') : t('settings.cluster.direct', 'Direct')) : '—',
+      value: zone ? (viaSn ? t('settings.cluster.viaSn', 'Via SN') : t('settings.cluster.direct', 'Direct')) : '—',
       icon: Wifi,
     },
   ]

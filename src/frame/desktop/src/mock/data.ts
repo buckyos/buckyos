@@ -516,6 +516,7 @@ const appCatalog: AppDefinition[] = [
     accent: 'var(--cp-app-violet)',
     tier: 'system',
     manifest: {
+      instance: 'multi',
       defaultMode: 'windowed',
       allowMinimize: true,
       allowMaximize: true,

@@ -19,23 +19,26 @@ import { InMemoryConversationMessageReader } from '../../../components/conversat
 import { registerObjectAccess, rememberLocalObject, resetObjectCaches } from '../../../components/conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../../../components/conversation/history/types'
 import {
-  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, clearSession, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInvite, revokeGroupInviteLink, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
-  type Contact, type GroupDoc, type GroupDocEnvelope, type GroupMemberRecord, type GroupSessionItem, type SessionMessageItem, type SessionSummary, type UiSessionStateEntry,
+  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, clearSession, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getDefaultSession, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, getSessionState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listConversations, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInvite, revokeGroupInviteLink, setDefaultSession, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
+  type Contact, type DefaultSession, type GroupDoc, type GroupMemberRecord, type GroupSessionItem, type MailboxRecord, type PeerConversations, type SessionMessageItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
-import { createGroupSchema, groupSessionId } from '../groupModel'
+import { createGroupSchema, DEFAULT_HISTORY_BEFORE_JOIN, groupSessionId, MAX_HISTORY_BEFORE_JOIN } from '../groupModel'
 import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../../../components/conversation/history/relations'
 import { messageVoice, type MessageObject } from '../../../components/conversation/model/msgobj'
 import { isActionMessage } from '../../../components/conversation/model/activity'
+import { agentDidsOf } from '../../../shared/controlPanel/account.ts'
+import { applySessionPref, groupName, participatedGroups } from '../../../shared/messagehub/session.ts'
+import { collectUnreadRecords, markRecordsRead } from '../../../shared/messagehub/unread.ts'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, NATIVE_CONNECTION_LABEL, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { sessionExtensions } from '../extensions/model'
-import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
-import type { ConnectionChoice, ManageAction, MessageHubStore, OwnerStatus, SyncStatus } from '../store/types'
+import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupProfileInput, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
+import type { ConnectionChoice, DefaultSessionOptions, ManageAction, MessageHubStore, OwnerStatus, SyncStatus } from '../store/types'
 import type { OutgoingPayload, OutgoingUpload } from '../../../components/conversation/model/outgoing'
 import { canStage, pendingBubble, pendingBubbleId } from '../store/outgoing'
 import { LocalStateStore } from './local'
 import { apiObjectAccess, setObjectViewer } from './objects'
-import { parseTunnelDid, projectOwner, shortDid, UNASSIGNED_ENTITY_ID, type ProjectedOwner, type ProjectionLabels } from './projection'
+import { channelSession, parseTunnelDid, projectOwner, shortDid, UNASSIGNED_ENTITY_ID, type ProjectedOwner, type ProjectionLabels } from './projection'
 import { emptyHistory, itemToMessage, messageId as messageIdOf, newestRecord, recordMeta, removeMessage, SessionApiReader, upsertMessages, type SessionHistory } from './reader'
 import { releaseAttachmentUploads, uploadAttachments } from './upload'
 import { translate } from '../translate'
@@ -93,6 +96,8 @@ interface OwnerData {
   groupLookups: Set<string>
   prefs: Record<string, { title: string; description: string; pinned: boolean; muted: boolean; pinnedMessage?: PinnedMessage | null }>
   prefsLoaded: Set<string>
+  /** Per Agent: the stored default and the conversations with it (`msg.list_conversations`); `set` counts the defaults learned otherwise. */
+  agentConversations: Map<string, PeerConversations & { set: number; loading?: Promise<void> }>
   version: number
   projected?: { version: number; value: ProjectedOwner }
   /** Enriched `entities()` per `(viewerDid, mode)`, keyed on owner + local state versions. */
@@ -143,16 +148,11 @@ function isUuid(value: string): boolean {
 
 function groupEntry(doc: GroupDoc, hosted: boolean): GroupSummaryEntry {
   const text = (value: unknown) => typeof value === 'string' ? value.trim() : ''
-  return { name: text(doc.profile?.name), description: text(doc.profile?.description), ownerDid: doc.owner, hostDid: typeof doc.host === 'string' ? doc.host : '', lifecycle: doc.lifecycle ?? 'active', hosted }
+  return { name: groupName(doc), description: text(doc.profile?.description), ownerDid: doc.owner, hostDid: typeof doc.host === 'string' ? doc.host : '', lifecycle: doc.lifecycle ?? 'active', hosted }
 }
 
 function groupMemberInfo(member: GroupMemberRecord): NonNullable<GroupInfo['members']>[number] {
   return { did: member.member_did, role: member.role, state: member.state, expiresAt: member.expires_at_ms ?? undefined, invitedBy: member.invited_by ?? undefined }
-}
-
-function docOf(value: GroupDocEnvelope | GroupDoc | null | undefined): GroupDoc | null {
-  if (!value || typeof value !== 'object') return null
-  return 'doc' in value && value.doc && typeof value.doc === 'object' ? value.doc : 'id' in value ? value as GroupDoc : null
 }
 
 /** A rejection the host gives for a group operation, as a reason code the UI translates. */
@@ -271,7 +271,7 @@ export class MessageHubApiStore implements MessageHubStore {
   private owner(ownerDid: string): OwnerData {
     let data = this.owners.get(ownerDid)
     if (!data) {
-      data = { status: { phase: 'idle' }, summaries: [], contacts: [], agentDids: [], groups: {}, peers: new Map(), groupInfo: new Map(), groupSessionTitles: {}, postAccess: new Map(), postChecks: new Set(), postGeneration: 0, receipts: new Map(), sessionMembers: new Map(), invitationNames: new Map(), invitationStates: new Map(), groupLookups: new Set(), prefs: {}, prefsLoaded: new Set(), version: 0, entitiesCache: new Map(), histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
+      data = { status: { phase: 'idle' }, summaries: [], contacts: [], agentDids: [], groups: {}, peers: new Map(), groupInfo: new Map(), groupSessionTitles: {}, postAccess: new Map(), postChecks: new Set(), postGeneration: 0, receipts: new Map(), sessionMembers: new Map(), invitationNames: new Map(), invitationStates: new Map(), groupLookups: new Set(), prefs: {}, prefsLoaded: new Set(), agentConversations: new Map(), version: 0, entitiesCache: new Map(), histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
       this.owners.set(ownerDid, data)
     }
     return data
@@ -342,7 +342,7 @@ export class MessageHubApiStore implements MessageHubStore {
     ])
     return {
       contacts,
-      agentDids: agents.map(agent => agent.agent_did).filter(did => typeof did === 'string' && did.startsWith('did:')),
+      agentDids: agentDidsOf(agents),
     }
   }
 
@@ -458,7 +458,10 @@ export class MessageHubApiStore implements MessageHubStore {
     let stopped = false
     const data = this.owner(context.ownerDid)
     const summaryTimer = setInterval(() => { void this.refreshSummaries(context) }, SUMMARY_POLL_MS)
-    const peopleTimer = setInterval(() => { void this.refreshPeople(context) }, CONTACT_POLL_MS)
+    const peopleTimer = setInterval(() => {
+      void this.refreshPeople(context)
+      for (const agentDid of data.agentConversations.keys()) void this.loadConversations(context, agentDid)
+    }, CONTACT_POLL_MS)
     const refreshPeople = () => { void this.refreshPeople(context) }
     const reconnect = () => { void this.refreshSummaries(context) }
     const checkIdentity = () => { void this.checkIdentity().catch(() => undefined) }
@@ -566,12 +569,107 @@ export class MessageHubApiStore implements MessageHubStore {
     return sortSessions(filtered, id => prefs.get(id) ?? this.preferences(context, id))
   }
 
-  defaultSession(context: MessageHubContext, entityId: string) {
-    const entity = this.findEntity(context, entityId)
-    return entity ? selectDefaultSession(entity, this.sessions(context, entityId, 'active')) : null
+  /** The owner's own view of an Agent: its default can be set, and its conversations on channels are listed. */
+  private isAgentOf(context: MessageHubContext, entity: Entity | undefined): boolean {
+    return entity?.type === 'agent' && context.mode === 'self' && context.ownerDid === this.selfDid
   }
 
-  ensureDefaultSession(context: MessageHubContext, entityId: string) { return ensureDefaultSession(this, context, entityId) }
+  /** The session behind a stored default, when it is listed here. */
+  private sessionOfDefault(context: MessageHubContext, entityId: string, value: DefaultSession | undefined): Session | null {
+    if (!value) return null
+    if (value.platform !== 'native') return this.channelSessions(context, entityId).find(session => session.id === value.session_id) ?? channelSession(entityId, { ...value, last_active_at_ms: value.set_at_ms })
+    return this.sessions(context, entityId).find(session => session.id === value.session_id) ?? null
+  }
+
+  defaultSession(context: MessageHubContext, entityId: string) {
+    const entity = this.findEntity(context, entityId)
+    if (!entity) return null
+    if (!this.isAgentOf(context, entity)) return selectDefaultSession(entity, this.sessions(context, entityId, 'active'))
+    return this.sessionOfDefault(context, entityId, this.owner(context.ownerDid).agentConversations.get(entityId)?.default)
+  }
+
+  async agentDefaultSession(context: MessageHubContext, entityId: string, options: DefaultSessionOptions = {}) {
+    if (!this.isAgentOf(context, this.findEntity(context, entityId))) return null
+    const data = this.owner(context.ownerDid)
+    const muted = this.entities(context).find(item => item.id === entityId)?.isMuted === true
+    const value = await getDefaultSession(context.ownerDid, entityId, options.writable === true)
+    const listed = data.summaries.some(summary => summary.session_id === value.session_id)
+    if (value.platform === 'native') await this.listSession(context, value.session_id)
+    // What a writing caller gets is the default only unless that is on a channel.
+    if (!options.writable) this.rememberDefault(data, entityId, value)
+    this.bump(data)
+    const session = this.sessionOfDefault(context, entityId, value)
+    if (!session) throw new Error('session_missing')
+    // Created just now (msg-center stores a new default as it creates it): it inherits the Agent's mute like any new session.
+    if (muted && !listed && value.platform === 'native' && Math.abs(value.set_at_ms - session.createdAt) < 1_000) await this.updatePreferences(context, session.id, { muted: true }).catch(error => console.warn('MessageHub session mute not inherited.', error))
+    return session
+  }
+
+  /** Makes sure a session of the owner is listed: one that was just created, or that is on a page not loaded yet. */
+  private async listSession(context: MessageHubContext, sessionId: string) {
+    const data = this.owner(context.ownerDid)
+    const listed = () => data.summaries.some(summary => summary.session_id === sessionId)
+    if (listed()) return
+    const state = await getSessionState(context.ownerDid, sessionId)
+    if (state?.registered && !listed()) {
+      this.mergeSummaries(data, [{ session_id: sessionId, unread_count: 0, updated_at_ms: state.updated_at_ms, last_activity_ms: state.created_at_ms, request_count: 0, lifecycle: state.lifecycle, state }])
+      return
+    }
+    // A session known only from its records has no state to list it by.
+    while (!listed() && this.hasMoreEntities(context)) await this.loadMoreEntities(context)
+  }
+
+  ensureDefaultSession(context: MessageHubContext, entityId: string, options?: DefaultSessionOptions) { return ensureDefaultSession(this, context, entityId, options) }
+
+  channelSessions(context: MessageHubContext, entityId: string): Session[] {
+    if (!this.canView(context) || !this.isAgentOf(context, this.findEntity(context, entityId))) return []
+    const conversations = this.owner(context.ownerDid).agentConversations.get(entityId)?.conversations ?? []
+    return conversations.filter(conversation => conversation.platform !== 'native').map(conversation => channelSession(entityId, conversation))
+  }
+
+  async setDefaultSession(context: MessageHubContext, session: Session) {
+    this.requireOwn(context)
+    const { to, toSession } = session.ownerDid === context.ownerDid ? { to: context.ownerDid, toSession: this.sendTarget(session).toSession }
+      : session.binding.kind === 'tunnel' ? { to: session.binding.endpointDid, toSession: session.binding.remoteContextId }
+      : { to: '', toSession: undefined }
+    if (!to) throw new Error('binding_unknown')
+    const data = this.owner(context.ownerDid)
+    this.rememberDefault(data, session.entityId, await setDefaultSession(context.ownerDid, session.entityId, to, toSession))
+    this.bump(data)
+  }
+
+  private conversationsEntry(data: OwnerData, entityId: string) {
+    let entry = data.agentConversations.get(entityId)
+    if (!entry) { entry = { conversations: [], set: 0 }; data.agentConversations.set(entityId, entry) }
+    return entry
+  }
+
+  /** The default as it was just set, answered or deleted: a read under way is older and leaves it. */
+  private rememberDefault(data: OwnerData, entityId: string, value: DefaultSession | undefined) {
+    const entry = this.conversationsEntry(data, entityId)
+    entry.default = value
+    entry.set++
+  }
+
+  /** A failed read leaves what was known (nothing at first) and is tried again with the next one. */
+  loadConversations(context: MessageHubContext, entityId: string): Promise<void> {
+    if (!this.isAgentOf(context, this.findEntity(context, entityId))) return Promise.resolve()
+    const data = this.owner(context.ownerDid)
+    const entry = this.conversationsEntry(data, entityId)
+    entry.loading ??= (async () => {
+      const { set } = entry, before = JSON.stringify([entry.conversations, entry.default])
+      try {
+        const value = await listConversations(context.ownerDid, entityId)
+        entry.conversations = value.conversations
+        if (entry.set === set) entry.default = value.default
+      } catch (error) {
+        console.warn('MessageHub conversations of the Agent unavailable.', error)
+      }
+      entry.loading = undefined
+      if (JSON.stringify([entry.conversations, entry.default]) !== before) this.bump(data)
+    })()
+    return entry.loading
+  }
 
   connections(context: MessageHubContext, entityId: string): ConnectionChoice[] {
     const entity = this.findEntity(context, entityId)
@@ -828,42 +926,35 @@ export class MessageHubApiStore implements MessageHubStore {
     const unread = new Map<string, SessionMessageItem[]>()
     for (const summary of summaries.filter(item => item.unread_count > 0)) {
       try {
-        let cursor: SessionHistory['oldestCursor']
-        const boundary = summary.last_record?.record
         const targets: SessionMessageItem[] = []
         unread.set(summary.session_id, targets)
-        do {
-          const page = await listSessionMessages({ owner: context.ownerDid, session_id: summary.session_id, limit: HISTORY_PAGE_SIZE, descending: true, with_object: false, cursor_sort_key: cursor?.sortKey, cursor_record_id: cursor?.recordId })
+        await collectUnreadRecords(listSessionMessages, { owner: context.ownerDid, sessionId: summary.session_id, boundary: summary.last_record?.record }, targets, () => {
           if (data.epoch !== epoch) throw new Error('context_changed')
-          targets.push(...(page.items ?? []).filter(item => item.direction === 'in' && item.recipient_state === 'UNREAD' && (!boundary || item.sort_key < boundary.sort_key || (item.sort_key === boundary.sort_key && item.record_id <= boundary.record_id))))
-          cursor = page.next_cursor_sort_key !== undefined && page.next_cursor_record_id !== undefined ? { sortKey: page.next_cursor_sort_key, recordId: page.next_cursor_record_id } : undefined
-        } while (cursor)
+        })
       } catch (error) {
         if (data.epoch !== epoch) throw error
         failures.push(error)
       }
     }
     for (const [sessionId, targets] of unread) {
-      for (let offset = 0; offset < targets.length; offset += 8) {
-        const results = await Promise.allSettled(targets.slice(offset, offset + 8).map(item => updateRecordState(item.record_id, 'READ')))
+      await markRecordsRead(updateRecordState, targets, results => {
         if (data.epoch !== epoch) throw new Error('context_changed')
-        const records = new Map<string, Awaited<ReturnType<typeof updateRecordState>>>()
+        const records = new Map<string, MailboxRecord>()
         for (const result of results) {
           if (result.status === 'fulfilled') records.set(result.value.record_id, result.value)
           else failures.push(result.reason)
         }
         const key = viewerSessionKey(context, sessionId)
         const history = data.histories.get(key)
-        if (history && records.size > 0) {
-          const updated = history.messages.flatMap(message => {
-            const meta = recordMeta(message)
-            const record = meta && records.get(meta.recordId)
-            return record ? [{ ...message, ui_record: { ...meta, recipientState: record.state } }] : []
-          })
-          data.histories.set(key, upsertMessages(history, updated))
-          this.bump(data)
-        }
-      }
+        if (!history || records.size === 0) return
+        const updated = history.messages.flatMap(message => {
+          const meta = recordMeta(message)
+          const record = meta && records.get(meta.recordId)
+          return record ? [{ ...message, ui_record: { ...meta, recipientState: record.state } }] : []
+        })
+        data.histories.set(key, upsertMessages(history, updated))
+        this.bump(data)
+      })
     }
     try {
       this.mergeSummaries(data, await readSummaries())
@@ -954,8 +1045,12 @@ export class MessageHubApiStore implements MessageHubStore {
     if (entity.type === 'group') return this.createGroupSessionFor(context, entity.id, values.title, values.description ?? '')
     const inheritMute = this.entities(context).find(item => item.id === entity.id)?.isMuted === true
     const epoch = data.epoch
-    const state = await createSession({ owner: context.ownerDid, peer_did: entity.id, title: values.title || undefined, binding: { kind: 'native', targetDid: binding.targetDid }, origin: 'manual' })
+    const agent = this.isAgentOf(context, entity)
+    const setDefault = agent && values.setDefault === true
+    const memoryMode = agent && values.memoryMode && values.memoryMode !== 'normal' ? values.memoryMode : undefined
+    const state = await createSession({ owner: context.ownerDid, peer_did: entity.id, title: values.title || undefined, binding: { kind: 'native', targetDid: binding.targetDid }, origin: 'manual', ...(setDefault ? { set_default: true } : {}), ...(memoryMode ? { memory_mode: memoryMode } : {}) })
     if (data.epoch !== epoch) throw new Error('context_changed')
+    if (setDefault) this.rememberDefault(data, entity.id, { session_id: state.session_id, platform: 'native', to: context.ownerDid, to_session: state.session_id, set_at_ms: state.created_at_ms })
     this.mergeSummaries(data, [{ session_id: state.session_id, unread_count: 0, updated_at_ms: state.updated_at_ms, last_activity_ms: state.created_at_ms, request_count: 0, lifecycle: 'active', state }])
     data.histories.set(viewerSessionKey(context, state.session_id), { ...emptyHistory, loaded: true })
     data.historyStatus.set(state.session_id, 'ready')
@@ -1002,6 +1097,9 @@ export class MessageHubApiStore implements MessageHubStore {
       data.runtime.delete(sessionId)
       delete data.prefs[sessionId]
       data.prefsLoaded.delete(sessionId)
+      for (const [agentDid, entry] of data.agentConversations) {
+        if (entry.default?.platform === 'native' && entry.default.session_id === sessionId) this.rememberDefault(data, agentDid, undefined)
+      }
       await this.local.update(next => {
         const key = viewerSessionKey(context, sessionId)
         delete next.drafts[key]; delete next.draftAttachments[key]; delete next.showActions[key]
@@ -1030,10 +1128,7 @@ export class MessageHubApiStore implements MessageHubStore {
   }
 
   private applyPref(prefs: SessionPreferences, entry: UiSessionStateEntry) {
-    if (entry.key === 'ui.title' && typeof entry.value === 'string' && entry.value.trim().length <= 64) prefs.title = entry.value.trim()
-    if (entry.key === 'ui.description' && typeof entry.value === 'string' && entry.value.trim().length <= 500) prefs.description = entry.value.trim()
-    if (entry.key === 'ui.pinned' && typeof entry.value === 'boolean') prefs.pinned = entry.value
-    if (entry.key === 'ui.muted' && typeof entry.value === 'boolean') prefs.muted = entry.value
+    applySessionPref(prefs, entry)
     if (entry.key === 'ui.pinned_message') { const pin = pinnedMessageSchema.safeParse(entry.value); prefs.pinnedMessage = pin.success ? pin.data : null }
   }
 
@@ -1391,12 +1486,7 @@ export class MessageHubApiStore implements MessageHubStore {
   private async fetchGroups(): Promise<Record<string, GroupSummaryEntry>> {
     const result = await listGroupsByMember()
     const groups: Record<string, GroupSummaryEntry> = {}
-    for (const joined of result.joined ?? []) {
-      if (joined.stopped) continue
-      const doc = docOf(joined.doc_cache)
-      groups[joined.group_did] = doc ? groupEntry(doc, false) : { name: '', description: '', ownerDid: '', hostDid: '', lifecycle: 'active', hosted: false }
-    }
-    for (const item of result.items ?? []) if (item.doc?.id) groups[item.doc.id] = groupEntry(item.doc, true)
+    for (const { did, doc, hosted } of participatedGroups(result)) groups[did] = doc ? groupEntry(doc, hosted) : { name: '', description: '', ownerDid: '', hostDid: '', lifecycle: 'active', hosted }
     const data = this.owner(this.selfDid)
     for (const invitation of result.invitations ?? []) {
       const groupDid = invitation.group_did ?? invitation.doc?.id
@@ -1505,6 +1595,7 @@ export class MessageHubApiStore implements MessageHubStore {
           sessions: sessionInfos,
           can,
           messageRules: { editWindowMs: defaultRules?.edit?.edit_window_ms ?? undefined, recallWindowMs: defaultRules?.edit?.recall_window_ms ?? undefined },
+          historyBeforeJoin: config && defaultRules?.history !== 'all' ? defaultRules?.history_before_join ?? DEFAULT_HISTORY_BEFORE_JOIN : undefined,
           pendingTransfer: transfer ? { memberDid: transfer.member_did, transferId: transfer.transfer_id, expiresAt: transfer.expires_at_ms } : previous?.pendingTransfer && previous.ownerDid === entry.ownerDid ? previous.pendingTransfer : undefined,
         },
       })
@@ -1552,11 +1643,14 @@ export class MessageHubApiStore implements MessageHubStore {
     return result.group_did
   }
 
-  async updateGroupProfile(context: MessageHubContext, groupDid: string, profile: { name: string; description: string }) {
-    const name = profile.name.trim(), description = profile.description.trim()
+  async updateGroupProfile(context: MessageHubContext, groupDid: string, profile: GroupProfileInput) {
+    const name = profile.name.trim(), description = profile.description.trim(), history = profile.historyBeforeJoin
     if (!name) throw new Error('invalid-group-name')
-    const revision = this.groupInfoOf(context, groupDid).revision
-    await this.groupOperation(context, groupDid, () => applyGroupConfig(groupDid, revision, { profile: { name, description } }, crypto.randomUUID()))
+    if (history !== undefined && !(Number.isInteger(history) && history >= 0 && history <= MAX_HISTORY_BEFORE_JOIN)) throw new Error('invalid-session-rules')
+    const info = this.groupInfoOf(context, groupDid)
+    const patch: Record<string, unknown> = { profile: { name, description } }
+    if (history !== undefined && history !== info.historyBeforeJoin) patch.default_session = { history_before_join: history }
+    await this.groupOperation(context, groupDid, () => applyGroupConfig(groupDid, info.revision, patch, crypto.randomUUID()))
     const data = this.owner(context.ownerDid)
     if (data.groups[groupDid]) data.groups[groupDid] = { ...data.groups[groupDid], name, description }
     this.bump(data)

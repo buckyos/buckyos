@@ -6,7 +6,7 @@ use crate::error::{WsError, WsResult};
 use crate::model::{EntityRow, JsonMap, ReadCtx, TYPE_TABLE};
 use crate::order_key::check_order_key;
 use crate::plan::Planner;
-use crate::value::{parse_date, parse_datetime_ms, FieldType};
+use crate::value::{parse_date, parse_datetime_ms, FieldDef, FieldType};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -56,7 +56,11 @@ pub fn standard_fields(e: &EntityRow) -> Option<Fields> {
     if e.type_id != TYPE_TABLE {
         return None;
     }
-    match e.schema_id.as_deref() {
+    schema_fields(e.schema_id.as_deref())
+}
+
+fn schema_fields(schema: Option<&str>) -> Option<Fields> {
+    match schema {
         Some(TODO_SCHEMA) => Some(TODO_FIELDS),
         Some(CALENDAR_SCHEMA) => Some(CALENDAR_FIELDS),
         _ => None,
@@ -228,9 +232,38 @@ impl Rec<'_> {
     }
 }
 
+/// Missing inputs for an insert after schema defaults and service-populated fields are accounted for.
+pub fn missing_record_fields(fields: &[FieldDef], schema: Option<&str>, draft: &JsonMap) -> Vec<String> {
+    let mut effective = draft.clone();
+    for field in fields {
+        if let Some(value) = &field.default {
+            effective.entry(field.field_id.clone()).or_insert_with(|| value.clone());
+        }
+    }
+    let record = Rec {
+        values: &effective,
+        fields: fields.iter().map(|f| (f.field_id.clone(), f.ty)).collect(),
+        standard: schema_fields(schema).unwrap_or(&[]),
+    };
+    let business = required_inputs(&record, schema);
+    fields.iter().filter(|f| {
+        !f.submitter && ((f.required && !f.nullable && effective.get(&f.field_id).is_none_or(Value::is_null))
+            || business.iter().any(|(id, _)| *id == f.field_id && record.has(id) && record.get(id).is_none()))
+    }).map(|f| f.field_id.clone()).collect()
+}
+
+fn required_inputs(record: &Rec, schema: Option<&str>) -> &'static [(&'static str, &'static str)] {
+    match schema {
+        Some(TODO_SCHEMA) => &[("title", ""), ("status", "")],
+        Some(CALENDAR_SCHEMA) if record.get("all_day").and_then(Value::as_bool) == Some(true) =>
+            &[("title", ""), ("start_date", " on an all-day event")],
+        Some(CALENDAR_SCHEMA) => &[("title", ""), ("start", " on a timed event")],
+        _ => &[],
+    }
+}
+
 fn todo_rules(r: &Rec) -> Rule {
-    r.required("title", "")?;
-    r.required("status", "")?;
+    for &(id, why) in required_inputs(r, Some(TODO_SCHEMA)) { r.required(id, why)?; }
     if let Some(k) = r.get("order") {
         let k = k.as_str().ok_or(("order", "order must be an order key".to_string()))?;
         check_order_key(k).map_err(|e| ("order", format!("order: {}", e.detail)))?;
@@ -251,7 +284,6 @@ fn todo_rules(r: &Rec) -> Rule {
 }
 
 fn calendar_rules(r: &Rec) -> Rule {
-    r.required("title", "")?;
     let all_day = r.get("all_day").and_then(Value::as_bool).unwrap_or(false);
     let (kind, first, last, other) = match all_day {
         true => ("an all-day event", "start_date", "end_date", ["start", "end"]),
@@ -262,7 +294,7 @@ fn calendar_rules(r: &Rec) -> Rule {
             return Err((k, format!("{k} must be absent on {kind} (it uses {first} / {last})")));
         }
     }
-    r.required(first, &format!(" on {kind}"))?;
+    for &(id, why) in required_inputs(r, Some(CALENDAR_SCHEMA)) { r.required(id, why)?; }
     // canonical datetimes and dates order as text
     if let (Some(a), Some(b)) = (r.get(first).and_then(Value::as_str), r.get(last).and_then(Value::as_str)) {
         if b < a {
@@ -481,7 +513,40 @@ pub fn check_rrule(rule: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::check_rrule;
+    use super::{check_rrule, missing_record_fields, CALENDAR_SCHEMA, TODO_SCHEMA};
+    use crate::value::FieldDef;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn draft_asks_for_missing_values_after_defaults_and_business_rules() {
+        let defs = |items: Value| items.as_array().unwrap().iter().map(|f| FieldDef::from_value(f).unwrap()).collect::<Vec<_>>();
+        let fields = defs(json!([
+            {"field_id":"a","name":"A","type":"text","required":true},
+            {"field_id":"b","name":"B","type":"number","required":true,"default":0},
+            {"field_id":"c","name":"C","type":"boolean","required":true,"default":false},
+            {"field_id":"d","name":"D","type":"text","nullable":true,"required":true},
+            {"field_id":"e","name":"E","type":"text","unique":true},
+            {"field_id":"who","name":"Who","type":"text","submitter":true,"required":true}
+        ]));
+        assert_eq!(missing_record_fields(&fields, None, json!({}).as_object().unwrap()), ["a"]);
+        assert!(missing_record_fields(&fields, None, json!({"a":"ok"}).as_object().unwrap()).is_empty());
+
+        let todo = defs(json!([
+            {"field_id":"title","name":"Title","type":"text"},
+            {"field_id":"status","name":"Status","type":"select","options":[{"option_id":"todo","label":"Todo"}],"default":"todo"}
+        ]));
+        assert_eq!(missing_record_fields(&todo, Some(TODO_SCHEMA), json!({}).as_object().unwrap()), ["title"]);
+
+        let calendar = defs(json!([
+            {"field_id":"title","name":"Title","type":"text"},
+            {"field_id":"all_day","name":"All day","type":"boolean"},
+            {"field_id":"start","name":"Start","type":"datetime","nullable":true},
+            {"field_id":"start_date","name":"First day","type":"date","nullable":true}
+        ]));
+        assert_eq!(missing_record_fields(&calendar, Some(CALENDAR_SCHEMA), json!({}).as_object().unwrap()), ["title", "start"]);
+        assert_eq!(missing_record_fields(&calendar, Some(CALENDAR_SCHEMA), json!({"title":"Trip", "all_day":true}).as_object().unwrap()), ["start_date"]);
+    }
+
 
     #[test]
     fn rrule_subset() {

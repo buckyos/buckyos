@@ -42,7 +42,11 @@ interface ConversationViewProps extends ConversationHostActions {
   onToggleMute?: () => void
   /** The session menu's "Clear history" (the host confirms); without it the entry is not offered. */
   onClearHistory?: () => void
+  /** Which session opens is still being resolved. */
+  defaultSessionPending?: boolean
   defaultSessionError?: boolean
+  /** Texts carried out as commands instead of being sent. */
+  commands?: Record<string, () => void>
   onRetryDefaultSession?: () => void
   leadingPane?: ReactNode
   isSessionSidebarOpen?: boolean
@@ -73,7 +77,7 @@ export function ConversationView({
   onBack,
   onOpenSessionSidebar,
   onOpenDetails,
-  title = session?.title ?? '', onOpenSessionDetails, creationReason, muted = false, onToggleMute, onClearHistory, defaultSessionError, onRetryDefaultSession,
+  title = session?.title ?? '', onOpenSessionDetails, creationReason, muted = false, onToggleMute, onClearHistory, defaultSessionPending = false, defaultSessionError, onRetryDefaultSession, commands,
   leadingPane = null,
   isSessionSidebarOpen = false,
   otherSessionsUnread = 0,
@@ -97,7 +101,7 @@ export function ConversationView({
   const notifyCategory = session ? notifyCategoryFromSessionId(session.id) : undefined
   const [notifyFilter, setNotifyFilter] = useState<NotifyFilter>('all')
   const notifyReader = useNotifyFilteredReader(source.reader, notifyCategory ? notifyFilter : 'all')
-  const subtitle = session ? [title, session.binding.kind === 'tunnel' ? session.binding.connectionName : ''].filter(Boolean).join(' · ') : t('messagehub.noSessions')
+  const subtitle = session ? [...new Set([title, session.binding.kind === 'tunnel' ? session.binding.connectionName : ''])].filter(Boolean).join(' · ') : defaultSessionPending ? '' : t('messagehub.noSessions')
   const isOwner = context.mode === 'self' && context.ownerDid === context.viewerDid
   const mutedMark = muted ? <BellOff size={13} className="shrink-0 text-[color:var(--cp-muted)]" role="img" aria-label={t('messagehub.sessionMenu.muted')} data-testid="session-muted" /> : null
   const menuItems: HeaderMenuItem[] = session ? [
@@ -160,8 +164,9 @@ export function ConversationView({
       leadingPane={leadingPane}
       panelDetails={sessionPanelDetails}
       historyReader={notifyCategory ? notifyReader : undefined}
-      composer={!notifyCategory}
-      emptyLabel={!session ? t('messagehub.noSessions') : notifyCategory ? t(`messagehub.notify.empty.${notifyFilter}`) : undefined}
+      composer={!notifyCategory && !defaultSessionPending}
+      commands={commands}
+      emptyLabel={!session ? t(defaultSessionPending ? 'messagehub.loadingHistory' : 'messagehub.noSessions') : notifyCategory ? t(`messagehub.notify.empty.${notifyFilter}`) : undefined}
       sendBlockedReason={sendBlockedReason}
       focusMessageId={focusMessageId}
       onSwipeLeft={agentPanel && !agentPanel.open ? onOpenDetails : undefined}

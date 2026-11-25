@@ -3,15 +3,20 @@
 import { useCallback, useState } from 'react'
 import { useMediaQuery } from '@mui/material'
 import { useMobileBackHandler } from '../../../../desktop/windows/MobileNavContext'
+import { useAppPath } from '../../../pathContext'
+import { appPath } from '../../../standalone/address'
 import type { AppServiceNav } from './navigation'
 
 interface AppServiceShellProps {
+  initialNav?: AppServiceNav
   children: (nav: AppServiceNav, navigate: (nav: AppServiceNav) => void) => React.ReactNode
 }
 
-export function AppServiceShell({ children }: AppServiceShellProps) {
-  const [currentNav, setCurrentNav] = useState<AppServiceNav>({ page: 'home' })
+export function AppServiceShell({ initialNav = { page: 'home' }, children }: AppServiceShellProps) {
+  const [currentNav, setCurrentNav] = useState<AppServiceNav>(initialNav)
   const isMobile = useMediaQuery('(max-width: 767px)')
+
+  useAppPath(currentNav.page === 'install' ? appPath('install') : appPath('', { service: currentNav.page === 'detail' ? currentNav.serviceId : undefined }))
 
   const handleBack = useCallback(() => setCurrentNav({ page: 'home' }), [])
 

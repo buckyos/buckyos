@@ -23,38 +23,45 @@ fn parse(text: &str) -> Result<Value, JsError> {
     canonical::parse_strict(text).map_err(fail)
 }
 
+fn live_field_defs(fields_json: &str) -> Result<Vec<FieldDef>, JsError> {
+    let mut fields = parse(fields_json)?;
+    let fields = fields.as_array_mut().ok_or_else(|| fail(WsError::invalid_op("fields must be an array")))?;
+    fields.iter_mut().map(|field| {
+        if let Some(o) = field.as_object_mut() {
+            for k in ["order_key", "def_rev", "type_rev", "values_rev"] { o.remove(k); }
+        }
+        FieldDef::from_value(field).map_err(fail)
+    }).collect()
+}
+
+#[wasm_bindgen]
+pub fn missing_record_fields(fields_json: &str, schema_id: Option<String>, draft_json: &str) -> Result<String, JsError> {
+    let fields = live_field_defs(fields_json)?;
+    let draft = parse(draft_json)?;
+    let values = draft.as_object().ok_or_else(|| fail(WsError::invalid_op("draft must be an object")))?;
+    Ok(json!(aiworkspace_core::standard::missing_record_fields(&fields, schema_id.as_deref(), values)).to_string())
+}
+
 /// A table view compiled to SQL over the logical table named `table` (a path or an alias, quoted here) — core
 /// `sqlview::compile_view`, the one compiler the service uses too (核心 API 调整 §3.5). For sessions without a replica,
 /// which read a view with `doc.query { sql }`. `fields_json`: the table's live fields as `doc.read` gives them;
-/// `view_json`: `{ filter?, sorts?, fields?, group?, manual_order? }`; `projection`: `records` (`_record`, the native
+/// `view_json`: `{ filter?, sorts?, fields?, group?, row_order? }`; `projection`: `records` (`_record`, the native
 /// rows) or `display` (`_id` and the display columns). → `{ sql, count_sql, group_sql?, diagnostics }`.
 #[wasm_bindgen]
 pub fn view_sql(table: &str, fields_json: &str, view_json: &str, projection: &str) -> Result<String, JsError> {
     use aiworkspace_core::model::FieldRow;
     use aiworkspace_core::sqlview::{compile_view, ident, Projection, ViewDef};
-    let fields = parse(fields_json)?;
-    let rows: Vec<FieldRow> = fields
-        .as_array()
-        .ok_or_else(|| fail(WsError::invalid_op("fields must be an array")))?
-        .iter()
-        .map(|f| {
-            let mut d = f.clone();
-            if let Some(o) = d.as_object_mut() {
-                for k in ["order_key", "def_rev", "type_rev", "values_rev"] {
-                    o.remove(k);
-                }
-            }
-            let def = FieldDef::from_value(&d).map_err(fail)?;
-            Ok(FieldRow { source_id: String::new(), field_id: def.field_id.clone(), def, order_key: String::new(), def_rev: 0, type_rev: 0, values_rev: 0, deleted_seq: None })
-        })
-        .collect::<Result<_, JsError>>()?;
+    let rows: Vec<FieldRow> = live_field_defs(fields_json)?.into_iter().map(|def| FieldRow {
+        source_id: String::new(), field_id: def.field_id.clone(), def,
+        order_key: String::new(), def_rev: 0, type_rev: 0, values_rev: 0, deleted_seq: None,
+    }).collect();
     let projection = match projection {
         "records" => Projection::Records,
         "display" => Projection::Display,
         other => return Err(fail(WsError::invalid_op(format!("projection must be records or display, not {other}")))),
     };
     let v = compile_view(&ident(table), &rows, &ViewDef::of_params(&parse(view_json)?), projection).map_err(fail)?;
-    Ok(json!({ "sql": v.sql, "count_sql": v.count_sql, "group_sql": v.group_sql, "diagnostics": v.diagnostics }).to_string())
+    Ok(json!({ "sql": v.sql, "params": v.params, "count_sql": v.count_sql, "group_sql": v.group_sql, "diagnostics": v.diagnostics }).to_string())
 }
 
 #[wasm_bindgen]
@@ -355,6 +362,7 @@ impl Replica {
         let p = parse(params_json)?;
         let m = &self.inner.working;
         let mut spec = QuerySpec {
+            row_order: p.get("row_order").and_then(Value::as_object).cloned(),
             limit: p.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize,
             cursor: p.get("cursor").and_then(Value::as_str).map(str::to_string),
             best_effort: true,
@@ -368,7 +376,7 @@ impl Replica {
             spec.filter = cell.payload.get("filter").filter(|f| !f.is_null()).cloned();
             spec.sorts = cell.payload.get("sorts").and_then(Value::as_array).cloned().unwrap_or_default();
             spec.group = cell.payload.get("group").and_then(|g| g["field_id"].as_str()).map(str::to_string);
-            spec.manual_order = cell.payload.get("manual_order").and_then(Value::as_object).cloned();
+            spec.row_order = cell.payload.get("row_order").and_then(Value::as_object).cloned();
         }
         if let Some(extra) = p.get("filter").filter(|f| !f.is_null()) {
             spec.filter = Some(match spec.filter.take() {

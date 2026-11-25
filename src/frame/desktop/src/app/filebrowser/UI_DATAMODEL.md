@@ -250,6 +250,11 @@ strings, zero sizes, or false metadata merely to satisfy rendering.
 
 ### 2.4 Sidebar projections
 
+Fixed entries head the sidebar and need no source: My files (the signed-in user's home), Recent
+(<code>view://recent</code>), Published (<code>/srv/publish</code>) and Library
+(<code>/srv/library</code>), then the pinned folders. They are always shown; opening one the account
+cannot read reports the access error like any other folder.
+
 ~~~ts
 export interface DfsNode {
   id: string

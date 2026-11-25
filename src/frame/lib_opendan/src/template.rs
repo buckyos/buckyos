@@ -526,6 +526,8 @@ impl SessionTemplate {
             max_session_depth: self.max_session_depth,
             tick_secs: self.tick_secs,
             runtime_view: self.runtime_view,
+            reads_messages: false,
+            memory: MemoryMode::Normal,
         }
     }
 

@@ -124,9 +124,23 @@ export const saveSsoSettings = (settings: SsoSettings): RpcResult<SsoSettings> =
     did_login_enabled: settings.did_login_enabled,
     // An empty field returns the Zone to the default jump entry.
     jump_base_url: jump || null,
-    ...(settings.oauth_sources ? {oauth_sources:settings.oauth_sources} : {}),
   })
 }
+
+/** Replaces the login source list; a source left out is deleted (its namespace stays reserved). */
+export const saveOAuthSources = (sources: OAuthSource[]): RpcResult<SsoSettings> =>
+  callSession<SsoSettings>('sso.settings.set', { oauth_sources: sources })
+
+/** A local account that signs in through a login source. */
+export interface OAuthSourceAccount {
+  user_id: string
+  show_name: string
+  email: string
+  state: string
+}
+
+export const fetchOAuthSourceAccounts = (sourceId: string): RpcResult<{ accounts: OAuthSourceAccount[] }> =>
+  callSession<{ accounts: OAuthSourceAccount[] }>('sso.oauth_source.accounts', { source_id: sourceId })
 
 export const ENTRY_SERVICES: readonly EntryService[] = ['aiworkspace', 'msg-center']
 

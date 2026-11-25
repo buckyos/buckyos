@@ -417,6 +417,33 @@ empty) with `more: true` and a `next_before` to go on from. Commit messages are 
 language (the Desktop writes the label of the edit); the client says the service's own messages and every other kind
 of entry in the reader's language.
 
+## Notices (System Notify, `notepads/buckyos-app-system-client-todo.md` N8)
+
+The service tells Zone users of two things through msg-center `notify.send` (`doc/message_hub/System Notify.md`), as
+`system:aiworkspace`; `store/src/notices.rs` finds them, `server/src/notices.rs` decides who is told and sends, once a minute
+over every Workspace but the copies shows and sessions run on. Standalone mode has no msg-center: nothing is sent.
+
+**Comments** are annotations with a `target` and a body (a note without one is canvas content), written by a person or an
+Agent (Commit origin `human` / `agent`). One concerns who made the target (who wrote the record, for a comment on a record;
+the Workspace owner when nobody is recorded), who commented on the same target before, and the accounts its body names as
+`@<user id>` (there is no structured mention: the text is what counts). Never its author. After notices went out, what comes
+in the next five minutes of that Workspace goes out together; level `normal`, `timely` when the user is named. How far
+comments were told is kept in the Workspace's local state (`notify.comments_seq`), so a restart or an unreachable msg-center
+loses none (older than a day: dropped), and a Workspace starts from its head when the service first sees it.
+
+**Reminders** are `ext.reminders` of the standard to-do and calendar tables ([schemas/standard-tables.md](schemas/standard-tables.md)),
+repeating events included (`server/src/recurrence.rs`, the Rust side of buckyos-websdk `src/aiws_rrule.ts`). A record reminds
+one person: a to-do's `ext.assignee`, who wrote the record, the owner — the first that is an account and may read the table.
+Level `timely`, category `todo` for a to-do; a notice closes a day after what it reminds of. The service sends what fell due
+since it last looked, at most an hour late; the key names the record, the start and the reminder, so a moved event reminds
+again and nothing is sent twice. Not reminded: done to-dos, cancelled events, records an Agent keeps the reminders of
+(`ext.maintenance` or `ext.covered_until`), and what `ws.clone` or an import as a new Workspace brought along, until somebody
+changes that record.
+
+A recipient is an active account that may read the comment and what it is on (the table, for a reminder) at that moment.
+`source.link` is the page: the Surface with the Block showing the thing (`block=`, `record=`, `occ=`), else the Workspace.
+Texts are English: the service has no language of the recipient.
+
 ## Connector (连接线方案 C1)
 
 Design: [连接线实现方案讨论](<../../../doc/workspace/连接线实现方案讨论.md>) §4, §6, §8.3. A connector is a Cell with
@@ -1361,7 +1388,7 @@ etag, records, bytes, reason? }`, `data { mode: local | url_query | synced, writ
 `SOURCE_READ_ONLY` — or nobody here, the rows being remote; `capabilities` and `ops` stay the ACL's and the type's),
 `children`, `capabilities` (the caller's, as everywhere), `ops` (the Commit operations its type takes: the `types` column
 of `schemas/operations.json`), `shows` (a Block: what it shows `{ entity_id, path, type }`, a table view with
-`view_sql`, `view_count_sql`, `view_group_sql?`, `view_diagnostics?` or `view_error`; a control: its bindings),
+`view_sql`, `view_params?`, `view_count_sql`, `view_group_sql?`, `view_diagnostics?` or `view_error`; a control: its bindings),
 `definition`, `ref`, `degraded?`, `lock_holder?`, `availability?`.
 
 `doc.read { as: "body" }` (the property `body`) is the entity in plain text (R6) — what Agents read, text queries match
@@ -1422,7 +1449,7 @@ to `head_seq` (a moved Workspace is `SNAPSHOT_EXPIRED`) and to the request.
 - **SQL** `{ sql, params?, tables?, max_rows?, expect_head? }`: one SELECT run by SQLite itself (R12) on a read-only
   connection, over **logical tables**: the temporary view of a local table, created the first time the statement names
   it — by its path (`FROM "/data/销售"`), `"~<entity_id>"`, its id, or an alias of `tables: { alias: path | id }` (with
-  `tables`, only those). Columns: `_id` (record id), `_rev`, `_body` (the path of the record's body), `_record` (the
+  `tables`, only those). Columns: `_id` (record id), `_created_seq` (insertion commit), `_rev`, `_body` (the path of the record's body), `_record` (the
   record as `doc.read` gives it, as JSON text: what the Desktop renders and edits), and per live field `"<name>"` (the
   display value) and `"<name>#raw"` (the stored value: option ids, the exact decimal, a reference or currency object as
   JSON text); a currency field also `"<name>#currency"`; a field named like a system column is `"<name>#field"`.
@@ -1443,10 +1470,19 @@ to `head_seq` (a moved Workspace is `SNAPSHOT_EXPIRED`) and to the request.
   `aiws_dec` (exact decimal order) are there for the compiled views. `expect_head: { epoch, seq }` refuses a Workspace
   at another head (`SNAPSHOT_EXPIRED` / `HEAD_MISMATCH`): the Desktop sends its confirmed head and runs no SQL while it
   has unconfirmed changes (R16). SQL runs on the service and on a wish stage's snapshot, never on a browser replica.
-- **Table views as SQL.** A table view Block keeps its definition (`filter`, `sorts`, `group`, `manual_order`,
+- **Table views as SQL.** A table view Block keeps its definition (`filter`, `sorts`, `group`, `row_order`,
   `fields`); `sqlview::compile_view` turns it into the SELECT that gives the rows, the order and the group counts of
   the evaluator (`filter::run_query`, kept for the browser replica, R16) — `store/tests/sql.rs` holds them side by side.
-  It appears in the Block's `meta.shows.view_sql`, is what the stage tools and wish inputs (`table_view`,
+  Without explicit sorts, records follow `created_seq`, then `record_id`. A view's `row_order` maps
+  each moved record ID to `<16-digit hex creation sequence>!<anchor record ID>!<fraction>`.
+  The unmoved anchor occupies fraction `h`. A live anchor supplies its actual creation sequence after replica rebase.
+  The stored sequence holds its place after deletion. Wish result views use sequence zero for their program order.
+  The `ref_purpose` of an `object_ref` field may be `image` or `canvas`. The references index records each
+  as a live, weak `value_link`. Selecting a value requires a readable image AssetRef or Surface in this workspace.
+  Deleting the target leaves its ID in the cell so that undo restores the link. General object references keep the
+  strong `value` edge.
+  Send `meta.shows.view_params` as `doc.query.params` for a view with manual positions.
+  The SELECT appears in the Block's `meta.shows.view_sql`, is what the stage tools and wish inputs (`table_view`,
   `table_query`) read through, and what the Desktop runs when a tab holds no replica (WASM `view_sql`). A view's
   `row_limit` (B7-3) is a display limit only: the Block shows the first `row_limit` rows of that SQL (`meta.shows.row_limit`); the
   data keeps every row.
@@ -1531,15 +1567,16 @@ may turn a refusal into an allowance), never for the owner; nothing is cached. A
 presenter's memberships settled again at each `show.notes`.
 
 Only the owner (R17): giving or taking `manage` (an entry touching it, the members of a group holding it), `ws.delete`,
-a restore over the Workspace (`ws.import restore`). Managers do the rest: groups, members, entries
+exporting the Workspace (`doc.export` in both `share` and `personal_backup` modes), and a restore over the Workspace
+(`ws.import restore`). Managers do the rest: groups, members, entries
 without `manage` (denials included), anonymous access, share entries, publications, macro bindings, maintenance. Every
 change is one record in `acl_audit` (who, judged as whom, when, the object with its path then, before, after; `acl.audit`),
 bumps `acl_rev` (`ws.get_info`), wakes `doc.wait_changes { after_acl_rev }` and publishes the kevent
 `…/aiworkspace/<ws>/acl`. A purged entity takes its entries along; a deleted one keeps them for a restore.
 
 **The permission design** — group definitions, the entries of groups and fixed groups, macro bindings — travels with a
-template (`templates/<id>/permissions.json`, written when a manager exports), a Clone and a package (`permission_design`
-in the manifest) made by a manager, and loads into the new Workspace with no members and anonymous access off. Members,
+template (`templates/<id>/permissions.json`) or Clone made by a manager, and with every workspace package
+(`permission_design` in the manifest). It loads into the new Workspace with no members and anonymous access off. Members,
 single callers' entries, the anonymous switch and share entries never travel; a restore over a Workspace keeps that
 Workspace's own.
 
@@ -1688,7 +1725,7 @@ they were judged where the Commit was admitted. The doc comment of each validato
 | cell | `check_slot` (from `validate_primitive`, `check_position`) | reference | `slot` only inside a control; inside a composite required and a slot of the definition (several Blocks may share one); elsewhere unique among the live siblings (`SLOT_CONFLICT`); re-judged by `tree.move`; a connector never turns into a box or back |
 | cell, container (composite) | `check_on_shape` (from `validate_primitive` / `container_primitive`) | primitive | `on` (扩展控件 P2): ≤ 16 event names, each one handler or ≤ 4, each an object whose `kind` is write / wish / open / notify, ≤ 16 KiB; never on a connector, ink, or a container other than a composite |
 | cell, container | `entity.set_props` (`plan.rs`) | primitive | `key` config / bindings / on, ≤ 64 property names `^[A-Za-z_][A-Za-z0-9_-]{0,63}$`, values ≤ 64 KiB; the key then goes through the entity's validators like a `set_keys` of it |
-| cell | `validate_cell` (table view configuration) | schema | `fields` / `filter` / `sorts` / `group` / `manual_order` only on table views, named fields live, ≤ 4 sorts, group field type; `row_limit` (1–100000, a table view only) |
+| cell | `validate_cell` (table view configuration) | schema | `fields` / `filter` / `sorts` / `group` / `row_order` only on table views, named fields live, ≤ 4 sorts, group field type; `row_limit` (1–100000, a table view only) |
 | cell | `validate_cell` (`config.snapshot`) | primitive | an embedded snapshot is an AssetRef (checked by `validate_asset`) |
 | cell (connector) | `validate_connector` (shapes) | schema | `flip`, `route`, ≤ 64 `controls`, `label.t` in [0, 1]; `start` / `end` are `{ entity_id, anchor { kind: named, id } }` |
 | cell (connector) | `validate_connector` (endpoints) | reference | a bound endpoint is a readable Block or group on the connector's Surface, never itself or another line |
@@ -1784,7 +1821,7 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `availability.describe` | experimental | `did` → the subject's published `availability_ref` for a caller with a current sharing grant |
 | `availability.free_busy` | experimental | `did`, offset-bearing `from`, `to` → `intervals`, `coverage` after checking the current sharing grant |
 | `ws.time` | stable | none → `server_ms` (unix ms of the service clock); any session, guests included |
-| `ws.list`, `ws.get_info`, `ws.delete` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one; `ws.get_info.owned_by_caller_user` reports whether the actual account or verified Agent owner owns this workspace; for that owner, an old copy explicitly deselected by `ws.select_name` retains its `former_name`; `ws.get_info.cloned_from` names the source of a clone or a `new` import. `ws.list` items also carry what the home page's cards show (UI 框架 PRD §9.2, K6): `owner_principal`, `updated_at` (the last accepted Commit, else the creation), `opened_at` (when the caller last opened it, or null), `public` (`anonymous` — anonymous access on and something granted to `@guest` — or `published` by path), `live_sessions` (live sessions of it as courseware) and `cover` (the picture chosen in the settings, `{ workspace_id, object_id, media_type }`, see “Covers”, or null). `ws.get_info` carries `settings` (the Workspace's shared settings, the root's `config`, see “Workspace settings”) and `settings_rev`; `record_open: true` records that the caller opened it now, for `opened_at`) |
+| `ws.list`, `ws.get_info`, `ws.delete` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one and `owner: true` when the caller has effective owner access; `ws.get_info.owned_by_caller_user` reports whether the actual account or verified Agent owner owns this workspace; for that owner, an old copy explicitly deselected by `ws.select_name` retains its `former_name`; `ws.get_info.cloned_from` names the source of a clone or a `new` import. `ws.list` items also carry what the home page's cards show (UI 框架 PRD §9.2, K6): `owner_principal`, `updated_at` (the last accepted Commit, else the creation), `opened_at` (when the caller last opened it, or null), `public` (`anonymous` — anonymous access on and something granted to `@guest` — or `published` by path), `live_sessions` (live sessions of it as courseware) and `cover` (the picture chosen in the settings, `{ workspace_id, object_id, media_type }`, see “Covers”, or null). `ws.get_info` carries `settings` (the Workspace's shared settings, the root's `config`, see “Workspace settings”) and `settings_rev`; `record_open: true` records that the caller opened it now, for `opened_at`) |
 | `ws.clone` | stable | none → `workspace_id`, `epoch`, `head_seq`, `content_root`, `cloned_from { workspace_id, snapshot }`, `excluded_entities` — a new Workspace the caller owns, copied from what the caller may read (workspace-level `export`; see “Workspace clone”) |
 | `acl.set` | stable | `changes: [{ subject, resource?, allow?, deny? }]` (≤ 500): each replaces the subject's entry on the resource (path or id, default `/`; both empty removes it), all or none, one record; `manage` on each resource, the owner's when `manage` is touched |
 | `acl.query` | stable | `by: entity` (`resource`, `expand?`: every subject with entries on its chain, their effective capabilities, each entry's source — direct, inherited, workspace — and what a denial overrides; macros bound to those groups and who may change them; managers), `by: subject` (`subject?`: its entries; for a group, its members; for a single caller, its judgment — groups and how, `@guest`, judged as), `by: explain` (`resource`, `principal?`: each capability allowed or refused and by which entry), `by: all` (every entry with who wrote it, `complete: true`, for a manager; otherwise the entries that apply to the caller — its own, its groups', `@all`, `@guest` while it is a guest — without who wrote them). Anyone may ask about itself; the rest is the managers' |
@@ -1947,7 +1984,7 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `doc.list_versions` | stable | `read` on `entity_id` |
 | `doc.restore_version` | experimental | `read` on `entity_id` |
 | `doc.checkpoint` | experimental | `export` on `/` |
-| `doc.export` | experimental | `export` on `/` |
+| `doc.export` | experimental | the owner |
 | `print.package` | experimental | may enter; `export` on the canvas, and on each canvas of a free canvas's path (the steps on others are left out); `read` on the PDF Frame; what is printed is what the caller may read |
 | `source.bind_contacts` | experimental | the owner |
 | `proc.start` | stable | a Source: `run` (or a write right) on it; a wish: `update` for analyze / code, `run` or a write right for run, on the wish; hosted: an account, executed by one of its own Agents |

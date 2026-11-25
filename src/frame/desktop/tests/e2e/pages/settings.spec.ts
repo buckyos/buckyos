@@ -176,6 +176,69 @@ test.describe('settings', () => {
     expect(Object.keys(await accountAppearance(page))).not.toContain('messagePreview')
   })
 
+  test('appearance: the Zone color and the mobile feed are saved to the account and come back on another device', async ({ page }) => {
+    const win = await openSettings(page, 'Appearance')
+    const preview = win.getByTestId('settings-accent-preview')
+    await expect(preview).toHaveAttribute('data-accent', '')
+    await expect(win.getByTestId('settings-accent-reset')).toHaveCount(0)
+    const pageAccent = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--cp-accent'))
+    const base = await pageAccent()
+
+    await win.getByTestId('settings-accent-b8437f').click()
+    await expect(win.getByTestId('settings-accent-b8437f')).toHaveAttribute('aria-pressed', 'true')
+    await expect(preview).toHaveAttribute('data-accent', '#b8437f')
+    await expect(win.getByTestId('settings-accent-dot')).toHaveCSS('background-color', 'rgb(184, 67, 127)')
+    await win.getByTestId('settings-mobile-feed').selectOption('activity')
+    await expect.poll(() => accountAppearance(page)).toMatchObject({ accent: '#b8437f', mobileFeed: 'activity' })
+    // It marks the Zone; the theme's own colours do not change.
+    expect(await pageAccent()).toBe(base)
+
+    const code = win.getByTestId('settings-accent-code')
+    await code.fill('#33')
+    await expect(win.getByText('Enter a color such as #3366cc.')).toBeVisible()
+    expect((await accountAppearance(page)).accent).toBe('#b8437f')
+    await code.fill('3366CC')
+    await expect(preview).toHaveAttribute('data-accent', '#3366cc')
+    await expect.poll(async () => (await accountAppearance(page)).accent).toBe('#3366cc')
+
+    await page.evaluate(() => {
+      for (const key of Object.keys(localStorage)) {
+        if (!key.startsWith('buckyos.mock.')) localStorage.removeItem(key)
+      }
+    })
+    await page.reload()
+    await page.getByTestId('desktop-app-settings').click()
+    await page.getByTestId('window-settings').getByRole('button', { name: 'Appearance', exact: true }).click()
+    await expect(page.getByTestId('settings-accent-preview')).toHaveAttribute('data-accent', '#3366cc')
+    await expect(page.getByTestId('settings-mobile-feed')).toHaveValue('activity')
+
+    await page.getByTestId('settings-accent-reset').click()
+    await expect(page.getByTestId('settings-accent-preview')).toHaveAttribute('data-accent', '')
+    await expect.poll(async () => (await accountAppearance(page)).accent).toBeNull()
+  })
+
+  test('notifications: each app that declares them has a switch; a failed or undeclared one says so', async ({ page }) => {
+    const win = await openSettings(page, 'Notifications')
+    const notes = win.getByTestId('notify-app-notes.example.com@alice')
+    await expect(notes).toContainText('Last sent')
+    const toggle = notes.getByRole('switch', { name: 'Notifications from Notes' })
+    await expect(toggle).toBeChecked()
+    await toggle.click()
+    await expect(toggle).not.toBeChecked()
+    await expect(toggle).toBeEnabled()
+    await win.getByRole('button', { name: 'Appearance', exact: true }).click()
+    await win.getByRole('button', { name: 'Notifications', exact: true }).click()
+    await expect(toggle).not.toBeChecked()
+
+    const legacy = win.getByTestId('notify-app-legacy.example.com@alice')
+    await expect(legacy).toContainText('does not declare notifications')
+    await expect(legacy.getByRole('switch')).toBeDisabled()
+    const gone = win.getByTestId('notify-app-weather.example.com@alice')
+    await expect(gone).toContainText('Uninstalled')
+    await expect(gone.getByRole('switch')).toHaveCount(0)
+    await expect(win.getByRole('switch', { name: 'Show message content in the status bar' })).toBeVisible()
+  })
+
   test('appearance: a file that is not a picture is refused and the background is kept', async ({ page }) => {
     const win = await openSettings(page, 'Appearance')
     // The picker only takes pictures: a text file is refused there and the picker stays open.

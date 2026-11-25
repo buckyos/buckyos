@@ -8,6 +8,8 @@ pub mod completed_install;
 mod cross_zone_auth;
 mod cross_zone_client;
 mod device_identity;
+mod domain_hosting;
+pub use domain_hosting::*;
 mod group_hook;
 mod homestation_client;
 pub mod host_account;

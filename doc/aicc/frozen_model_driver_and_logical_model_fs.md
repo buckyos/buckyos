@@ -84,9 +84,9 @@ LLM 装配顺序为：
   -> 原子发布 ModelRegistry
 ```
 
-对外结构为 `功能 -> 规格 -> 模型家族:固定预设 -> 物理 instance`。LLM 功能和规格不启用通用 Auto/Hybrid，不接受 inventory/`auto_mounts` 直接挂载。`llm` 只作命名空间；任务、规格、家族禁止隐式 Parent fallback。内置用途默认显式回退到 `llm.fallback`（按成本分层引用非 `direct_only` 规格、自身 disabled），回退仍保留原任务约束和 scheduler。
+对外结构为 `功能 -> 规格 -> 模型家族:固定预设 -> 物理 instance`。LLM 功能和规格不启用通用 Auto/Hybrid，不接受 inventory/`auto_mounts` 直接挂载。`llm` 只作命名空间；任务、规格、家族禁止隐式 Parent fallback，默认 strict；`llm.fallback` 默认为空。fallback 只来自系统管理员手工配置，配置后仍保留原任务约束（2026-11-23 修订，原则见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)，代码差距见 [显式 fallback 改造 TODO](../../notepads/aicc-explicit-fallback-todo.md)）。
 
-先过滤可执行候选，跳过空规格，再按功能权重选规格、在规格内按推导的版本值选最新合格稳定家族，最后调度物理实例。OpenAI 的 `5.6 -> 560`、`5.5 -> 550`、`6 -> 600`；同版本允许同值，并以归一化家族 ID 升序稳定排序，不依赖配置声明顺序。版本分段、扩展数字段和无版本模型的处理见 Metadata Schema，不把日期、参数量或产品后缀当版本号。实验版仅在无合格稳定版且策略允许时参与。两层顺序不相乘，Provider 数量不增加家族权重；规格耗尽再换下一个规格。
+先过滤可执行候选，跳过空规格，再按功能权重选规格、在规格内按推导的版本值选最新合格稳定家族，最后调度物理实例。OpenAI 的 `5.6 -> 560`、`5.5 -> 550`、`6 -> 600`；同版本允许同值，并以归一化家族 ID 升序稳定排序，不依赖配置声明顺序。版本分段、扩展数字段和无版本模型的处理见 Metadata Schema，不把日期、参数量或产品后缀当版本号。实验版仅在无合格稳定版且策略允许时参与。两层顺序不相乘，Provider 数量不增加家族权重；规格没有静态可用的候选时才看下一个规格，Provider 故障不改变选择。
 
 inventory 消失只清理动态家族/预设及其引用，保留空规格、功能节点及偏好权重。官方 Provider 停供时保留模型定义，其他 Provider 仍可提供同一家族。每个规格须被功能引用或声明 `direct_only`，每个有效 LLM 模型规则须显式声明主规格与可选的额外规格绑定，绑定的规格不可重复；零库存也校验这些声明。字段、JSON 示例、迁移边界和验收项统一见 [Metadata Schema](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)。
 

@@ -15,7 +15,7 @@ use libopendan::protocol::*;
 use libopendan::runner::{
     compose_reply, drive, DriveResult, OutboundSink, SendResult, StopWhen, TurnReply,
 };
-use libopendan::SessionTemplate;
+use libopendan::{AgentStateClient, SessionTemplate};
 use ndn_lib::MsgObject;
 use serde_json::json;
 
@@ -167,6 +167,145 @@ async fn chat_compacts_when_native_history_exceeds_the_budget() {
     assert_eq!(sd.state().unwrap().turns_completed, 2);
 }
 
+/// The messages of a request after its system text.
+fn after_system(req: &llm_context::deps::LlmInferenceRequest) -> Vec<buckyos_api::AiMessage> {
+    req.messages.iter().skip_while(|m| m.role == AiRole::System).cloned().collect()
+}
+
+/// Chat route TODO §4 (D11): the same long conversation in a large and in a
+/// small window. `Turns` of about 6k tokens each; returns what each chat
+/// inference was sent.
+async fn long_chat(window: u32, turns: usize) -> (Env, libopendan::SessionDir, Vec<Vec<buckyos_api::AiMessage>>) {
+    let env = Env::new();
+    let mut spec = ui_spec();
+    spec.prompt.llm_context["context_window"] = json!(window);
+    let sd = env.create_work(spec).await;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let s2 = seen.clone();
+    let llm = ScriptedLlm::new(move |req, _| {
+        if render(&req.messages).contains("history compressor") {
+            return text("What was said so far.");
+        }
+        s2.lock().unwrap().push(after_system(req));
+        text(r#"{"reply":"noted","topic":null,"artifacts":[]}"#)
+    });
+    let mut deps = env.deps(llm.clone());
+    deps.summarizer = Some(llm.clone());
+    for turn in 1..=turns {
+        post_blocking(&env.queue_dir, &queue_of(&sd), msg(&format!("turn {turn} {}", "words here ".repeat(2_200))));
+        let result = drive(&sd, &deps, StopWhen::TurnClosed).await;
+        assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{turn}: {result:?}");
+    }
+    let seen = seen.lock().unwrap().clone();
+    (env, sd, seen)
+}
+
+#[tokio::test]
+async fn a_long_chat_keeps_its_prefix_in_a_large_window_and_is_compressed_in_a_small_one() {
+    // 6 turns ≈ 36k tokens: twice what used to be compressed whatever the
+    // window, far from the 160k line of this one.
+    let (_env, sd, seen) = long_chat(200_000, 6).await;
+    assert!(sd.summary_opt().unwrap().is_none(), "not compressed");
+    for pair in seen.windows(2) {
+        assert_eq!(pair[1][..pair[0].len()], pair[0][..], "the next request starts with the last one");
+    }
+    // The line of a 24k window is crossed on the way; the chat goes on, and
+    // after the compression its requests extend each other again.
+    let (_env, sd, seen) = long_chat(24_000, 6).await;
+    let summary = sd.summary_opt().unwrap().expect("compressed");
+    assert!(summary.history_summary.contains("What was said so far."));
+    assert_eq!(sd.state().unwrap().turns_completed, 6);
+    let extends = seen.windows(2).filter(|p| p[1].len() > p[0].len() && p[1][..p[0].len()] == p[0][..]).count();
+    assert!(extends >= 3, "{extends}");
+    assert!(seen.iter().all(|m| libopendan::runner::history::estimate(m) <= 24_000 * 8 / 10), "every request stays below the line");
+}
+
+/// Chat route TODO §4: what the conversation recorded and the way to its
+/// words outlive every compression.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recorded_notes_and_the_original_words_survive_compressions() {
+    let env = Env::new();
+    let mut spec = ui_spec_waiting(8000);
+    spec.prompt.history_budget_tokens = Some(3_000);
+    let sd = env.create_work(spec).await;
+    let queue = env.queue_dir.clone();
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let s2 = seen.clone();
+    let sid = sd.sid().to_string();
+    let llm = ScriptedLlm::new(move |req, _| {
+        let all = render(&req.messages);
+        if all.contains("history compressor") {
+            // A summarizer that keeps nothing of it.
+            return text("Some long messages were exchanged.");
+        }
+        let last = last_user_text(req);
+        let noted = has_tool_result(req, "p1").is_some() || has_tool_result(req, "p5").is_some();
+        s2.lock().unwrap().push(all);
+        if last.contains("not Monday") && !noted {
+            return shell(
+                "p1",
+                &format!("agent-session ctl perceive 'the owner corrected the deadline to Friday' --queue-dir {}", queue.display()),
+            );
+        }
+        if last.contains("read it back") && has_tool_result(req, "r1").is_none() {
+            return shell("r1", &format!("agent-session read-session {sid} --turn 1 --queue-dir {}", queue.display()));
+        }
+        text(r#"{"reply":"noted","topic":null,"artifacts":[]}"#)
+    });
+    let mut deps = env
+        .deps(llm.clone())
+        .with_session_cli(PathBuf::from(env!("CARGO_BIN_EXE_xagent")));
+    deps.summarizer = Some(llm.clone());
+    let long = "padding words ".repeat(900);
+    let turns = [
+        "The report is due on Friday, not Monday.".to_string(),
+        format!("first {long}"),
+        format!("second {long}"),
+        format!("third {long}"),
+        "read it back".to_string(),
+    ];
+    let mut compressions = Vec::new();
+    for t in &turns {
+        post_blocking(&env.queue_dir, &queue_of(&sd), msg(t));
+        let result = drive(&sd, &deps, StopWhen::TurnClosed).await;
+        assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{result:?}");
+        compressions.push(
+            read_worklog(&sd)
+                .iter()
+                .filter(|e| matches!(e.body, WorklogBody::Compaction { .. }))
+                .count(),
+        );
+    }
+    assert!(*compressions.last().unwrap() >= 2, "{compressions:?}");
+    let summary = sd.summary_opt().unwrap().unwrap();
+    assert_eq!(summary.perceptions.len(), 1, "{:?}", summary.perceptions);
+    let line = summary.perceptions[0].clone();
+    assert!(line.contains("(turn 1): the owner corrected the deadline to Friday"), "{line}");
+    let after = seen.lock().unwrap().last().cloned().unwrap();
+    assert!(after.contains("<history_summary>") && after.contains(&line), "{after}");
+    assert!(after.contains(&format!("agent-session read-session {} --turn <n>", sd.sid())), "{after}");
+    // The words themselves, through the command the history names.
+    assert!(after.contains("The report is due on Friday, not Monday."), "{after}");
+    let reference = line.split(' ').next().unwrap();
+    let read = env.agent().cognition().read(sd.sid(), reference).await.unwrap();
+    assert!(serde_json::to_string(&read).unwrap().contains("deadline to Friday"));
+    // The same cursor and Turn name the same records, whatever was added.
+    let range = |after: Option<u64>| libopendan::api::RecordRange { turn: Some(1), after, limit: 2, ..Default::default() };
+    let agent = env.agent();
+    let first = libopendan::api::read_session_records(agent.as_ref(), sd.sid(), &range(None)).await.unwrap();
+    assert_eq!(first.records.len(), 2);
+    let second = libopendan::api::read_session_records(agent.as_ref(), sd.sid(), &range(first.next_after)).await.unwrap();
+    assert!(second.records.iter().all(|e| e.body.turn() == Some(1)));
+    assert!(second.records[0].seq > first.records[1].seq);
+    post_blocking(&env.queue_dir, &queue_of(&sd), msg(&format!("fourth {long}")));
+    drive(&sd, &deps, StopWhen::TurnClosed).await;
+    let again = libopendan::api::read_session_records(agent.as_ref(), sd.sid(), &range(first.next_after)).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&again.records).unwrap(),
+        serde_json::to_value(&second.records).unwrap()
+    );
+}
+
 #[tokio::test]
 async fn uncompressed_chat_keeps_fork_results_without_the_child_transcript() {
     let env = Env::new();
@@ -315,6 +454,163 @@ async fn structured_reply_failure_never_delivers_raw_output() {
         assert_eq!(sd.state().unwrap().outbox[0].msg.content.content, "recovered");
         assert_eq!(llm.count(), 3);
     }
+}
+
+/// A chat with `submit_reply` in its tools, and `agent-session` on PATH.
+async fn compat_chat(env: &Env) -> libopendan::SessionDir {
+    let mut spec = ui_spec_waiting(1500);
+    spec.prompt.llm_context["tools"]["tools"] =
+        json!([{ "groupname": "bash_core" }, { "name": "submit_reply" }]);
+    env.create_work(spec).await
+}
+
+fn set_mode(queue_dir: &std::path::Path, call_id: &str, mode: &str) -> buckyos_api::AiResponse {
+    shell(
+        call_id,
+        &format!("agent-session ctl reply-mode {mode} --queue-dir {}", queue_dir.display()),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rejected_reply_may_switch_to_the_compatible_mode() {
+    let env = Env::new();
+    let sd = compat_chat(&env).await;
+    let broken = r#"{"reply":"visible text","topic":null,"artifacts":[],"extra":1}"#;
+    let queue = env.queue_dir.clone();
+    let llm = ScriptedLlm::new(move |req, n| match n {
+        // Turn 1: the correction offers the mode; the model takes it and the
+        // next text is the reply of the same Turn.
+        0 => {
+            assert!(req.force_json && req.json_schema.is_some());
+            text(broken)
+        }
+        1 => {
+            let m = last_user_text(req);
+            assert!(m.contains("Your reply does not meet the required format"), "{m}");
+            assert!(m.contains("agent-session ctl reply-mode compat"), "{m}");
+            set_mode(&queue, "m1", "compat")
+        }
+        2 => {
+            assert!(has_tool_result(req, "m1").unwrap().contains("posted"));
+            assert!(!req.force_json && req.json_schema.is_none());
+            text("plain words, {not json}")
+        }
+        // Turn 2: still in the mode, told so; a plain text again.
+        3 => {
+            assert!(!req.force_json);
+            assert!(last_user_text(req).contains("reply mode: compat"), "{}", last_user_text(req));
+            text("second")
+        }
+        // Turn 3: a file and a topic go through the tool, while a task runs.
+        4 => shell("t1", "printf data > out.txt; sleep 8"),
+        5 => {
+            assert!(has_tool_result(req, "t1").unwrap().contains("task local:shell:t1"));
+            tool_call("r0", "submit_reply", json!({"reply": "here", "artifacts": ["missing.txt"]}))
+        }
+        6 => {
+            let r = has_tool_result(req, "r0").unwrap();
+            assert!(r.contains("missing.txt"), "{r}");
+            tool_call(
+                "r1",
+                "submit_reply",
+                json!({"reply": "the file", "topic": {"title": "files", "tags": ["file"]}, "artifacts": ["out.txt"]}),
+            )
+        }
+        // Turn 4: back to the schema.
+        7 => {
+            assert!(!last_user_text(req).contains("reply mode: compat"), "said once");
+            set_mode(&queue, "m2", "schema")
+        }
+        8 => {
+            assert!(req.force_json);
+            text("not json")
+        }
+        9 => text(r#"{"reply":"json again","topic":null,"artifacts":[]}"#),
+        _ => panic!("unexpected inference {n}: {}", last_user_text(req)),
+    });
+    let sink = Arc::new(ReplySink::default());
+    let mut deps = env
+        .deps(llm.clone())
+        .with_session_cli(PathBuf::from(env!("CARGO_BIN_EXE_xagent")));
+    deps.outbound = Some(sink.clone());
+    for (turn, expected) in [(1, "plain words, {not json}"), (2, "second"), (3, "the file"), (4, "json again")] {
+        post_blocking(&env.queue_dir, &queue_of(&sd), msg(&format!("message {turn}")));
+        let result = drive(&sd, &deps, StopWhen::TurnClosed).await;
+        assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{turn}: {result:?}");
+        let reply = sink.replies.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(reply.answer.as_deref(), Some(expected));
+        assert_eq!(reply.artifacts.len(), usize::from(turn == 3), "{turn}");
+        let state = sd.state().unwrap();
+        assert_eq!(state.reply_mode, if turn < 4 { ReplyMode::Compat } else { ReplyMode::Schema });
+        assert_eq!(state.topic.title, if turn < 3 { "" } else { "files" }, "{turn}");
+        assert!(state.final_report.is_none() && state.latest_report.is_none(), "a reply is no report");
+        assert_eq!(state.watched_tasks.len(), usize::from(turn >= 3), "what runs is followed on");
+    }
+    assert_eq!(llm.count(), 10);
+    assert!(sd.state().unwrap().outbox.iter().all(|o| !o.msg.content.content.contains("visible text")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn submit_reply_outside_the_compatible_mode_says_how_to_switch() {
+    let env = Env::new();
+    let sd = compat_chat(&env).await;
+    post_blocking(&env.queue_dir, &queue_of(&sd), msg("hello"));
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => tool_call("r0", "submit_reply", json!({"reply": "hi"})),
+        1 => {
+            let r = has_tool_result(req, "r0").unwrap();
+            assert!(r.contains("agent-session ctl reply-mode compat"), "{r}");
+            text(r#"{"reply":"hi","topic":null,"artifacts":[]}"#)
+        }
+        _ => panic!("unexpected inference"),
+    });
+    let sink = Arc::new(ReplySink::default());
+    let mut deps = env.deps(llm.clone());
+    deps.outbound = Some(sink.clone());
+    drive(&sd, &deps, StopWhen::TurnClosed).await;
+    assert_eq!(sink.replies.lock().unwrap()[0].answer.as_deref(), Some("hi"));
+    assert_eq!(sd.state().unwrap().reply_mode, ReplyMode::Schema);
+}
+
+/// The reply is on record before the Turn closes: recovery delivers it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_submitted_reply_outlives_the_run() {
+    let env = Env::new();
+    let sd = compat_chat(&env).await;
+    post_blocking(&env.queue_dir, &queue_of(&sd), msg("hello"));
+    let queue = env.queue_dir.clone();
+    let llm = ScriptedLlm::fallible(move |_, n| match n {
+        0 => Ok(set_mode(&queue, "m1", "compat")),
+        1 => Err(llm_context::LLMComputeError::Timeout),
+        _ => panic!("unexpected inference {n}"),
+    });
+    let sink = Arc::new(ReplySink::default());
+    let mut deps = env
+        .deps(llm.clone())
+        .with_session_cli(PathBuf::from(env!("CARGO_BIN_EXE_xagent")));
+    deps.outbound = Some(sink.clone());
+    drive(&sd, &deps, StopWhen::MaxOutcomes { n: 1 }).await;
+    let run_id = sd.state().unwrap().live_run.unwrap().run_id;
+    let runs = sd.runs();
+    let mut record = runs.record(&run_id).unwrap();
+    let source = ReportSource::Reply { call_id: "r1".into() };
+    let reply = ReportSubmission {
+        id: "reply-1".into(),
+        run_id: run_id.clone(),
+        source,
+        report: "kept".into(),
+        artifacts: vec![],
+        result: Some(json!({"topic": {"title": "kept topic", "tags": []}})),
+        is_end: true,
+        outcome: None,
+        accepted_at_ms: 1,
+    };
+    record.host.as_mut().unwrap().extra["reports"] = json!([reply]);
+    record.status = agent_tool::xllm::RunStatus::Completed;
+    runs.store().write_record(&record).unwrap();
+    drive(&sd, &deps, StopWhen::Idle).await;
+    assert_eq!(sink.replies.lock().unwrap()[0].answer.as_deref(), Some("kept"));
+    assert_eq!(sd.state().unwrap().topic.title, "kept topic");
 }
 
 #[tokio::test]

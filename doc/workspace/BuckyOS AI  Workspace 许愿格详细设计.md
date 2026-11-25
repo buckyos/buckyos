@@ -69,7 +69,7 @@
 | 许愿格实体 | `buckyos.wish` 已有 `prompt`、`analysis`、`inputs`、`executor`、`output`、`output_mode`、`executor_config`、`last_run` |
 | 两遍执行与应用 | Desktop 的 `WishService` 已有 `analyze → execute → plan → apply`；当前 `executorFor` 只接受 `mock`，候选保存在浏览器内存 |
 | 结果与画布 | 现有 `ResultSpec` 支持 richtext / record / table / image / video；Mock 的 video 是逐帧预览。宿主创建结果文件夹、画布 Group 和 Cell |
-| 表格视图 | 表格 Cell 本身就是保存的视图（`filter/sorts/group/fields/manual_order`），`doc.query` 可以按 `view_id` 读取视图结果 |
+| 表格视图 | 表格 Cell 本身就是保存的视图（`filter/sorts/group/fields/row_order`），`doc.query` 可以按 `view_id` 读取视图结果 |
 | HTML 扩展 | `window.aiws` v1：`context`、`read`、`query`、`submit`（原始 Operation）、`upload`、`snapshot`、`notify`、`on`。Mock 执行器就是一个以 `aiws.on('execute')` 返回结果的 HTML 定义，由 `HtmlExecutor` 无头运行 |
 | 依赖与新鲜度 | `entity.set_derived`、`entities.derived_json`、`doc.freshness`、`doc.relations`；core 与 WASM 共享判断 |
 | 提交与撤销 | 普通 Command / Commit、读集前置条件、写入权限、锁、幂等记录、补偿撤销 |
@@ -1023,7 +1023,7 @@ W0–W4 已实施，W5（§16.1）未做。下面记录实施时对 §18 待确�
 - **Markdown 转换在 core**（pulldown-cmark 0.13，CommonMark + GFM 表格、删除线、任务列表），WASM 同时导出；富文本 schema 新增 `blockquote`、`code_block`、`horizontal_rule`、`table` / `table_row` / `table_cell`。
 - **输出上限**：每个阶段的 `.llm_context` 写 `max_tokens`，取设置 `wish.max_output_tokens`（默认 32,000）；Claude 要求必须给出，AICC 也按它筛掉输出上限不足的模型。
 - **小数不舍入**（§8.5）：`decimal` 未声明位数时按值所需的位数保存（最多 6 位）；已有字段位数不够时先用 `table.migrate_field` 扩大（core 允许 decimal → decimal 迁移），预览列为结构变更。
-- **表格行序**：记录没有顺序，结果表格 Block 用 `manual_order` 显示程序输出的行序（≤ 1000 行）；以后的运行只在用户没有自己排序或拖动时更新它。
+- **表格行序**：记录按创建序号和记录 ID 排列，结果表格 Block 用 `row_order` 显示程序输出的行序（≤ 1000 行）；以后的运行只在用户没有自己排序或拖动时更新它。
 - **结果放进框**：`output_contract.placement` 为 `frame:<句柄>` 时，结果组放在该框内（同一 Surface）。
 - **导入时视图输入延后校验**：包先重放数据树、后重放 Surface，绑定表格视图的输入在导入时不要求视图已存在；视图真缺失时由新鲜度报 `view_missing`。
 - **fixed 输入**（§6.3）未实施，属于 W5：分析阶段拒绝 `version.mode: fixed`；输入一旦改动就必须重新分析，所以执行时不会出现 fixed 输入。面板中没有固定按钮。

@@ -447,6 +447,9 @@ impl Service {
             {
                 let mut item = json!({ "workspace_id": name, "title": ws.title(), "head_seq": ws.head_seq, "epoch": ws.epoch,
                                        "capabilities": access.ws_caps.names() });
+                if access.is_owner() {
+                    item["owner"] = json!(true);
+                }
                 if let Ok(Some(n)) = ws.name() {
                     item["name"] = json!(n);
                 }

@@ -16,6 +16,7 @@ import { friendlyDidName } from './api/projection'
 import { releaseAttachmentUploads } from './api/upload'
 import { FriendRequestMessage, GroupNoticeMessage, NotifyMessage } from './conversationCards'
 import { SenderAvatar } from './HubAvatar'
+import { channelAccess, isChannelSession, readingContext } from './sessionModel'
 import { getMessageHubStore, useMessageHubStore, type MessageHubStore } from './store'
 import type { MessageHubContext, Session } from './types'
 
@@ -33,6 +34,23 @@ export const messageHubClock = (store: MessageHubStore) => {
 }
 
 /** A session of the viewer's own messages, active or archived. */
+/** Nobody reads a hidden page: what it would mark is marked when it is shown again. */
+const unseen = new Map<string, { ids: Set<string>; mark: (recordIds: string[]) => void }>()
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    const waiting = [...unseen.values()]
+    unseen.clear()
+    for (const { ids, mark } of waiting) mark([...ids])
+  })
+}
+function markSeen(key: string, recordIds: string[], mark: (recordIds: string[]) => void) {
+  if (document.visibilityState !== 'hidden') return mark(recordIds)
+  const ids = unseen.get(key)?.ids ?? new Set<string>()
+  for (const id of recordIds) ids.add(id)
+  unseen.set(key, { ids, mark })
+}
+
 export function findSession(context: MessageHubContext, sessionId: string): Session | null {
   const store = getMessageHubStore()
   return (['active', 'archived'] as const).flatMap(lifecycle => store.sessions(context, undefined, lifecycle)).find(session => session.id === sessionId) ?? null
@@ -57,7 +75,10 @@ export function useMessageHubConversationSource({ context, entityId, session, co
   const sessionId = session?.id ?? ''
   const entity = store.findEntity(context, entityId)
   const isGroup = entity?.type === 'group'
-  const isOwner = context.mode === 'self' && context.ownerDid === context.viewerDid
+  // A conversation on a channel is read from the Agent's mailbox, shown from the viewer's side of it.
+  const channel = !!session && isChannelSession(context, session)
+  const reading = session ? readingContext(context, session) : context
+  const isOwner = !channel && context.mode === 'self' && context.ownerDid === context.viewerDid
   const group = isGroup ? store.group(context, entityId) : null
   const groupMembers = group?.members
   const groupKnown = group !== null
@@ -72,19 +93,19 @@ export function useMessageHubConversationSource({ context, entityId, session, co
     const parsed = parseGroupNotice(message)
     return parsed ? operation(parsed) : Promise.reject(Error('not-found'))
   }
-  const preferences = session ? store.preferences(context, sessionId) : null
+  const preferences = session ? store.preferences(reading, sessionId) : null
   const ownAgent = isOwner && store.isOwnAgent(context, entityId)
   const missing = () => Promise.reject(Error('session_missing'))
   return {
     sessionId,
-    selfDid: context.ownerDid,
-    reader: session ? store.reader(context, sessionId) : EMPTY_READER,
-    historyStatus: session ? store.historyStatus(context, sessionId) : 'ready',
-    hasOlder: session ? store.hasOlder(context, sessionId) : false,
-    loadOlder: () => session ? store.loadOlder(context, sessionId) : Promise.resolve(false),
-    locate: (messageId) => store.locateMessage(context, sessionId, messageId),
-    markRead: (recordIds) => { if (session) void store.markRead(context, sessionId, recordIds) },
-    access: session ? store.access(context, session, confirmed) : null,
+    selfDid: channel && session.binding.kind === 'tunnel' ? session.binding.endpointDid : context.ownerDid,
+    reader: session ? store.reader(reading, sessionId) : EMPTY_READER,
+    historyStatus: session ? store.historyStatus(reading, sessionId) : 'ready',
+    hasOlder: session ? store.hasOlder(reading, sessionId) : false,
+    loadOlder: () => session ? store.loadOlder(reading, sessionId) : Promise.resolve(false),
+    locate: (messageId) => store.locateMessage(reading, sessionId, messageId),
+    markRead: (recordIds) => { if (session) markSeen(`${reading.ownerDid}\n${sessionId}`, recordIds, (ids) => { void store.markRead(reading, sessionId, ids) }) },
+    access: !session ? null : channel ? channelAccess : store.access(context, session, confirmed),
     unavailableReason: creationReason,
     canAct: isOwner,
     send: (payload) => session ? store.send(context, sessionId, payload, confirmation) : missing(),
@@ -99,14 +120,14 @@ export function useMessageHubConversationSource({ context, entityId, session, co
       saveAttachments: (attachments) => session ? store.saveAttachments(context, sessionId, attachments) : undefined,
     },
     displayName: nameOf,
-    runtime: session ? store.runtimeFor(context, sessionId) : [],
+    runtime: session ? store.runtimeFor(reading, sessionId) : [],
     preferences: {
       showActions: preferences?.showActions ?? true,
       pinned: preferences?.pinnedMessage ?? null,
       setPinned: isOwner && session ? (pinned) => store.updatePreferences(context, sessionId, { pinnedMessage: pinned }) : undefined,
     },
     panel: session?.panel ?? null,
-    readReceipt: (message) => store.readReceipt(context, sessionId, message),
+    readReceipt: (message) => store.readReceipt(reading, sessionId, message),
     peerMarkdown: entity?.type === 'agent',
     agent: ownAgent ? { did: entityId, name: nameOf(entityId) } : undefined,
     agentControls: getAgentPanelSource(),

@@ -8,6 +8,8 @@
 pub const STORAGE_SCHEMA_VERSION: u32 = 7;
 pub const LOCAL_SCHEMA_VERSION: u32 = 1;
 
+pub const RECORD_ORDER_INDEX: &str = "CREATE INDEX IF NOT EXISTS table_records_created ON table_records(source_id, created_seq, record_id) WHERE deleted_seq IS NULL";
+
 /// The document database: the working form of one portable Workspace.
 pub const DOC_DDL: &str = r#"
 CREATE TABLE workspace_meta (

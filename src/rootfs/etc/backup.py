@@ -13,6 +13,8 @@ import shutil
 import argparse
 from pathlib import Path
 
+DNS_CREDENTIALS_DIR = "dns_credentials"
+
 
 def get_buckyos_root():
     """Get buckyos root directory"""
@@ -89,11 +91,14 @@ def copy_file(src_file: Path, dst_file: Path, label: str, copied_items: list, mo
         print(f"  - Skipped (not found): {label}")
 
 
-def copy_tree(src_dir: Path, dst_dir: Path, label: str, copied_items: list):
+def copy_tree(src_dir: Path, dst_dir: Path, label: str, copied_items: list, private=False):
     if src_dir.exists():
         try:
             print(f"Copying {src_dir} -> {dst_dir} ...")
             shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
+            if private and os.name != "nt":
+                for copied in [dst_dir, *(dst_dir / src.relative_to(src_dir) for src in src_dir.rglob("*"))]:
+                    copied.chmod(0o700 if copied.is_dir() else 0o600)
             copied_items.append(label)
             print(f"  ✓ Copied: {label}")
         except Exception as e:
@@ -102,10 +107,26 @@ def copy_tree(src_dir: Path, dst_dir: Path, label: str, copied_items: list):
         print(f"  - Skipped (not found): {label}")
 
 
+def backup_zone_certificates(buckyos_root: str, hostname, backup_dir: Path, copied_items: list):
+    """The server certificates of <hostname> and *.<hostname> (directory _.<hostname>)"""
+    if not isinstance(hostname, str) or not hostname or Path(hostname).name != hostname:
+        print("  - Skipped zone certificates (access_hostname not found in start_config.json)")
+        return
+    for root, label, mode in (
+        (get_identity_root(buckyos_root), "local/identity", None),
+        (get_security_root(buckyos_root), "security", 0o600),
+    ):
+        for dir_name in (hostname, f"_.{hostname}"):
+            for src_file in sorted((root / dir_name).glob("server.*")):
+                relative = f"{label}/{dir_name}/{src_file.name}"
+                copy_file(src_file, backup_dir / relative, relative, copied_items, mode=mode)
+
+
 def backup_identity_file(target_dir: str):
     """
     Backup identity files
-    Files to backup: [etc/node_identity.json, etc/machine.json, local/identity/<device>, security/start_config.json, security/<device>]
+    Files to backup: [etc/node_identity.json, etc/machine.json, local/identity/<device>, security/start_config.json, security/<device>,
+    the Zone's server certificates and keys, security/dns_credentials]
     Backup to target_dir/$zone_name directory, zone_name is obtained from start_config.json file
     """
     buckyos_root = get_buckyos_rootfs_dir()
@@ -183,11 +204,23 @@ def backup_identity_file(target_dir: str):
                     backup_dir / "security" / dir_name,
                     f"security/{dir_name}",
                     backed_up_files,
+                    private=True,
                 )
             else:
                 print(f"  - Skipped identity directories (not found for {device_did})")
         except Exception as e:
             print(f"  ✗ Failed to backup identity directories: {e}")
+
+    backup_zone_certificates(
+        buckyos_root, start_config_data.get("access_hostname"), backup_dir, backed_up_files
+    )
+    copy_tree(
+        get_security_root(buckyos_root) / DNS_CREDENTIALS_DIR,
+        backup_dir / "security" / DNS_CREDENTIALS_DIR,
+        f"security/{DNS_CREDENTIALS_DIR}",
+        backed_up_files,
+        private=True,
+    )
     
     if backed_up_files:
         print(f"\nBackup completed! {len(backed_up_files)} file(s) backed up to {backup_dir}")
@@ -260,6 +293,7 @@ def restore_identity_file(source_dir: str, zone_name: str):
                     get_security_root(buckyos_root) / security_dir.name,
                     f"security/{security_dir.name}",
                     restored_files,
+                    private=True,
                 )
     else:
         print(f"  - Skipped (not found in backup): security")

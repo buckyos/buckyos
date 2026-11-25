@@ -2,15 +2,18 @@ import { useState } from 'react'
 import { useMediaQuery } from '@mui/material'
 import { Sidebar } from './Sidebar'
 import { MobileTabBar } from './MobileTabBar'
+import { useAppPath } from '../../../pathContext'
 import type { AICenterPage } from './Sidebar'
 
 interface AICenterShellProps {
+  initialPage?: AICenterPage
   children: (page: AICenterPage, navigate: (page: AICenterPage) => void) => React.ReactNode
 }
 
-export function AICenterShell({ children }: AICenterShellProps) {
-  const [currentPage, setCurrentPage] = useState<AICenterPage>('home')
+export function AICenterShell({ initialPage = 'home', children }: AICenterShellProps) {
+  const [currentPage, setCurrentPage] = useState<AICenterPage>(initialPage)
   const isMobile = useMediaQuery('(max-width: 767px)')
+  useAppPath(currentPage === 'home' ? '/' : `/${currentPage}`)
 
   return (
     <div className="flex flex-col h-full w-full" style={{ background: 'var(--cp-bg)' }}>

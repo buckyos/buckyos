@@ -1,16 +1,9 @@
 import { isMockRuntime } from '../runtime.ts'
-import { callRpc } from './rpc.ts'
+import { readSystemMetrics, type SystemMetrics } from '../shared/controlPanel/systemMetrics.ts'
+import { shellChannel } from './channel.ts'
+import { settle } from './rpc.ts'
 
-/** The `system.metrics` fields the shell shows (control_panel `handle_system_metrics`, `lite` form). */
-export interface SystemMetrics {
-  cpu: { usagePercent: number; model: string; cores: number }
-  memory: { totalGb: number; usedGb: number; usagePercent: number }
-  disk: { totalGb: number; usedGb: number; usagePercent: number }
-  network: { rxPerSec: number; txPerSec: number }
-  loadAverage: { one: number; five: number; fifteen: number }
-  processCount: number
-  uptimeSeconds: number
-}
+export type { SystemMetrics }
 
 const mockBootedAt = Date.now() - 3 * 86_400_000 - 5 * 3_600_000
 
@@ -34,5 +27,5 @@ function mockSystemMetrics(): SystemMetrics {
 
 export async function fetchSystemMetrics(): Promise<{ data: SystemMetrics | null; error: unknown }> {
   if (isMockRuntime()) return { data: mockSystemMetrics(), error: null }
-  return callRpc<SystemMetrics>('system.metrics', { lite: true })
+  return settle(readSystemMetrics(shellChannel))
 }

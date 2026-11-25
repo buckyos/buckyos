@@ -32,6 +32,11 @@ function stateOf(tab: BrowserTab): TabState {
 
 const sessions = new Map<string, { states: TabState[]; activeTabId: string }>()
 
+/** A window's tabs outlive its panel (the phone layout unmounts it), but not the window. */
+export function forgetBrowserSessions(windowOpen: (windowId: string) => boolean) {
+  for (const key of [...sessions.keys()]) if (!windowOpen(key.replace(/:(left|right)$/, ''))) sessions.delete(key)
+}
+
 /** Scroll positions reach pane state at most this often (ms); the live value sits in a ref meanwhile. */
 const SCROLL_COMMIT_MS = 200
 

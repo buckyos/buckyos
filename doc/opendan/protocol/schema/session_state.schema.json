@@ -2061,6 +2061,25 @@
       ],
       "type": "object"
     },
+    "ReplyMode": {
+      "description": "How a UI session's final reply is given. The model changes it (`agent-session ctl reply-mode`); it holds for the session, a new one starts with the default.",
+      "oneOf": [
+        {
+          "description": "The final text is the JSON of the behavior's `[reply]` schema.",
+          "enum": [
+            "schema"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The final text is what the user reads; a reply with a topic or artifacts goes through `submit_reply`.",
+          "enum": [
+            "compat"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "ReplyRoute": {
       "description": "Default reply path of a session.",
       "oneOf": [
@@ -2207,6 +2226,25 @@
           "required": [
             "kind",
             "step_index"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`submit_reply`: the Turn's reply, not a report of the session; its `result` is `{topic}`.",
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "reply"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "call_id",
+            "kind"
           ],
           "type": "object"
         }
@@ -2808,6 +2846,14 @@
         }
       ],
       "description": "Default reply path: the way the last consumed input message came, else the parent session."
+    },
+    "reply_mode": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ReplyMode"
+        }
+      ],
+      "description": "UI sessions: how the final reply is given."
     },
     "reported_rev": {
       "default": 0,

@@ -3,6 +3,36 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const TOOL_REPORT: &str = "report";
+/// The structured reply of a conversation in the compatible reply mode
+/// ([`ReplyMode::Compat`]).
+pub const TOOL_SUBMIT_REPLY: &str = "submit_reply";
+
+/// How a UI session's final reply is given. The model changes it
+/// (`agent-session ctl reply-mode`); it holds for the session, a new one
+/// starts with the default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyMode {
+    /// The final text is the JSON of the behavior's `[reply]` schema.
+    #[default]
+    Schema,
+    /// The final text is what the user reads; a reply with a topic or
+    /// artifacts goes through `submit_reply`.
+    Compat,
+}
+
+impl ReplyMode {
+    pub fn is_default(&self) -> bool {
+        *self == Self::Schema
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Schema => "schema",
+            Self::Compat => "compat",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -25,6 +55,19 @@ pub enum ReportOutcome {
 pub enum ReportSource {
     Tool { call_id: String },
     Behavior { step_index: u32 },
+    /// `submit_reply`: the Turn's reply, not a report of the session; its
+    /// `result` is `{topic}`.
+    Reply { call_id: String },
+}
+
+impl ReportSource {
+    /// The tool call that submitted it.
+    pub fn call_id(&self) -> Option<&str> {
+        match self {
+            Self::Tool { call_id } | Self::Reply { call_id } => Some(call_id),
+            Self::Behavior { .. } => None,
+        }
+    }
 }
 
 /// One artifact of a report: a file of the work directory (`path`, copied
@@ -80,6 +123,11 @@ pub struct ReportSubmission {
 }
 
 impl ReportSubmission {
+    /// The reply of a Turn rather than a report of the session.
+    pub fn is_reply(&self) -> bool {
+        matches!(self.source, ReportSource::Reply { .. })
+    }
+
     /// The report with its artifacts, by object id where there is one.
     pub fn delivery_text(&self) -> String {
         let mut text = self.report.clone();

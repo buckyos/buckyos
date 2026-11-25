@@ -1,9 +1,9 @@
-use super::{Context, Failure};
+use super::{files, Context, Failure};
 use buckyos_api::{
-    build_current_rbac_config, decode_device_config_without_verify, user_did_from_doc_value,
-    UserSettings, UserType,
+    build_current_rbac_config, decode_device_config_without_verify, oauth_subject_key,
+    user_did_from_doc_value, OAuthSubject, RetiredOAuthSource, SsoSettings, UserSettings, UserType,
 };
-use name_lib::{DeviceInfo, UserPrivateProfile};
+use name_lib::{DeviceInfo, UserPrivateProfile, DID};
 
 pub(super) fn identity(ctx: &mut Context) -> Result<(), Failure> {
     for (raw_key, bytes) in &ctx.snapshot {
@@ -68,6 +68,58 @@ pub(super) fn identity(ctx: &mut Context) -> Result<(), Failure> {
                     .map_err(|_| ctx.unsupported(key, "unrecognized device info"))?;
                 if info.device_doc.name != *name {
                     return Err(ctx.unsupported(key, "device name differs from the config path"));
+                }
+            }
+            _ => continue,
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn sso(ctx: &mut Context) -> Result<(), Failure> {
+    for (raw_key, bytes) in &ctx.snapshot {
+        let Ok(key) = std::str::from_utf8(raw_key) else {
+            continue;
+        };
+        let parts: Vec<_> = key.split('/').collect();
+        let account = |name: &str| {
+            if files::component(name) {
+                Ok(())
+            } else {
+                Err(ctx.unsupported(key, "unrecognized account binding"))
+            }
+        };
+        match parts.as_slice() {
+            ["system", "sso", "settings"] => {
+                serde_json::from_slice::<SsoSettings>(bytes)
+                    .map_err(|_| ctx.unsupported(key, "unrecognized SSO settings"))?;
+            }
+            ["services", "control_panel", "oauth", "retired_sources"] => {
+                serde_json::from_slice::<Vec<RetiredOAuthSource>>(bytes)
+                    .map_err(|_| ctx.unsupported(key, "unrecognized retired login sources"))?;
+            }
+            ["services", "control_panel", "oauth", "subjects", id] => {
+                let subject: OAuthSubject = serde_json::from_slice(bytes)
+                    .map_err(|_| ctx.unsupported(key, "unrecognized OAuth subject"))?;
+                if oauth_subject_key(&subject.identity.issuer, &subject.identity.sub) != *id {
+                    return Err(ctx.unsupported(key, "OAuth subject differs from the config path"));
+                }
+            }
+            ["services", "control_panel", "oauth", "labels", _] => {
+                let hash = |c: &u8| matches!(c, b'0'..=b'9' | b'a'..=b'f');
+                if bytes.len() != 64 || !bytes.iter().all(hash) {
+                    return Err(ctx.unsupported(key, "unrecognized OAuth identity index"));
+                }
+            }
+            ["services", "control_panel", "oauth", "bindings", _] => {
+                account(std::str::from_utf8(bytes).unwrap_or_default())?;
+            }
+            ["services", "control_panel", "native_login_bindings", _] => {
+                account(&serde_json::from_slice::<String>(bytes).unwrap_or_default())?;
+            }
+            ["services", "control_panel", "user_login_sources", _, _] => {
+                if !bytes.starts_with(b"\"did:") || serde_json::from_slice::<DID>(bytes).is_err() {
+                    return Err(ctx.unsupported(key, "unrecognized login source"));
                 }
             }
             _ => continue,

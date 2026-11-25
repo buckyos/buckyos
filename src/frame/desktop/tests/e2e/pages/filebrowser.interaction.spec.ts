@@ -64,6 +64,23 @@ for (const layout of LAYOUTS) {
       await expect(panel.getByRole('button', { name: 'Recent', exact: true }).first()).toBeVisible()
     })
 
+    test('Published and Library open the Zone folders cyfs:///srv/publish and cyfs:///srv/library', async ({ page }) => {
+      const win = await openFiles(page, layout.mobile)
+      let panel = await places(win, layout.mobile)
+      for (const [label, path] of [['Published', '/srv/publish'], ['Library', '/srv/library']]) {
+        await panel.getByRole('button', { name: label, exact: true }).click()
+        if (layout.mobile) {
+          // Choosing a place closes the drawer.
+          await expect(win.getByTestId('files-places')).toHaveCount(0)
+          panel = await places(win, true)
+        } else {
+          await expect(win.locator('main[data-pane="left"]')).toHaveAttribute('data-location', `dfs://${path}`)
+          await expect(win.getByRole('tab', { name: label, exact: true })).toBeVisible()
+        }
+        await expect(panel.locator('[aria-current="page"]')).toHaveText(label)
+      }
+    })
+
     test('the folder tree starts collapsed, loads on expand to any depth and remembers what was opened', async ({ page }) => {
       let win = await openFiles(page, layout.mobile)
       let panel = await places(win, layout.mobile)

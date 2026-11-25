@@ -5,6 +5,8 @@
 - `PKX=$OWNER_PUBLIC_KEY.X` —— Owner公钥（Ed25519的x分量），仅用于自验证BOOT签名
 - `DEV=$GATEWAY_DEVICE_MINI_DOC_JWT` —— ZoneGateway/OOD的`DeviceMiniConfig`（owner签名的JWT），主要携带rtcp端口等boot阶段必须的字段
 
+这3条TXT由SN按BNS上的文档应答，**用户不需要在自己的DNS后台写BOOT / DEV**。自有域名的Zone首次启动使用激活时写到本机的 Zone 文档（Last Known Good State），不依赖BOOT TXT，见 [Booting 阶段 resolve-did-document 的特殊处理说明](../BuckyOS%20Booting阶段%20resolve-did-document的特殊处理说明.md) §14.1。用户自己写的归属证明是另一条记录：`_pkx.<域名>` TXT，值为 `PKX(<owner 公钥 x>)`，与这里的 `PKX=` 不同。
+
 具体实现参考 `buckyos-base/src/name-lib/src/zone.rs` 的 `ZoneBootConfig`，以及name-client里的`parse_txt_record_to_did_document`。
 
 ```rust
@@ -38,10 +40,10 @@ pub struct ZoneBootConfig {
 99%的情况下，都不应该直接使用 ZoneBootConfig，而是使用基于 DNS TXT Record 转换得到的 ZoneDocument；内部服务读取 `boot/config` 时先解析 ZoneConfig，再解包其中的 `zone_document`。
 
 ## ZoneBootConfig的 首要目标：确保系统能安全引导 (Secure Boot)
-OOD的安全启动引导流程如下（实现位置：`src/kernel/node_daemon/src/node_daemon.rs` 的 `looking_zone_boot_config`）：
+OOD的安全启动引导流程如下（实现位置：`src/kernel/node_daemon/src/zone_boot_resolve.rs` 的 `boot_resolve_zone_document`）：
 
-1. OOD通过DNS查询得到ZoneBootConfig(JWT格式)
-   - 调试/离线场景：若`{zone_name}.zone.json`存在，会被优先加载，绕过DNS（见`looking_zone_boot_config`内的本地分支）
+1. OOD先读本机的Last Known Good State（激活时写入，`$BUCKYOS_ROOT/etc/<zone host>.zone_lkgs.json`），再发现Zone Document：先走`resolve_did`（自有域名时是`https://<域名>/.well-known/`），失败后查DNS TXT得到ZoneBootConfig(JWT格式)。都失败时用Last Known Good State继续启动
+   - 调试/离线场景：若`{zone_name}.zone.json`存在，会被优先加载，绕过网络发现（见`load_debug_zone_document_override`）
 2. 对ZoneBootConfig进行验证：
     - 比已知的ZoneBootConfig更新（尽力防止DNS重放攻击）
     - 有ZoneOwner的签名（依赖`ZoneBootConfig::decode`使用Owner公钥校验）
@@ -230,154 +232,117 @@ resolve_did是cyfs://名字系统的关键函数，在其实现里，会根据di
 
 ## 理解激活页面的Zone的接入方式
 
-一共有8种连接路径 https://github.com/buckyos/BuckyOSApp/issues/16
-下面是按“**A. net_id 四类 × B. 域名两类**”的写法，把你**第一段（无SN模式/有SN模式 + 各种家庭组合）**改成与第二段一致的描述方式；同时我把几个隐含前提补齐了（尤其是“无SN”的适用边界），并统一了一点术语（ACME / DDNS / keep tunnel）。
+激活时有三个互相独立的选择：
+
+| 选择 | 可选值 | 决定什么 |
+| --- | --- | --- |
+| 接入方式（`net_id`） | `nat` / `portmap` / `wan_dyn` / `wan` | 流量怎么进来，见A |
+| 域名和DNS | 默认域名；自有域名的SN托管 / 手工 / DNS API | 谁写DNS记录，见B |
+| 证书来源 | 系统自动签发（`acme`）/ 用户上传（`upload`） | 要不要ACME，见B1.3 |
+
+自有域名的托管信息是 `DomainHosting`（`src/kernel/buckyos-api/src/domain_hosting.rs`），激活时写入 `start_config.json` 的 `domain_hosting`，首次启动后存在 system-config 的 `system/domain_hosting`。默认域名没有这一项。
+
+### 对SN的依赖分三件事
+
+“走不走SN中转”“SN应不应答地址”“SN应不应答其它记录”是三件独立的事，不能用一个“需不需要SN”的布尔值表示：
+
+| 事情 | 由什么决定 | 规则 |
+| --- | --- | --- |
+| 流量经SN中转 | 只看接入方式 | `nat`全部；`portmap`只有HTTP(S)，RTCP直连；`wan_dyn`平时直连，保留后备隧道；`wan`不用 |
+| SN应答地址（A / AAAA） | 名字是否由SN解析：默认域名、SN托管，或记录CNAME到`<用户名>.web3.<SN>` | `nat`、`portmap`应答relay；`wan_dyn`应答设备上报的公网IP；`wan`应答签名文档里的固定IP |
+| SN应答其它记录（证书挑战等TXT） | 域名的NS是否在SN：默认域名和SN托管 | 手工和DNS API不用SN的这一项 |
+
+因此`wan`也可以用SN托管：SN应答固定IP和证书挑战，但不中转。走激活页面的用户都有SN账号，`ZoneDocument.sn`、`BootDocument.sn`和`DeviceDocument.ddns_sn_url`一律写入，它们不代表“要中转”。完全不用SN的Zone用`src/active.ts`命令行激活，见 `product/node_active/Node_Active_无SN命令行激活.md`。
 
 ---
 
-### A. 4 种访问路径（入口节点 OOD / ZoneGateway 的 net_id）
+### A. 4 种接入方式（入口节点 OOD / ZoneGateway 的 net_id）
 
 > 入口节点=对外提供访问与域名引导的节点（可以是 ZoneGateway，也可以是承担 ZoneGateway 职责的 OOD）。
 >
-> 是否`keep tunnel to SN`的判定见 [node_daemon.rs:864](src/kernel/node_daemon/src/node_daemon.rs:864) ：仅当配置了SN且`net_id`不以`wan`开头时才会`keep_tunnel`。`ddns_sn_url`只在`net_id`为`wan_dyn`或`portmap`时由激活流程自动写入（见 [active_server.rs:507](src/kernel/node_daemon/src/active_server.rs:507) ）。
+> 是否`keep tunnel to SN`只看`net_id`，`wan`以外都连，见 `src/kernel/node_daemon/src/sn_zone_info.rs` 的 `device_requires_sn_keep_tunnel`。地址和`self_cert`上报对所有接入方式都做。
 
-#### A1. `nat`（最常见）
+| net_id | 入口节点的可达性 | SN中转 | 激活发布的文档 | SN应答的地址 |
+| --- | --- | --- | --- | --- |
+| `nat` | 没有公网入口 | 全部流量 | — | relay |
+| `portmap` | 能映射RTCP端口（默认2980），不能映射443 | HTTP(S)；RTCP直连 | — | relay。RTCP直连地址在完整设备文档里 |
+| `wan_dyn` | 443、2980公网可达，IP会变 | 平时不用，隧道作后备 | mini设备文档写`net_id = wan_dyn` | 设备上报的公网IP |
+| `wan` | 443、2980公网可达，IP固定 | 不用，不连relay | `DeviceDocument.ips`和`ZoneDocument`的`gateway_ips`写用户确认的公网IP | 签名文档里的固定IP |
 
-* 入口节点在 NAT 后，**无 443/2980 的公网可达能力**
-* **必须依赖 SN 做中转/隧道（keep tunnel）**，否则外部无法稳定访问
+`portmap`如果应答设备地址，浏览器会连到没有映射的443，所以应答relay。IP会变的用户应选`wan_dyn`，不要选`wan`。
 
-#### A2. `portmap`
-
-* 入口节点在 NAT 后，**可映射 2980 或其它指定端口，但无法映射 443**
-* 需要 SN 的 **DDNS**（`ddns_sn_url`自动指向SN，当入口节点 IP/端口变化时刷新）
-* HTTPS 流量无法直达入口节点：**需要 SN 转发/中转（HTTPS relay）**
-* 入口节点通常仍需要与 SN **keep tunnel**（因为`net_id`不以`wan`开头）
-
-#### A3. `wan_dyn`
-
-* 入口节点具备公网可达能力，但 IP 不固定：
-
-  * 能映射 443、2980（或公网动态 IPv6 可达）
-* **不需要 SN 做中转**（代码中`net_id.starts_with("wan")`返回true，不keep_tunnel），但通常需要 **DDNS/引导服务**
-
-  * 用 SN 二级域名 → SN 提供 DDNS（自动写入`ddns_sn_url`）
-  * 用自有域名 → 用户可自建 DDNS，或仍用 SN 参与引导（见 B1）
-
-#### A4. `wan`
-
-* 入口节点具备公网固定可达能力（固定公网 IP / 稳定公网 IPv6）
-* `net_id.starts_with("wan")`，因此**不keep_tunnel**
-* 可做到 **完全不依赖 SN**（前提见 B1/WAN+自有域名）
-
-
-### B. 2 种域名使用方式
+### B. 域名和DNS
 
 #### B1. 用户自有域名
 
-用户使用自己的域名（如 `example.com`）时，涉及 3 类记录/能力：
+用户使用自己的域名（如`home.example.com`），按DNS由谁管理分三种。三种都能与四种接入方式组合。
 
-* A/AAAA：将域名（或子域）指向入口节点的公网地址
-* TXT：配置 DID / PX0 / ZoneGatewayDeviceConfig（用于引导、校验、发现）
-* 可选 NS：把某个子域（或整个域）NS 指向入口节点（`TODO:未实现`）
+| 托管方式 | 用户要做什么 | 系统做什么 | 证书 | 根域名 |
+| --- | --- | --- | --- | --- |
+| SN托管 | 写两次：先`_pkx` TXT，再把NS委派到`dns.<SN>` | SN应答地址和证书挑战 | 自动签发（默认）或上传 | 不支持。委派根域名会丢掉MX等记录 |
+| 手工 | 自己写3条记录，自己更换证书 | 检测记录 | 只能上传 | `wan`可用；其它接入方式要子域名 |
+| DNS API | 给一个DNS服务商的token | 写记录、写证书挑战、续期、修复缺失的记录 | 自动签发（默认）或上传 | `wan`可用；其它接入方式要子域名，DNS在Cloudflare的除外 |
 
-  * 可用于“对子设备的域名查询”（子设备域名解析由入口节点提供）
-  * 可用于自动化证书（如果入口节点承担 ACME HTTP-01/DNS-01 逻辑）
+服务商名单、申请token的步骤和权限建议见 [doc/user/dns-providers](../../user/dns-providers/README.md)。
 
-**关键边界**
+##### B1.1 记录
 
-* **只有当 `net_id=wan`（或用户自建完整等价的 DDNS/证书/引导能力）时，自有域名才可能做到完全不需要 SN。**
-* 当 `net_id != wan`（例如 `nat/portmap/wan_dyn`）时：
+手工和DNS API用同一份记录计划（`src/kernel/node_daemon/src/domain/plan.rs`），区别只是由用户写还是由节点写：
 
-  * 你要么依赖 SN 提供 DDNS/引导/中转的某一部分
-  * 要么用户自己额外部署等价服务（DDNS、证书签发、反向代理/中转等）
+| 记录 | `nat` / `wan_dyn` / `portmap` | `wan` |
+| --- | --- | --- |
+| `_pkx.<域名>` TXT | `PKX(<owner 公钥 x>)` | 同左 |
+| `<域名>` | CNAME `<用户名>.web3.<SN>` | A / AAAA 公网IP |
+| `*.<域名>` | CNAME `<用户名>.web3.<SN>` | A / AAAA 公网IP |
 
-#### B2. 使用 SN 的二级域名
+SN托管只有`_pkx` TXT和NS `dns.<SN>`。
 
-SN 提供一个二级域名（如 `xxx.buckyos.io`），并提供配套的引导能力：
+* relay按绑定关系路由，不要求NS委派到SN。CNAME到`<用户名>.web3.<SN>`后，动态IP和relay换IP都由SN处理，节点不用自己做DDNS。
+* 不写BOOT / DEV TXT。`https://ood1.<域名>/.well-known/did.json`由Zone在boot之后自己提供，不用另外发布。
+* 比通配记录更具体的旧记录（例如单独的`ood1`）会盖住通配记录，要删掉。
+* Cloudflare上的记录要用“仅DNS”，不能开代理。
 
-* 自动注册/分配二级域名（自动在 BNS 上注册？）
-* 域名解析：
+##### B1.2 归属与检测
 
-  * 基于入口节点动态 IP 的 **DDNS**
-  * 自动配置域名的 TXT：DID / PX0 / ZoneGatewayDeviceConfig
-  * 支持对子设备的域名查询
-  * 支持自动 ACME 获取 TLS 证书（SN 侧或配合入口节点）
-* 转发/中转能力（按用户配置启用）：
+* 归属：`_pkx`由节点按BNS上的OwnerDocument算出，在权威NS上看到之后再由SN `domain.bind`确认；`user.get_profile`的`user_domain`已经是这个域名就不再调。
+* SN托管的顺序是先TXT后NS，都在激活之前完成。只看NS会让别人抢先绑定一个已经委派过来的域名。
+* 激活前检测归属、NS、入口记录（含`ood1`、`sys`、`public`和一个随机子域）、证书挑战、CAA，全部通过才能激活；`commit_active`再检查一遍。规则见 `notepads/node-active-custom-domain-todo.md` §3.3.1。
+* 检测直接问权威NS，节点要能访问外网的53端口（UDP，截断时TCP）。出口拦了53端口的网络里检测通不过。
+* 激活后节点启动3分钟时检测一次，之后每6小时一次；有问题时每1小时一次。DNS API会顺带补回缺失的记录。
+* token被服务商拒绝时通知owner；自动签发的证书续期失败持续30分钟才通知，到期前14天内仍失败再通知一次。上传的证书不通知。
 
-  * HTTP 转发：把 http 流量转发到节点列表 A
-  * HTTPS/端口受限场景转发：当 443 不可直达时，提供 https relay
-  * 连接型转发：允许节点列表 B 设备与 SN keep tunnel，通过 SN 中转访问
-  * device info 查询（`TODO:需要支持`）
-  * rudp call/called（传统 P2P 打洞）
+##### B1.3 证书
+
+* Zone需要两个名字：`<域名>`和`*.<域名>`。
+* 自动签发：SN托管用`sn-dns`（DNS-01，挑战写到SN），DNS API用`dns-api`（挑战写到服务商）。生成规则看`domain_hosting`，不看接入方式，所以`wan`也有ACME。
+* ACME目录默认Let's Encrypt生产环境。激活页配置`active_config.json`可以加可选的`acme_issuer`，激活时写进`domain_hosting.acme_issuer`，DV用staging时设它。
+* 上传：检查后装到身份路径，`server.meta.json`的`renewal.manager`为`manual`，系统不续期、不提醒、不替换。
+* `nat`、`portmap`的HTTPS由relay转发，前提是SN上的`self_cert`为true。它由网关按TLS栈实际加载到的证书上报（`self_cert_report`），与证书来源无关。
+
+#### B2. 使用 SN 的二级域名（默认域名）
+
+`<用户名>.web3.<SN>`，没有`domain_hosting`：
+
+* 注册账号时分配，地址、TXT（BOOT / DEV / PKX）由SN按BNS文档和上报应答
+* 证书用`sn-dns`自动签发
+* relay转发HTTP / HTTPS / RTCP，按接入方式决定用不用
 
 ---
 
-### C. 典型组合（4 × 2 的展开版）
+### C. 典型组合
 
-> 每个组合回答：是否需要 SN（DNS/DDNS/证书/中转/隧道）+ 入口节点与 SN 的连接方式。
+每格写：DNS地址由谁应答 / 证书从哪来 / 流量怎么走。
 
-#### C1. `nat` + SN 二级域名（最常见家庭配置）
+| 接入方式 | 默认域名 | 自有域名 + SN托管 | 自有域名 + 手工 | 自有域名 + DNS API |
+| --- | --- | --- | --- | --- |
+| `nat` | SN应答relay / `sn-dns` / 全部经relay | SN应答relay / `sn-dns`或上传 / 全部经relay | CNAME到SN，应答relay / 上传 / 全部经relay | CNAME到SN，应答relay / `dns-api`或上传 / 全部经relay |
+| `portmap` | 同`nat`，RTCP直连 | 同`nat`，RTCP直连 | 同`nat`，RTCP直连 | 同`nat`，RTCP直连 |
+| `wan_dyn` | SN应答上报的IP / `sn-dns` / 直连 | SN应答上报的IP / `sn-dns`或上传 / 直连 | CNAME到SN，应答上报的IP / 上传 / 直连 | CNAME到SN，应答上报的IP / `dns-api`或上传 / 直连 |
+| `wan` | SN应答固定IP / `sn-dns` / 直连 | SN应答固定IP / `sn-dns`或上传 / 直连 | A / AAAA固定IP / 上传 / 直连 | A / AAAA固定IP / `dns-api`或上传 / 直连 |
 
-* SN：DDNS + TXT 自动配置 +（通常）证书 + **中转/keep tunnel**
-* 入口节点：
-
-  * ZoneBootConfig 设置 SN
-  * 入口节点（OOD 或 ZoneGatewayNode）与 SN **keep tunnel**
-
-#### C2. `nat` + 自有域名
-
-* 由于入口节点不可公网直达，**仍需要 SN 的中转/keep tunnel**
-* DNS 侧可由用户自有域名承担“命名”，但解析/引导仍要落到 SN 的可达方案上：
-
-  * SN 配置自定义 hostname = 用户自有域名（等价“绑定域名”）
-  * 其它同 C1（keep tunnel / 转发）
-
-
-#### C3. `portmap` + SN 二级域名（只开放 2980 等端口）
-
-* SN：DDNS + TXT 自动配置 + **HTTPS relay**（因为 443 不可达）+（通常）keep tunnel
-* 入口节点：
-
-  * DeviceConfig JWT 中声明可达端口（如 2980）（`TODO:需要支持`）
-  * ZoneBootConfig 设置 SN
-  * 为了支持 https 访问，通常仍需要 keep tunnel
-
-#### C4. `portmap` + 自有域名
-
-* SN 配置自定义 hostname = 用户自有域名
-* 其它同 C3（核心仍是：443 不可达 → 需要 SN 的 https relay/隧道）
-
-#### C5. `wan_dyn` + SN 二级域名（443/2980 映射或动态公网 IPv6）
-
-* SN：主要提供 **DDNS + TXT 自动配置 +（可选）证书自动化**
-* 入口节点：
-
-  * ZoneBootConfig 设置 SN（用于 report device info/保持解析最新）
-  * **通常不需要 keep tunnel**（可直连）
-
-#### C6. `wan_dyn` + 自有域名
-
-* 两种路径（二选一）：
-
-  1. **用户自建 DDNS/证书/引导**：SN 可完全不参与
-  2. 仍用 SN 做 DDNS/引导：SN 配置自定义 hostname = 自有域名
-* 入口节点通常不需要 keep tunnel（能直连）
-
-#### C7. `wan` + SN 二级域名（用户无域名但有固定公网）
-
-* SN：可只做“二级域名解析/TXT/证书便利”，**不要求中转**
-* 入口节点：
-
-  * ZoneBootConfig 设置 SN（可选；report device info 成本低）
-  * 入口节点直接以固定公网地址对外服务（无 keep tunnel）
-
-#### C8. `wan` + 自有域名（唯一完全不需要 SN 的组合）
-
-* 用户域名 A/AAAA 指向固定公网入口节点
-* TXT 配置 DID / PX0 / ZoneGatewayDeviceConfig
-* 可选 NS（`TODO:未实现`）：用于对子设备域名查询
-* 证书：入口节点自建 ACME 或用户自管证书体系
-* **SN 不参与 DNS / DDNS / 转发 / 隧道 / 中转**
+* `wan_dyn`保留到relay的后备隧道；`wan`不连relay。
+* `wan` + 手工或DNS API时，SN不参与地址应答、证书和流量，只保留账号、归属确认、BNS发布和上报。
+* 完全不用SN只有`wan` + 自有域名 + `src/active.ts`这一种，DNS和证书全部自己管。
 
 
 

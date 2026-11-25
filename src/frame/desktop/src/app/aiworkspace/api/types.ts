@@ -30,6 +30,8 @@ export interface WorkspaceSummary {
   epoch: string
   head_seq: number
   capabilities: Capability[]
+  /** The caller has the Workspace owner's effective access. */
+  owner?: boolean
 }
 
 export interface ClonedFrom {
@@ -97,8 +99,6 @@ export interface WorkspaceInfo extends WorkspaceSummary {
   anonymous?: boolean
   /** Who the caller is judged as (an Agent nobody configured here: its owner, R16). */
   judged_as?: string
-  /** The caller is the Workspace's owner. */
-  owner?: boolean
   /** The Workspace's shared settings (the root's `config`, K4) and the version a conditional write expects. */
   settings?: WorkspaceSettings
   settings_rev?: number
@@ -333,7 +333,11 @@ export type FieldType = 'text' | 'number' | 'decimal' | 'date' | 'datetime' | 'b
 
 export interface OptionDef { option_id: string; label: string }
 
+export type ReferencePurpose = 'image' | 'canvas'
+
 export interface FieldDef {
+  ref_purpose?: ReferencePurpose
+  target_types?: string[]
   field_id: string
   name: string
   type: FieldType
@@ -388,11 +392,14 @@ export interface ConnectorProjection {
 }
 export interface ConnectorEnd { entity_id: string; anchor: { kind: 'named'; id: string } }
 
+export type RowOrder = Record<string, string>
+
 export interface CellPayload {
   /** Absent on a pure UI Block (frame, shape…). */
   source_ref?: Reference
   /** Renderer id and version (D6: the backend checks the format only; the registry decides support). */
   view: { type: string; version?: number }
+  row_order?: RowOrder
   title?: string
   fields?: { field_id: string; width?: number }[]
   filter?: FilterNode | null
@@ -892,6 +899,7 @@ export interface CellMeta { derived?: { run_id?: string; program?: string; input
 
 export interface QueryRow {
   record_id: string
+  created_seq?: number
   rev: number
   revs: Record<string, number>
   values: Record<string, Json>
@@ -900,6 +908,7 @@ export interface QueryRow {
 }
 
 export interface QueryParams {
+  row_order?: RowOrder
   view_id?: string
   source_id?: string
   filter?: FilterNode | null

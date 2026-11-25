@@ -13,6 +13,8 @@ import {
   useSystemDialog,
   type AppInstallerDialogParams,
 } from '../../sysdlg'
+import type { AppContentLoaderProps } from '../types'
+import { appServiceLaunchSchema } from './launch'
 
 function PageRouter({
   nav,
@@ -57,10 +59,11 @@ function PageRouter({
   }
 }
 
-export function AppServiceAppPanel() {
+export function AppServiceAppPanel({ launch }: AppContentLoaderProps) {
+  const parsed = appServiceLaunchSchema.safeParse(launch?.payload)
   return (
     <AppServiceStoreProvider>
-      <AppServiceShell>
+      <AppServiceShell key={launch?.requestId ?? 'default'} initialNav={parsed.success ? parsed.data : undefined}>
         {(nav, navigate) => <PageRouter nav={nav} onNavigate={navigate} />}
       </AppServiceShell>
     </AppServiceStoreProvider>

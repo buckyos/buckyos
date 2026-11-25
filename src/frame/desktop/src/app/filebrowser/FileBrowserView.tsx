@@ -23,6 +23,9 @@ import { useI18n } from '../../i18n/provider'
 import { contentDescriptor, type HandlerPlan } from 'buckyos/content'
 import { openContent, contentHandlers, handlerLabel, contentRegistry } from '../content/open'
 import { openPreview } from '../preview/launch'
+import { useAppPath } from '../pathContext'
+import { appPath } from '../standalone/address'
+import type { FilesOpenRequest } from './launch'
 import {
   useMobileBackHandler,
   useMobileTitleOverride,
@@ -83,11 +86,13 @@ import {
   crumbsForUrl,
   dfsPathOf,
   displayPath,
+  LIBRARY_URL,
   normalizeUrl,
   parentUrl,
   parseDeviceUrl,
   pathOfFileUri,
   deviceUrl,
+  PUBLISH_URL,
   archiveRootOf,
   archiveRootUrl,
   archiveSplit,
@@ -126,11 +131,14 @@ function writablePathOf(url: string): string | null {
   return dfsPathOf(url) ?? (parseDeviceUrl(url) ? url : null)
 }
 
+/** The request each window followed last. */
+const followedRequests = new Map<string, string>()
+
 type BrowserPane = ReturnType<typeof useBrowserPane>
 const FILE_DRAG_TYPE = 'application/x-buckyos-file-items'
 let draggedFiles: { token: string; pane: BrowserPane; items: FileItem[] } | null = null
 
-type FileBrowserProps = { windowId?: string; openRequest?: { requestId: string; path: string } }
+type FileBrowserProps = { windowId?: string; openRequest?: FilesOpenRequest }
 
 /** Files opens on "My files" — the signed-in user's own home — once it is known, so `/home` never flashes. */
 export function FileBrowserView(props: FileBrowserProps) {
@@ -164,6 +172,8 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
 
   const left = useBrowserPane(initialTabs, windowId ? `${windowId}:left` : undefined, home.path)
   const right = useBrowserPane([], windowId ? `${windowId}:right` : undefined, home.path)
+  // A computer folder's URL names this window's sudo session: it is never an address.
+  useAppPath(appPath('', { path: left.currentUrl !== homeUrl ? dfsPathOf(left.currentUrl) : null }))
   const livePanes = useRef([left, right])
   useEffect(() => { livePanes.current = [left, right] }, [left, right])
   const [, refreshCopyCapability] = useState(0)
@@ -172,13 +182,16 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
   const transfersPanel = useTransfersPanelState()
   const [focusedSide, setFocusedSide] = useState<'left' | 'right'>('left')
   // A launch that names a folder (the Desktop folder, a folder on the desktop) shows it in the left pane.
-  const handledOpenRequest = useRef<string | null>(openRequest?.requestId ?? null)
+  const handledOpenRequest = useRef<string | null>(null)
   useEffect(() => {
     if (!openRequest || handledOpenRequest.current === openRequest.requestId) return
     handledOpenRequest.current = openRequest.requestId
-    left.navigate(openRequest.path)
+    // A phone remounts the panel with the request it already followed.
+    if (windowId && followedRequests.get(windowId) === openRequest.requestId) return
+    if (windowId) followedRequests.set(windowId, openRequest.requestId)
+    if (openRequest.path) left.navigate(openRequest.path)
     setFocusedSide('left')
-  }, [openRequest, left])
+  }, [openRequest, left, windowId])
 
   const [listPreferences, setListPreferences] = useState<{ fullColumns: boolean; density: 'compact' | 'comfortable'; nameWidth: number }>(() => {
     try { return { fullColumns: false, density: 'compact', nameWidth: 260, ...JSON.parse(localStorage.getItem('files.listPreferences') ?? '{}') } }
@@ -280,8 +293,14 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
     if (!hostInfo) { showToast(t('filebrowser.host.unavailable', 'This computer\'s folders cannot be opened here')); return null }
     return deviceUrl(hostKey, filePath)
   }
-  const titledTabs = (tabs: BrowserTab[]) => tabs.map((tab) =>
-    tab.path === homeUrl ? { ...tab, title: myFilesLabel } : tab.path === hostRoot ? { ...tab, title: hostInfo?.label ?? tab.title } : tab)
+  /** Tabs on a fixed sidebar place carry its name. */
+  const placeTitles: Record<string, string | undefined> = {
+    [PUBLISH_URL]: t('filebrowser.sidebar.published', 'Published'),
+    [LIBRARY_URL]: t('filebrowser.sidebar.library', 'Library'),
+    [hostRoot]: hostInfo?.label,
+    [homeUrl]: myFilesLabel,
+  }
+  const titledTabs = (tabs: BrowserTab[]) => tabs.map((tab) => ({ ...tab, title: placeTitles[tab.path] ?? tab.title }))
   const topicList = topicsSource.state.data ?? NO_TOPICS
 
   // Live collection list (sidebar + "Add to Collection" submenu).
@@ -301,6 +320,8 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
   } | null>(null)
 
   useEffect(() => { setPreviewCollapsed(true); setMobilePreviewOpen(false); setMobileUploadOpen(false) }, [left.activeTabId, left.currentUrl, right.activeTabId, right.currentUrl])
+  const uploadRequest = openRequest?.upload ? openRequest.requestId : null
+  useEffect(() => { if (uploadRequest) setMobileUploadOpen(true) }, [uploadRequest])
 
   // Deselecting the last item leaves selection mode.
   useEffect(() => {
