@@ -409,6 +409,68 @@ async fn a_failed_task_is_reported_as_failed() {
     assert_eq!(llm.count(), 3);
 }
 
+// D4. Half an hour of waiting for a command: the ticks back off from 30 s to
+//    10 minutes, six of them in all. A command's end comes at once, and after
+//    every end the interval starts over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ticks_back_off_and_start_over_with_every_end() {
+    let s = setup();
+    let sd = create(&s, "two long builds", 30).await;
+    let workdir = libopendan::runtime::resolve_workdir(&sd).unwrap();
+    let wait = |name: &str| format!("for i in $(seq 1 1200); do test -f {name} && echo {name} built && exit 0; sleep 0.1; done; exit 1");
+    let (one, two) = (wait("one"), wait("two"));
+    let llm = ScriptedLlm::new(move |req, n| {
+        if n == 0 {
+            return calls(&[
+                ("c1", "shell", json!({ "command": one })),
+                ("c2", "shell", json!({ "command": two })),
+            ]);
+        }
+        if new_inputs(req).contains("<<task_result task=\"local:shell:c2\"") {
+            return report_end("both built");
+        }
+        text("Building.")
+    });
+    let deps = deps(&s, llm.clone());
+    drive(&sd, &deps, StopWhen::Idle).await;
+    assert_eq!(llm.count(), 2);
+    // `secs` of waiting in steps of ten: the seconds at which it inferred.
+    async fn wait_secs(sd: &SessionDir, deps: &RunnerDeps, llm: &ScriptedLlm, secs: u64) -> Vec<u64> {
+        let mut at = Vec::new();
+        for step in 1..=secs / 10 {
+            pass_time(sd, 10);
+            let before = llm.count();
+            drive(sd, deps, StopWhen::Idle).await;
+            if llm.count() > before {
+                at.push(step * 10);
+            }
+        }
+        at
+    }
+    let at = wait_secs(&sd, &deps, &llm, 1800).await;
+    assert_eq!(at, [30, 90, 210, 450, 930, 1530], "seconds");
+    assert_eq!(sd.state().unwrap().task_watch.ticks, 6);
+    // The first build ends: its end is an input at once, whatever the interval.
+    async fn end_of(sd: &SessionDir, deps: &RunnerDeps, llm: &ScriptedLlm) {
+        let before = llm.count();
+        for _ in 0..200 {
+            drive(sd, deps, StopWhen::Idle).await;
+            if llm.count() > before || sd.state().unwrap().is_finished() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("no end came in");
+    }
+    std::fs::write(workdir.join("one"), "").unwrap();
+    end_of(&sd, &deps, &llm).await;
+    assert_eq!(sd.state().unwrap().task_watch.ticks, 0);
+    assert_eq!(wait_secs(&sd, &deps, &llm, 100).await, [30, 90]);
+    std::fs::write(workdir.join("two"), "").unwrap();
+    end_of(&sd, &deps, &llm).await;
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Succeeded));
+}
+
 // 6 + 10. A reply that ends nothing and waits for nothing gets one
 //    correction (its own input) and then fails the session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

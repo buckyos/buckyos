@@ -27,6 +27,6 @@ Use the current behavior's `[reply]` schema. The user sees `reply` and `artifact
 
 ## Memory: what to perceive
 
-Use `agent-session ctl perceive "<observation>"` for the owner's lasting preferences, requirements, judgments and corrections, useful facts, names or pointers, project/tool observations, and consequential surprises, mistakes or methods. Capture lessons from a work report when relaying it. Record only what will matter later or revises existing knowledge. Preserve attribution, exact values, scope, conditions and uncertainty. Use `--explicit` only when asked to remember. Leave out secrets, progress, live state and one-off task parameters.
+Use `agent-session ctl perceive "<observation>"` for the owner's lasting preferences, requirements, judgments and corrections, useful facts, names or pointers, project/tool observations, and consequential surprises, mistakes or methods. Capture lessons from a work report when relaying it, except what a plan's report lists as `Remembered (already in memory)`. Record only what will matter later or revises existing knowledge. Preserve attribution, exact values, scope, conditions and uncertainty. Use `--explicit` only when asked to remember. Leave out secrets, progress, live state and one-off task parameters.
 
 For flags, evidence, corrections and examples read `$OPENDAN_AGENT_ROOT/cmd_skills/ui_core/references/memory.md`. Search with `agent-session recall <words or tags>... [--object <path>]` and inspect evidence with `agent-session recall --read <ref>`. Distinguish unconsolidated notes from conclusions.

@@ -24,14 +24,18 @@ default_cmd_skills = ["ui_core"]
 default_behavior = "plan_simple"
 completion = "explicit_report"
 tick_secs = 30
+tick_max_secs = 600
 [session.plan_simple]
 base = "work"
 default_behavior = "plan_simple"
 input = "queue"
-tick_secs = 600
+tick_secs = 1800
+tick_max_secs = 14400
+waits_idle = true
+max_life_secs = 172800
 ```
 
-Use `msg.group`, `group` and `per_group` for groups. Class sections are strict; `base` inherits built-in defaults only. Set `turns`, `objective`, `completion`, `input` (`queue` for messages, `none` for controls only), `tick_secs`, `max_process_depth` and `max_sub_sessions` as needed. Validate each `default_behavior`, `meta.next` and `behavior:<name>` or Work creation fails. Goal scheduling: `min_interval_secs` (900), `guarantee_secs` (259200, 0 off, otherwise ≥3600), `check_every_secs` (300). Cap activations via `budget.activation` (tokens, runs, wall time), periods via `budget.period` (window/tokens/activations/works), or all goals plus their work via `agent_budget`. Built-in goal checks live in `goal_checks/<name>.ts`; a user goal can use `agent-session goal check set` (Agent State Protocol §9.4).
+Use `msg.group`, `group` and `per_group` for groups. Class sections are strict; `base` inherits built-in defaults only. Set `turns`, `objective`, `completion`, `input` (`queue` for messages, `none` for controls only), `tick_secs` / `tick_max_secs` (a waiting Work is ticked that long after its last reply, then after twice as long each time; another input starts over), `waits_idle` (it may wait for something outside while nothing runs), `max_life_secs` (a Work older than this only wraps up), `max_process_depth` and `max_sub_sessions` as needed. Validate each `default_behavior`, `meta.next` and `behavior:<name>` or Work creation fails. Goal scheduling: `min_interval_secs` (900), `guarantee_secs` (259200, 0 off, otherwise ≥3600), `check_every_secs` (300). Cap activations via `budget.activation` (tokens, runs, wall time), periods via `budget.period` (window/tokens/activations/works), or all goals plus their work via `agent_budget`. Built-in goal checks live in `goal_checks/<name>.ts`; a user goal can use `agent-session goal check set` (Agent State Protocol §9.4).
 `[loader.browser]` enables on-demand Chromium from ext-core; defaults `enabled=true`, `idle_stop_secs=600`, `max_tabs=12`. Private sessions use `agent-browser` / `$OPENDAN_BROWSER_RPC`. The owner uses Agent Browser. Native profile `.cache/browser/`, tabs `state/browser/groups.json`; missing Chromium affects browser availability.
 
 #### Behavior loops

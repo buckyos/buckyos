@@ -26,8 +26,11 @@ const WAIT_USER_MSG: &str = "WAIT_USER_MSG";
 
 /// Interrupt reason of a run stopped by `control(pause)`.
 pub(super) const PAUSE_REASON: &str = "session paused";
-/// A message to read before the next inference (`reads_messages`).
+/// An input to read before the next inference: a message
+/// (`reads_messages`), an update of the Todo the session executes.
 pub(super) const MESSAGE_REASON: &str = "a message arrived";
+/// A Work past its lifetime wraps up (`policy.max_life_secs`).
+pub(super) const LIFETIME_REASON: &str = "session lifetime reached";
 
 /// A yield waits for the sub sessions the session must hear from; with
 /// none, a progress report alone does not finish the session.
@@ -89,8 +92,8 @@ pub(super) enum FinishKind {
     /// `control(pause)` stopped the run at an inference boundary: kept at
     /// its checkpoint, the Turn stays open, `resume` runs it on.
     Paused,
-    /// A message stopped the run at an inference boundary: kept at its
-    /// checkpoint, the message joins its open Turn.
+    /// A message (or an update of its Todo) stopped the run at an inference
+    /// boundary: kept at its checkpoint, the input joins its open Turn.
     Message,
 }
 
@@ -150,6 +153,9 @@ pub(super) struct Next {
     /// for anything: the run is kept and gets this correction count's
     /// nudge as its next input (once per Turn).
     pub(super) nudge: u8,
+    /// The reply that keeps the run waits for something outside, with
+    /// nothing of the session running (`policy.waits_idle`).
+    pub(super) idle: bool,
     /// The Turn ended on a question nobody answers now
     /// (`wait_user_msg = end_turn`).
     pub(super) needs_input: bool,
@@ -279,6 +285,9 @@ pub(super) async fn apply_ui_reply(
         ContextOutput::Text { .. } => {}
     }
 }
+
+/// `error.kind` of a Work whose context does not fit after its compactions.
+pub const CONTEXT_LIMIT_ERROR_KIND: &str = "context_limit";
 
 /// `error.kind` of a Turn the AI service refused under the AI quota or
 /// resource policy of the Agent's owner.
@@ -531,13 +540,7 @@ pub(super) fn classify_done(
         _ if next.report.is_some() => decide_end(cfg, &mut next, completed + 1),
         _ if cfg.session.policy.completion == CompletionPolicy::ExplicitReport => {
             if nobody_answers(cfg) {
-                next.finished = true;
-                next.kind = FinishKind::Error;
-                next.outcome = Some(Outcome::Failed);
-                next.turn_end = Some(TurnStatus::Failed);
-                next.error = Some(
-                    json!({"kind":"missing_end_report","message":"an explicit final report is required; nobody answers this session", "recoverable":false}),
-                );
+                missing_end_report(&mut next);
             } else {
                 next.waiting = true;
                 next.turn_end = Some(TurnStatus::Completed);
@@ -877,8 +880,8 @@ async fn interpret_outcome(
             next.usage = Some(usage.clone());
             snapshot = s;
             let accepted = super::reports::final_report(&lc.run)?;
-            // A message that came with the final report: not the end then.
-            let reopened = accepted.is_some() && super::reports::reopen_for_message(sh, &lc.run).await?;
+            // An input that came with the final report: not the end then.
+            let reopened = accepted.is_some() && super::reports::reopen_for_input(sh, &lc.run).await?;
             if let Some(report) = accepted.filter(|_| !reopened) {
                 next = classify_done(
                     &cfg,
@@ -926,8 +929,29 @@ async fn interpret_outcome(
             next.usage = Some(usage);
             snapshot = s;
             next.kind = FinishKind::ContextLimit;
-            next.error = Some(json!({ "kind": "context_limit", "message": "context limit reached" }));
-            status = RunStatus::Paused;
+            next.error = Some(json!({ "kind": CONTEXT_LIMIT_ERROR_KIND, "message": "context limit reached" }));
+            if !site.child && multi_turn_work(&cfg) && !cfg.session.policy.waits_idle {
+                // Bounded work: compacted as often as it may be, it still
+                // does not fit. It ends here; what it found stays readable
+                // and goes to a new attempt.
+                let progress = last_progress(&*sh.session.lock().await);
+                next.error = Some(json!({
+                    "kind": CONTEXT_LIMIT_ERROR_KIND,
+                    "message": "context_limit: the context does not fit the model's window after its compactions",
+                    "recoverable": false,
+                }));
+                next.answer = Some(match progress {
+                    Some(p) => format!("Stopped at the context limit. Last progress:\n{p}"),
+                    None => "Stopped at the context limit; it reported no progress.".to_string(),
+                });
+                next.run_ended = true;
+                next.finished = true;
+                next.outcome = Some(Outcome::Failed);
+                next.turn_end = Some(TurnStatus::Failed);
+                status = RunStatus::LimitReached;
+            } else {
+                status = RunStatus::Paused;
+            }
         }
     }
     if super::goal::is_goal(&cfg) && !site.child {
@@ -1050,8 +1074,11 @@ pub(super) async fn commit_kept(
         }
         s.state.wait_children = next.wait_children.clone();
         // Ticks are counted from the moment the session began waiting.
-        if !next.wait_tasks.is_empty() || !next.wait_children.is_empty() {
+        if next.idle || !next.wait_tasks.is_empty() || !next.wait_children.is_empty() {
             s.state.task_watch.last_tick_ms = crate::now_ms();
+        }
+        if next.turn_end.is_some() {
+            s.state.task_watch.idle = next.idle;
         }
     }
     if next.nudge > 0 {
@@ -1083,7 +1110,9 @@ pub(super) async fn commit_kept(
 /// A multi-Turn Work Session ([`multi_turn_work`], not inside a sub
 /// context): the reply that keeps the run closes the Turn — it is the
 /// progress its caller sees — and with nothing running a reply that did not
-/// end the session gets one correction (`nudge`) before it fails.
+/// end the session gets one correction (`nudge`) before it fails. A session
+/// that may wait for something outside (`policy.waits_idle`) waits instead
+/// of failing; one past its lifetime waits for nothing.
 async fn keep_while_running(
     sh: &Arc<Shared>,
     lc: &LiveCtx,
@@ -1109,6 +1138,14 @@ async fn keep_while_running(
         return;
     }
     let multi_turn = !child && multi_turn_work(cfg);
+    if multi_turn && cfg.life_over(crate::now_ms()) {
+        if sh.session.lock().await.state.nudge.count == 0 {
+            nudged(next);
+        } else {
+            missing_end_report(next);
+        }
+        return;
+    }
     // Sub sessions report through the session's own channel
     // (`poll_children`); other tasks are followed by id: those running, and
     // those that ended without the model having their end yet (it comes
@@ -1145,7 +1182,14 @@ async fn keep_while_running(
         if next.kind == FinishKind::Wait && next.run_ended {
             next.wait_children.clear();
         }
-        if multi_turn && missing_end && sh.session.lock().await.state.nudge.count == 0 {
+        if !multi_turn || !missing_end {
+            return;
+        }
+        let (corrected, idle) = {
+            let s = sh.session.lock().await;
+            (s.state.nudge.count > 0, s.state.task_watch.idle)
+        };
+        if cfg.session.policy.waits_idle && (corrected || idle) {
             let usage = next.usage.take();
             let answer = next.answer.take();
             *next = Next {
@@ -1153,9 +1197,12 @@ async fn keep_while_running(
                 waiting: true,
                 usage,
                 answer,
-                nudge: 1,
+                idle: true,
+                turn_end: Some(TurnStatus::Completed),
                 ..Default::default()
             };
+        } else if !corrected {
+            nudged(next);
         }
         return;
     }
@@ -1175,6 +1222,59 @@ async fn keep_while_running(
         next.turn_end = Some(TurnStatus::Completed);
         next.answer = answer;
     }
+}
+
+/// The reply gets the runner's correction as its next input (the run is
+/// kept, the Turn stays open).
+fn nudged(next: &mut Next) {
+    let usage = next.usage.take();
+    let answer = next.answer.take();
+    *next = Next {
+        kind: FinishKind::Wait,
+        waiting: true,
+        usage,
+        answer,
+        nudge: 1,
+        ..Default::default()
+    };
+}
+
+/// The reply ends the session as failed: only a final report would have
+/// ended it otherwise.
+fn missing_end_report(next: &mut Next) {
+    next.run_ended = true;
+    next.waiting = false;
+    next.finished = true;
+    next.kind = FinishKind::Error;
+    next.outcome = Some(Outcome::Failed);
+    next.turn_end = Some(TurnStatus::Failed);
+    next.error = Some(
+        json!({"kind":"missing_end_report","message":"an explicit final report is required; nobody answers this session", "recoverable":false}),
+    );
+}
+
+/// What a Work said last about where it stands: its progress report, else
+/// the reply of its last Turn.
+fn last_progress(s: &Session) -> Option<String> {
+    s.state
+        .latest_report
+        .as_ref()
+        .map(|r| r.report.clone())
+        .or_else(|| last_reply(s))
+        .filter(|t| !t.trim().is_empty())
+}
+
+/// The last reply that closed a Turn, from the worklog.
+fn last_reply(s: &Session) -> Option<String> {
+    let mut r = s.dir.worklog().reverse(s.state.worklog.committed_bytes, 0).ok()?;
+    while let Ok(Some((_, e))) = r.next_json::<WorklogEntry>() {
+        if let WorklogBody::Outcome { report: Some(text), kind, .. } = e.body {
+            if kind == FinishKind::Wait.as_str() {
+                return Some(text);
+            }
+        }
+    }
+    None
 }
 
 /// What the end-of-run commit leaves for the work after it.
@@ -1652,6 +1752,7 @@ fn one_line(next: &Next) -> String {
             "waiting for {} sub session(s)",
             next.wait_children.len()
         ),
+        (false, FinishKind::Wait) if next.idle => "waiting".to_string(),
         (false, FinishKind::Wait) => "waiting for input".to_string(),
         (false, FinishKind::Switch) => format!(
             "switching to {}",

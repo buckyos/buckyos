@@ -2383,9 +2383,19 @@
     "TaskWatch": {
       "description": "[`SessionState::task_watch`].",
       "properties": {
+        "idle": {
+          "description": "The last reply waits for something outside, with nothing of its own running (`policy.waits_idle`): until another input than a tick, the timer ends the wait and a reply that goes on waiting is not corrected.",
+          "type": "boolean"
+        },
         "last_tick_ms": {
-          "description": "When the last tick was taken in, or the session began waiting for its work (epoch ms): the next tick is `tick_secs` after it.",
+          "description": "When the last tick was taken in, or the session began waiting (epoch ms): the interval of the next tick is counted from it.",
           "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "ticks": {
+          "description": "Ticks taken in since the last other input: each doubles the interval (`SessionPolicy::tick_interval_ms`).",
+          "format": "uint32",
           "minimum": 0.0,
           "type": "integer"
         }
@@ -2904,7 +2914,7 @@
           "$ref": "#/definitions/TaskWatch"
         }
       ],
-      "description": "Multi-Turn Work Sessions: the timer that opens a Turn while the session waits for the work it started (`timer:` subscriptions)."
+      "description": "Multi-Turn Work Sessions: the timer that opens a Turn while the session waits (`timer:` subscriptions)."
     },
     "todo_view_rev": {
       "description": "Revision of the TodoList (`todos.json`) last shown to the session's top-level context in an input batch: the compact view is rendered again only when the list changed since (0: never shown).",

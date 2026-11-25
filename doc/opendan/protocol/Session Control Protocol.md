@@ -143,7 +143,7 @@ Goal Session 的终止由 Goal 生命周期驱动，不是另一个 `ControlComm
 - **聊天与按钮**：斜杠命令不由 Session 解析，msg bridge 在入队前按登记表与发送者身份处理。`/stop`、`/cancel` 转成 `stop(scope=turn)`，只投给对话当前的 UI Session，没有打开的 Turn 时不投、回一句提示；`/clean`、`/new` 由宿主归档当前 UI Session（有未结束的 Work 时拒绝并列出它们）；`/resume` 由宿主恢复这个对话里被中断的 Session（它自己，否则它名下最靠上的那些）；owner 的 redact 转成 `retract`。控制和撤回都不会为一个还没有 UI Session 的对话新建会话。界面的“停止”按钮在占位消息上发 `turn` 范围，在后台 Work 上发 `session` 范围。
 - **任务服务**：TaskMgr 一侧的取消按 task 属于哪类会话转成 stop：UI Session 和 Goal Session 上是 `turn` 范围，Work 上是 `session` 范围（那个 task 就是这件工作）。暂停着的 Session，其打开的 Turn 的 task 是 TaskMgr 的 `Paused` 状态，message 写 `paused: …`，异常中断写 `interrupted: …`；恢复后回到 Running / Waiting。TaskMgr 一侧发起的 Pause / Resume 请求不转成控制：Session 暂停或恢复时，待处理的同类请求会被一并确认，除此之外不起作用。
 - **宿主重启后的恢复**：宿主启动后第一次扫描登记表（`host/mod.rs` 的 `Supervisor::tick`）找出它驱动的未结束 Session，为每个起驱动循环。这一轮里（直到第一次扫描结束）起的驱动循环，在拿到 lease、读到 `state.json` 之后先判定这个 Session 重启前是不是正在工作；是的话写 `state.paused`（来源 `interrupted`，`reason = interrupted by a restart of the host`，`by` 是宿主）和 `control_applied{command: pause, input.src: "_runner", source: interrupted}`，然后停住，不推理。断电、崩溃、正常重启不区分。
-  - 正在工作：Work Session 未结束、没有暂停、不是在等用户（`run_state = waiting` 且不在等自己发起的工作）就算，不管这一刻有没有打开的 Turn，包括刚建好还没开始的——等子任务的 Work 会自己按 tick 推理；UI、Goal Session 看“有打开的 Turn 且不是在等用户回答”。空闲的对话、两次 Activation 之间的 Goal Session、在等用户回答的 Session 不算，新消息和下一次运行机会照常处理。
+  - 正在工作：Work Session 未结束、没有暂停、不是在等用户（`run_state = waiting` 且不会自己接着推理）就算，不管这一刻有没有打开的 Turn，包括刚建好还没开始的——等子任务的 Work、在等外部条件的 plan（`task_watch.idle`）会自己按 tick 推理；UI、Goal Session 看“有打开的 Turn 且不是在等用户回答”。空闲的对话、两次 Activation 之间的 Goal Session、在等用户回答的 Session 不算，新消息和下一次运行机会照常处理。
   - 判定以 `state.json` 为准，登记表只用来找出要看的 Session。之后新建的 Session、驱动循环出错后重起的都不算。用户暂停过的 Session 重启后仍是原来的来源。
   - `resume` 清掉标记，从检查点继续（§5），级联到同一次中断的子 Session（§7）。中断期间到达的输入留在队列。停止被中断的 Turn 时一并清掉中断标记（§4）。
   - 每个宿主只处理自己驱动的 Session。`xagent` 命令行直接驱动的 Session 不经过 Supervisor，行为不变。自动恢复没有做。
@@ -205,7 +205,7 @@ owner 从用户角度给出的有效语义。§9.1 把每一项对到前面各�
 owner 确认 §9.2 的三条推定时定了这一期的标准：自动恢复下一期再做，手动控制的语义要做对。检验办法是对 §9.1 的每一项问：用户做了这个操作之后，还有没有哪里在他不知道的情况下接着推理。下面是对着代码核对的结果，都是读代码得出的，没有跑用例。第 1 条是对已确认推定的修正，第 3、6 条是新的推定，在 UI TODO §2.1 等确认；其余是实现上的要求。
 
 1. **“正在工作”不能只看有没有打开的 Turn（修正 §9.2 第 5 条的推定）。**
-   - 多 Turn 的 Work Session 在两次 Turn 之间等自己发起的工作时，会按 `policy.tick_secs` 产生 tick，每次 tick 打开一个 Turn（`runner/ticks.rs`）。内置 `work` 类是 30 秒，`plan_simple` 是 600 秒。只按打开的 Turn 判定的话，重启后 plan 的子 Session 停住了，plan 自己还在按 tick 推理。所以 Work Session 的判定是：未结束、没有暂停、不是在等用户，不管这一刻有没有打开的 Turn，包括刚建好还没开始的。
+   - 多 Turn 的 Work Session 在两次 Turn 之间等自己发起的工作时，会按 `policy.tick_secs` 产生 tick，每次 tick 打开一个 Turn（`runner/ticks.rs`）。内置 `work` 类从 30 秒、`plan_simple` 从 30 分钟开始，间隔翻倍（Session Directory Protocol §3）。只按打开的 Turn 判定的话，重启后 plan 的子 Session 停住了，plan 自己还在按 tick 推理。所以 Work Session 的判定是：未结束、没有暂停、不是在等用户，不管这一刻有没有打开的 Turn，包括刚建好还没开始的。
    - 在等用户回答的 Session 不算，不管是哪一类。它不会自己推理，用户一回答就继续；标成中断的话，回答进了队列却没有反应。
    - UI、Goal Session 仍按“有打开的 Turn 且不是在等用户回答”判定。
    - 判定以 `state.json` 为准。提交时先写 state 再上报登记表，断电时登记表可能落后一步；登记表只用来找出要看的 Session。

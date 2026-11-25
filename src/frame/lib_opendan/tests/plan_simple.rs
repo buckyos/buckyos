@@ -24,8 +24,8 @@ use libopendan::{SessionDir, SessionTemplate};
 use serde_json::json;
 
 /// V-config: the real package's classes and behavior. A Work is a plan
-/// session by default; the conversation's plan (`plan_simple`) has a queue
-/// and a rare tick; the plan reads its workspace only and its inputs place
+/// session by default; the conversation's plan (`plan_simple`) has a queue,
+/// rare ticks, may wait for something outside and has a lifetime; the plan reads its workspace only and its inputs place
 /// the background; the model receives `intent` as a
 /// required argument of every function (the strict report included) and no
 /// XML action protocol; there is no behavior loop in the package any more.
@@ -38,10 +38,13 @@ async fn the_plan_simple_class_and_its_function_contract() {
     assert_eq!(t.completion, CompletionPolicy::ExplicitReport);
     assert_eq!(t.default_behavior.as_deref(), Some("plan_simple"));
     assert_eq!(t.input, libopendan::InputChannel::Queue);
-    assert_eq!(t.tick_secs, 600);
+    assert_eq!((t.tick_secs, t.tick_max_secs), (1800, 14400));
+    assert_eq!((t.waits_idle, t.max_life_secs), (true, 48 * 3600));
     let work = SessionTemplate::load("work", Some(&env.agent_root)).unwrap();
     assert_eq!(work.default_behavior.as_deref(), Some("plan_simple"), "a Work is a plan by default");
     assert_eq!(work.input, libopendan::InputChannel::None);
+    assert_eq!((work.tick_secs, work.tick_max_secs), (30, 600));
+    assert_eq!((work.waits_idle, work.max_life_secs), (false, 0), "bounded work waits for nothing and has no lifetime");
     for gone in ["plan", "do"] {
         assert!(env.agent().behaviors().get(gone).await.unwrap().is_none(), "no `{gone}` behavior");
     }
@@ -50,10 +53,17 @@ async fn the_plan_simple_class_and_its_function_contract() {
     let entry = b.to_entry("plan_simple", &json!({}), true).unwrap();
     assert!(entry.call_intent);
     assert!(entry.prompt.on_input.as_deref().unwrap().contains("{{ background_context }}"));
-    for child in ["work_simple", "explore"] {
+    for (child, workspace) in [("work_simple", None), ("explore", Some(WorkspaceAccess::ReadOnly))] {
         let c = env.agent().behaviors().get(child).await.unwrap().unwrap();
         assert!(!c.capabilities.call_intent, "{child} keeps its own contract");
-        assert_eq!(c.capabilities.workspace, None, "{child} writes what it is given");
+        assert_eq!(c.capabilities.workspace, workspace, "{child}");
+    }
+    // What a work session needs is said once, to everyone who creates one.
+    for creator in ["plan_simple", "goal", "analyze_intent"] {
+        let c = env.agent().behaviors().get(creator).await.unwrap().unwrap();
+        let entry = c.to_entry(creator, &json!({}), true).unwrap();
+        let said = [entry.prompt.system.clone(), entry.prompt.on_context_switch.clone()].into_iter().flatten().collect::<String>();
+        assert!(said.contains("## What a work session needs") && said.contains("## Choosing manuals for work"), "{creator}: {said}");
     }
     tool_env(&env);
     let project = env.root.join("project");

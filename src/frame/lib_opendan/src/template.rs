@@ -50,9 +50,17 @@ pub struct SessionTemplate {
     /// manuals a session of this class takes when its creator chooses none
     /// (`cmd_skills/<name>/SKILL.md`).
     pub default_cmd_skills: Vec<String>,
-    /// `agent.toml [session.<class>] tick_secs`: how often the session's
-    /// `timer:` subscriptions tick while it waits for its work (0: never).
+    /// `agent.toml [session.<class>] tick_secs`: how long after its last
+    /// reply the session's `timer:` subscriptions tick while it waits (0:
+    /// never); `tick_max_secs`: what the doubling interval grows to.
     pub tick_secs: u64,
+    pub tick_max_secs: u64,
+    /// `agent.toml [session.<class>] waits_idle`: it may wait for something
+    /// outside while nothing it started runs.
+    pub waits_idle: bool,
+    /// `agent.toml [session.<class>] max_life_secs`: how long after its
+    /// creation a Work goes on at most (0: no limit).
+    pub max_life_secs: u64,
     /// `agent.toml [session.<class>] runtime_view`: which runtimes the
     /// session's prompt knows (`chat | work | all`; a UI session `chat`, a
     /// plan `all`).
@@ -214,6 +222,9 @@ impl SessionTemplate {
             objective: None,
             default_cmd_skills: Vec::new(),
             tick_secs: policy.tick_secs,
+            tick_max_secs: policy.tick_max_secs,
+            waits_idle: policy.waits_idle,
+            max_life_secs: policy.max_life_secs,
             runtime_view: if kind == SessionKind::Ui { RuntimeView::Chat } else { RuntimeView::Work },
         };
         Some(match class {
@@ -400,11 +411,20 @@ impl SessionTemplate {
                 OpenDanError::InvalidArgument(format!("agent.toml [session.{class}] default_cmd_skills: {e}"))
             })?;
         }
-        if let Some(v) = over.get("tick_secs") {
-            t.tick_secs = v
-                .as_integer()
-                .and_then(|n| u64::try_from(n).ok())
-                .ok_or_else(|| bad("tick_secs"))?;
+        for (key, slot) in [
+            ("tick_secs", &mut t.tick_secs),
+            ("tick_max_secs", &mut t.tick_max_secs),
+            ("max_life_secs", &mut t.max_life_secs),
+        ] {
+            if let Some(v) = over.get(key) {
+                *slot = v
+                    .as_integer()
+                    .and_then(|n| u64::try_from(n).ok())
+                    .ok_or_else(|| bad(key))?;
+            }
+        }
+        if let Some(v) = over.get("waits_idle") {
+            t.waits_idle = v.as_bool().ok_or_else(|| bad("waits_idle"))?;
         }
         if let Some(v) = parse("runtime_view")? {
             t.runtime_view = serde_json::from_value(v).map_err(|_| bad("runtime_view (chat | work | all)"))?;
@@ -525,6 +545,9 @@ impl SessionTemplate {
             max_sub_sessions: self.max_sub_sessions,
             max_session_depth: self.max_session_depth,
             tick_secs: self.tick_secs,
+            tick_max_secs: self.tick_max_secs,
+            waits_idle: self.waits_idle,
+            max_life_secs: self.max_life_secs,
             runtime_view: self.runtime_view,
             reads_messages: false,
             memory: MemoryMode::Normal,

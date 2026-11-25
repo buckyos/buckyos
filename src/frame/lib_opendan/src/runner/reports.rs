@@ -419,7 +419,8 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
             }
         }
     }
-    if !running.is_empty() {
+    // A session past its lifetime ends with what still runs.
+    if !running.is_empty() && !s.config.life_over(crate::now_ms()) {
         if super::goal::is_goal(&s.config) {
             return Err(invalid(format!(
                 "this activation still follows what it started ({}): an activation follows its own commands to their end, within its wall clock limit (activation_max_wall_secs), and their ends come back to you as `<<task_result>>`. Cancel what you no longer need (`agent-session task cancel <task_id>`); anything long belongs in a work session",
@@ -432,19 +433,19 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
         )));
     }
     drop(s);
-    // The Todo this work session executes changed while it worked: the
-    // change comes first (its event opens the next Turn).
-    if !child && super::inputs::todo_update_queued(sh).await {
-        return Err(invalid(
-            "your Todo was updated while you worked and the update waits as your next input: do not finish yet. Reply with one sentence on where things stand (no final report); that ends this Turn and the update opens the next one",
-        ));
+    // What came while it worked is read first (it is its next input).
+    if child {
+        return Ok(());
     }
-    if !child && super::inputs::unread_messages(sh).await {
-        return Err(invalid(
+    match super::inputs::unread(sh).await {
+        Some(super::inputs::Unread::TodoUpdate) => Err(invalid(
+            "your Todo was updated while you worked and the update is not read yet: do not finish. It is your next input; take it in, then report again",
+        )),
+        Some(super::inputs::Unread::Message) => Err(invalid(
             "a message for you arrived while you worked and is not read yet: do not finish. It is your next input; take it in, then report again",
-        ));
+        )),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 fn same_args(old: &ReportSubmission, args: &ReportArgs) -> bool {
@@ -916,14 +917,14 @@ pub(super) async fn sync_latest(sh: &Shared, run: &RunHandle) -> Result<()> {
     Ok(())
 }
 
-/// A Work that reads messages does not end with one unread: its accepted
-/// final report becomes a progress report when a message came meanwhile
+/// A Work does not end with a message or an update of its Todo unread: its
+/// accepted final report becomes a progress report when one came meanwhile
 /// (`true`). Otherwise nobody can post one until the end is committed
 /// (`Shared::post_lock`).
-pub(super) async fn reopen_for_message(sh: &Shared, run: &RunHandle) -> Result<bool> {
+pub(super) async fn reopen_for_input(sh: &Shared, run: &RunHandle) -> Result<bool> {
     let stopping = {
         let s = sh.session.lock().await;
-        if !s.config.session.policy.reads_messages {
+        if !super::inputs::reads_while_working(&s.config) {
             return Ok(false);
         }
         s.state.stop_requested || s.state.child_call().is_some()
@@ -932,13 +933,13 @@ pub(super) async fn reopen_for_message(sh: &Shared, run: &RunHandle) -> Result<b
         return Ok(false);
     }
     let lock = crate::state::lock_posts(&sh.dir.state_dir()).await?;
-    if !super::inputs::unread_messages(sh).await {
+    if super::inputs::unread(sh).await.is_none() {
         *sh.post_lock.lock().expect("post lock") = Some(lock);
         return Ok(false);
     }
     run.reopen_final_report()?;
     sync_latest(sh, run).await?;
-    log::info!("session {}: a message came with its final report; it goes on", sh.dir.sid());
+    log::info!("session {}: an input came with its final report; it goes on", sh.dir.sid());
     Ok(true)
 }
 

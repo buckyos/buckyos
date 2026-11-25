@@ -56,7 +56,7 @@ pub use assembler::{
 pub use children::{SessionTaskResolver, SESSION_TASK_PREFIX};
 pub use drive::drive;
 pub use live_tasks::answer_session_task;
-pub use outcome::AI_QUOTA_ERROR_KIND;
+pub use outcome::{AI_QUOTA_ERROR_KIND, CONTEXT_LIMIT_ERROR_KIND};
 pub use retry::PROVIDER_UNAVAILABLE;
 pub(crate) use retry::exhausted_line;
 pub use outbound::{

@@ -7,7 +7,7 @@ The memory maintenance goal consolidates observations later. Work and conversati
 - Preference, requirement or boundary: preserve the owner's wording, project, audience, duration and exceptions. Label a suggestion or tendency accordingly. Use `--explicit` only when the owner asked to remember.
 - Judgment: say who judged which deliverable, person, supplier or tool, on what occasion and why. Attribute third-party claims. Identify your own inference.
 - Correction: quote the correction and its scope. For an existing hint use `--cite <hint id> --suggest correction`.
-- Surprise, mistake, decision or successful method: state the expectation, conditions, action, result and what remains unknown. Distinguish attempted, reported, verified and owner-approved. Perceive a lesson from child work when relaying the report.
+- Surprise, mistake, decision or successful method: state the expectation, conditions, action, result and what remains unknown. Distinguish attempted, reported, verified and owner-approved. Perceive a lesson from child work when relaying the report; leave out what a plan's report lists as `Remembered (already in memory)`: the plan perceived that itself.
 - Tool observation or project convention: record the version, environment, object and call or source. Date earlier events with `--occurred-at`.
 - Fact, role, alias, relation or private term: keep names and pointers exact, including ports, paths and purpose. Prefer a link to an authoritative contact or configuration object. Only merge identities the owner connects.
 

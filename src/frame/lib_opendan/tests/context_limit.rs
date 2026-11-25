@@ -407,6 +407,48 @@ async fn a_run_that_never_fits_is_paused_with_the_limit_and_retried_later() {
     assert_eq!((stats.rounds, stats.rounds_failed, stats.turns), (5, 4, 1));
 }
 
+/// D10: a bounded Work that never fits ends as failed, with the last progress
+/// it reported; a plan (it may wait, and goes on for long) keeps its run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_work_that_never_fits_ends_with_its_last_progress() {
+    let _serial = init_context_logger();
+    std::env::set_var("LIBOPENDAN_WHO", APP);
+    for (plan, progress) in [(false, true), (false, false), (true, true)] {
+        let env = Env::new();
+        let mut spec = libopendan::SessionTemplate::load("work", None).unwrap().spec("research it");
+        spec.prompt.llm_context = multi_turn_context(None);
+        spec.prompt.history_budget_tokens = Some(100);
+        spec.policy.waits_idle = plan;
+        let sd = env.create_work(spec).await;
+        let llm = ScriptedLlm::fallible(move |req, _| {
+            if progress && has_tool_result(req, "p1").is_none() && !render(&req.messages).contains("SUMMARY-X") {
+                return Ok(tool_call("p1", "report", json!({ "report": "3 of 5 sources read, notes in notes.md", "is_end": false })));
+            }
+            Err(refusal())
+        });
+        let deps = env.deps(llm.clone()).with_summarizer(StaticSummarizer::new("SUMMARY-X"));
+        let r = drive(&sd, &deps, StopWhen::Finished).await;
+        let st = sd.state().unwrap();
+        assert_eq!(st.last_error.as_ref().unwrap()["kind"], "context_limit", "{r:?}");
+        if plan {
+            assert!(!st.is_finished() && st.live_run.is_some() && st.open_turn.is_some(), "{r:?}");
+            continue;
+        }
+        assert!(r.is_finished(), "{r:?}");
+        assert_eq!(st.outcome, Some(Outcome::Failed));
+        assert!(st.live_run.is_none() && st.open_turn.is_none() && st.final_report.is_none(), "{st:?}");
+        assert_eq!(st.latest_report.is_some(), progress);
+        assert_eq!((st.turn_seq, st.turns_completed), (1, 0));
+        let report = sd.report().unwrap();
+        let expected = if progress { "Last progress:\n3 of 5 sources read, notes in notes.md" } else { "it reported no progress" };
+        assert!(report.contains("Stopped at the context limit") && report.contains(expected), "{report}");
+        let run = st.last_run.unwrap();
+        assert_eq!(sd.runs().record(&run).unwrap().status, agent_tool::xllm::RunStatus::LimitReached);
+        // A later drive has nothing to do.
+        assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
+    }
+}
+
 struct FailingSummarizer;
 
 #[async_trait]

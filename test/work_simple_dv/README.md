@@ -8,7 +8,7 @@ What a run shows (each is a check of `verify`):
 
 - both `shell` calls outlive the 25 s in-call wait and continue as tasks (`local:shell:<call_id>`);
 - the model closes Turns with progress replies (worklog `outcome kind=wait` with the reply) and the session keeps the run;
-- a tick (`timer:task_watch`, every 30 s from `[session.work] tick_secs`) opens Turns while the builds run; the new build output is in `<<background_context>>`;
+- a tick (`timer:task_watch`, 30 s after the last reply, then after twice as long each time up to 10 minutes: `[session.work] tick_secs` / `tick_max_secs`) opens Turns while the builds run; the new build output is in `<<background_context>>`;
 - each build's end comes back as `<<task_result … status="finished">>` with the whole result;
 - the model never calls `wait_task` / `agent-session task wait`;
 - calls carry `intent`; the session ends with `report(is_end=true)`.

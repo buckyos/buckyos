@@ -437,3 +437,35 @@ pub async fn resume_interrupted(agent: &dyn libopendan::state::AgentStateClient)
     }
     told
 }
+
+/// Simulated time: `secs` pass for a session nobody drives meanwhile (its
+/// stamps, and those of its Todos' attempts, are moved back).
+pub fn pass_time(sd: &SessionDir, secs: u64) {
+    let back = |v: &mut Value| {
+        if let Some(t) = v.as_u64().filter(|t| *t > 0) {
+            *v = json!(t.saturating_sub(secs * 1000));
+        }
+    };
+    let edit = |path: PathBuf, f: &dyn Fn(&mut Value)| {
+        let mut v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        f(&mut v);
+        std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    };
+    edit(sd.file(libopendan::protocol::STATE_FILE), &|v| {
+        if let Some(t) = v.pointer_mut("/task_watch/last_tick_ms") {
+            back(t);
+        }
+        back(&mut v["updated_at_ms"]);
+    });
+    edit(sd.file(libopendan::protocol::SESSION_CONFIG_FILE), &|v| back(&mut v["session"]["created_at_ms"]));
+    let todos = sd.state_dir().join(libopendan::todos::TODO_LIST_FILE);
+    if todos.is_file() {
+        edit(todos, &|v| {
+            for t in v["todos"].as_array_mut().unwrap() {
+                for a in t["attempts"].as_array_mut().into_iter().flatten() {
+                    back(&mut a["started_at_ms"]);
+                }
+            }
+        });
+    }
+}

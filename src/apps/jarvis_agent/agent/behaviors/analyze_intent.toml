@@ -67,7 +67,7 @@ For the request below, decide what it needs:
 
 ## Ready
 
-- A task is ready when you know: its objective; scope and what is not included; how to check that it is done; the inputs it needs; key dependencies; runtime; workspace; what it may change; the manuals that fit it.
+- A task is ready when you can give its work everything "What a work session needs" lists.
 - A goal is ready when you know: the state to reach or keep, what it acts on, whom it serves, how progress is judged, its limits.
 
 ## Shape of a work session
@@ -82,9 +82,7 @@ For the request below, decide what it needs:
 - The runtime is a choice between two, never a search: leave `--runtime` out (the work runs on your private runtime, where every `agent-session` command and your skills' commands are, and reaches the other runtimes with `run` / `copy`), or give `--runtime <owner's default runtime id>` when the user explicitly asks for the work to happen on their computer ("on my machine", "take a screenshot", "open that file here"), or when the material and the commands are only there. A work on the owner's runtime is a single-machine session: it has only the runtime's own tools and `shell`, no `agent-session`, and cannot reach other runtimes — so its material must already be there or in a workspace on it. Another machine, or several, do not make the work a plan: a work on your private runtime sees every runtime (`agent-session runtime list`) and works on them with `run` / `copy` — name the machine and what is done there in the work's message. Only when part of the work must run as a single-machine session on another machine (its desktop, or tools that exist only there and are too many to drive with `run`), create `--class plan_simple` without `--runtime`: the plan sees every runtime and places each Todo.
 - A long-lived project goes into a registered workspace (pick it by workspace_id). For a new one, choose where it lives first — your private runtime (the agent's own workspaces, under its AgentRoot) or the owner's default runtime (the owner's own files; only when the owner wants the project on their machine) — then the directory, usually a question for the user with your suggestion first as an option. Runtimes that grant no workspaces (temporary devices) refuse one.
   `agent-session workspace create --runtime <runtime_id> --directory <absolute path> --name <name> --description <purpose> --key <unique operation id>`; existing files: `workspace import` with the same options.
-- A one-off task needs no workspace: `--workspace none`.
-- Match the manuals to the working runtime before creating work (see "Choosing manuals for work"; the owner's default runtime has the baseline shown in `<runtime>`). AIGC generation, including `aigc_audio` and `aigc_video`, uses standard commands and runs on your private runtime. Preserve a user-selected runtime and workspace, and use `--workspace none` for a one-off task without a workspace. A workspace on another runtime stays the work's workspace: copy files from and to it. Missing local tools are not evidence that the zone lacks video models; base a model-availability claim on `ai_provider models --api-type video.generate` or an actual AICC result. If a required step has no compatible runtime, report that specific gap.
-- A request to generate a video uses `aigc_video` and the `video.generate` model route unless the user requested another production method. Preserve that requirement in the work's objective and acceptance criteria: a successful AICC task, its real output and its model evidence. Missing local commands do not authorize substituting a Python/SVG animation or slideshow.
+- The owner's default runtime has the baseline shown in `<runtime>`: match the manuals to it when the work runs there.
 
 ## Existing work
 
@@ -94,13 +92,15 @@ For the request below, decide what it needs:
 
 ## Creating
 
-- Work: `agent-session create-worksession --title "<short title>" --objective "<complete, self-contained objective>" --msg "<the answers, evidence, constraints and how to check that it is done>" (--class plan_simple | --behavior work_simple) [--cmd-skill <name>]... [--runtime <owner's default runtime id>] --workspace <workspace_id>|none --context recent:6 --report final`
-  The work session does not see this conversation: it has its objective, its message and — with `--context recent:6` — an excerpt of the conversation's last messages (cut, for reference). Whatever it must know goes into the objective and the message. Its end comes back to the conversation by itself.
+- Work: `agent-session create-worksession --title "<short title>" --objective "<objective and scope>" --msg "<inputs with the user's answers and the evidence you found, what it may change, done when, report>" (--class plan_simple | --behavior work_simple) [--cmd-skill <name>]... [--runtime <owner's default runtime id>] --workspace <workspace_id>|none --context recent:6 --report final`
+  What it needs is in "What a work session needs" (a plan needs the same of the whole objective). Besides that it has — with `--context recent:6` — an excerpt of the conversation's last messages (cut, for reference). In the report ask for what the user will want to know. Its end comes back to the conversation by itself.
   `--title`: the name the user sees the work under, in the user's language: what is done, at most 20 Chinese characters or 40 Latin characters (for example `重写 llm_context 设计文档`, `Build and test the crate`). Required.
   `--cmd-skill`: the manuals for this work (see "Choosing manuals for work"). A `--behavior work_simple` work takes them into its prompt. A `--class plan_simple` work takes none itself: the names you give are candidates the plan sees and chooses from for each of its Todos, so give the ones the Todos are likely to need.
 - Goal: `agent-session goal create --objective "<the state to reach or keep>" --title <short title> --lifecycle achieve|maintain [--achieved-when <t>] [--healthy-state <t>] [--constraint <t>]... [--workspace <id>] [--every <secs ≥ 60> | --cron "<minute hour day month weekday>" [--timezone <iana zone>]] --start --key <unique operation id>`
   A timetable is when the goal checks; it infers only when its check says so (it writes its own check script in its first activation). A wall-clock request ("weekdays at 9") is a `--cron` in the user's time zone (taken from this conversation when `--timezone` is left out); a rate ("every hour") is `--every`.
 - Reminders: a goal whose objective states every reminder exactly — the times or the rule that gives them (spelled out: "weekdays at 15:00, 15:50, 16:40 and 17:30"), the time zone, and what to tell the user. `--lifecycle maintain --healthy-state "every reminder reaches the user at its time"` for a repeating one; `--lifecycle achieve --achieved-when "the reminder was sent"` for a single one. `--cron` that comes at least at every reminder time, in the user's time zone (`*/10 15-17 * * 1-5` covers the example); `--start`. In its first activation the goal writes a check script that sends each reminder at its time by itself, so a reminder costs no inference. Ask only what changes the reminders (for example which days count as working days when the user means something unusual); a missing detail with an obvious reading is an assumption you state.
+
+__INCLUDE(work_request_rule.inc)__
 
 __INCLUDE(skill_select_rule.inc)__
 

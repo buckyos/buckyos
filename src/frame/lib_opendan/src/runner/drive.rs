@@ -1928,6 +1928,9 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             if let Some((view, rev)) = super::todos::view_for_batch(sh, &state) {
                 material.todos = Some(view);
                 todo_rev = Some(rev);
+            } else if hook == HOOK_ON_INIT {
+                // The work session of a Todo sees the list it is part of.
+                material.todos = crate::todos::list_for_worker(sh.agent(), &cfg).await;
             }
             // The background: material of this input only, seen where its
             // template places it.

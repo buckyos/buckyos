@@ -118,6 +118,15 @@ async fn a_whole_list_at_once_runs_in_its_order() {
             let first = user_texts(req).into_iter().next().unwrap();
             if todo == "T02" {
                 assert!(first.contains("Builds on the results of:\n- T01 write a: T01 written"), "{first}");
+                // The plan's whole list as it stands now, its own Todo marked.
+                for line in [
+                    "<plan_todos>\n- T01 [work, completed] write a\n- T02 [work, yours, after T01] write b\n",
+                    "- T03 [work, ",
+                    "- T04 [work, ",
+                    ", after T03] write d\n",
+                ] {
+                    assert!(first.contains(line), "{line}: {first}");
+                }
             }
             if has_tool_result(req, "w1").is_none() {
                 return tool_call(
@@ -155,6 +164,10 @@ async fn a_whole_list_at_once_runs_in_its_order() {
                 assert_eq!((outs[1]["status"].as_str(), outs[1]["after"].clone()), (Some("pending"), json!(["T01"])), "{}", outs[1]);
                 assert_eq!(outs[2]["scheduled"][0]["todo_id"], "T03", "{}", outs[2]);
                 assert_eq!((outs[3]["status"].as_str(), outs[3]["after"].clone()), (Some("pending"), json!(["T03"])), "{}", outs[3]);
+                // Work without acceptance criteria is said so, never refused.
+                for o in &outs {
+                    assert!(o["note"].as_str().is_some_and(|n| n.contains("has no acceptance criteria (--accept)")), "{o}");
+                }
                 return text("Four Todos planned; T01 and T03 run.");
             }
             let t01 = list.get("T01").unwrap();
@@ -174,6 +187,7 @@ async fn a_whole_list_at_once_runs_in_its_order() {
             if right_after(req, "p2") {
                 let r = plan_result(req, "p2").unwrap();
                 assert_eq!((r["todo_id"].as_str(), r["mode"].as_str()), (Some("T05"), Some("explore")), "{r}");
+                assert!(r.get("note").is_none(), "an exploration needs none: {r}");
                 assert_eq!(r["scheduled"][0]["result"], "dispatched", "T01 completed: it starts at once: {r}");
                 return text("Verification of T01 runs.");
             }
@@ -448,8 +462,9 @@ async fn the_limit_holds_ready_todos_back_until_one_ends() {
 
 /// 5 / 7: the user's message reaches the plan through its queue; the plan
 /// updates the running Todo (a placement change is refused while it runs);
-/// the work session cannot finish before it took the update in, gets it as
-/// its next input with the whole new task and reports against it.
+/// the work session, which calls tools without a break, gets the update
+/// before its next inference, in its open Turn, with the whole new task and
+/// the plan's list, and reports against it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn an_update_reaches_the_running_work_session() {
     let env = Env::new();
@@ -465,7 +480,6 @@ async fn an_update_reaches_the_running_work_session() {
     let path_c = path.clone();
     let llm = ScriptedLlm::new(move |req, _| match role(req) {
         Role::Work => {
-            let updated = !list_of(&plan_path).get("T01").unwrap().updates.is_empty();
             if !p2.swap(true, Ordering::SeqCst) {
                 post_blocking(&queue_dir, &plan_queue, msg("Please write it in Rust instead."));
             }
@@ -474,17 +488,16 @@ async fn an_update_reaches_the_running_work_session() {
                 *u2.lock().unwrap() = input;
                 return tool_call("w-new", "report", json!({ "report": "UPDATED: written in Rust", "outcome": "succeeded", "is_end": true }));
             }
+            // It only ever calls tools: the update is read at the first
+            // inference after it was posted.
+            let updated = list_of(&plan_path).get("T01").unwrap().updates.first().map(|u| u.at_ms);
+            assert!(
+                updated.is_none_or(|at| libopendan::now_ms() < at + 2_000),
+                "the update is not read: {:?}",
+                user_texts(req)
+            );
             let done = req.messages.iter().filter(|m| m.role == AiRole::Tool).count();
-            if !updated {
-                return tool_call(&format!("s{done}"), "shell", json!({ "command": "sleep 0.3" }));
-            }
-            match has_tool_result(req, "w-end") {
-                None => tool_call("w-end", "report", json!({ "report": "written in Python", "outcome": "succeeded", "is_end": true })),
-                Some(r) => {
-                    assert!(r.contains("your Todo was updated"), "the end waits for the update: {r}");
-                    text("The task changed; adjusting.")
-                }
-            }
+            tool_call(&format!("s{done}"), "shell", json!({ "command": "sleep 0.3" }))
         }
         Role::Explore => panic!("no explorations"),
         Role::Plan => {
@@ -522,22 +535,182 @@ async fn an_update_reaches_the_running_work_session() {
     let update = saw_update.lock().unwrap().clone();
     assert!(update.contains("Todo T01 was updated (content): the user wants Rust"), "{update}");
     assert!(update.contains("Your task now:") && update.contains("Write a greeting in Rust."), "{update}");
+    assert!(update.contains("The plan's TodoList now:\n- T01 [work, yours] greeting\n"), "the list again: {update}");
     assert!(update.contains("The task you are working on was updated"), "the work_simple branch: {update}");
     let list = list_of(&path);
     let t = list.get("T01").unwrap();
     assert_eq!(t.updates.len(), 1);
     assert_eq!((t.updates[0].attempt, t.updates[0].fields.clone()), (Some(1), vec!["content".to_string()]));
     assert_eq!(t.latest().unwrap().summary.as_deref(), Some("UPDATED: written in Rust"));
-    // Taken in at the work session's next batch (its Turn was open: the
-    // refused end, the reply and the correction came first).
+    // Taken in inside its first Turn, before its next inference: no reply of
+    // it and no correction in between.
     let child = children_of(&list, "T01").pop().unwrap();
     let e = env.agent().sessions().lookup(&child).await.unwrap().unwrap();
-    let log = read_worklog(&SessionDir::open(&e.location).unwrap());
+    let child = SessionDir::open(&e.location).unwrap();
+    let log = read_worklog(&child);
     assert!(
-        log.iter().any(|x| matches!(&x.body, WorklogBody::InputBatch { inputs, .. } if inputs.iter().any(|i| i.key.contains("#updated@")))),
+        log.iter().any(|x| matches!(&x.body, WorklogBody::InputBatch { turn: 1, inputs, .. } if inputs.iter().any(|i| i.key.contains("#updated@")))),
         "{:?}",
         kinds(&log)
     );
+    assert_eq!(child.state().unwrap().turn_seq, 1);
+    let outcomes: Vec<&str> = log
+        .iter()
+        .filter_map(|x| match &x.body {
+            WorklogBody::Outcome { kind, .. } => Some(kind.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(outcomes, ["message", "done"]);
+}
+
+/// D1: a final report given while an update is unread is refused; one that
+/// came together with the update is a progress report (the work goes on).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_work_session_does_not_end_with_its_update_unread() {
+    let env = Env::new();
+    install_jarvis(&env);
+    tool_env(&env);
+    let sd = env.create_work(plan_spec(&env, "write a greeting")).await;
+    let path = sd.path().to_path_buf();
+    let (queue_dir, root) = (env.queue_dir.clone(), env.agent_root.clone());
+    let posted = Arc::new(AtomicBool::new(false));
+    let p2 = posted.clone();
+    let path_c = path.clone();
+    let llm = ScriptedLlm::new(move |req, _| match role(req) {
+        Role::Work => {
+            let input = last_input(req);
+            if input.contains("was updated") {
+                return tool_call("w-new", "report", json!({ "report": "UPDATED", "outcome": "succeeded", "is_end": true }));
+            }
+            // The update comes while the final report is being made.
+            if !p2.swap(true, Ordering::SeqCst) {
+                let list = list_of(&path_c);
+                let child = children_of(&list, "T01").pop().unwrap();
+                let t = list.get("T01").unwrap();
+                let ev = AgentEvent {
+                    subscription_id: None,
+                    source: EventSource::new("todo", "T01"),
+                    event: "updated".into(),
+                    seq: Some(t.rev + 1),
+                    summary: "Todo T01 was updated (content): late".into(),
+                    data_ref: None,
+                    terminal: false,
+                    call_id: None,
+                };
+                let queue = queue_of_sid(&root, &child);
+                post_blocking(&queue_dir, &queue, PostedInput::event(APP, "late-update", ev));
+            }
+            match has_tool_result(req, "w-end") {
+                None => tool_call("w-end", "report", json!({ "report": "OLD", "outcome": "succeeded", "is_end": true })),
+                Some(r) => panic!("the update comes before this inference: {r}"),
+            }
+        }
+        Role::Explore => panic!("no explorations"),
+        Role::Plan => {
+            let list = list_of(&path_c);
+            if has_tool_result(req, "p1").is_none() {
+                return shell("p1", "One Todo.", "agent-session todo add \"greeting\" --content \"Write it.\" --accept \"prints hello\"");
+            }
+            if list.get("T01").unwrap().status == TodoStatus::Completed {
+                return tool_call("p3", "report", json!({ "intent": "Done.", "report": "done", "outcome": "succeeded", "is_end": true }));
+            }
+            text("T01 runs.")
+        }
+    });
+    let out = drive_to_end(&env, llm.clone(), &sd).await;
+    assert!(finished_ok(&out.result), "{:?} {:?}", out.result, sd.state().unwrap().last_error);
+    assert_eq!(list_of(&path).get("T01").unwrap().latest().unwrap().summary.as_deref(), Some("UPDATED"));
+    let refused = llm
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|r| has_tool_result(r, "w-end"))
+        .next()
+        .unwrap();
+    assert!(refused.contains("your Todo was updated while you worked and the update is not read yet"), "{refused}");
+}
+
+/// D10: a Todo's work session that does not fit its model's window any more
+/// ends its attempt as failed, the reason and its last progress report with
+/// it; the Todo after it does not start, and a retry is given what the first
+/// attempt did.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn an_attempt_at_the_context_limit_goes_back_to_the_plan() {
+    use llm_context::error::{LLMComputeError, ProviderFailure};
+    let env = Env::new();
+    install_jarvis(&env);
+    tool_env(&env);
+    let sd = env.create_work(plan_spec(&env, "read a lot, then publish")).await;
+    let path = sd.path().to_path_buf();
+    let path_c = path.clone();
+    let told = AtomicBool::new(false);
+    let llm = ScriptedLlm::fallible(move |req, _| {
+        let system = system_of(req);
+        // The summary of a compaction is made by the same model.
+        if !system.contains("You are the plan session") && !system.contains("You are a work session") {
+            return Ok(text(&json!({ "summary": "SUMMARY-X" }).to_string()));
+        }
+        Ok(match role(req) {
+            Role::Work => {
+                // Its first message may be a summary by now; the objective stays.
+                if system.contains("Todo T02 (") {
+                    return Ok(tool_call("w9", "report", json!({ "report": "published", "outcome": "succeeded", "is_end": true })));
+                }
+                if system.contains("Todo T01 (attempt 2,") {
+                    let first = user_texts(req).into_iter().next().unwrap();
+                    assert!(first.contains("attempt 1 stopped at the context limit; its work: agent-session read-session"), "{first}");
+                    return Ok(tool_call("w2", "report", json!({ "report": "read all 5", "outcome": "succeeded", "is_end": true })));
+                }
+                if !told.swap(true, Ordering::SeqCst) {
+                    return Ok(tool_call("w1", "report", json!({ "report": "3 of 5 sources read", "is_end": false })));
+                }
+                return Err(LLMComputeError::provider(ProviderFailure::ContextLimit, "context_length_exceeded"));
+            }
+            Role::Explore => panic!("no explorations"),
+            Role::Plan => {
+                let list = list_of(&path_c);
+                if has_tool_result(req, "p1").is_none() {
+                    shell("p1", "Read, then publish.", "agent-session todo add \"read\" --content \"Read the sources.\" --accept \"all read\" && agent-session todo add \"publish\" --content \"Publish.\" --accept \"published\"")
+                } else if list.get("T01").unwrap().status == TodoStatus::Failed && has_tool_result(req, "p2").is_none() {
+                    assert!(last_input(req).contains("todo T01 (attempt 1) finished (failed): context_limit:"), "{}", last_input(req));
+                    assert_eq!(list.get("T02").unwrap().status, TodoStatus::Blocked);
+                    shell("p2", "See what it did.", "agent-session todo show T01 --report")
+                } else if right_after(req, "p2") {
+                    let r = plan_result(req, "p2").unwrap();
+                    assert_eq!(r["report"]["report"], "3 of 5 sources read", "{r}");
+                    let child = children_of(&list, "T01").pop().unwrap();
+                    shell(
+                        "p3",
+                        "Go on from there.",
+                        &format!("agent-session todo update T01 --reason \"it has to go on\" --evidence \"attempt 1 stopped at the context limit; its work: agent-session read-session {child} --report --worklog 50\" && agent-session todo retry T01 --reason \"read the remaining two\""),
+                    )
+                } else if list.get("T02").unwrap().status == TodoStatus::Completed {
+                    tool_call("p4", "report", json!({ "intent": "Done.", "report": "published", "outcome": "succeeded", "is_end": true }))
+                } else {
+                    text("Work runs.")
+                }
+            }
+        })
+    });
+    let out = drive_to_end(&env, llm, &sd).await;
+    assert!(finished_ok(&out.result), "{:?} {:?}", out.result, sd.state().unwrap().last_error);
+    let list = list_of(&path);
+    let t01 = list.get("T01").unwrap();
+    assert_eq!(t01.attempts.iter().map(|a| a.status).collect::<Vec<_>>(), [TodoStatus::Failed, TodoStatus::Completed]);
+    let first = &t01.attempts[0];
+    assert!(first.error.as_deref().unwrap().starts_with("context_limit:"), "{first:?}");
+    assert!(first.summary.as_deref().unwrap().starts_with("context_limit:"), "{first:?}");
+    let report = libopendan::todos::read_report(env.agent().as_ref(), first).await.unwrap().unwrap();
+    assert_eq!((report.report.as_str(), report.outcome), ("3 of 5 sources read", None));
+    assert_eq!(list.get("T02").unwrap().attempts.len(), 1);
+}
+
+fn queue_of_sid(agent_root: &std::path::Path, sid: &str) -> String {
+    let path = agent_root.join(format!("state/sessions/{sid}.json"));
+    let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))).unwrap();
+    v["input_queue"].as_str().unwrap().to_string()
 }
 
 /// 6: `todo pause` stops the work session's inference after its call in

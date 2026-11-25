@@ -95,6 +95,41 @@ pub(super) fn view_for_batch(sh: &Shared, state: &SessionState) -> Option<(Strin
     Some((list.render_view(), list.rev))
 }
 
+/// One line per Todo that runs: for how long, and the latest progress of
+/// its work session.
+pub(super) async fn running_lines(sh: &Shared, now_ms: u64) -> Vec<String> {
+    let list = load(sh);
+    let mut out = Vec::new();
+    for t in &list.todos {
+        let Some(a) = t.running() else {
+            continue;
+        };
+        let since = super::ticks::fmt_secs(now_ms.saturating_sub(a.started_at_ms));
+        let mut line = format!("{} {} (attempt {}): ", t.todo_id, t.title, a.attempt);
+        line.push_str(&match a.paused() {
+            true => format!("paused, started {since} ago"),
+            false => format!("running for {since}"),
+        });
+        if let Some((progress, at_ms)) = progress_of(sh, a.child_sid.as_deref()).await {
+            line.push_str(&format!(
+                "; latest progress, {} ago: {progress}",
+                super::ticks::fmt_secs(now_ms.saturating_sub(at_ms))
+            ));
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// The latest progress a work session shows, and when it was committed.
+async fn progress_of(sh: &Shared, child_sid: Option<&str>) -> Option<(String, u64)> {
+    let e = sh.agent().sessions().lookup(child_sid?).await.ok()??;
+    let sd = crate::session::SessionDir::open(&e.location).ok()?;
+    let state = sd.state().ok()?;
+    let line = crate::work_card::progress_line(&sd, &state);
+    (!line.is_empty()).then_some((line, state.updated_at_ms))
+}
+
 /// The Todo a work session executes, as the list binds it.
 pub(super) struct BoundChild {
     pub child_sid: String,

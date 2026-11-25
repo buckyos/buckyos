@@ -11,7 +11,8 @@
 //! - **wrap-up on time / tokens**: a top-level run out of wallclock or total
 //!   tokens gets one wrap-up per Turn instead of failing at once: its clock
 //!   restarts, its iterations are set to 0 (wrap-up mode) and a `<<budget>>`
-//!   line tells it to end now.
+//!   line tells it to end now. A Work past its lifetime
+//!   (`policy.max_life_secs`) wraps up the same way, every Turn from then on.
 
 use std::sync::Arc;
 
@@ -142,19 +143,47 @@ pub(super) fn warning(snapshot: &LLMContextSnapshot) -> Option<Injection> {
     })
 }
 
-/// A top-level run that ran out of wallclock / total tokens, turned into
-/// its wrap-up (once per Turn): the history so far goes to the worklog with
-/// a `control_applied{budget_wrap_up}`, the clock restarts, no tool
-/// iteration is left (wrap-up mode: only the wrap-up tools, at most
-/// `wrap_up_rounds` batches), the token cap leaves room for those
-/// inferences, and a `<<budget>>` line asks for the end. `None`: the
+/// What a run wraps up for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Limit {
+    Budget(BudgetKind),
+    /// The session's lifetime.
+    Lifetime,
+}
+
+impl Limit {
+    fn name(self) -> String {
+        match self {
+            Limit::Budget(which) => serde_json::to_value(which)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default(),
+            Limit::Lifetime => "lifetime".into(),
+        }
+    }
+}
+
+/// The Turn of `snapshot` wraps up already.
+pub(super) fn wrapping_up(snapshot: &LLMContextSnapshot, turn: u64) -> bool {
+    snapshot_host_meta(snapshot).budget_wrap_up_turn == turn
+}
+
+/// A top-level run that ran out of wallclock / total tokens, or whose session
+/// is past its lifetime, turned into its wrap-up (once per Turn): the history
+/// so far goes to the worklog with a `control_applied{budget_wrap_up}`, the
+/// clock restarts, no tool iteration is left (wrap-up mode: only the wrap-up
+/// tools, at most `wrap_up_rounds` batches), the token cap leaves room for
+/// those inferences, and a `<<budget>>` line asks for the end. `None`: the
 /// outcome stands (a sub context, another kind, already wrapped up).
 pub(super) async fn wrap_up(
     sh: &Arc<Shared>,
     lc: &LiveCtx,
-    which: BudgetKind,
+    limit: Limit,
 ) -> Result<Option<LLMContext>> {
-    if !matches!(which, BudgetKind::Wallclock | BudgetKind::Tokens) {
+    if !matches!(
+        limit,
+        Limit::Budget(BudgetKind::Wallclock | BudgetKind::Tokens) | Limit::Lifetime
+    ) {
         return Ok(None);
     }
     let run_id = lc.run.run_id().to_string();
@@ -177,10 +206,14 @@ pub(super) async fn wrap_up(
     let elapsed_ms = crate::now_ms().saturating_sub(snapshot.state.started_at_ms);
     let used = snapshot.state.usage.total_tokens.unwrap_or(0);
     let hint = finish_hint(&snapshot);
-    let text = match which {
-        BudgetKind::Wallclock => format!(
+    let text = match limit {
+        Limit::Budget(BudgetKind::Wallclock) => format!(
             "{BUDGET_TAG} This run has used its time budget ({} min of continuous running). Do not start anything new: {hint} now.",
             elapsed_ms / 60_000
+        ),
+        Limit::Lifetime => format!(
+            "{BUDGET_TAG} This session has reached its lifetime ({} since it was created). Nothing new can start and what still runs is stopped with it: {hint} now.",
+            super::ticks::fmt_secs(s.config.session.policy.max_life_secs.saturating_mul(1000))
         ),
         _ => format!(
             "{BUDGET_TAG} This run has used its token budget ({used} tokens). Do not start anything new: {hint} now."
@@ -198,7 +231,7 @@ pub(super) async fn wrap_up(
         },
         command: "budget_wrap_up".into(),
         detail: json!({
-            "which": which,
+            "which": limit.name(),
             "run_id": run_id,
             "turn": turn,
             "elapsed_ms": elapsed_ms,
@@ -214,7 +247,7 @@ pub(super) async fn wrap_up(
     snapshot.state.started_at_ms = crate::now_ms();
     snapshot.state.tool_iterations_left = 0;
     snapshot.state.wrap_up_rounds_used = 0;
-    if which == BudgetKind::Tokens {
+    if limit == Limit::Budget(BudgetKind::Tokens) {
         let reserve = snapshot
             .request
             .model_policy
@@ -245,7 +278,7 @@ pub(super) async fn wrap_up(
         json!({
             "session_id": sh.dir.sid(),
             "run_id": run_id,
-            "which": which,
+            "which": limit.name(),
             "turn": turn,
             "elapsed_ms": elapsed_ms,
             "total_tokens": used,

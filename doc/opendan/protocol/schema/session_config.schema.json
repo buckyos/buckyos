@@ -2456,6 +2456,12 @@
           "default": true,
           "type": "boolean"
         },
+        "max_life_secs": {
+          "description": "How long after its creation a Work goes on at most (0: no limit): from then on it only wraps up, and waits for nothing any more.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "max_process_depth": {
           "default": 4,
           "description": "Callers on `process_stack` at most (sub contexts in progress).",
@@ -2506,9 +2512,15 @@
           "default": "work",
           "description": "Which runtimes the session's prompt knows (runtime lifecycle TODO §0.3, three levels)."
         },
+        "tick_max_secs": {
+          "default": 600,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "tick_secs": {
           "default": 30,
-          "description": "While the session waits for the work it started, its `timer:` subscriptions tick this often (0: never).",
+          "description": "While the session waits for the work it started, its `timer:` subscriptions tick this long after its last reply (0: never). Every tick in a row doubles the interval, up to `tick_max_secs`; any other input starts it over.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -2520,6 +2532,10 @@
             }
           ],
           "default": "allowed"
+        },
+        "waits_idle": {
+          "description": "A Work that may wait for something outside: once corrected, a reply while nothing it started runs is a wait its timer ends, not a failure.",
+          "type": "boolean"
         }
       },
       "type": "object"

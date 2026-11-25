@@ -182,6 +182,7 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
         t.has_msg |= has_msg;
         t.msg_keys.extend(msg_keys);
     }
+    let mut ticked = false;
     for i in &r.inputs {
         if i.src == INTERNAL_TASK_SRC {
             // The completion of a watched task entered the context: the
@@ -198,12 +199,25 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
         } else if i.src == INTERNAL_TIMER_SRC {
             // The next tick is counted from this one.
             state.task_watch.last_tick_ms = state.task_watch.last_tick_ms.max(r.at_ms);
+            ticked = true;
         } else if i.src == INTERNAL_NUDGE_SRC {
             state.nudge.pending = false;
         } else {
             state.source_mut(&i.src).mark(i.index);
         }
         state.recent_keys.push(&i.key);
+    }
+    // A tick lengthens the interval of the next one; any other input (the
+    // runner's correction is none) starts it over.
+    let other = r
+        .inputs
+        .iter()
+        .any(|i| i.src != INTERNAL_TIMER_SRC && i.src != INTERNAL_NUDGE_SRC);
+    if other {
+        state.task_watch.ticks = 0;
+        state.task_watch.idle = false;
+    } else if ticked {
+        state.task_watch.ticks = state.task_watch.ticks.saturating_add(1);
     }
     // Exactly the semi-subscription versions this batch injected.
     clear_pending_events(&mut state.pending_events, &r.events);

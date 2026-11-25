@@ -7,7 +7,9 @@
 //! and saved) and refreshes the activity heartbeat.
 //!
 //! A Work that reads messages while it works (`reads_messages`) stops here
-//! for one: the run is kept, the message is its next input in the same Turn.
+//! for one, the work session of a Todo for an update of that Todo: the run is
+//! kept, it is the next input in the same Turn. A Work past its lifetime stops
+//! here to wrap up.
 //!
 //! Nothing else is injected here: reaching a checkpoint, finishing a tool
 //! call or receiving an Observe event never puts a message or an event into
@@ -89,21 +91,22 @@ impl SessionCheckpointHook {
         // stay queued for the next controlled input.
         let routed = route_inputs(sh, true).await?;
         Box::pin(super::goal::stop_if_dormant(sh, true)).await?;
-        let (stop, turn_stop, paused, message) = {
+        let (stop, turn_stop, paused, lifetime, message) = {
             let s = sh.session.lock().await;
+            let top = s.state.child_call().is_none();
             (
                 s.state.stop_requested,
                 s.state.turn_stop_requested,
                 s.state.paused.is_some(),
-                s.config.session.policy.reads_messages
-                    && s.state.child_call().is_none()
-                    && routed
-                        .candidates
-                        .iter()
-                        .any(|m| m.msg().is_some_and(|x| !x.delivery.context)),
+                top && s.config.life_over(crate::now_ms())
+                    && !super::budget::wrapping_up(snapshot, s.state.current_turn().max(1)),
+                top && routed
+                    .candidates
+                    .iter()
+                    .any(|m| super::inputs::read_while_working(&s.config, m)),
             )
         };
-        if stop || turn_stop || paused || message {
+        if stop || turn_stop || paused || lifetime || message {
             if let Some(h) = sh.interrupt.lock().expect("interrupt lock").as_ref() {
                 h.interrupt(if stop {
                     "session stop requested"
@@ -111,6 +114,8 @@ impl SessionCheckpointHook {
                     "turn stop requested"
                 } else if paused {
                     super::outcome::PAUSE_REASON
+                } else if lifetime {
+                    super::outcome::LIFETIME_REASON
                 } else {
                     super::outcome::MESSAGE_REASON
                 });

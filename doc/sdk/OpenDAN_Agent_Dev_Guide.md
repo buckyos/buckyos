@@ -81,7 +81,7 @@ work skill 是一类事的命令手册，纯文本（`SKILL.md` 加可选的 `re
 
 - front matter：`name` / `description` / `requires` / `commands` / `scope` / `baseline` / `platforms`，一行一个。`description` 同时写“做什么”和“何时用”，选择方只看它。`commands: ffmpeg, ffprobe` 只写手册依赖的命令名（shell 内建、标准层命令不写）：系统据此告诉 owner 缺什么、启用哪个扩展包能补上（`buckyos skill status`、`agent-session skill status`），缺命令不阻止安装或使用，用户自己装的同名命令同样算有。`scope` 只有 work skill 能写，取 `work`（缺省）/ `ui` / `ui, work`。plan / goal skill 写 `scope` 或 `commands` 是错误。`requires` 是给人读的说明。
 - 适用环境：`baseline: standard | extended`（缺省 standard）说明手册在哪种 session-runtime 上有效——standard 只用标准环境的命令（清单见 `xagent runtime baseline`：`agent-session`、`llm_understand_media`、`agent_tool xllm`、`xagent`、`buckyos`、`aicc-tool` 及其媒体命令），用到 ffmpeg、ImageMagick 等扩展工具（`xagent runtime baseline --level extended`）的写 `extended`，构建工具链等清单外的依赖也写 `extended` 并在正文说明；`platforms: linux, macos, windows`（逗号分隔，缺省全部）。这些字段不是固定词时安装被拒。
-- 选择：Work 的手册在创建时选定，最多 8 个，由意图分析、Goal、plan session 从 `agent-session skill list --kind work --scope work` 中挑选；三处的选择规则是同一段 `behaviors/skill_select_rule.inc`。`work_simple` / `explore` 的子 Work 未指定时继承父 Work 的选择。`plan_simple` 声明了 `[capabilities] cmd_skills = "candidates"`：给它的 `--cmd-skill` 不冻结，只在首个输入里以 `<skill_candidates>` 列出（`- name: description`），它创建的 Todo 不继承任何手册，只拿 `todo add --skill` 点名的。Work 不能点名 `scope: ui` 的手册；对话只取 scope 含 `ui` 的。
+- 选择：Work 的手册在创建时选定，最多 8 个，由意图分析、Goal、plan session 从 `agent-session skill list --kind work --scope work` 中挑选；三处的选择规则是同一段 `behaviors/skill_select_rule.inc`，创建 work session 时要给全什么（任务与报告内容、runtime 与 workspace、手册）是同一段 `behaviors/work_request_rule.inc`。`work_simple` / `explore` 的子 Work 未指定时继承父 Work 的选择。`plan_simple` 声明了 `[capabilities] cmd_skills = "candidates"`：给它的 `--cmd-skill` 不冻结，只在首个输入里以 `<skill_candidates>` 列出（`- name: description`），它创建的 Todo 不继承任何手册，只拿 `todo add --skill` 点名的。Work 不能点名 `scope: ui` 的手册；对话只取 scope 含 `ui` 的。
 - 生效：Session 创建冻结手册时按其 session-runtime 声明的基线与平台过滤（Workspace 的 runtime 不参与）；不满足的手册不注入，在 `## Commands` 末尾列出原因。Work / Todo 显式点名的手册不满足、已被禁用或只属于对话时拒绝创建（Todo 进入 blocked 并记下原因）；继承来的在子 Session 的 runtime 上重新解析。容器声明为 extended，节点 runtime 由 owner 在 Agent 设置里声明（缺省 standard）。
 - 装配：选中的手册按顺序整篇进入系统段末尾的 `## Commands`，随 Session 冻结；运行中不切换、不追加，安装 / 更新 / 禁用 / 删除只影响之后创建的 Session。
 - 安装、删除、禁用和 UI 集合只归 owner：Agent 的 Skills 页（OpenDAN WebUI），或 `buckyos skill install|remove|disable|enable --agent <agent_id>`、`buckyos skill ui-add|ui-remove|ui-list --agent <agent_id>`。`buckyos skill install` 的来源是 `.pikg`、目录（作者试用）、URL / Catalog DID 或 `--draft <slug>`；安装前给出风险清单并要求确认。禁用的 skill 不出现在 `skill list`（`--all` 除外），被点名时拒绝。安装记录在 `.meta/skills.json`，状态（禁用、UI 集合、使用计数、安装落点）在 `.meta/skills_state.json`；Agent 模板升级不覆盖、不删除已安装的 skill。Agent 模板也可以在自己的 PIKG 里带 `agent_skills` 子包，随模板同步。
@@ -184,7 +184,7 @@ Jarvis 已不再有 behavior loop 的 Session（2026-11-02 删除 `plan` / `do`�
 | `group:bash` | 唯一内置组：`shell`、`read_file`、`write_file`、`edit_file`；等待预算小于命令超时时另加三个 task 工具 |
 | 普通名称 | 查询宿主注册的具名工具，不是在内置组中挑选同名成员 |
 | `call_intent = true` | 只用于 function_call：宿主给每个原生函数的 schema 加 required 的 `intent`，执行前校验（缺失 / 空白 / 非字符串 → 可修正错误，调用不执行），交给工具前去掉，原始参数保留在快照与 worklog；Jarvis `plan_simple` 使用 |
-| `workspace = "read_only"` | 以它为入口的 Session 只读 Workspace：绑定为只读、不取写者租约、不阻挡写它的子 Session；文件工具本来只写工作目录，shell 不受限（提示词约束）；Jarvis `plan_simple` 使用 |
+| `workspace = "read_only"` | 以它为入口的 Session 只读 Workspace：绑定为只读、不取写者租约、不阻挡写它的子 Session；文件工具本来只写工作目录，shell 不受限（提示词约束）；只读授权的 runtime 只接收这样的 Session（它在那里没有自己的目录，从账号 home 或第一个授权根起按路径读文件，列不了目录，跑不了命令）；Jarvis `plan_simple`、`explore` 使用 |
 
 因此，上述配置的实际效果是无原生 tools，整个 bash 组作为 actions 提供，包含 task 工具。**这是当前实现与 CLI 优先目标之间的差距，不能据此继续把所有新能力展开成 action。**
 

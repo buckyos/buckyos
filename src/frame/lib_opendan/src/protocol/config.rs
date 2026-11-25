@@ -184,9 +184,21 @@ pub struct SessionPolicy {
     #[serde(default = "default_session_depth")]
     pub max_session_depth: u8,
     /// While the session waits for the work it started, its `timer:`
-    /// subscriptions tick this often (0: never).
+    /// subscriptions tick this long after its last reply (0: never). Every
+    /// tick in a row doubles the interval, up to `tick_max_secs`; any other
+    /// input starts it over.
     #[serde(default = "default_tick_secs")]
     pub tick_secs: u64,
+    #[serde(default = "default_tick_max_secs")]
+    pub tick_max_secs: u64,
+    /// A Work that may wait for something outside: once corrected, a reply
+    /// while nothing it started runs is a wait its timer ends, not a failure.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waits_idle: bool,
+    /// How long after its creation a Work goes on at most (0: no limit):
+    /// from then on it only wraps up, and waits for nothing any more.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub max_life_secs: u64,
     /// Which runtimes the session's prompt knows (runtime lifecycle TODO
     /// §0.3, three levels).
     #[serde(default)]
@@ -262,6 +274,9 @@ impl Default for SessionPolicy {
             max_sub_sessions: default_sub_sessions(),
             max_session_depth: default_session_depth(),
             tick_secs: default_tick_secs(),
+            tick_max_secs: default_tick_max_secs(),
+            waits_idle: false,
+            max_life_secs: 0,
             runtime_view: RuntimeView::default(),
             reads_messages: false,
             memory: MemoryMode::Normal,
@@ -276,9 +291,28 @@ fn default_tick_secs() -> u64 {
     DEFAULT_TICK_SECS
 }
 
+/// Default [`SessionPolicy::tick_max_secs`].
+pub const DEFAULT_TICK_MAX_SECS: u64 = 600;
+
+fn default_tick_max_secs() -> u64 {
+    DEFAULT_TICK_MAX_SECS
+}
+
+fn is_zero(v: &u64) -> bool {
+    *v == 0
+}
+
 impl SessionPolicy {
     pub fn is_default(&self) -> bool {
         self == &SessionPolicy::default()
+    }
+
+    /// The interval before the next tick, `ticks` in a row after another
+    /// input.
+    pub fn tick_interval_ms(&self, ticks: u32) -> u64 {
+        let first = self.tick_secs.saturating_mul(1000);
+        let max = self.tick_max_secs.saturating_mul(1000).max(first);
+        first.saturating_mul(1u64 << ticks.min(32)).min(max)
     }
 }
 
@@ -991,8 +1025,8 @@ pub const BROWSER_SUBSCRIPTION: &str = "_browser";
 pub const BROWSER_SOURCE_ID: &str = "browser";
 
 /// Id of a Work Session's implicit timer subscription: while the session
-/// waits for the work it started, the runner ticks it every
-/// `policy.tick_secs` and the tick opens a Turn.
+/// waits, the runner ticks it (`policy.tick_secs`, backing off) and the tick
+/// opens a Turn.
 pub const TASK_WATCH_SUBSCRIPTION: &str = "_task_watch_timer";
 /// Name of that timer (`timer:task_watch`).
 pub const TASK_WATCH_TIMER: &str = "task_watch";
@@ -1091,6 +1125,14 @@ fn one() -> u64 {
 impl SessionConfig {
     pub fn session_id(&self) -> &str {
         &self.session.session_id
+    }
+
+    /// The session is a Work past its lifetime (`policy.max_life_secs`).
+    pub fn life_over(&self, now_ms: u64) -> bool {
+        let life = self.session.policy.max_life_secs.saturating_mul(1000);
+        life > 0
+            && self.session.kind == SessionKind::Work
+            && now_ms >= self.session.created_at_ms.saturating_add(life)
     }
 
     /// Subscriptions every session has without declaring them.

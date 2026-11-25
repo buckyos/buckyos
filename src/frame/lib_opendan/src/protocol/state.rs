@@ -743,7 +743,7 @@ pub struct SessionState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub background_shown: BTreeMap<String, String>,
     /// Multi-Turn Work Sessions: the timer that opens a Turn while the
-    /// session waits for the work it started (`timer:` subscriptions).
+    /// session waits (`timer:` subscriptions).
     #[serde(default, skip_serializing_if = "TaskWatch::is_empty")]
     pub task_watch: TaskWatch,
     /// Corrections the runner gave the open Turn (a reply that neither
@@ -815,10 +815,19 @@ pub struct Paused {
 /// [`SessionState::task_watch`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskWatch {
-    /// When the last tick was taken in, or the session began waiting for
-    /// its work (epoch ms): the next tick is `tick_secs` after it.
+    /// When the last tick was taken in, or the session began waiting
+    /// (epoch ms): the interval of the next tick is counted from it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub last_tick_ms: u64,
+    /// Ticks taken in since the last other input: each doubles the interval
+    /// (`SessionPolicy::tick_interval_ms`).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub ticks: u32,
+    /// The last reply waits for something outside, with nothing of its own
+    /// running (`policy.waits_idle`): until another input than a tick, the
+    /// timer ends the wait and a reply that goes on waiting is not corrected.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub idle: bool,
 }
 
 impl TaskWatch {
@@ -845,6 +854,10 @@ impl Nudge {
 }
 
 fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
+}
+
+fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
@@ -985,10 +998,14 @@ impl SessionState {
         last_index.saturating_sub(p.acked_index).saturating_sub(above) as usize
     }
 
-    /// Whether the session waits for work it started: tasks it follows,
-    /// sub sessions it must hear from, the runner's own correction.
+    /// Whether the session goes on by itself: it waits for work it started
+    /// (tasks it follows, sub sessions it must hear from), the runner's own
+    /// correction, or its timer.
     pub fn follows_work(&self) -> bool {
-        !self.watched_tasks.is_empty() || !self.wait_children.is_empty() || self.nudge.pending
+        !self.watched_tasks.is_empty()
+            || !self.wait_children.is_empty()
+            || self.nudge.pending
+            || self.task_watch.idle
     }
 
     /// The session waits and only someone's input can move it (`goal`: a

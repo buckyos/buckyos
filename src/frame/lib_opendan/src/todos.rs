@@ -141,7 +141,7 @@ Finish with a final report (is_end) the plan can decide on.\n"
 When you have a workspace, the project files are there: change them there and say what you changed; other results go into your report's artifacts. \
 Do only this Todo, within its scope; leads outside it go into your report. \
 Your Todo may be updated while you work: the update comes to you as input. \
-Finish with a final report (is_end) with the evidence for each acceptance criterion; the plan decides on it.\n"
+Finish with a final report (is_end): what the Todo asks it to give, and the evidence for each acceptance criterion; the plan decides on it.\n"
         }
     };
     task.push_str(note);
@@ -313,6 +313,10 @@ pub async fn schedule(
 pub fn observe(entry: &RegistryEntry, state: Option<&SessionState>) -> ChildObservation {
     let st = &entry.status;
     let report = state.and_then(|s| s.final_report.as_ref());
+    // Ended without a final report: what it reported last is its evidence.
+    let progress = state
+        .and_then(|s| s.latest_report.as_ref())
+        .filter(|r| report.is_none() && !r.is_reply());
     // Retries used up: the plan learns the provider was unavailable, not
     // only the last error's text.
     let exhausted = state
@@ -335,19 +339,25 @@ pub fn observe(entry: &RegistryEntry, state: Option<&SessionState>) -> ChildObse
             }
             _ => TodoStatus::Failed,
         };
+        let limited = state
+            .and_then(|s| s.last_error.as_ref())
+            .filter(|e| e["kind"] == crate::runner::CONTEXT_LIMIT_ERROR_KIND)
+            .and_then(|e| e.get("message").and_then(Value::as_str))
+            .map(one_line);
         let summary = report
             .map(|r| one_line(&r.report))
             .filter(|s| !s.is_empty())
             .or_else(|| exhausted.as_deref().map(one_line))
+            .or(limited)
             .or_else(|| Some(one_line(&st.one_line_status)).filter(|s| !s.is_empty()));
         return ChildObservation {
             status,
             summary,
-            report: report.map(|r| ReportRef {
+            report: report.or(progress).map(|r| ReportRef {
                 session_id: entry.session_id.clone(),
                 report_id: r.id.clone(),
             }),
-            artifacts: report.map(artifact_refs).unwrap_or_default(),
+            artifacts: report.or(progress).map(artifact_refs).unwrap_or_default(),
             error: (status != TodoStatus::Completed).then_some(error).flatten(),
         };
     }
@@ -384,7 +394,8 @@ pub struct ReportView {
     pub session_dir: PathBuf,
 }
 
-/// The report an attempt points to: the final report of its work session.
+/// The report an attempt points to: the final report of its work session, or
+/// the last progress report of one that ended without.
 pub async fn read_report(agent: &dyn AgentStateClient, attempt: &TodoAttempt) -> Result<Option<ReportView>> {
     let Some(r) = attempt.report.clone() else {
         return Ok(None);
@@ -394,7 +405,8 @@ pub async fn read_report(agent: &dyn AgentStateClient, attempt: &TodoAttempt) ->
     };
     let child = SessionDir::open(&e.location)?;
     let st = child.state()?;
-    Ok(st.final_report.filter(|s| s.id == r.report_id).map(|s| ReportView {
+    let reports = [st.final_report, st.latest_report];
+    Ok(reports.into_iter().flatten().find(|s| s.id == r.report_id).map(|s| ReportView {
         report_ref: r,
         report: s.report,
         outcome: s.outcome,
@@ -560,9 +572,29 @@ pub async fn expand_update(agent: &dyn AgentStateClient, ev: &AgentEvent) -> Age
         return out;
     };
     if let Some(t) = list.get(&ev.source.id) {
-        out.summary = format!("{}\n\nYour task now:\n{}", ev.summary, t.task_text(&list, attempt));
+        out.summary = format!(
+            "{}\n\nYour task now:\n{}\nThe plan's TodoList now:\n{}",
+            ev.summary,
+            t.task_text(&list, attempt),
+            list.lines_for_worker(&t.todo_id)
+        );
     }
     out
+}
+
+/// The TodoList of the plan whose Todo this session executes, as it stands
+/// now ([`TodoList::lines_for_worker`]); `None` for any other session.
+pub async fn list_for_worker(agent: &dyn AgentStateClient, cfg: &SessionConfig) -> Option<String> {
+    let plan = cfg.session.origin.as_ref()?.parent_session.as_deref()?;
+    let e = agent.sessions().lookup(plan).await.ok()??;
+    let list = store_of(&SessionDir::open(&e.location).ok()?).load().ok()?;
+    let me = cfg.session.session_id.as_str();
+    let mine = list
+        .todos
+        .iter()
+        .find(|t| t.attempts.iter().any(|a| a.child_sid.as_deref() == Some(me)))?;
+    let lines = agent_tool::escape_xml_text(&list.lines_for_worker(&mine.todo_id));
+    Some(format!("<plan_todos>\n{lines}</plan_todos>"))
 }
 
 /// Send `pause` / `resume` / `stop` to the work session of a running Todo.

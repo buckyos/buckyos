@@ -98,6 +98,49 @@ async fn a_node_session_is_placed_where_it_can_be_or_refused_at_creation() {
     assert!(refused.to_string().contains("does not allow creating directories"), "{refused}");
 }
 
+/// D11: a node whose grant only reads takes an exploration, which needs no
+/// directory of its own there and starts from the account home; work that
+/// writes is refused when it is created.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_only_node_takes_explorations_and_no_work() {
+    let env = Env::new();
+    plan::install_jarvis(&env);
+    let agent = env.agent();
+    mock_node_with_caps(&["/lab"], "/lab/home", &["open_stream", "describe", "read", "stat", "query", "cancel"]);
+    let record = agent.runtimes().register(&lab(RuntimeBaseline::Standard, true), APP).await.unwrap();
+    assert!(record.grant.read_only() && record.usable(), "{record:?}");
+    let spec = |behavior: &str| {
+        let mut s = libopendan::SessionTemplate::load("work", Some(&env.agent_root)).unwrap().spec(format!("{behavior} on the lab"));
+        s.prompt.behavior = Some(behavior.into());
+        s.prompt.llm_context = serde_json::json!({ "tools": { "enabled": true } });
+        s.runtime.requirement.runtime_id = Some("lab".into());
+        s.idempotency_key = Some(behavior.into());
+        s.freeze = true;
+        s
+    };
+    let refused = create_session(&env.app_dir, spec("work_simple"), agent.as_ref(), APP, env.channels().as_ref()).await.unwrap_err();
+    assert!(refused.to_string().contains("grants this agent read-only operations"), "{refused}");
+
+    let sd = env.create_work(spec("explore")).await;
+    let cfg = sd.config().unwrap();
+    assert!(cfg.runtime.is_node() && cfg.runtime.frozen.as_ref().unwrap().grant.read_only());
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => tool_call("c1", "shell", serde_json::json!({ "command": "ls" })),
+        1 => {
+            let r = has_tool_result(req, "c1").unwrap();
+            assert!(r.contains("mock node: no exec"), "commands are refused there: {r}");
+            tool_call("r1", "report", serde_json::json!({ "report": "could not run anything", "outcome": "blocked", "is_end": true }))
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let mut deps = env.deps(llm.clone());
+    deps.runtime = libopendan::runtime::runtime_for_session(&sd, &cfg, agent.as_ref(), None, &deps.xllm).await.unwrap();
+    let r = libopendan::runner::drive(&sd, &deps, libopendan::runner::StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?} {:?}", sd.state().unwrap().last_error);
+    assert_eq!(llm.count(), 2);
+    assert_eq!(sd.binding_opt().unwrap().unwrap().workdir, "/lab/home");
+}
+
 struct Device;
 
 #[async_trait::async_trait]

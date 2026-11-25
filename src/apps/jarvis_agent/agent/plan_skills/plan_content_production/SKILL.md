@@ -1,6 +1,6 @@
 ---
 name: plan_content_production
-description: How to split, gate and accept the production of content — images, audio, video, documents, slide decks — from a brief to delivered files. Use it when the objective ends in media or documents a person will look at, especially when generation is slow or costs money.
+description: How to split, gate and accept the production of content — images, audio, video, documents, slide decks — from a brief to delivered files. Use it when the objective ends in media or documents a person will look at and that somebody writes or generates, especially when generation is slow or costs money; not for files that only record what a query or a command printed.
 ---
 # Planning content production
 

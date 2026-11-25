@@ -179,34 +179,55 @@ pub async fn stop_queued(sh: &Shared) -> bool {
     })
 }
 
-/// An update of the Todo this work session executes is queued and not
-/// taken in yet.
-pub(super) async fn todo_update_queued(sh: &Shared) -> bool {
-    let Ok(fetched) = fetch_inputs(sh).await else {
-        return false;
-    };
-    let s = sh.session.lock().await;
-    fetched.iter().any(|m| {
-        !s.state.source(&m.src).is_consumed(m.index)
-            && !s.state.recent_keys.contains(&m.key)
-            && matches!(&m.input, Ok(SessionInput::Event(ev)) if ev.source.kind == crate::todos::TODO_EVENT_SOURCE)
-    })
+/// An update of the Todo the session executes.
+fn is_todo_update(m: &FetchedInput) -> bool {
+    matches!(&m.input, Ok(SessionInput::Event(ev)) if ev.source.kind == crate::todos::TODO_EVENT_SOURCE)
 }
 
-/// Messages the session reads while it works ([`SessionPolicy`]
-/// `reads_messages`), queued and not taken in yet.
-pub(super) async fn unread_messages(sh: &Shared) -> bool {
-    if !sh.session.lock().await.config.session.policy.reads_messages {
-        return false;
+/// The session may be given inputs it reads while it works: messages
+/// ([`SessionPolicy`] `reads_messages`), updates of the Todo it executes.
+pub(super) fn reads_while_working(cfg: &SessionConfig) -> bool {
+    cfg.session.policy.reads_messages
+        || cfg
+            .session
+            .origin
+            .as_ref()
+            .is_some_and(|o| o.parent_session.is_some())
+            && cfg.session.kind == SessionKind::Work
+            && cfg.channels.kmsg().is_some()
+}
+
+/// An input the session reads before its next inference.
+pub(super) fn read_while_working(cfg: &SessionConfig, m: &FetchedInput) -> bool {
+    is_todo_update(m)
+        || cfg.session.policy.reads_messages && m.msg().is_some_and(|x| !x.delivery.context)
+}
+
+/// What the session should read before it goes on, queued and not taken in
+/// yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Unread {
+    TodoUpdate,
+    Message,
+}
+
+pub(super) async fn unread(sh: &Shared) -> Option<Unread> {
+    let cfg = sh.session.lock().await.config.clone();
+    if !reads_while_working(&cfg) {
+        return None;
     }
-    let Ok(fetched) = fetch_inputs(sh).await else {
-        return false;
-    };
+    let fetched = fetch_inputs(sh).await.ok()?;
     let s = sh.session.lock().await;
-    fetched.iter().any(|m| {
+    let mut left = fetched.iter().filter(|m| {
         !s.state.source(&m.src).is_consumed(m.index)
             && !s.state.recent_keys.contains(&m.key)
-            && m.msg().is_some_and(|x| !x.delivery.context)
+            && read_while_working(&cfg, m)
+    });
+    let first = left.next()?;
+    Some(if is_todo_update(first) || left.any(is_todo_update) {
+        Unread::TodoUpdate
+    } else {
+        Unread::Message
     })
 }
 

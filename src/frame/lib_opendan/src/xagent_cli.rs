@@ -1975,9 +1975,16 @@ async fn cmd_todo(mut a: Args) -> R<i32> {
             let mode = if sub == "add" { TodoMode::Serial } else { TodoMode::Explore };
             let new = new_todo(&mut a, mode)?;
             check_todo_skills(&c, &new.skills).await?;
+            let unchecked = mode == TodoMode::Serial && new.accept.is_empty();
             let id = store.update(|l| l.add(new, now)).map_err(todo_fail)?;
             let scheduled = todo_schedule(&c, &sd).await?;
-            print(&todo_brief(&sd, &id, scheduled)?);
+            let mut brief = todo_brief(&sd, &id, scheduled)?;
+            if unchecked {
+                brief["note"] = json!(format!(
+                    "{id} has no acceptance criteria (--accept): fine when a later Todo checks its result; otherwise `todo update {id} --accept \"<criterion>\"` says what its work session must show"
+                ));
+            }
+            print(&brief);
             Ok(0)
         }
         "dispatch" | "review" => Err(bad(format!(

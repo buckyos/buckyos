@@ -262,6 +262,11 @@ fn line_of(state: CardState, sd: &SessionDir, st: &SessionState) -> String {
     }
 }
 
+/// The latest progress of a session that has not ended.
+pub(crate) fn progress_line(sd: &SessionDir, st: &SessionState) -> String {
+    line_of(CardState::Running, sd, st)
+}
+
 fn title_of(entry: &RegistryEntry, cfg: &SessionConfig) -> String {
     entry
         .title

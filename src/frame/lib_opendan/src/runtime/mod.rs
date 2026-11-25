@@ -210,18 +210,23 @@ const NODE_SESSIONS_DIR: &str = "sessions";
 /// when the account home lies outside the granted roots (a device issued
 /// for one work directory).
 pub fn node_agent_dir(target: &RemoteNodeTarget, runtime_id: &str, agent_id: &str) -> Result<String> {
+    Ok(target_join(&node_base(target, runtime_id)?, &[".opendan", agent_id]))
+}
+
+/// The account home on a node, or its first granted root when the home lies
+/// outside the granted roots.
+fn node_base(target: &RemoteNodeTarget, runtime_id: &str) -> Result<String> {
     let home = target.described().info.home.clone().filter(|h| !h.trim().is_empty());
     let roots = target.workdir_roots();
     let grant = RuntimeGrant { roots: roots.iter().map(PathBuf::from).collect(), ..Default::default() };
-    let base = match home {
-        Some(home) if grant.within_roots(&home) => home,
+    match home {
+        Some(home) if grant.within_roots(&home) => Ok(home),
         _ => roots.first().cloned().ok_or_else(|| {
             OpenDanError::Bind(format!(
                 "runtime `{runtime_id}`: its executor reports no account home and grants no directory, so the agent's directory there cannot be placed"
             ))
-        })?,
-    };
-    Ok(target_join(&base, &[".opendan", agent_id]))
+        }),
+    }
 }
 
 /// Join path parts below `base` with the separator of the target OS (a
@@ -570,7 +575,9 @@ pub async fn runtime_for_session(
 
 /// Where a node-runtime session works on its node: what is bound, else
 /// `<account home>/.opendan/<agent>/sessions/<sid>` ([`node_agent_dir`]),
-/// created now (the executor's `mkdir`, idempotent).
+/// created now (the executor's `mkdir`, idempotent). On a node that creates
+/// no directories (a read-only grant) it has none of its own and starts from
+/// the account home ([`node_base`]).
 async fn node_workdir(
     sd: &SessionDir,
     agent: &dyn crate::state::AgentStateClient,
@@ -581,6 +588,13 @@ async fn node_workdir(
         return Ok(known);
     }
     let target = open_node_target_of(runtime_id, config, &sd.state_dir().join("runtime_ops")).await?;
+    if !target.caps().contains(&buckyos_api::ExecutorOp::Mkdir) {
+        let dir = node_base(&target, runtime_id)?;
+        return target
+            .canonical_dir(&dir)
+            .await
+            .map_err(|e| OpenDanError::Bind(format!("runtime `{runtime_id}`: open {dir}: {e}")));
+    }
     let base = node_agent_dir(&target, runtime_id, agent.agent_id())?;
     let dir = target_join(&base, &[NODE_SESSIONS_DIR, sd.sid()]);
     target
@@ -907,7 +921,7 @@ pub async fn bind_or_verify(
             )));
         }
     }
-    if node {
+    if node && !cfg.runtime.frozen.as_ref().is_some_and(|f| f.grant.read_only()) {
         if let Err(e) = write_session_context(sd, cfg, rt, agent, &binding.workdir).await {
             log::warn!("session {}: no session context on runtime {}: {e}", sd.sid(), binding.runtime_id);
         }
@@ -1199,7 +1213,8 @@ pub async fn check_node_placement(agent: &dyn crate::state::AgentStateClient, re
     let config = node_config_of(&record.runtime_id, &exec)?;
     let target = open_node_target_of(&record.runtime_id, &config, &ops_dir).await?;
     node_agent_dir(&target, &record.runtime_id, agent.agent_id())?;
-    if !target.caps().contains(&buckyos_api::ExecutorOp::Mkdir) {
+    // A read-only grant takes only sessions that read: they need no directory.
+    if !record.grant.read_only() && !target.caps().contains(&buckyos_api::ExecutorOp::Mkdir) {
         return Err(OpenDanError::Bind(format!(
             "runtime `{}` does not allow creating directories, so a session's directory cannot be made there; use it from a private session (`agent-session run` / `copy`)",
             record.runtime_id

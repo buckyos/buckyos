@@ -1,6 +1,6 @@
 # Jarvis 长期计划与短任务执行 TODO
 
-D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）· 对照实现 `1704812f8` · 未实施 · 1 项新增待你过目
+D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）· 对照实现 `1704812f8` · 同日已实施，未提交，见“实施记录” · 1 项新增和 5 处实施取舍待你过目
 
 目标是让 `plan_simple` 持续管理可跨 12 小时、可变更、可等待的目标，让 `work_simple` 作为干活的主体，独立完成一个已准备好的任务。任务可以是 Plan 的 Todo，也可以由会话或 Goal 直接交办。30 分钟是 Plan 拆单和回头看的参考，不是 Work 的时限。
 
@@ -99,7 +99,7 @@ D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）�
 
 ## plan_simple
 
-- [ ] **需求澄清在原会话里完成。**（D7）
+- [x] **需求澄清在原会话里完成。**（D7）
 
   **现状**　分析阶段在建 Plan 之前已经用 `ask_user` 问，最多 5 问，问答由分析写进 Plan 的首条消息。Plan 的 `ask_user` 发通知，关联最近的 UI 祖先，投到发起这项工作的会话。UI 可以代答，TaskMgr 把答案作为 task 结果送回提问的 Plan。普通会话消息另由 UI 用 `post` 转发给 Plan。Plan 现在只在领域 skill 要求访谈、或者后期只差一个决定时提问，其余缺前提时优先终报。
 
@@ -109,7 +109,7 @@ D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）�
 
   **验证**　通知路由和代答有单测。提问时机、UI 选哪条路要真实模型 DV。[Plan 行为](../src/apps/jarvis_agent/agent/behaviors/plan_simple.toml) · [分析阶段的提问](../src/apps/jarvis_agent/agent/behaviors/analyze_intent.toml) · [会话转发规则](../src/apps/jarvis_agent/agent/behaviors/chat_route.toml) · [通知路由](../src/frame/lib_opendan/src/notify.rs) · [UI 代答测试](../src/frame/lib_opendan/tests/notify.rs)
 
-- [ ] **让 Plan 能长时间等待。**（D2、D3、D4）
+- [x] **让 Plan 能长时间等待。**（D2、D3、D4）
 
   **现状**　Plan 有持久输入队列，能等 Todo 的工作会话、task 和 `ask_user` 的回答。名下什么都没在跑时，纯文本回复会收到一次提醒，再次空回复以 `missing_end_report` 结束。tick 固定 600 秒一次，只在它跟着工作时才有，每次是一次推理，等一个 Todo 12 小时是 72 次。会话没有寿命上限。
 
@@ -125,7 +125,7 @@ D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）�
 
   **验证**　宿主单测。Plan 能不能分清在推进和卡死，要真实模型 DV。[等待与 timer](../src/frame/lib_opendan/src/runner/ticks.rs) · [结束判定](../src/frame/lib_opendan/src/runner/outcome.rs) · [重启后的中断判定](../src/frame/lib_opendan/src/runner/drive.rs) · [收尾模式](../src/frame/lib_opendan/src/runner/budget.rs) · [会话类配置](../src/apps/jarvis_agent/agent/agent.toml)
 
-- [ ] **必要的独立验收排在消费结果之前。**（D6、D9）
+- [x] **必要的独立验收排在消费结果之前。**（D6、D9）
 
   **现状**　Worker 报 `succeeded` 后，调度器在 Plan 下一次推理前启动后继。提示词第 4 步已要求预知需要独立验收时随清单加验证 Todo，没有说消费结果的 Todo 要依赖它。Plan 事后补的验证 Todo 拦不住已经启动的后继，只能 `todo stop`。提示词第 2 步要求每个 work Todo 都带验收标准。
 
@@ -135,7 +135,7 @@ D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）�
 
   **验证**　依赖阻断已有单测。清单排得对不对要真实模型 DV，至少两类目标：改代码后发布、扫描或查询。[Plan 验收规则](../src/apps/jarvis_agent/agent/behaviors/plan_simple.toml) · [调度时机](../src/frame/lib_opendan/src/runner/todos.rs)
 
-- [ ] **Plan 把值得复用的结论写入 Memory。**（D8）
+- [x] **Plan 把值得复用的结论写入 Memory。**（D8）
 
   **现状**　结束会话不会自动写记忆。UI 在转述工作成果时用 `ctl perceive` 记录。机制上任何会话都能调 `ctl perceive`，Plan 的提示词没让它用，它的只读命令清单里也没有这一条。会话绑定了 workspace 时，宿主把 workspace 记成感知的主体。记忆模式由宿主把关：不写模式下 `ctl perceive` 不记录，会话创建的工作继承这个模式。
 
@@ -156,7 +156,7 @@ D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）�
 
 创建方有三个：会话的意图分析、Goal、Plan（经 `todo add`）。会话直接发起的 `work_simple` 从 11-10 起承担扫描、查进程这类一个会话能做完的事，11-23 起有 inbox。下面各项写明对哪一种来源生效，没写的都适用。
 
-- [ ] **三个创建方创建 simple work session 时给全三样东西。**（新增，按上面的定位核对出来的，待你过目）
+- [x] **三个创建方创建 simple work session 时给全三样东西。**（新增，按上面的定位核对出来的，待你过目）
 
   **现状**　三处提示词各写了一遍怎么创建，要求不完全一样。
   - 任务目标：三处都要求写目标和怎样算完成。准备好的标准详略不一，分析那一处最全：目标、范围、怎样检查、输入、依赖、runtime、workspace、可以改什么、手册。报告要包含什么，三处都没有让创建方说。`work_simple` 自己有一段固定的终报要求：结论、证据、交付物在哪、artifacts。`report` 有一个放结构化结果的 `result` 字段，没有哪个创建方用它。
@@ -171,7 +171,7 @@ D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）�
 
   **验证**　真实模型 DV。改完后确认每个 behavior 仍能解析。[分析创建工作](../src/apps/jarvis_agent/agent/behaviors/analyze_intent.toml) · [Goal 创建工作](../src/apps/jarvis_agent/agent/behaviors/goal.toml) · [Plan 的 Todo](../src/apps/jarvis_agent/agent/behaviors/plan_simple.toml) · [手册选择规则](../src/apps/jarvis_agent/agent/behaviors/skill_select_rule.inc) · [终报要求](../src/apps/jarvis_agent/agent/behaviors/work_simple.toml) · [report 的参数](../src/frame/lib_opendan/src/runner/reports.rs)
 
-- [ ] **Worker 看得到整张 TodoList，验收标准可选。**（D9，只对 Plan 的 Todo）
+- [x] **Worker 看得到整张 TodoList，验收标准可选。**（D9，只对 Plan 的 Todo）
 
   **现状**　首条输入已有 Todo ID、attempt、正文、已填写的验收标准、上游结果摘要、报告引用和产物引用。清单里别的 Todo 它看不到，只看得到自己依赖的上游。Plan 已选择或沿用默认 runtime、workspace，并可指定 cmd skills。`--accept` 可以不给。
 
@@ -181,7 +181,7 @@ D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）�
 
   **验证**　首条输入的内容和提醒有单测。Worker 是否少做了重复验证要真实模型 DV。[Todo 交接内容](../src/frame/agent_tool/src/todo_tools.rs) · [子会话创建](../src/frame/lib_opendan/src/todos.rs)
 
-- [ ] **运行中的 Todo 更新及时送达。**（D1，只对 Plan 的 Todo）
+- [x] **运行中的 Todo 更新及时送达。**（D1，只对 Plan 的 Todo）
 
   **现状**　`todo update` 把新正文和验收条件送给运行中的 Worker。更新要等 Worker 的当前 Turn 结束才读到，一路调工具不停的 Worker 要到提交终报时才看到，这时终报被拒绝。Plan 也可以 `todo stop` 后 `todo retry`。会话直接发起的 `work_simple` 已经在下一次推理前读补充。
 
@@ -191,7 +191,7 @@ D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）�
 
   **验证**　宿主单测，要调整已有用例对送达时机的断言。Plan 选哪条路要真实模型 DV。[Work 行为](../src/apps/jarvis_agent/agent/behaviors/work_simple.toml) · [检查点](../src/frame/lib_opendan/src/runner/hook.rs) · [运行中更新测试](../src/frame/lib_opendan/tests/plan_simple_async.rs)
 
-- [ ] **Work 等命令时的 tick 改成退避。**（D4）
+- [x] **Work 等命令时的 tick 改成退避。**（D4）
 
   **现状**　Work 等自己启动的命令时每 30 秒 tick 一次，每次是一次推理，30 分钟的构建是 60 次。工具轮数按 Turn 补满，墙钟保护一段连续运行，缺省 60 分钟，等待和重启间隔不计。
 
@@ -201,7 +201,7 @@ D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）�
 
   **验证**　宿主单测，要调整已有的 tick 用例。[预算与恢复测试](../src/frame/lib_opendan/tests/work_simple_async.rs) · [等待与 timer](../src/frame/lib_opendan/src/runner/ticks.rs) · [现行墙钟设计](done/opendan-work-context-budget-fix-todo.md)
 
-- [ ] **上下文放不下时把结局交还 Plan。**（D10）
+- [x] **上下文放不下时把结局交还 Plan。**（D10）
 
   **现状**　多轮 Work 到窗口的 80% 时压缩到 30%，继续做。压缩三次仍放不下时，run 暂停，Turn 保持打开，等以后的驱动再试。按代码看，Plan 这时收不到任何输入，我没有实测。
 
@@ -211,7 +211,7 @@ D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）�
 
   **验证**　宿主单测。[上下文测试](../src/frame/lib_opendan/tests/context_limit.rs)
 
-- [ ] **在同一次尝试内及时报告确定性失败。**
+- [x] **在同一次尝试内及时报告确定性失败。**
 
   **现状**　业务失败的终报已能结束 attempt，Plan 可以说明原因后显式重试。提示词没有约定 Worker 何时停止重跑失败的验证。连续 4 次工具出错由宿主结束，这管的是工具错误，不是验收不过。
 
@@ -221,7 +221,7 @@ D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）�
 
   **验证**　真实模型 DV。[Work 行为](../src/apps/jarvis_agent/agent/behaviors/work_simple.toml) · [运行时重试](../src/frame/lib_opendan/src/runner/retry.rs)
 
-- [ ] **修 explore 在只读 runtime 上的准入。**（D11、D12）
+- [x] **修 explore 在只读 runtime 上的准入。**（D11、D12）
 
   **现状**　并行 explore 已可用，默认没有 workspace，可以在自己的目录写复现脚本和证据。`explore.toml` 没有声明 `workspace = "read_only"`，只读 runtime 的准入检查因此拒绝它，而 Plan 的提示词和准入代码的注释都说只读 runtime 可以跑 exploration。只读授权不含 Exec，准入修好后 explore 在那里只能读文件，跑不了命令。在可写的机器上，shell 能按绝对路径改调查对象，只有提示词里一句不要修改。
 
@@ -230,6 +230,73 @@ D1–D12 已裁决，落实方式已确认 · 2026-11-24（原稿 2026-11-18）�
   **验收场景**　指定只读 runtime 的 explore 能启动并读取。两个 explore 并行读同一份源材料，各自保存证据。
 
   **验证**　准入有单测。只读 runtime 上的实际能力要在真实 Zone 上看。[Explore 行为](../src/apps/jarvis_agent/agent/behaviors/explore.toml) · [runtime 准入](../src/frame/lib_opendan/src/api.rs) · [研究计划手册](../src/apps/jarvis_agent/agent/plan_skills/plan_research/SKILL.md)
+
+## 实施记录
+
+2026-11-24 在 `190745cdb` 上实施，未提交。
+
+**落点**
+
+| 条目 | 代码 |
+| --- | --- |
+| timer 退避、空等、寿命 | `SessionPolicy.tick_max_secs / waits_idle / max_life_secs`（`agent.toml` 的会话类可配）；`state.task_watch.ticks / idle`；`runner/ticks.rs`、`outcome.rs`（`keep_while_running`）、`receipts.rs`；寿命在 `hook.rs` 的检查点停住，收尾复用 `budget.rs::wrap_up` |
+| timer 里的 Todo 进度 | `runner/todos.rs::running_lines`，进度取工作卡片的那一行 |
+| Todo 更新在下一次推理前读入 | `hook.rs` 与 inbox 同一处；`inputs.rs::read_while_working`；终报的拒绝和退回也一起覆盖 |
+| `context_limit` | `outcome.rs` 的 `ContextLimitReached` 分支；`todos.rs::observe / read_report` |
+| Worker 看到整张清单、`todo add` 的提醒 | `todo_tools.rs::lines_for_worker`、`todos.rs::list_for_worker / expand_update`、`drive.rs` 的首个批次、`xagent_cli.rs` |
+| explore 准入 | `explore.toml`；`runtime/mod.rs::node_workdir / check_node_placement` |
+| 提示词 | `plan_simple`、`work_simple`、`explore`、`goal`、`analyze_intent`、`chat_route`、`groupchat_route`，新增 `work_request_rule.inc`；`plan_content_production` 的适用说明；`ui_core`、`opendan_agent_dev` 两份手册 |
+| 文档 | 协议五份与 schema、Agent TodoList、架构设计 §6.8、§12.8、Dev Guide、AGENTS.md |
+
+**实施取舍，待你过目**
+
+1. 清单快照取在 Worker 读首条输入的那一刻，不是派工那一刻。`todo add` 一执行就派工，按派工那一刻取，第一个 Todo 永远看不到排在它后面的验证 Todo。Plan 的提示词另外要求一条命令加完整张清单。两处之间仍有一两秒的空档，没有加机制去等。
+2. “提醒保留一次”按“每次有别的输入之后一次”做。timer 连着来时不再提醒，用户消息、Todo 结束这类输入之后，Plan 又没结束又没东西在跑，会再提醒一次。
+3. `context_limit` 结束只对有界的 Work。`waits_idle` 的会话（`plan_simple` 类）三次压缩后仍和现在一样暂停等下次驱动。没有最终报告就结束的 attempt，不论原因，报告引用都指向它最后一次进度报告。
+4. 只读 runtime 有第二道准入：宿主要在节点上建会话目录，只读授权没有 Mkdir，光声明 `read_only` 仍会被拒。改成只读授权下不建目录，从账号 home（不在授权根里就从第一个授权根）起读。
+5. 三处提示词里关于 AIGC 的几句也并进了共用规则，因为它们说的是 runtime 和 workspace 怎么选。
+
+`[session.work]` 的缺省 behavior 仍是 `plan_simple`，但空等和寿命只配在 `plan_simple` 类上。会话分析一直用 `--class plan_simple`，不受影响。
+
+**真实模型里发现、已改的提示词**
+
+- Plan 建了一个“等文件”的 Todo 让 Worker 去等。补了：等外部条件是 Plan 自己的事，不建 Todo。
+- 把 `ask_user` 当成 `agent-session` 的子命令。写明是独立命令。
+- 会话转述 Plan 的报告时又记了一遍。终报的标题改成 `Remembered (already in memory)`，规则挪到“转述报告”那一句。
+- 三个系统查询写成三个文件，Plan 套用了内容制作的 plan skill，多出一个复核 Todo。改了那份 skill 的适用说明，提示词写明扫描、查询、转换、下载不做第二遍测量。
+
+**验证**
+
+真实模型回放（`lib_opendan/tests/plan_replay.rs`，14 条；隔离的 AgentRoot，模型走本机 Zone 的 AICC，时间模拟，要测的角色用真模型，其余按需脚本）。最后一版提示词整套跑一遍，12 条过；另两条是夹具不真，修好后单独重跑通过。每条的全文在 `src/target/plan-replay/`，重跑会覆盖。
+
+| 用例 | 看到的 |
+| --- | --- |
+| 等次日的文件 | 24 小时 8 次 timer，期间没建 Todo；文件到了建 Todo、写对结果、终报 |
+| 推进还是卡死 | 每次都有进度的 Todo 一直放行；停在同一句的，第一或第二次 timer 时查了记录后停掉重派 |
+| 改代码后发布 | 复现 → 修复 → 独立验收 → 发布，发布依赖验收 |
+| 三个系统查询、一次扫描 | 没有验证 Todo |
+| 只有用户知道的值 | 先问，不依赖的照跑，依赖的等答案；给全时不问 |
+| 答题卡还是补充 | 打字回答走 `notify answer` 一次，改要求走 `post` |
+| 预期外失败 | Plan 记一条，带报告出处，主体是 workspace；会话转述时没有再记 |
+| 改要求 | 细节原地 `update`；换交付物时 `stop` 旧的再派新的 |
+| 后面排了验证 Todo | Worker 只跑验收标准那一条；样本只有一两次，命令数差别不大 |
+| 确定性失败 | 同一检查只跑一次就终报 |
+| 三处创建 | 会话、Goal、Plan 交办同一件事，都说清了目标、范围、怎样算完成、报告要包含什么 |
+
+每次 timer 用掉两次模型调用（先用只读命令看一次，再回复），所以 24 小时是 8 次推理机会、16 次调用。单测里不看条件的 Plan 是 8 次。
+
+第一次跑会话那条时，用例写的是真实网段，对话没有建 work，自己在本机跑了脚本：对 192.168.1.0/24 的 254 个地址连 9100 端口，`echo > /dev/tcp/…` 会向连上的设备发一个换行。局域网里有打印机的话可能吐了一张白纸。之后用例改成文档专用网段 198.51.100.0/24。
+
+宿主单测：`libopendan`、`agent_tool`、`node_executor` 全量，失败的 9 条都是已知基线。`fixtures` 的 f04、f06、f07、f12、f15 这次在 HEAD 上重跑确认过；`memory_replay::a_jarvis_conversation_is_told_what_to_perceive` 和 `grep_tool` 的 3 条，前几次的记录里在 HEAD 上就失败，这次没有重跑。`opendan` 全过（浏览器 `screen_tests` 有一条头一次失败，重跑通过）。没有跑 `buckyos-build.py`。新用例：`tests/plan_wait.rs`（8 条，模拟时间）、`plan_simple_async` 2 条（另改 2 条的断言）、`work_simple_async` 1 条、`context_limit` 1 条、`session_runtime` 1 条、`node_executor/tests/read_only_explore.rs`。
+
+只读 runtime 的实测用真实执行器（进程内，`AgentPermissionMode::ReadOnly`）：按路径读普通文件可以，列不了目录，命令、写、编辑都被拒。Plan 的说法已按这个改。
+
+**没验的**
+
+- 真实 Zone 一项没跑。本机 Zone 现在是重新激活的 `waterflier3`，没有 aios 镜像，Agent 容器起不来，我没有动它。通知卡片、Agent 容器里的 `ask_user`、TaskMgr 送回答案、真实的 48 小时都没走过。
+- 清单快照的空档有多大，要在真实 Zone 看第一个 Todo 的首条输入。
+- 回放每条只跑了一到四次，不说明稳定性。
+- 上线要重建 aios 镜像并重新打包 Jarvis。
 
 ## 不做
 

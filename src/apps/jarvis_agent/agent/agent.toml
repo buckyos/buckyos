@@ -60,8 +60,10 @@ max_process_depth = 4
 # A work session's command manuals are chosen when it is created
 # (`create-worksession --cmd-skill`); there is no default. It has many Turns:
 # every reply closes one (the progress its caller sees), the end of a task it
-# started — or a tick every `tick_secs` while its tasks run — opens the next;
-# only `report(is_end=true)` ends it. By default it is a plan session
+# started — or a tick while its tasks run — opens the next; only
+# `report(is_end=true)` ends it. A tick comes `tick_secs` after the last
+# reply, then after twice as long each time up to `tick_max_secs`; any other
+# input starts over. By default it is a plan session
 # (`plan_simple`): it keeps a TodoList whose Todos run in work sessions of
 # their own (`work_simple`, `explore`); `--behavior work_simple` makes it one
 # bounded task.
@@ -69,17 +71,23 @@ max_process_depth = 4
 default_behavior = "plan_simple"
 completion = "explicit_report"
 tick_secs = 30
+tick_max_secs = 600
 max_process_depth = 8
 
 # The plan session of a conversation (`--class plan_simple`): its queue
-# brings it the user's messages forwarded from the conversation (it never
-# waits for an answer); it only steers what runs, so its tick is rare (a
-# Todo's end is its input).
+# brings it the user's messages forwarded from the conversation; it only
+# steers what runs, so its ticks are rare (30 minutes, up to 4 hours; a
+# Todo's end is its input). It may wait for something outside while nothing
+# runs (`waits_idle`: its tick brings it back), and lives at most 48 hours
+# (`max_life_secs`): then it only wraps up.
 [session.plan_simple]
 base = "work"
 default_behavior = "plan_simple"
 input = "queue"
-tick_secs = 600
+tick_secs = 1800
+tick_max_secs = 14400
+waits_idle = true
+max_life_secs = 172800
 max_process_depth = 8
 # A plan sees every runtime and workspace to place its Todos.
 runtime_view = "all"

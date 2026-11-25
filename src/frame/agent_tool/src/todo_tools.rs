@@ -1240,6 +1240,29 @@ impl TodoList {
         s.push_str("</todo_list>");
         s
     }
+
+    /// The whole list as the work session of `todo_id` is shown it, one line
+    /// per Todo: what else the plan has, and where its own stands in it.
+    pub fn lines_for_worker(&self, todo_id: &str) -> String {
+        let mut s = String::new();
+        for t in &self.todos {
+            let kind = match t.mode {
+                TodoMode::Serial => "work",
+                TodoMode::Explore => "explore",
+            };
+            s.push_str(&format!("- {} [{kind}", t.todo_id));
+            if t.todo_id == todo_id {
+                s.push_str(", yours");
+            } else {
+                s.push_str(&format!(", {}", t.status.as_str()));
+            }
+            if !t.after.is_empty() {
+                s.push_str(&format!(", after {}", t.after.join(" ")));
+            }
+            s.push_str(&format!("] {}\n", t.title));
+        }
+        s
+    }
 }
 
 fn clean(items: Vec<String>) -> Vec<String> {
@@ -1451,6 +1474,21 @@ mod tests {
             after: Some(Vec::new()),
             ..todo(title)
         }
+    }
+
+    #[test]
+    fn a_worker_is_shown_the_whole_list_with_its_own_todo_marked() {
+        let mut l = TodoList::default();
+        l.add(todo("build"), 1).unwrap();
+        l.add(NewTodo { mode: TodoMode::Explore, ..todo("verify <build>") }, 2).unwrap();
+        l.add(free("docs"), 3).unwrap();
+        assert_eq!(
+            l.lines_for_worker("T01"),
+            "- T01 [work, yours] build\n- T02 [explore, pending, after T01] verify <build>\n- T03 [work, pending] docs\n"
+        );
+        l.cancel("T03", "not needed", 4).unwrap();
+        assert!(l.lines_for_worker("T02").contains("- T01 [work, pending] build\n- T02 [explore, yours, after T01]"));
+        assert!(l.lines_for_worker("T02").ends_with("- T03 [work, cancelled] docs\n"));
     }
 
     fn done(status: TodoStatus, summary: &str) -> ChildObservation {

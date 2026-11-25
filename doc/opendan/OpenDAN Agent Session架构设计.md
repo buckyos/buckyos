@@ -442,11 +442,12 @@ Work 失败不代表已经产生的外部影响消失。Context Fork、Session �
 
 ### 6.8 Plan Session：TodoList、运行中工作的控制（2026-11-02 实现）
 
-复杂的 Work 以 plan session 进行（Jarvis：`[session.work] default_behavior = "plan_simple"`；对话创建时用 `--class plan_simple`，带输入队列、`tick_secs = 600`）。它只读（behavior 的 `[capabilities] workspace = "read_only"`：Workspace 绑定只读、不取写者租约），只维护 TodoList；每个 Todo 的执行是一个独立的 work session（`work_simple` / `explore`，读写继承的 Workspace），宿主在 Todo 的前置都完成时立刻创建它，不需要 plan 派发（[Agent TodoList](Agent%20TodoList.md)）。
+复杂的 Work 以 plan session 进行（Jarvis：`[session.work] default_behavior = "plan_simple"`；对话创建时用 `--class plan_simple`，带输入队列、从 30 分钟退避到 4 小时的 tick、48 小时的寿命上限）。它只读（behavior 的 `[capabilities] workspace = "read_only"`：Workspace 绑定只读、不取写者租约），只维护 TodoList；每个 Todo 的执行是一个独立的 work session（`work_simple` / `explore`，读写继承的 Workspace），宿主在 Todo 的前置都完成时立刻创建它，不需要 plan 派发（[Agent TodoList](Agent%20TodoList.md)）。
 
-- **输入种类**：首条（目标与 runtime 上下文）；work session 结束或需要回答（`poll_children`）；用户消息（对话 `agent-session post <plan sid> --msg …` 转发，只发给 plan，不发给它的 work session）；tick；runner 的纠正。每个输入打开一个 Turn，plan 在其中决定列表与运行中的工作要不要改。
+- **输入种类**：首条（目标与 runtime 上下文）；work session 结束或需要回答（`poll_children`）；用户消息（对话 `agent-session post <plan sid> --msg …` 转发，只发给 plan，不发给它的 work session）；tick（列出每个在跑的 Todo 跑了多久、最近一句进度）；runner 的纠正。每个输入打开一个 Turn，plan 在其中决定列表与运行中的工作要不要改。
+- **等待**（2026-11-24）：30 分钟是拆单和回头看的参考，不是 work session 的时限，卡没卡死由 plan 看进度判断。plan 等外部条件不登记、不写检查脚本：名下什么都没在跑时它的回复被纠正一次，之后算等待（`policy.waits_idle`），tick 每次给它一次推理，它用只读命令看条件是否满足，等太久要不要失败自己判断。寿命从创建起算，到点只剩 `report`（`policy.max_life_secs`）。
 - **控制命令**：Session 接受 `pause` / `resume`（`xagent ctl <sid> pause|resume [--reason]`）。暂停推理并保留当前 Turn / 检查点，外部 task 继续；恢复、子 Session 级联、无队列限制与状态投影统一按 [Session Control Protocol](<protocol/Session Control Protocol.md>) §5、§7—§8，不在此另定一套语义。宿主重启后正在工作的 Session 不自动继续，停在暂停（来源 `interrupted`），由用户 `resume`；每个 Session 都有控制队列，纯 Work 的队列只收控制命令（2026-11-10，同上协议 §5、§8）。
-- **plan 对运行中工作的影响只经 Todo**：`todo update`（work session 以 `todo:<id>` / `updated` 事件收到完整的新任务，这是它唯一能收到的外部变化，它的队列不是 inbox）、`todo pause|resume|stop`（宿主转成对该 work session 的控制命令）。
+- **plan 对运行中工作的影响只经 Todo**：`todo update`（work session 在下一次推理前以 `todo:<id>` / `updated` 事件收到完整的新任务和整张列表，这是它唯一能收到的外部变化，它的队列不是 inbox）、`todo pause|resume|stop`（宿主转成对该 work session 的控制命令）。
 - **结束**：只有 `report(is_end=true)`；宿主不检查 TodoList 是否收敛，验证由验证 Todo 承担。结束时仍在跑的 work session 被停止，attempt 记为 `stopped`。
 
 ## 7. Goal Session：目标模型、运行循环与持续认知
@@ -1145,7 +1146,7 @@ Agent 委派工作后，当前推理可以已经结束，而业务目标尚未�
 
 **超时需要区分三个层次。** 调用内的等待预算决定调用何时返回“仍在运行”；Runtime 的轮询或重新拉取用于检查是否已有状态变化；业务超时事件用于触发 Agent 的下一次判断。轮询一次不等于调用一次 LLM。业务需要防止漏通知时，应显式安排状态核对与超时兜底。
 
-**Work 的 timer 是隐式订阅。** 内建 `work` 模板带 `_task_watch_timer`（`timer:task_watch`，Active）：会话在 Waiting 中等自己启动的工作（在跟的 task / 要听取的子 Session）且没有打开的 Turn 时，runner 每 `policy.tick_secs`（缺省 30 秒，`agent.toml [session.work] tick_secs` 可配，0 关闭）为它产生一条 `tick` 输入，打开一个 Turn 让模型说一句现状；不门控，省推理靠调大间隔。timer 由 runner 产生，不需要输入队列，也不经 Timer bridge。
+**Work 的 timer 是隐式订阅。** 内建 `work` 模板带 `_task_watch_timer`（`timer:task_watch`，Active）：会话在 Waiting 中等自己启动的工作（在跟的 task / 要听取的子 Session）且没有打开的 Turn 时，runner 在上一次回复之后 `policy.tick_secs`（缺省 30 秒，`agent.toml [session.work] tick_secs` 可配，0 关闭）为它产生一条 `tick` 输入，打开一个 Turn 让模型说一句现状；连着的 tick 间隔翻倍，封顶 `policy.tick_max_secs`（缺省 10 分钟），任何别的输入让间隔重新开始。不门控，省推理靠间隔。`policy.waits_idle` 的会话（plan）名下什么都没在跑、说明自己在等外部条件时，timer 照常给。timer 由 runner 产生，不需要输入队列，也不经 Timer bridge。
 
 **半订阅只在输入里被使用。** 半订阅永远不成为一条独立的输入：每个受控输入批次算出自上次显示以来变化的背景行（半订阅状态版本、在跟 task 的新输出——每 task 一行，最多 2 KB，只给增量；UI Session 另有时间、runtime、运行中的子 Session、hints 等），作为模板变量 `background_context` 交给该批次的模板；模板不引用，半订阅对这个 Session 就不可见，只有实际渲染进输入消息的行才记为已显示。没有单独的快照消息，工具结果之后也不注入。子 Session 的结束 / 需要输入、task 的结束是事件，不成背景行；Todo 只是创建 work session 的辅助，没有自己的事件或背景行。task 的运行中变化只走这条路，不进 `pending_events`。
 

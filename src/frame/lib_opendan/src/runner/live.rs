@@ -1007,8 +1007,9 @@ pub(super) fn restart_clock(sh: &Shared, mut lc: LiveCtx) -> Result<LiveCtx> {
 /// (another `run()` call in the same segment), at most
 /// [`MAX_LIMIT_COMPACTIONS`] times in a row: a successful inference after a
 /// rewrite starts the count anew (compaction TODO C3); the one over the
-/// limit goes to `handle_context_outcome`, which pauses the run. A top-level run out of
-/// time / tokens runs on in its wrap-up ([`super::budget::wrap_up`]).
+/// limit goes to `handle_context_outcome`, which pauses the run, or ends a
+/// bounded Work. A top-level run out of time / tokens, or past the lifetime of
+/// its session, runs on in its wrap-up ([`super::budget::wrap_up`]).
 pub(super) async fn run_compacting(
     sh: &Arc<Shared>,
     lc: &mut LiveCtx,
@@ -1038,8 +1039,16 @@ pub(super) async fn run_compacting(
         }
         // Out of time / tokens: the top-level run ends its work in a
         // wrap-up before the budget fails it (once per Turn).
-        if let LLMContextOutcome::BudgetExhausted { which, .. } = &outcome {
-            if let Some(ctx) = super::budget::wrap_up(sh, lc, *which).await? {
+        // So does one whose session is past its lifetime.
+        let limit = match &outcome {
+            LLMContextOutcome::BudgetExhausted { which, .. } => Some(super::budget::Limit::Budget(*which)),
+            LLMContextOutcome::Interrupted { reason, .. } if reason == super::outcome::LIFETIME_REASON => {
+                Some(super::budget::Limit::Lifetime)
+            }
+            _ => None,
+        };
+        if let Some(limit) = limit {
+            if let Some(ctx) = super::budget::wrap_up(sh, lc, limit).await? {
                 lc.ctx = ctx;
                 *sh.interrupt.lock().expect("interrupt") = Some(lc.ctx.interrupt_handle());
                 continue;

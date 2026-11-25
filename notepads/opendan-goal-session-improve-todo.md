@@ -1,31 +1,40 @@
 # Goal Session 改进 TODO
 
-日期：2026-11-24 · 源码基线 `1704812f8` · 状态：**待 owner Review，未实施**
+日期：2026-11-24 · 事实的行号取自 `1704812f8` · 状态：**已定稿（owner 2026-11-24），未实施**
 
 需求来源有三处：owner 2026-11-24 重新思考 Goal Session 的脑图（§2.1 原文）、当天按代码做的差距核对、几个实际场景里暴露的问题（§2.3）。
 
-和其他文档的关系：
+**实施顺序（owner 2026-11-24 已定，§2.4）：Plan / work_simple（进行中）→ 本文 → Agent 浏览器二期。** 本文的规划按这个顺序排：
 
+- [Plan / work_simple TODO](jarvis-plan-work-simple-todo.md)（下称“Plan 单”）先落地。本文以它完成后的代码和提示词为基线，开工第一件事是重新核对行号（S0-0）。
+- [Agent 浏览器二期 TODO](agent-browser-phase2-todo.md)（下称“二期单”）排在本文之后。它的 WG（Work 开发、Goal 运维）、GJ（Goal 作业）两组是通用的 Goal 能力，改由本文排期和验收（GJ 也在本文做，Q18 已定）。这两组的设计仍写在二期单 §4.2–§4.4，本文不重抄，只写合并关系（§4.10）。二期开工时这两组应该已经完成（§6 的出口）。
 - [Goal Session 继续推进 TODO](opendan-goal-session-next-todo.md)（下称“旧单”）：本文接替它没做完的 F3、E1–E3、D4 里和提醒有关的部分，以及 §7.3、§10.7 的遗留。D3（workflow 计划后端）仍留在旧单。
-- [Agent 浏览器二期 TODO](agent-browser-phase2-todo.md)（下称“二期单”）：它的 GJ（Goal 作业）、WG（Work 开发、Goal 运维）两组是通用的 Goal 能力，本文不重写，只列依赖和要改的地方（§4.5、Q4）。
-- [Plan / work_simple TODO](jarvis-plan-work-simple-todo.md)：已裁决未实施，和本文改同一批 behavior 文本，先后见 Q16。
 - 现状见[架构设计](<../doc/opendan/OpenDAN Agent Session架构设计.md>) §15.7。
 
 ## 0. 怎么用这份文档
 
-**给 owner。** 要你定的都在 §1。Q1–Q5 没定之前不开始对应的组；其余没有答复的按建议做。请直接在“答复”后面写。
+**给 owner。** 本文已定稿，现在没有等你回答的问题。先定的七条是你的答复，落实在 §1.3；我的四处理解你已确认；没有单独答复的各条按建议定案。Q17–Q19 是从二期单带过来的，结论在这里，二期单不用再答。实施中出现要你定的新问题，会写进 §11 再问你。
 
 **给 CodeAgent。**
 
+- §1 的问题都已定案：有答复的按答复和 §1.3 的落实，没有答复的按“建议”。“另一种做法”都没有采纳，不要再加回来。
 - §2 是约束，不重新讨论。和代码现实冲突时停下来写进 §11，问 owner。
 - §3 是查过的事实，标“没验”的要先验证。行号以基线为准，动手前核对。路径里 `lib_opendan/` 指 `src/frame/lib_opendan/src/`，`jarvis/` 指 `src/apps/jarvis_agent/agent/`。
 - §4 是设计，名字和字段可以调整，调整后回写本文和协议文档。
 - 做完一条，在 §11 记一行：改了什么、跑了什么、结果、没验什么。
 - 遵守 [AGENTS.md](../AGENTS.md)：不做兼容实现；改动范围小；手册和代码同一变更内更新。
-- **机制越少越好。** 每一处先看能不能用已有的命令、事件、提示词做到。本文新增的宿主机制只有五处（§4.9），多出来的要先问。
+- **机制越少越好。** 每一处先看能不能用已有的命令、事件、提示词做到。本文新增的宿主机制只有五处，另有从二期单接手的两处（§4.9），多出来的要先问。
+- 标着“见二期单”的任务，内容、落点和验证以二期单的对应条目为准；和本文任务合并做的，以 §4.10 的合并关系为准。
+- 同机别的会话在改同一批文件（Plan 单进行中）。只动自己的文件，不要用 `git stash` 做基线。
 - 不要提交，除非 owner 要求。
 
-## 1. 待 owner 决策
+## 1. owner 决策（2026-11-24 已定稿）
+
+定稿时 owner 的话：
+
+> 四处理解都对，按这个版本定稿
+
+“四处理解”指 §1.3 里标着“我的理解”的两处（Q2、Q18）和答复之后改过的两条建议（Q11、Q13）。下面保留各条问题的原文、建议和答复，作为裁决记录。
 
 ### 1.1 先定
 
@@ -38,7 +47,7 @@
 - 分两步的理由：Memory 整理的质量依赖那份很长的专用提示词，搬成 goal skill 之后要用真实模型回放确认不退化；它还有宿主驱动的回执、清理和租约绑在 Goal 上（§3.1）。结晶和做工具没有这些负担。
 - 另一种做法：一步全并；或只并结晶和做工具，Memory 整理一直单独。
 - 影响：SI 全组。
-- 答复：
+- 答复：按建议合并
 
 **Q2 Agent 自己做的工具，要不要你确认才给 Work 用？**
 
@@ -46,24 +55,24 @@
 - **建议：允许。** self improve 可以往 `<agent_root>/tools/` 放命令，并新建来源为 `local` 的手册，做完通知你一次，你可以在 Skills 页禁用。改随包安装的手册、动 `scope` 往 `ui` 方向，仍走草稿。按“先能力再安全”记为已知风险（§9）。
 - 另一种做法：新手册一律走现有的草稿流程，你在 Skills 页点安装后才生效。不用改宿主，但每个新工具都等你一次。
 - 影响：SI3、SI4。
-- 答复：
+- 答复：允许，之前完成的owner系列工具其实就已经是一种“快捷方式”类的结晶了
 
 **Q3 每次唤醒继承全部历史，还是只带上次的结论？**
 
 - 现状：两样同时在。同一个 Session 的历史全部继承，走通用压缩；宿主每次另外重建 Goal 头，里面有上次的结论、距离、待办、问题和 Work。
 - **建议：先量（S0-1），再定。** 历史占一次 `no_action` 成本两成以上，就把缺省改成“每次唤醒开新上下文，只带 Goal 头”，Goal 可以自己切回继承（和改检查脚本一样，不增加修订号），你也能在页面上改。不到两成就维持现状，不加这个开关。
-- 两种情况下都不做 Goal 专用的压缩，继承历史时走标准压缩。旧单的 F3 就此关闭。这和你对 Plan 历史的裁决一致（Plan / work_simple TODO 的 D5）。
+- 两种情况下都不做 Goal 专用的压缩，继承历史时走标准压缩。旧单的 F3 就此关闭。这和你对 Plan 历史的裁决一致（Plan 单的 D5）。
 - 影响：CX2。
-- 答复：
+- 答复：按建议
 
 **Q4 新建 Goal 一律先过一个“建 Goal 的 Work”？**
 
 - 现状：意图分析直接 `goal create --start`，对话立刻收到 `goal_created`。第一次 Activation 自己写检查脚本；它失败了 Goal 仍是 active，用户不知道。
 - **建议：统一。** 意图分析遇到要新建 Goal 的请求，建一个 `work_simple` 的 Work（手册 `goal_setup`）。Work 把检查脚本写好并试跑，准备好交付要用的东西，最后建 Goal。成败就是 Work 的结局，结果自己回到对话。Goal 从第一天起只做运维。
-- 这改了二期单 WG3 里“纯观察和提醒仍直接建 Goal”那一句，并依赖它的 WG1、WG2（Work 能建 Goal、命令行能在创建时装检查脚本）。
+- 这改了二期单 WG3 里“纯观察和提醒仍直接建 Goal”那一句。它需要 Work 能建 Goal、命令行能在创建时装检查脚本（WG1、WG2），这两条改在本文先做（Q17）。
 - 另一种做法：只有“先建设后维护”的请求走 Work（二期单现在的写法），简单的 Goal 仍直接建。少一个 Work，但首次失败仍然没人知道。
-- 影响：FX 全组。
-- 答复：
+- 影响：FX 全组、WG3。
+- 答复：按需要，不固定。我想work是独立的，在work的任务要求里说明最后要建立 维护/持续改进的 goal session
 
 **Q5 固定时间的提醒，改成优先写进日历？**
 
@@ -71,9 +80,28 @@
 - **建议：到点就说、不需要判断的提醒写日历，不建 Goal。** 日历表达不了的规则（“工作日 15 点到 18 点每 50 分钟”这类可以拆成几条重复日程，拆不了的才算），以及要看了情况才决定说不说的提醒，仍用检查脚本。这样一个提醒不再占一个 Goal。
 - 前提没验：日历提醒由谁在什么时候发、Agent 不在线时发不发、手机上收不收得到（S0-3）。验不过就维持现状。
 - 影响：CA1。
-- 答复：
+- 答复：之前讨论过，一个提醒如果用户需要在日程里看到，就加。用户是否需要由Agent自行判断
+
+**Q17 Work 凭什么能建立和改写 Goal？**（二期单 Q2，另一种做法的细节在那里）
+
+- 现状：建 Goal 只有 owner 和 UI 会话能做；UI 只能修订自己建的 Goal；Work 一律拒绝。会话身份是自报的，这套权限只防误用。
+- **建议（同二期单）：规则放宽到够用，不加授权字段。** 直接由 UI 会话创建、且不属于某个 Goal 的 Work，对 Goal 的权限等同它的父 UI。对端是 owner 的 UI 会话可以修订这个 Agent 的任何非内置 Goal。Plan 的 Todo、Goal 派的 Work 不行。身份自报的缺口这一期不补，记为已知风险。
+- 另一种做法：创建 Work 时带结构化授权并堵住身份自报，要改会话协议、登记表和 kRPC 鉴权。
+- 影响：WG1、WG2，FX 依赖它。
+- 答复：按建议
+
+**Q18 Goal 作业（二期单 GJ1–GJ6）在本文做，还是留到二期？**
+
+- 背景：二期单 Q1 建议新增 Goal 作业：属于一个 Goal、由宿主按时间表在 Agent 的私有 runtime 里以 Agent 身份运行、不推理的程序（设计在二期单 §4.2）。另一种做法是扩展 AIWS 的同步任务。你定过例行工作用脚本是通用规则。
+- **建议：在本文做，放在最后一个里程碑；载体选 Goal 作业。** 理由有两条。一是按你定的顺序，二期一开工就要用 GJ1–GJ3。二是没有它，“Work 开发、Goal 运维”只有检查脚本一个载体，而检查脚本不能写文件、不能做事，证明通用性的 DV（WG7）跑不成。
+- 另一种做法：留在二期单，本文只做 WG 和 GJ7，WG7 的 DV 和 V10 推到二期。本文少一个里程碑，二期多一段和重排站无关的工作。
+- 这一条同时回答二期单 Q1。
+- 影响：GJ 组、M6、V10。
+- 答复：按建议，按Q4的结构，不搞特殊化
 
 ### 1.2 有建议值
+
+这一组除 Q11、Q13 外没有单独的答复，随定稿按建议定案。
 
 **Q6 模式 2（每次唤醒派子会话）怎么表达？** 建议不做成宿主的模式，写进提示词和一份 goal skill：轻的事自己做；要独立上下文的派一个 `work_simple`；要先探索再动手的派一个 `plan_simple`（它本来就是“探索 Todo + 执行 Todo”）。接受一次推进跨几次唤醒，不让 Activation 等子会话。需要把 2026-11-02“Goal 建的 Work 一律 `work_simple`”在提示词里放宽成“缺省 `work_simple`”，宿主本来就允许显式指定。影响 CX3。
 答复：
@@ -90,14 +118,18 @@
 **Q10 Goal 的对话视图放在哪，里面说的话怎么处理？** 建议放 Desktop 的 Agent 面板（用户在手机上，Agent 主页是另一个站点，手机宽度没验过）：Goal 列表，点开是对话形态，每次唤醒一组（原因、折叠的过程、结论）。输入框里发的话就是 `goal post`。用户的话不过硬间隔、仍过预算，否则发出去最长 15 分钟没反应。影响 UX1、UX2、UX4。
 答复：
 
-**Q11 Goal 太多怎么办？** 建议三个选项都不做成机制：不设硬上限，不加合并命令，不把所有 Goal 合成一个。靠四件事控制数量：提醒改走日历（Q5）；意图分析优先并入已有 Goal（已有）；活动 Goal 达到 16 个时，新建之前必须说明为什么不能并入（提示词）；Agent 后台总量封顶（已有）。Goal 之间的矛盾在新建和改写的时候查（提示词），不在每次唤醒时查。“全部合成一个”现在做不了：一个 Goal 只有一份检查脚本、一份预算、绑定一个 Workspace。影响 UX5。
-答复：
+**Q11 Goal 太多怎么办？** 建议三个选项都不做成机制：不设硬上限，不加合并命令，不把所有 Goal 合成一个。靠四件事控制数量：固定提醒并入同一个提醒 Goal，一份检查脚本管多条；意图分析优先并入已有 Goal（已有）；活动 Goal 达到 16 个时，新建之前必须说明为什么不能并入（提示词）；Agent 后台总量封顶（已有）。Goal 之间的矛盾在新建和改写的时候查（提示词），不在每次唤醒时查。“全部合成一个”现在做不了：一个 Goal 只有一份检查脚本、一份预算、绑定一个 Workspace。影响 UX5。
+
+这条建议在 Q5 答复之后改过。原来第一件事是“提醒改走日历”；按 Q5 的答复，提醒进不进日历由 Agent 判断，不进日历的仍然是 Goal，所以换成“并入同一个提醒 Goal”。
+答复：改后的建议已确认（定稿时的“四处理解都对”）。
 
 **Q12 “整理日程”指什么，什么时候做？** 我的理解：Memory 整理时发现的日程和待办，问过你之后写进 `owner.cal` / `owner.todo`；发现的长期职责，建议并入已有的 Goal。这就是旧单推后的 E1、E2，它等的日历和待办命令已经有了。建议放在 Q1 的第二步，方案沿用[默认 Goal 单](jarvis-default-goal-session-todo.md)的 T05，候选加一类“给已有的 Goal 增加一项职责”。影响 SI6、CA3。
 答复：
 
-**Q13 “写宏代码，是一种捷径”里的宏指什么？** 我的理解：把已有命令组合成一个脚本，比从头开发工具便宜，所以排在做工具的最前面。不是 AIWorkspace 的宏。理解错了请指出。影响 SI4。
-答复：
+**Q13 “写宏代码，是一种捷径”里的宏指什么？** 你在 Q2 的答复里给了例子：owner 系列工具就是一种“快捷方式”类的结晶。我据此改了理解：捷径是把已有的命令和接口包成一个短的、带约定参数的入口，省掉每次重新拼的 token，owner 系列（对象别名加本地动作脚本）是它的一种形态。它排在做工具的最前面。
+
+建议第一期 self improve 产出的快捷方式用命令的形态（`<agent_root>/tools/` 下的脚本加一份 `local` 手册）。对象别名的形态推后（§10）：别名和本地动作脚本现在只从管理员安装的扩展包登记，Agent 对用户覆盖只读（[对象别名 TODO](opendan-object-local-extensions-todo.md) §4 第 1 条，实施后我没有复核），要先给 Agent 开一个自己的登记来源。影响 SI4。
+答复：理解和建议已确认（定稿时的“四处理解都对”）。
 
 **Q14 `llm_tool_carft` 的空壳删不删？** 它是“命令不存在时现场打造”的脚手架，只实现了拒绝分支，注入它的 shell 钩子没找到。架构 §9.5.1 已经改成离线处理。建议删，缺工具的信号改从 Work 的 worklog 里读（退出码 127）。影响 SI7。
 答复：
@@ -105,8 +137,36 @@
 **Q15 self improve 缺省开还是关，预算多少？** 现在结晶缺省关，因为看一次约 18 万 token。建议缺省开，用预算和门槛控制成本：周期预算 24 小时 60 万不变；检查脚本的门槛保守（新增的、用过手册的 Work 够多才看）；Skills 页上的结晶开关改成 self improve 的两个职责开关（结晶、做工具）。关着就一直没有数据，也就谈不上降本增效。影响 SI1、SI5。
 答复：
 
-**Q16 和另外两份 TODO 的先后。** 建议：Plan / work_simple TODO 先落地（它改 `analyze_intent`、`goal`、`work_simple`、`plan_simple`）；二期单的 WG1、WG2 在本文的 FX 之前；二期单的 GJ7（定时输入不堆积）不等二期，随本文的 RT 一起做。其余互不影响。
+**Q16 和另外两份 TODO 的先后。** 已定（2026-11-24，§2.4）：Plan 单 → 本文 → 二期单。
+
+**Q19 运维和升级的几条通用规则**（二期单 Q4、Q5、Q15、Q19，随 WG4、WG5 在本文落地）。建议都同二期单：
+
+- 请求升级走现有的通知和对话，不加机制：Goal 把问题、影响、建议和任务书草稿写成工作区里的一份文件，发一条带链接的通知；主人在对话里答应后，由意图分析建 Work（二期单 Q4）。
+- 用户看到的东西、系统的权限和成本都不变，是运维；其余是升级（二期单 Q5）。
+- 小改动不开 Work，主人所在的 UI 会话直接修订 Goal（二期单 Q15）。
+- 架构 §8.3 的软件维护 Goal 保留现在的行为：维护目标里写明“允许自己派 Work 修改代码”才可以，默认不写（二期单 Q19）。
+
+重排站专有的那一半（来源页上的显示、App 里的“升级”按钮、`site upgrade` 命令）留在二期单。
 答复：
+
+### 1.3 答复的落实（2026-11-24）
+
+| 问题 | 你的答复 | 落实 |
+| --- | --- | --- |
+| Q1 | 按建议合并 | 一个 `self_improve`，分两步（§4.1）。 |
+| Q2 | 允许，之前完成的owner系列工具其实就已经是一种“快捷方式”类的结晶了 | self improve 可以往 `tools/` 放命令、新建 `local` 手册，做完通知一次（§4.2、SI3）。“快捷方式”作为做工具的第一种产出写进 §4.2 和 Q13。我的理解（已确认）：这句话是在说明这类结晶已经有先例、值得做，没有要求第一期就能产出对象别名；所以第一期只做命令形态。 |
+| Q3 | 按建议 | 先量（S0-1），历史占两成以上才加 `context: fresh \| carry`（§4.3、CX2）。 |
+| Q4 | 按需要，不固定。我想work是独立的，在work的任务要求里说明最后要建立 维护/持续改进的 goal session | **没有采纳“一律先过 Work”。** 两条路都留：不需要先建设什么的，意图分析照旧直接建 Goal，`goal_created` 保留；需要先做出东西的，建一个普通的 Work，任务书里写明最后建立负责维护或持续改进的 Goal。走哪条由意图分析判断。没有“建 Goal 的 Work”这种专门的类型（§4.5、FX）。这就是二期单 WG3 原来的写法，WG3 不用改。 |
+| Q5 | 之前讨论过，一个提醒如果用户需要在日程里看到，就加。用户是否需要由Agent自行判断 | **没有采纳“优先写日历”。** 判断依据只有一条：主人需不需要在日程里看到它。需要的写进日历（带 `reminders`，不再另建提醒）；不需要的照旧由 Goal 的检查脚本发。由 Agent 判断，不设规则（§4.6、CA1）。S0-3 不再决定做不做，只验证手册里的说法。 |
+| Q17 | 按建议 | WG1 按二期单的规则做。 |
+| Q18 | 按建议，按Q4的结构，不搞特殊化 | Goal 作业在本文做，放 M6。我的理解（已确认）：“按 Q4 的结构”是说作业没有专门的建立流程。它由普通的 Work 按任务书在收尾时和 Goal 一起装上，或由 Goal 自己装；V10 的 DV 也按这个结构跑。 |
+
+答复带来的其他改动：
+
+- Q4 之后，直接建的 Goal 第一次 Activation 失败时用户仍然不会马上知道，要等 FH2 的通知（连续 3 次）。记在 §9。
+- Q4 之后，原来的手册 `goal_setup` 改名 `goal_handover`，内容是“Work 收尾时怎么建立或改写 Goal”，只给任务书里有这一步的 Work。
+- Q5 之后，Q11 的第一条建议换了，Q13 按 Q2 的答复重写了。两条改后的内容都已确认。
+- 没有单独答复的 Q6–Q10、Q12、Q14、Q15、Q19 随定稿按建议定案。其中 Q3 不需要再问：S0-1 量出来历史占两成以上就做 CX2，不到就不做。
 
 ## 2. 约束
 
@@ -148,23 +208,23 @@
     - 首次执行：一个标准的创建goal 的worksession, 根据报告决定工作成功还是失败？
 ```
 
-脑图里带问号的几处没有裁决，对应 §1 的问题。之后 owner 要求“结合你的理解（认为值得做的部分）以及来自实际场景的新需求”写本文，所以取舍是整理者做的，都列在 §1 和 §10。
+脑图里带问号的几处当时没有裁决，对应 §1 的问题。之后 owner 要求“结合你的理解（认为值得做的部分）以及来自实际场景的新需求”写本文，取舍由整理者提出，列在 §1 和 §10，owner 逐条答复或随定稿确认。脑图和 §1 的结论不一致时以 §1 为准，例如脑图里“首次执行：一个标准的创建 goal 的 worksession”最后定的是按需要、不固定（Q4）。
 
 ### 2.2 之前定过、对本文有效的
 
 | # | 内容 | 出处 |
 | --- | --- | --- |
-| E1 | 机制越少越好，优先用已有的事件和提示词 | Plan / work_simple TODO D6、D9 |
+| E1 | 机制越少越好，优先用已有的事件和提示词 | Plan 单 D6、D9 |
 | E2 | 先能力再安全，缺口记成已知风险 | 多处 |
 | E3 | Goal 是珍贵的资源，不靠多建 Goal 分摊职责；内置配置只是初始状态，可以自我演化，不给内置 Goal 开特例 | 旧单 §8 |
 | E4 | Goal 的早期运行为后面的重复交付准备工具；交付都是命令 | 旧单 §9 |
 | E5 | 同一个 Workspace：Work 开发，Goal 运维；Work 可以改写 Goal 的维护目标；大问题请求用户开 Work 升级 | 架构 §7.10 |
 | E6 | Goal 的周期性工作倾向用脚本完成 | 二期单 D1 |
 | E7 | 四道门槛：硬保障、硬间隔、预算、检查；预算用量要让 Goal 看得见 | 架构 §12.1.1 |
-| E8 | 检查脚本只读，不给 run 和写权限；不为“Agent 把脚本写坏”另加机制（Q8 请求改一处） | 旧单 §8 |
-| E9 | skill 是纯文本；安装、删除、禁用只有 owner 能做（Q2 请求放宽一处） | 2026-11-09 |
+| E8 | 检查脚本只读，不给 run 和写权限；不为“Agent 把脚本写坏”另加机制。Q8 改了一处：连续 3 次出错并入硬保障 | 旧单 §8、本文 Q8 |
+| E9 | skill 是纯文本；安装、删除、禁用只有 owner 能做。Q2 放宽了一处：self improve 可以新建 `local` 手册 | 2026-11-09、本文 Q2 |
 | E10 | Goal 找人靠通知，不在对话里开口；非 quiet 的通知跟随默认会话 | 架构 §15.7.2 第 5 条、聊天路由 TODO Q7 |
-| E11 | Goal 建的 Work 缺省 `work_simple`（Q6 请求放宽提示词） | 2026-11-02 |
+| E11 | Goal 建的 Work 缺省 `work_simple`。Q6 把提示词里的“一律”放宽成缺省，需要时可以派 `plan_simple` | 2026-11-02、本文 Q6 |
 | E12 | 用户没有 PC，体验按手机评估 | 产品原则 |
 | E13 | 默认处于开发阶段，不做兼容 | AGENTS.md |
 
@@ -172,7 +232,7 @@
 
 | 场景 | 暴露的问题 | 本文的任务 |
 | --- | --- | --- |
-| 个人重排站（二期单） | 例行工作要脚本跑、不推理；建站是 Work，之后交给 Goal；大问题要请求升级 | 二期单 GJ、WG；本文 FX 把“先建后管”推广到所有 Goal |
+| 个人重排站（二期单） | 例行工作要脚本跑、不推理；建站是 Work，之后交给 Goal；大问题要请求升级 | WG、GJ（设计在二期单）；FX 让普通的 Work 在收尾时建立 Goal |
 | 同上 | Work 占着 Workspace 几小时后放行，Goal 连续打开多次 Activation | RT1（即二期单 GJ7） |
 | 站立提醒（2026-11-11 DV） | 一个提醒占一个 Goal；首次 Activation 9.2 万 token；Agent 写的脚本只在整分钟命中，宿主延迟时提醒静默丢失；脚本写坏后 72 小时才被发现 | CA1、CA2、FH5 |
 | 历次 DV 的成本 | 一次 `no_action` 2.5–7.8 万 token；结晶看一次 18.2 万；Goal 里跟长命令三次 Activation 37.8 万 | S0-1、CX1–CX3 |
@@ -180,7 +240,23 @@
 | 日历和待办接入（2026-11-20） | 提醒有了两条路；“整理日程”等的前置已经具备 | CA1、CA3 |
 | 默认会话（聊天路由） | Goal 的提问已经投到默认会话，但只有自由文本，对话里看不到 Goal 在做什么 | FH4、UX2 |
 
+### 2.4 实施顺序（owner 2026-11-24）
+
+> 实施顺序上，plan-work-simple已经在开发了，随后我打算完成goal session的改造，最后再推进 agent-browser-phase2
+
+对本文的含义（整理者的推论）：
+
+1. **Plan 单先落地，本文不重复它做的事，在它的结果上改。** 和本文有关的几项：
+   - 三个创建方（意图分析、Goal、Plan）共用一段“一个 work session 需要什么”的规则（`behaviors/work_request_rule.inc`，`goal.toml` 已经包含它）。本文里 Goal 派活、收尾时要建立 Goal 的 Work 的任务书都按它写，要回传的值放进报告的 `result`。
+   - Work 等命令时的 tick 退避；`work_simple` 压缩三次仍放不下时以 `context_limit` 失败结束。Goal 派出去的 Work 因此不会无声地卡住，失败会作为结局回到 Goal（FH1 的计数用得上）。
+   - Plan 能长时间等待，寿命上限 48 小时。Goal 派 `plan_simple`（Q6）时要知道它最多活这么久。
+   - Plan 写 Memory、`work_simple` 不写。Goal 派的 `work_simple` 值得记的东西写在报告里，由 Goal 判断。
+2. **二期排在本文之后，二期依赖的通用 Goal 能力在本文做完。** WG、GJ 两组都移到本文（Q18 已定）。本文的验收不能依赖重排站，用和浏览器无关的例子（V10）。
+3. **本文的出口就是二期的入口。** 见 §6 末尾。
+
 ## 3. 事实
+
+行号取自 `1704812f8`。Plan 单正在改 `jarvis/behaviors/{goal,analyze_intent,work_simple,plan_simple,explore}.toml`、`jarvis/agent.toml`，以及 `lib_opendan/` 的 `runner/{reports,drive,ticks,budget,outcome}.rs`、`xagent_cli.rs`、`runtime/mod.rs`、`protocol/config.rs` 等，它落地后这些文件的行号会变，个别说法也可能变（S0-0）。二期单 §3.3、§3.4 查过的事实对 WG、GJ 两组有效，不在这里重抄。
 
 ### 3.1 内置 Goal
 
@@ -228,7 +304,7 @@
 
 ### 3.6 创建与管理
 
-- 建 Goal 只有 owner 和 UI Session 能做（[state/goals.rs](../src/frame/lib_opendan/src/state/goals.rs) `:618`）。Work 一律拒绝，这是二期单 WG1 要改的。
+- 建 Goal 只有 owner 和 UI Session 能做（[state/goals.rs](../src/frame/lib_opendan/src/state/goals.rs) `:618`）。Work 一律拒绝，这是 WG1 要改的。
 - 意图分析的结果有 `goal_created`（[analyze_intent.toml](../src/apps/jarvis_agent/agent/behaviors/analyze_intent.toml) 的 `outcome` 枚举，宿主校验在 `runner/reports.rs:763`）。提醒分支写着“create a goal that sends it”。它已被要求优先并入已有 Goal（“goals are scarce: fold it into one that fits”）。
 - 带检查脚本且不带 `--start` 的 Goal，epoch 开始先跑检查，不推理（`host/goals.rs:886`）。
 - 页面：Agent 主页（`src/frame/opendan/web`）有 Goals 列表和详情，活动 Goal 超过 16 个时提示（`pages/Goals.tsx:117`），没有创建入口，owner 只能改预算和时间表。Goal Session 在 `SessionDetail.tsx` 里以 worklog 表格显示。
@@ -257,7 +333,8 @@
 
 ### 4.2 Agent 自己做的工具（Q2、Q13、Q14）
 
-- 先后顺序写进 `self_improve_tools`：已有的命令或已装的包能做到（只需要写进手册）；把已有命令组合成脚本（“宏”）；包管理器安装；开源实现在本机构建；自己写。脚本用 Deno 或 Python。
+- 先后顺序写进 `self_improve_tools`：已有的命令或已装的包能做到（只需要写进手册）；做一个快捷方式；包管理器安装；开源实现在本机构建；自己写。脚本用 Deno 或 Python。
+- 快捷方式（Q13）：把已有的命令和接口包成一个短的、带约定参数的入口，省掉每次重新拼的 token。owner 系列工具（`xcall owner.cal add` 这类）是人做的先例。第一期产出的是命令形态，不产出对象别名。
 - 落点：命令放 `<agent_root>/tools/<name>`。每个命令配一份来源为 `local` 的手册，`commands` 里写这个命令名，正文写什么时候用、怎么用、怎么验。Work 靠这份手册发现它。
 - 判断依据和结晶相同：至少两个 Work 显示同一个缺口。一次是事件，不是规律。
 - 轻的当轮做完；要调试的派一个 Work（任务书写清输入输出和怎么验），下一次唤醒读报告后再登记手册。
@@ -274,32 +351,45 @@
 | --- | --- |
 | 几步就能做完并当场核对 | 自己做 |
 | 需要自己的上下文、一件事 | 派一个 `work_simple` |
-| 要先弄清楚再动手，或几件事并行 | 派一个 `plan_simple`，由它排探索和执行的 Todo |
-| 例行的、不需要判断的 | 写成检查脚本或 Goal 作业（二期单 GJ），不推理 |
+| 要先弄清楚再动手，或几件事并行 | 派一个 `plan_simple`，由它排探索和执行的 Todo（它最多活 48 小时） |
+| 例行的、不需要判断的 | 写成检查脚本或 Goal 作业（GJ），不推理 |
 
+- 派活的任务书按 Plan 单的 `work_request_rule.inc` 写，下一次唤醒要用的值让 Work 放进报告的 `result`。
 - 派活之后本次 Activation 就结束，Work 的结局在后面的唤醒里读报告。不改“Activation 关闭就放手”，不让 Work 的结束绕过硬间隔。
 
 ### 4.4 失败信号与求助（Q7–Q9）
 
 - **Goal 头加两个计数**：`activations_failed_in_a_row`（结局不是 `completed`，或没有有效结果）和 `works_failed_in_a_row`（最近吸收的 Work 连续不成功的个数），放在 `<state>` 里，为 0 时不显示。
-- **提示词的升级顺序**（`goal.toml` 和 `goal_upkeep`）：同一种做法失败两次就换做法；换过仍失败，向主人求助（`questions`，写清试过什么、卡在哪、要主人做什么）；属于目标本身要变的，请求升级（二期单 §4.4）；主人明确不处理的，降低检查频率并在 `pending` 里留着，不反复提。
+- **提示词的升级顺序**（`goal.toml` 和 `goal_upkeep`）：同一种做法失败两次就换做法；换过仍失败，向主人求助（`questions`，写清试过什么、卡在哪、要主人做什么）；属于目标本身要变的，请求升级（WG5，Q19）；主人明确不处理的，降低检查频率并在 `pending` 里留着，不反复提。
 - **宿主的通知**（Q7）：连续 3 次时发一条，key 为 `goal:<id>:failing`，计数回到 0 之后才可能再发。不休眠、不改状态。
 - **检查脚本连续出错**（Q8）：`check_errors >= 3` 时 `guarantee_due` 返回真，之后按硬保障的现有路径走，Goal 头里已经有 `<check_errors>`。
 - **提问带选项**：`questions` 的元素可以是字符串，也可以是 `{text, options: [{id, label}], allow_text}`，映射到通知已有的选项输入。
 
-### 4.5 首次执行（Q4，依赖二期单 WG1、WG2）
+### 4.5 Goal 怎么来（Q4 的答复；先做 WG1、WG2）
 
-1. 意图分析判断要新建 Goal 时，建一个 `work_simple` 的 Work，手册 `goal_setup`，结果 `work_created`。任务书写明目标、范围、怎么判断进展、限制，以及“做完建立 Goal”。
-2. Work 做的事：读 `goal list` 确认不该并入已有 Goal、和已有 Goal 没有矛盾；写检查脚本并试跑；准备交付要用的东西（页面、脚本、Goal 作业）；`goal create`（带检查脚本，不带 `--start`）；在报告的 `result` 里写 `goal_id`。
-3. 成败是 Work 的结局。失败时不留半成品：Goal 已经建出来的，Work 归档它并在报告里说明。
-4. Goal 的第一次运行机会是一次检查，不推理。
-5. 意图分析不再自己建 Goal：`goal_created` 从结果枚举里去掉，属于已有 Goal 的请求照旧 `forwarded`。小改动（“以后别提醒周末”）由 UI 直接 `goal revise`，不开 Work（二期单 Q15）。
+Goal 有两条来路，走哪条由意图分析按请求判断，不固定：
+
+| 请求 | 做法 | 结果 |
+| --- | --- | --- |
+| 不需要先做出什么东西：盯着某件事、到点判断、条件提醒 | 意图分析直接 `goal create`，和现在一样。Goal 在第一次 Activation 里写自己的检查脚本 | `goal_created` |
+| 要先做出一个东西，以后一直维护或持续改进：状态页、重排站、一套脚本 | 建一个普通的 Work（`work_simple` 或 `plan_simple`）。任务书按 `work_request_rule.inc` 写，在“做完的标准”和“报告”里写明：最后建立负责维护或持续改进的 Goal，在报告的 `result` 里给出 `goal_id` | `work_created` |
+| 属于已有 Goal 的事 | 照旧转给它 | `forwarded` |
+| 对已有 Goal 的小改动（“以后别提醒周末”） | UI 直接 `goal revise`，不开 Work（Q19） | 用现有的 `forwarded`，或新增 `goal_revised`，选改动小的（二期单 WG3） |
+
+第二条路的几点：
+
+- Work 是独立的普通 Work，没有专门的类型，也不归属于它要建的 Goal。它和别的 Work 的区别只在任务书里多了收尾这一步。
+- 收尾怎么做写在 work skill `goal_handover` 里，意图分析只给任务书里有这一步的 Work：先读 `goal list`，该并入已有 Goal 的就改写它，不新建；写检查脚本并试跑；装上例行要跑的脚本（Goal 作业）；`goal create` 带检查脚本、不带 `--start`，所以 Goal 的第一次运行机会是一次检查，不推理；把维护说明作为 goal skill 交给 Goal。
+- 成败是 Work 的结局，结果自己回到对话。失败时不留半成品：Goal 已经建出来的，Work 归档它并在报告里说明。
+- `plan_simple` 时，按 Q17 的规则只有 Plan 自己有建 Goal 的权限，它的 Todo 没有，所以由 Plan 在收尾时建。这一句是整理者的推论，WG1 实施时核对 Plan 能不能跑这条命令。
 
 需要补的一处：`goal check run --script <file>` 在没有 Goal 时也能跑，`ctx` 里没有上次的 `state`，时间表和 Workspace 由参数给。
 
 ### 4.6 提醒与日程（Q5、Q12）
 
-- 意图分析的提醒分支：到点就说的写日历（`xcall owner.cal add`，带 `reminders`，重复规则拆成重复日程），结果 `direct`，报告里写清每个时刻。日历表达不了的才建 Goal。
+- 意图分析的提醒分支只加一条判断，不加规则：主人需不需要在日程里看到这个提醒，由 Agent 自己判断。
+  - 需要（会议、约会、截止日期这类本来就是日程的事）：写进日历，`xcall owner.cal add` 带 `reminders`，结果 `direct`。日历自己会提醒，不再另建 Goal，也不再往检查脚本里加。
+  - 不需要（站起来活动、喝水这类习惯，或要看了情况才决定说不说的）：照旧由 Goal 的检查脚本到点发通知。已经有提醒 Goal 时并入它，不再新建（Q11）。
 - 检查脚本的 `ctx` 加 `slot_ms`（这次检查对应的时间槽）和 `missed`（合并了几个槽）。`goal_check_script` 手册里按时刻发通知的例子改用 `slot_ms`，晚到窗口写成必须。
 - 日程候选（第二步）沿用默认 Goal 单 T05：整理提交之后发布候选，一条候选一个带选项的问题，主人同意后由 self improve 调 `owner.cal` / `owner.todo` 落地；“长期职责”这类候选的落地是给已有的 Goal 增加一项职责（`goal post` 给那个 Goal，或请主人开 Work 改写），不新建 Goal。
 
@@ -309,7 +399,7 @@
 - Goal 会话视图：复用 `SessionConversation` 的外壳和 `worklog` 的数据源。每次 Activation 一组：唤醒原因、折叠的过程（工具调用）、结论（报告正文、决定、建了哪些 Work）。Goal 的提问和它发的通知按消息显示。只读加一个输入框。
 - 输入框发的话调 `goals.post`，成为原因是 `feedback` 的输入。用户的话不过硬间隔，仍过预算和 Agent 总量；被预算拦下时视图里要说明什么时候恢复。
 - “新建目标”不做表单：按钮打开和这个 Agent 的默认会话并预填一句话，走意图分析（§4.5）。
-- 数量：意图分析和 `goal_setup` 的提示词加两条：活动 Goal 达到 16 个时，新建之前必须说明为什么不能并入已有的；发现和已有 Goal 的目标矛盾时问主人，不自己选。并入的做法写进 `goal_setup`：改写目标 Goal 的定义和检查脚本，归档被并入的那个。
+- 数量：意图分析和 `goal_handover` 的提示词加三条：固定提醒并入同一个提醒 Goal，改写它的目标后用 `goal post` 让它更新检查脚本；活动 Goal 达到 16 个时，新建之前必须说明为什么不能并入已有的；发现和已有 Goal 的目标矛盾时问主人，不自己选。并入的做法写进 `goal_handover`：改写目标 Goal 的定义和检查脚本，归档被并入的那个。
 
 ### 4.8 自我维护要的数据
 
@@ -326,15 +416,39 @@
 4. 用户的话不过硬间隔（Q10）。
 5. 检查的 `ctx.slot_ms`、提问带选项、`goal stats`、`goal check run` 不要求已有 Goal：四处小的接口补充。
 
+从二期单接手的两处，设计在二期单，不算本文新增：
+
+6. Work 可以建立和改写 Goal（WG1，Q17）。
+7. Goal 作业（GJ1–GJ6，Q18）；以及定时输入不堆积（GJ7）这一处修正。
+
+### 4.10 从二期单接手的 WG、GJ
+
+设计不重抄。下表是每条任务在本文里怎么做，以及留在二期单的部分。
+
+| 二期单任务 | 在本文里 | 留在二期单的 |
+| --- | --- | --- |
+| WG1 权限 | 原样做（Q17） | 无 |
+| WG2 命令行（`goal create / revise` 补字段、`--check-script`） | 原样做，和 FX3 同一处改 | 无 |
+| WG3 意图分析 | 即 FX1，按二期单原样：先建设后维护的请求建 Work，任务书写明做完建立或改写哪个 Goal；纯观察和提醒仍直接建 Goal；小改动直接修订（Q4 的答复） | `site config set` 这类站点参数的小改动 |
+| WG4 Goal 提示词（运维范围、先改工作区再安装、动手前看有没有主人的 Work） | 和 CX3、FH3 一起改 `goal.toml`，同一次提交 | 重排站的 goal skill `reading_site_ops`（MN2） |
+| WG5 升级请求 | 只做通用的约定：升级说明文件、带 `--key --url` 的通知、主人在对话里答应后由意图分析建 Work（Q19） | `site upgrade open / close`、来源页状态、App 的升级界面（AP8） |
+| WG6 文档 | 并入 DOC1 | 无 |
+| WG7 非浏览器例子的 DV | 本文的 V10 | 无 |
+| GJ1–GJ6 Goal 作业 | 原样做（Q18）；GJ4 改 `ctx` 时和 CA2 的 `slot_ms` 一起改，手册 `goal_check_script` 同一变更内更新 | 作业的具体命令 `site sync`、翻译的每日上限（ST4）、MN4 里其余手册 |
+| GJ7 定时输入不堆积 | 即 RT1，放 M1 | 无 |
+
+作业怎么到 Goal 手里不另设流程（Q18 的答复）：要先建设的，由 Work 按任务书在收尾时和 Goal 一起装上（§4.5）；运行中要加的，由 Goal 自己装。
+
 ## 5. 任务
 
 ### 5.0 S0：先量、先验
 
+- [ ] **S0-0 确认基线。** 入口条件：Plan 单已经合入。确认后重新核对 §3 的行号和说法（重点是 `goal.toml`、`analyze_intent.toml`、`agent.toml`、`runner/reports.rs`、`xagent_cli.rs`），把变了的改掉；读一遍 `work_request_rule.inc` 和改过的 `goal.toml`，确认 §4.3、§4.5 的写法和它不冲突。Plan 单没合入就不开始 M1 之后的任务。
 - [ ] **S0-1 量一次 Activation 的成本构成。** 取本机 Zone 上跑了两周的内置整理 Goal 和一个用户 Goal，从 Session 的 `usage.jsonl` 和 worklog 算：系统提示词加工具定义、Goal 头、历史、每轮工具往返各多少 token；`no_action` 平均几轮。结果写进 §3.3，据此定 Q3。
 - [ ] **S0-2 `tools/` 在不在 PATH 上。** 在 Agent 容器里往 `<agent_root>/tools` 放一个脚本，从 Work 的 shell 里直接按名字调。不在就记下要补的落点。
-- [ ] **S0-3 日历提醒。** 真实 Zone 上建一条带 `reminders` 的重复日程：到点谁发、发到哪、Agent 容器停着时发不发、手机上有没有。结果写进 §3.6，据此定 Q5。
+- [ ] **S0-3 日历提醒。** 真实 Zone 上建一条带 `reminders` 的重复日程：到点谁发、发到哪、Agent 容器停着时发不发、手机上有没有。结果写进 §3.6。它不再决定 CA1 做不做（Q5 已答）；手册里“重复日程也会提醒”的说法不成立时，记成 owner 工具的缺陷，CA1 的提示词里把这类提醒留给检查脚本。
 - [ ] **S0-4 Work 的任务事件。** 查旧单 §7.3 第 3 条的来源（`runner/children.rs`、`goal.rs:366 reason_of`）。
-- [ ] **S0-5 读 §1 的答复**，改 §4。
+- [x] **S0-5 读 §1 的答复**，改 §4。先定的七条已落实（§1.3，2026-11-24）。Q6–Q16、Q19 以后有答复时再改。
 
 ### 5.1 SI：self improve
 
@@ -355,7 +469,7 @@
 - [ ] **CX1 `goal stats`。** `xagent_cli.rs` 的 `cmd_goal`，kRPC 只读。验证：对一个有 50 条 Activation 记录的 fixture 核对每个数。
 - [ ] **CX2 `context: fresh | carry`**（Q3，S0-1 之后）。`GoalScheduleSpec`、`set_check` 那条路、`runner` 装配历史的地方、页面。
   - 验证：`fresh` 下第 N 次 Activation 的请求里没有第 N-1 次的工具往返；Activation 中途被杀后续完时本次的历史还在；切换不产生新修订。
-- [ ] **CX3 提示词与 `goal_upkeep`。** `goal.toml`：工作方式的表、指向 `goal_upkeep`、`--behavior work_simple` 改成缺省；`goal_skills/goal_upkeep/SKILL.md`。在 Plan / work_simple TODO 之后改（Q16）。
+- [ ] **CX3 提示词与 `goal_upkeep`。** `goal.toml`：工作方式的表、指向 `goal_upkeep`、`--behavior work_simple` 改成缺省；`goal_skills/goal_upkeep/SKILL.md`。在 Plan 单改过的 `goal.toml` 上改，派活的写法沿用 `work_request_rule.inc`。`goal.toml` 这一批改动（CX3、FH3、WG4）放在同一次提交里。
   - 验证：真实模型上一个被故意设成每 5 分钟检查、每次都没事的 Goal，几次唤醒之内自己把检查收紧。
 - [ ] **CX4 关闭 F3。** 旧单和架构 §11.2、§11.3、§17.2 写明不做 Goal 专用压缩。
 
@@ -363,55 +477,86 @@
 
 - [ ] **FH1 两个计数进 Goal State 和 Goal 头。** `protocol/goal.rs`、`runner/goal.rs:989 close_activation`、`render_builtin`。
 - [ ] **FH2 连续失败的通知**（Q7）。`host/goals.rs`，发送复用 `send_notify`。验证：第 3 次失败发一条；第 4 次不发；成功一次后再连续 3 次才再发。
-- [ ] **FH3 升级顺序。** `goal.toml`、`goal_upkeep`、`goal_delivery`。
+- [ ] **FH3 升级顺序。** `goal.toml`、`goal_upkeep`、`goal_delivery`。其中“请求升级”那一步的完整约定在 WG5（M2）补上，M1 先写成在 `questions` 里向主人提出。
 - [ ] **FH4 提问带选项。** `GoalResult` 的解析、`questions_to_user`（`runner/goal.rs:1314`）、Goal 头的 `<open_questions>`、Desktop 的通知卡片不用改（已有选项输入）。
 - [ ] **FH5 检查连续出错并入硬保障**（Q8）。`goal.rs:295 guarantee_due`。验证：出错 3 次后下一个槽唤醒一次，原因 `guarantee`，仍受硬间隔保护。
 
-### 5.4 FX：首次执行
+### 5.4 WG：Work 开发、Goal 运维（接手自二期单 §5.2，合并关系见 §4.10）
 
-- [ ] **FX1 意图分析。** `analyze_intent.toml`：新建 Goal 改成建 Work；去掉 `goal_created`；`runner/reports.rs:763`、`tests/notify.rs` 等跟着改。
-- [ ] **FX2 work skill `goal_setup`。** 指向 `goal_skills/goal_check_script`、`goal_delivery` 的正文路径，不复制；写明并入和查矛盾（§4.7）、失败不留半成品。
+- [ ] **WG1 权限**（Q17）。见二期单 WG1、§4.3。
+- [ ] **WG2 命令行。** 见二期单 WG2。
+- [ ] **WG3 意图分析。** 即 FX1。
+- [ ] **WG4 Goal 提示词。** 见二期单 WG4；和 CX3、FH3 同一次改。
+- [ ] **WG5 升级请求**（Q19）。只做通用约定：`goal.toml`、`analyze_intent.toml`、`ui_core`、`goal_delivery`。
+- [ ] **WG6 文档。** 并入 DOC1。
+- [ ] **WG7 DV。** 见二期单 WG7，就是本文的 V10。
+
+### 5.5 FX：Work 收尾时建立 Goal（在 WG1、WG2 之后）
+
+- [ ] **FX1 意图分析（即 WG3）。** `analyze_intent.toml`：加上 §4.5 的判断和第二条路的任务书写法；`goal_created` 和直接建 Goal 的写法不动。只改提示词，结果的 schema 和 `runner/reports.rs` 的校验不用改（小改动的结果选了新增 `goal_revised` 时除外）。
+- [ ] **FX2 work skill `goal_handover`。** Work 收尾时怎么建立或改写 Goal：指向 `goal_skills/goal_check_script`、`goal_delivery` 的正文路径，不复制；写明并入和查矛盾（§4.7）、装作业、失败不留半成品、报告的 `result` 里给 `goal_id`。重排站专有的交接说明仍在二期单的 MN1。
 - [ ] **FX3 `goal check run` 不要求已有 Goal。** `xagent_cli.rs:2925`、`goal_check.rs` 的 `run_for`。
-- [ ] **FX4 DV。** 真实模型三条：一个要判断的监控目标建成并由检查起步；一个建到一半失败，对话里收到失败、没有残留的 Goal；一个应该并入已有 Goal 的请求没有新建。
+- [ ] **FX4 DV。** 真实模型四条：纯观察的请求仍直接建 Goal，没有多出 Work；先建设后维护的请求建了 Work，任务书里有收尾这一步，Work 结束时交出 Goal，Goal 由检查起步；Work 建到一半失败，对话里收到失败，没有残留的 Goal；应该并入已有 Goal 的请求没有新建。
 
-### 5.5 CA：提醒与日程
+### 5.6 CA：提醒与日程
 
-- [ ] **CA1 提醒走日历**（Q5，S0-3 之后）。`analyze_intent.toml` 的 Reminders 一节、`goal_check_script` 的对应一节、`ui_core`。
+- [ ] **CA1 提醒进不进日历由 Agent 判断**（Q5 的答复）。`analyze_intent.toml` 的 Reminders 一节加 §4.6 的判断；`ui_core`、`owner` 手册里“不要在别处再排同一个提醒”的说法和它对齐；`goal_check_script` 的提醒一节不动。只改提示词和手册。
+  - 验证：真实模型上各说一句会议类和习惯类的提醒，去向符合 V5；改完每个 `behaviors/*.toml` 仍能解析。
 - [ ] **CA2 `ctx.slot_ms` 与 `missed`。** `goal_check.rs:405`、`goal_check_runner.ts`、Agent State Protocol §9.4、手册例子。验证：宿主晚 3 分钟跑检查时，按 `slot_ms` 写的提醒仍然发出且只发一次。
 - [ ] **CA3 日程候选。** 并在 SI6 里做。
 
-### 5.6 UX：Desktop
+### 5.7 UX：Desktop
 
 - [ ] **UX1 Agent 面板的 Goal 列表。** `app/messagehub/agentpanel/`，数据 `goals.list`。
 - [ ] **UX2 Goal 会话视图。** 新组件放 `components/conversation/`，数据 `session.worklog` 加 `goals.activations`。
 - [ ] **UX3 新建目标入口。** 预填用 `hub.saveDraft`（二期单 §3.7 查过没有直接预填的接口）。
 - [ ] **UX4 用户的话不过硬间隔**（Q10）。`runner/goal.rs:202 hold_events`。验证：硬间隔内 `goal post` 立刻打开 Activation；预算用完时不打开，视图显示恢复时刻。
-- [ ] **UX5 数量与矛盾的提示词。** `analyze_intent.toml`、`goal_setup`。
+- [ ] **UX5 数量与矛盾的提示词。** `analyze_intent.toml`、`goal_handover`：提醒并入同一个 Goal、16 个时先说明、矛盾时问主人（§4.7）。
 - [ ] **UX6 多语言与用例。** 10 种语言；`mock/backend.ts` 加 `goals.*`；手机视口的 e2e。
 
-### 5.7 RT：运行中的问题
+### 5.8 RT：运行中的问题
 
-- [ ] **RT1 定时输入不堆积。** 即二期单 GJ7，随本文先做。
+- [ ] **RT1 定时输入不堆积。** 即二期单 GJ7：Goal Session 还有没消费的 `scheduled` 输入时，`host/goals.rs:989` 不再投新的，只累加 `missed`。验证：Work 占用工作区 3 小时，放行后只打开一次 Activation。
 - [ ] **RT2 Work 的任务事件不进 Goal 的原因。** S0-4 有结论后修。
 
-### 5.8 DOC
+### 5.9 GJ：Goal 作业（接手自二期单 §5.1，Q18）
 
-- [ ] **DOC1 架构设计。** §9.1（改回一个 self improve，说明和“迁移为不同 Goal”的关系）、§9.3、§9.5、§11.2、§11.3、§12.1.1、§15.7、§17.2。
-- [ ] **DOC2 协议与手册。** Agent State Protocol §9；`opendan_agent_dev`、`ui_core`、`skill_authoring`、`goal_check_script`、`goal_delivery`；AGENTS.md 的联动表（内置 Goal、goal skill、`goal stats`）。
+- [ ] **GJ1 存储与安装。** 见二期单 GJ1、§4.2。
+- [ ] **GJ2 运行器与调度。** 见二期单 GJ2。
+- [ ] **GJ3 命令、kRPC、权限。** 见二期单 GJ3；权限用 WG1 定下来的规则。
+- [ ] **GJ4 检查脚本与 Goal 头。** 见二期单 GJ4；和 CA2 改同一个 `ctx`，`goal_check_script` 手册同一变更内更新。
+- [ ] **GJ5 用量与预算。** 见二期单 GJ5。`goal stats`（CX1）把作业的用量单列一项。
+- [ ] **GJ6 Agent 主页的作业面板。** 见二期单 GJ6。Desktop 的 Goal 会话视图（UX2）在每次唤醒的那一组里显示相关作业的最近一次结果，不另做面板。
+
+### 5.10 DOC
+
+- [ ] **DOC1 架构设计（含 WG6）。** §7.10（按 WG 的实现更新）、§8.3（补一句，Q19）、§9.1（改回一个 self improve，说明和“迁移为不同 Goal”的关系）、§9.3、§9.5、§11.2、§11.3、§12.1.1、§15.7、§17.2。
+- [ ] **DOC2 协议与手册。** Agent State Protocol §9（含 §9.5 权限表、作业）；`opendan_agent_dev`、`ui_core`、`skill_authoring`、`goal_check_script`、`goal_delivery`；AGENTS.md 的联动表（内置 Goal、goal skill、`goal stats`、Goal 作业）。
 - [ ] **DOC3 旧单。** 标注 F3、E1–E3、§7.3、§10.7 的去向。
+- [ ] **DOC4 二期单。** 标注 WG、GJ 已由本文完成并指向本文的实施记录；把这两组从它的 §5、§6 的里程碑和 §7 的 V10 里去掉；Q1、Q2、Q4、Q5、Q15、Q19、Q23 注明答复在本文的 Q16–Q19；它的 §3.3、§3.4 里被本文改掉的事实（权限、`goal_created`、`goal.toml` 的说法）更新。
 
 ## 6. 顺序
 
 | 里程碑 | 内容 | 出口 |
 | --- | --- | --- |
-| M0 | S0；Q1–Q5 定稿 | 成本构成、日历提醒的实测结论 |
-| M1 省钱、不丢 | CX1–CX4、FH1–FH5、CA2、RT1、RT2 | 一个空转的 Goal 会自己收紧；连续失败主人知道 |
-| M2 先建后管 | 二期单 WG1、WG2，FX、CA1、UX5 | 新建 Goal 的成败回到对话；提醒不占 Goal |
+| M0 | 入口：Plan 单已合入。S0（含 S0-0）。先定的七条已答 | 基线核对完；成本构成有数，Q3 据此定下做不做 CX2；日历提醒验过 |
+| M1 省钱、不丢 | CX1–CX4、FH1–FH5、WG4、CA2、RT1、RT2 | 一个空转的 Goal 会自己收紧；连续失败主人知道 |
+| M2 先建后管 | WG1、WG2、FX（即 WG3）、WG5、CA1、UX5 | 要先建设的请求由 Work 在收尾时交出 Goal；提醒该进日历的进日历；升级请求能闭环 |
 | M3 自我改进 | SI1–SI5、SI7 | self improve 做出第一个被 Work 用上的工具 |
 | M4 看得见 | UX1–UX4、UX6 | 手机上能看一个 Goal 在做什么，并对它说话 |
-| M5 并入 Memory | SI6、CA3、DOC | 只剩一个内置 Goal |
+| M5 并入 Memory | SI6、CA3 | 只剩一个内置 Goal |
+| M6 例行工作与收口 | GJ1–GJ6、WG7、DOC1–DOC4、§7 验收 | V10 跑通；二期可以开工 |
 
-M1 的 Rust 部分、M4 的 Desktop 部分可以并行；M2 等 Plan / work_simple TODO 落地（Q16）。
+- M0、M1、M2 按顺序做。M1 先做是因为后面每一组都会让 Goal 跑得更多，先把成本和失败管住。
+- M2 完成后，M3（Rust：播种与 skills）、M4（Desktop）、M6 的 GJ（Rust：新模块）互不依赖，可以各派一个子 Agent 并行，Rust 子 Agent 各用自己的 `CARGO_TARGET_DIR`。串行做时按表里的顺序。
+- M5 排在 M3 之后，等 self improve 跑稳了再把 Memory 整理搬进来。
+- GJ 放最后：本文别的组都不依赖它，只有二期依赖。CX2 做不做要等 S0-1（Q3），不做时 M1 少这一条，别的不变。
+
+**出口，也就是二期单的入口：**
+
+- WG1–WG7、GJ1–GJ7 完成，V4、V10 在真实 Zone 上跑过。
+- Agent State Protocol §9 已经包含权限表和作业，二期单 S0-4 不用再改这一份。
+- 二期单已按 DOC4 回写。回写之后它的里程碑只剩重排站本身：M1 是 ST、TP、RH、AP1 / AP2 / AP6，M2 是 MN1 / MN3、AP3–AP5，M3 是 MN2、AP7 / AP8。
 
 ## 7. 验收
 
@@ -420,12 +565,13 @@ M1 的 Rust 部分、M4 的 Desktop 部分可以并行；M2 等 Plan / work_simp
 | V1 | 一个没事可做的 Goal 跑三天 | 第三天的 token 明显少于第一天；它自己改过检查脚本或时间表；没有人提醒它 | 真实 Zone + 真实模型 |
 | V2 | 一个一直失败的 Goal | 主人收到一条看得懂的求助或失败通知，不是每次都发；Goal 没有重复同一种做法超过两次 | 人为让它的 Work 必然失败 |
 | V3 | 检查脚本被写坏 | 3 个槽之后 Goal 被唤醒并修好；固定时刻的通知最多漏这几个槽 | 集成测试 + 真实 Zone |
-| V4 | 对 Agent 说“帮我盯着某件事” | 出现一个 Work；它结束时对话里有结论；Goal 起步没有推理；建不成时没有残留 | 真实 Zone |
-| V5 | 对 Agent 说“每天九点提醒我” | 日历里多一条带提醒的日程；没有新的 Goal；到点手机收到 | 真机 |
+| V4 | 两种请求各说一句 | “帮我盯着某件事”：直接建了 Goal，没有多出 Work。“做一个某某，以后一直维护”：建了 Work，任务书里写着最后建立 Goal；Work 结束时对话里有结论和 Goal；Goal 起步是一次检查、没有推理；Work 失败时没有残留的 Goal | 真实 Zone + 真实模型 |
+| V5 | 两种提醒各说一句 | “明天下午三点提醒我开评审会”：日历里有这一条并带提醒，没有新的 Goal，到点手机收到。“工作日每 50 分钟提醒我站起来”：没有进日历，并入了提醒 Goal 的检查脚本，到点发通知、不推理 | 真机 |
 | V6 | 同一个缺口出现两次 | self improve 做出工具和手册并通知主人；第三次同类 Work 用了它，轮数减少 | 真实模型 |
 | V7 | 手机上看一个 Goal | 能看到每次唤醒为什么醒、做了什么、结论是什么；发一句话，一分钟内有回应 | 真机 |
 | V8 | 第 17 个 Goal | 意图分析先说明为什么不能并入，或直接并入了已有的 | 真实模型 |
 | V9 | Memory 整理并入之后 | 回放结果不退化；只有一个内置 Goal；整理回执照常 | `memory_replay --ignored` |
+| V10 | 和浏览器无关的“先建后管”（二期单 WG7） | 对 Agent 说“做一个每小时检查我的几个网站是否可用的状态页，以后一直维护”：Work 建成并交出 Goal 和作业；例行检查不推理；人为制造故障后 Goal 被唤醒修好；改需求时主人收到升级请求，同意后由 Work 升级 | 真实 Zone + 真实模型 |
 
 ## 8. 验证命令与 DV 注意
 
@@ -435,13 +581,20 @@ M1 的 Rust 部分、M4 的 Desktop 部分可以并行；M2 等 Plan / work_simp
 - 部署：改 behavior、goal skill、检查脚本要重新打 Jarvis 包；容器内的 Rust 改动要 `./build_aios --local-test` 再 `uv run src/start.py --skip-update`。
 - 真实 Zone 的 Goal DV 做法见旧单 §10 和它的证据目录。**测试 Goal 由脚本在拿到结果后自动归档**，不要留着过夜（2026-11-11 一个短硬保障的测试 Goal 烧了约 220 万 token）。
 - 手册的描述会影响意图分流，改完先用便宜的消息试分流。
+- 开工前用 `git status` 确认 Plan 单的改动已经提交。它没提交时动 `goal.toml`、`analyze_intent.toml`、`runner/reports.rs` 会和另一个会话互相覆盖。
+- WG、GJ 的验证命令和 DV 注意见二期单 §8 里和这两组有关的部分。
 
 ## 9. 已知风险
+
+- 本文接手 WG、GJ 之后范围变大，多了一个子系统（Goal 作业，Q18 已定在本文做）。它排在最后，前面的里程碑不依赖它。
+- 会话身份自报（Q17）：Agent 绕过 Goal 的权限在技术上可行，靠提示词约束。
+- 作业以 Agent 身份运行、没有沙箱（Q18）：程序由 Agent 写，被诱导写出恶意程序的风险和它平时写代码相同。
+- 直接建的 Goal 第一次 Activation 失败时，用户不会马上知道（Q4 保留了直接建）：对话里已经收到 `goal_created`，要等连续 3 次失败的通知（FH2）。第一次 Activation 的成本也照旧，提醒 Goal 实测 9.2 万 token。
+- 走哪条路、提醒进不进日历都交给 Agent 判断（Q4、Q5），判断错了没有机制兜底，靠 V4、V5 的真实模型 DV 看分流准不准。
 
 - Agent 自己做的工具不经主人确认就给 Work 用（Q2）：工具由 Agent 写，被诱导写出有害命令的风险和它平时写代码相同；事后通知，主人可以禁用。
 - `fresh` 上下文会丢掉 Goal 没写进报告的东西。Goal 头和报告的质量决定了连续性，要在 V1 里看有没有反复重查同一件事。
 - self improve 缺省打开后每天最多 60 万 token（Q15）。门槛写松了会空转，V1 的方法同样适用于它。
-- 新建 Goal 多一个 Work（Q4）：一次意图分析加一个 `work_simple` 的固定开销。提醒改走日历之后，剩下的都是需要判断的 Goal，这个开销换来的是检查脚本经过试跑、成败回到对话。
 - 用户的话不过硬间隔（Q10）：一直说话可以连续唤醒，由周期预算封顶。
 - Memory 整理的规则从系统提示词搬到按需读的 goal skill 后，模型可能不读就动手。SI6 的回放是唯一的保证，不过就不并。
 - 定时仍只在 Agent 进程在线时触发（旧单 D3 未做）。
@@ -450,10 +603,13 @@ M1 的 Rust 部分、M4 的 Desktop 部分可以并行；M2 等 Plan / work_simp
 
 - **求助主人以外的人。** 要先定：以谁的名义发、能联系谁、对方的回复怎么回到 Goal（现在只会进 Agent 和那个人的 UI Session）。最小的做法是加一条发消息的命令并由 UI 转 `goal post`，等授权规则定了再做。
 - **在 HomeStation 上求助其他 Agent。** 要先有读的一方：现在没有 Agent 会去看别人的求助帖。最小的做法是会话可用的发帖命令加检查脚本读评论，等有第二个会读的 Agent 再做。
+- **self improve 产出对象别名形态的快捷方式**（Q13）。要先给 Agent 开一个自己的别名和本地动作脚本的登记来源，现在只有管理员安装的扩展包和用户覆盖两种。
+- **新建 Goal 一律先过 Work、固定提醒一律写日历。** Q4、Q5 没有采纳，不要再加回来。
 - **在一次唤醒里等子会话跑完**（模式 2 的严格形态）。
 - **Goal 数量的硬上限、合并命令、所有 Goal 合成一个。**
 - **Goal 专用的压缩策略。**
-- workflow 计划后端（旧单 D3）、Goal 作业与 Work 改写 Goal 的实现（二期单 GJ、WG）、XLLM 结晶、子 Work 的预算预留、跨节点运行。
+- 个人重排站本身：二期单的 ST、TP、RH、AP、MN、RB、BR、EV、CL 各组，以及 WG、GJ 里重排站专有的部分（§4.10 右列）。
+- workflow 计划后端（旧单 D3）、XLLM 结晶、子 Work 的预算预留、跨节点运行。
 
 ## 11. 实施记录
 
