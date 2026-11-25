@@ -65,6 +65,8 @@
     "host_account_hint": "你為其開啟主機存取的 Agent，會以這個帳號在本機執行命令，其他 Agent 不受影響。一般帳號在 Agent 裡無法使用 sudo。",
     "host_account_none": "不指定（Agent 不能在本機執行命令）",
     "host_account_root_warning": "你為其開啟主機存取的 Agent 將完全控制這台機器，盜用你 owner 帳號的人也會取得同樣的控制權。只有需要讓 Agent 維護這台機器時才選 root。",
+    "save_mnemonic_label": "將助記詞儲存到這台裝置（僅用於開發測試）",
+    "save_mnemonic_warning": "助記詞會以明文寫入 start_config.json，能讀取這個檔案的人就能完全控制此身分。只用於測試帳號。",
     "activate_button": "啟用",
     "default_credentials": "登入使用者名稱: {{username}}",
     "copy_link": "複製連結",

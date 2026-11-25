@@ -65,6 +65,8 @@
     "host_account_hint": "Los Agents a los que permitas usar el host ejecutan comandos en esta máquina con esta cuenta. Los demás Agents no se ven afectados. Una cuenta normal no puede usar sudo desde un Agent.",
     "host_account_none": "Ninguna (los Agents no pueden ejecutar comandos en esta máquina)",
     "host_account_root_warning": "Los Agents a los que permitas usar el host tendrán el control total de esta máquina, y quien se apodere de tu cuenta de owner tendrá el mismo control. Elige root solo si un Agent debe mantener esta máquina.",
+    "save_mnemonic_label": "Guardar la frase de recuperación en este dispositivo (solo para desarrollo y pruebas)",
+    "save_mnemonic_warning": "La frase de recuperación se escribe en start_config.json en texto sin cifrar. Quien pueda leer ese archivo controla por completo esta identidad. Úsalo solo con cuentas de prueba.",
     "activate_button": "Activar",
     "default_credentials": "Nombre de usuario de inicio de sesion: {{username}}",
     "copy_link": "Copiar enlace",

@@ -1,4 +1,15 @@
-import { Alert, Box, Button, CircularProgress, MenuItem, Stack, TextField, Typography } from "@mui/material";
+import {
+  Alert,
+  Box,
+  Button,
+  Checkbox,
+  CircularProgress,
+  FormControlLabel,
+  MenuItem,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
 import { MutableRefObject, ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -167,6 +178,22 @@ const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime
             ))}
           </TextField>
           {wizardData.host_account === "root" && <Alert severity="warning">{t("host_account_root_warning")}</Alert>}
+        </Stack>
+      )}
+      {!isWalletRuntime && wizardData.web_owner_material && (
+        <Stack spacing={1.5}>
+          <FormControlLabel
+            control={
+              <Checkbox
+                size="small"
+                checked={wizardData.save_owner_mnemonic}
+                disabled={loading}
+                onChange={(event) => onUpdate({ save_owner_mnemonic: event.target.checked })}
+              />
+            }
+            label={<Typography variant="body2">{t("save_mnemonic_label")}</Typography>}
+          />
+          {wizardData.save_owner_mnemonic && <Alert severity="warning">{t("save_mnemonic_warning")}</Alert>}
         </Stack>
       )}
       {loading && (

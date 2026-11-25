@@ -65,6 +65,8 @@
     "host_account_hint": "ホストの利用を許可した Agent は、このアカウントでこのマシン上のコマンドを実行します。ほかの Agent には影響しません。一般アカウントでは Agent から sudo を使えません。",
     "host_account_none": "指定しない（Agent はこのマシンでコマンドを実行できません）",
     "host_account_root_warning": "ホストの利用を許可した Agent はこのマシンを完全に操作できます。owner アカウントを乗っ取った人も同じ権限を得ます。Agent にこのマシンの保守を任せる場合だけ root を選んでください。",
+    "save_mnemonic_label": "リカバリーフレーズをこのデバイスに保存する（開発・テスト専用）",
+    "save_mnemonic_warning": "リカバリーフレーズは start_config.json に平文で書き込まれます。このファイルを読める人は、この ID を完全に操作できます。テスト用アカウントでのみ使用してください。",
     "activate_button": "有効化",
     "default_credentials": "ログインユーザー名: {{username}}",
     "copy_link": "リンクをコピー",

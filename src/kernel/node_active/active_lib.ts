@@ -101,6 +101,7 @@ export async function createInitialWizardData(
     owner_document: null,
     evm_address: "",
     web_owner_material: null,
+    save_owner_mnemonic: false,
     device_public_key: device.public_key,
     device_private_key: device.private_key,
     is_wallet_runtime: false,
@@ -674,6 +675,9 @@ export async function activateNode(
           accept_warnings: setup.certificate === "upload" && accept_warnings,
         }
       : null,
+    ...(data.save_owner_mnemonic && !data.is_wallet_runtime && data.web_owner_material
+      ? { owner_mnemonic_words: data.web_owner_material.mnemonic_words }
+      : {}),
   })) as { status: string; access_hostname: string };
   if (result.status !== "completed") throw new Error("Activation did not complete");
   memo.current = null;

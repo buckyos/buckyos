@@ -65,6 +65,8 @@
     "host_account_hint": "Agents you enable for the host run commands on this machine as this account. Other Agents are not affected. A normal account cannot use sudo from an Agent.",
     "host_account_none": "None (Agents cannot run commands on this machine)",
     "host_account_root_warning": "Agents you enable for the host will have full control of this machine, and anyone who takes over your owner account gets the same control. Choose root only to let an Agent maintain this machine.",
+    "save_mnemonic_label": "Save the recovery phrase on this device (development and testing only)",
+    "save_mnemonic_warning": "The recovery phrase is written to start_config.json in plain text. Anyone who can read that file fully controls this identity. Use this for test accounts only.",
     "activate_button": "Activate",
     "default_credentials": "Login username: {{username}}",
     "copy_link": "Copy link",

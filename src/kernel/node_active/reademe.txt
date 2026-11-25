@@ -22,6 +22,10 @@ OwnerDocument 核对）。钱包路径只接受 bridge 返回并校验通过的 
 全部通过才能下一步；激活时两种域名走同一条路径：签名四份文档，`commit_active` 带
 `domain`。提交失败后重试用同一批签名文档。
 
+浏览器路径的确认步骤有一个默认不勾选的“把助记词保存到这台设备”，只用于开发测试账户：勾选后 `commit_active` 带
+`owner_mnemonic_words`，node_daemon 核对它与 OwnerDocument 一致后，以明文写入 `start_config.json` 的同名字段。
+`start.py --reinstall` 会连同 `security/` 一起清掉它。钱包路径没有这个选项。
+
 `commit_active` 成功 2 秒后激活服务退出，启动结果页只用已经加载的代码、文案和图标：
 构建产物只有一个脚本，9 种语言在页面打开后全部预加载。2 分钟后开始请求
 `https://public.<域名>/readme`，满 5 分钟不成功按节点、DNS、证书与转发三层给出原因。
