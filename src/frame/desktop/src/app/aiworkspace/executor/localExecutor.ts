@@ -15,7 +15,7 @@ import { MemoryRunStore, XllmRun, XllmTask, type AiResponse, type JsonValue, typ
 import { createBridgeHost } from '../../../../../aiworkspace/aiws/host.js'
 import type { Json, StagedAsset, WishBudget, WishClaim, WishStageBrief, WishStageFiles, WishToolAnswer } from '../api/types'
 import { aiwsT } from '../i18n'
-import { aiccCall, aiccTask, refusalCode, stageLlm, type Infer } from './infer'
+import { aiccCall, aiccTask, imageModelCapabilities, refusalCode, stageLlm, type Infer } from './infer'
 import { runProgram } from './programHost'
 import { wishRuntime } from './wishRuntime'
 
@@ -267,7 +267,9 @@ export class LocalExecutor {
     this.checkAborted()
     // the stage's text is the service's, verbatim: never an xllm template
     const task = await XllmTask.prepareHosted(llmContext, 'aiws.wish', (stage.system ?? '').replaceAll('{{', '\\{{'), deps)
-    this.xllm = await XllmRun.start(task, deps, { input: stage.user ?? '' })
+    const imageCapabilities = stage.stage === 'code' ? await imageModelCapabilities() : ''
+    this.checkAborted()
+    this.xllm = await XllmRun.start(task, deps, { input: (stage.user ?? '') + imageCapabilities })
     if (this.abort.signal.aborted) this.xllm.interrupter().interrupt('stopped by the page')
     let outcome: RunOutcome = await this.xllm.execute()
     for (let retry = 0; retry < TRANSIENT_RETRIES && outcome.status === 'paused' && TRANSIENT_KINDS.includes(outcome.record.last_error?.kind ?? '') && !this.fatal; retry++) {

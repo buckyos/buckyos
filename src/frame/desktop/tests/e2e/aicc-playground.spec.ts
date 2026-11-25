@@ -114,6 +114,17 @@ test('canonical API coverage, task request wrappers, identifier cleanup and reso
   expect(taskResponse({ phase: 'Terminal', outcome: 'Canceled' }, {}).status).toBe('cancelled')
 })
 
+test('image edits keep explicit ratio and tuning options with nested size', () => {
+  const params = { exact_model: 'image@test', prompt: 'landscape', images: [resource],
+    aspect_ratio: '16:9', negative_prompt: 'watermark', quality: 'high', seed: 7,
+    output: { size: '2K', media_type: 'image/jpeg' } }
+  expect(importRequest(JSON.stringify(params), 'image.img2img').params).toEqual(params)
+  expect(validateRequest('image.img2img', params)).toEqual([])
+  const fields = PLAYGROUND_APIS['image.img2img'].fields.map((field) => field.key)
+  for (const name of ['aspect_ratio', 'negative_prompt', 'quality', 'seed']) expect(fields).toContain(name)
+  expect(fields).not.toContain('size')
+})
+
 test('video.generate conditions follow the server rules and results show each video with its metadata', async ({ page }) => {
   const keyframe = { type: 'keyframe', id: 'first', position: 'start', resource }
   const base = { ...sample('video.generate'), prompt: '@{first} comes alive', conditions: [keyframe] }

@@ -648,7 +648,7 @@ fn judge_run(st: &Arc<StageState>, results: Option<&Value>, log: &str) -> WsResu
     if let Some(e) = raw.get("error").and_then(Value::as_str) {
         // a refusal of the AI the macro called is the run's reason, as for any model call (§7.4)
         let code = match raw.get("error_code").and_then(Value::as_str) {
-            Some(c @ ("AI_QUOTA_EXHAUSTED" | "AI_QUOTA_BUDGET_EXCEEDED" | "AI_RESOURCE_NOT_PERMITTED" | "AI_ATTRIBUTION_UNAVAILABLE" | "AI_UNAVAILABLE")) => {
+            Some(c @ ("AI_QUOTA_EXHAUSTED" | "AI_QUOTA_BUDGET_EXCEEDED" | "AI_RESOURCE_NOT_PERMITTED" | "AI_ATTRIBUTION_UNAVAILABLE" | "AI_UNSUPPORTED_OPERATION" | "AI_UNAVAILABLE")) => {
                 return Err(WsError::sub(Code::DependencyUnavailable, ai_code(c), format!("The macro's AI call was refused: {}", e.lines().next().unwrap_or(""))).with_data(json!({ "program_log": log })));
             }
             _ => "PROGRAM_FAILED",
@@ -686,6 +686,7 @@ fn ai_code(c: &str) -> &'static str {
         "AI_QUOTA_BUDGET_EXCEEDED" => "AI_QUOTA_BUDGET_EXCEEDED",
         "AI_RESOURCE_NOT_PERMITTED" => "AI_RESOURCE_NOT_PERMITTED",
         "AI_ATTRIBUTION_UNAVAILABLE" => "AI_ATTRIBUTION_UNAVAILABLE",
+        "AI_UNSUPPORTED_OPERATION" => "AI_UNSUPPORTED_OPERATION",
         "AI_UNAVAILABLE" => "AI_UNAVAILABLE",
         _ => "AI_QUOTA_EXHAUSTED",
     }

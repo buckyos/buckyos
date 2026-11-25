@@ -538,6 +538,7 @@ fn codecs() -> Arc<CodecRegistry> {
             execution_modes: BTreeSet::from([ExecutionMode::Immediate]),
             default_max_output_tokens: None,
             default_priority: 0,
+            image_parameters: BTreeSet::new(),
         }],
         supports_cancel: false,
         supports_webhook: false,

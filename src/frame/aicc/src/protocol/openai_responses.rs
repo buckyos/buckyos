@@ -110,6 +110,9 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
         )],
         false,
     );
+    images_generate.bindings[0]
+        .image_parameters
+        .extend(["n", "style"].map(str::to_owned));
     let mut images_edit = operation(
         OPENAI_IMAGES_EDIT_OPERATION_ID,
         vec![
@@ -281,6 +284,22 @@ fn binding(
 ) -> OperationBinding {
     let mut binding = OperationBinding::new(api_type, modes);
     binding.supported_features = features.into_iter().map(str::to_string).collect();
+    binding.image_parameters = match api_type {
+        ApiType::ImageTextToImage => ["size", "aspect_ratio", "quality", "output.media_type"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        ApiType::ImageImageToImage => [
+            "output.size",
+            "aspect_ratio",
+            "quality",
+            "output.media_type",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        _ => BTreeSet::new(),
+    };
     binding
 }
 
@@ -1155,18 +1174,23 @@ fn encode_responses_image_generate(
     request: &TextToImageInvokeRequest,
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<Value> {
-    call.context.ignore_unsupported_options(
+    call.context.reject_unsupported_options(
         "OpenAI Responses image generation",
         &[
             ("negative_prompt", request.negative_prompt.is_some()),
             ("seed", request.seed.is_some()),
             ("style", request.style.is_some()),
-            ("aspect_ratio", request.aspect_ratio.is_some()),
             ("n", request.n.is_some_and(|count| count != 1)),
         ],
-    );
-    let tool = image_generation_tool(
+    )?;
+    let size = openai_image_size(
         request.size.as_deref(),
+        request.aspect_ratio.as_deref(),
+        call,
+        true,
+    )?;
+    let tool = image_generation_tool(
+        size.as_deref(),
         request.quality.as_deref(),
         request
             .output
@@ -1196,20 +1220,27 @@ fn encode_responses_image_edit(
             "OpenAI Responses image edit requires images",
         ));
     }
-    call.context.ignore_unsupported_options(
+    call.context.reject_unsupported_options(
         "OpenAI Responses image edit",
-        &[("strength", request.strength.is_some())],
-    );
+        &[
+            ("strength", request.strength.is_some()),
+            ("negative_prompt", request.negative_prompt.is_some()),
+            ("seed", request.seed.is_some()),
+        ],
+    )?;
     let mut content = vec![json!({"type": "input_text", "text": request.prompt})];
     for image in &request.images {
         content.push(encode_input_image(image, call)?);
     }
+    let size = openai_image_size(
+        request.output.as_ref().and_then(|o| o.size.as_deref()),
+        request.aspect_ratio.as_deref(),
+        call,
+        true,
+    )?;
     let tool = image_generation_tool(
-        request
-            .output
-            .as_ref()
-            .and_then(|output| output.size.as_deref()),
-        None,
+        size.as_deref(),
+        request.quality.as_deref(),
         request
             .output
             .as_ref()
@@ -1226,6 +1257,99 @@ fn encode_responses_image_edit(
         apply_responses_parameters(body, &call.input.resolved_parameters)?;
     }
     Ok(body)
+}
+
+fn openai_image_size(
+    size: Option<&str>,
+    aspect: Option<&str>,
+    call: &CodecCall<'_>,
+    responses: bool,
+) -> ProtocolResultValue<Option<String>> {
+    let model = provider_model_id(call)?;
+    let dynamic = model.starts_with("gpt-image-2");
+    let fixed = (responses && !dynamic) || model.starts_with("gpt-image-1");
+    let ratio = aspect
+        .map(|v| {
+            buckyos_api::parse_aspect_ratio(v).ok_or_else(|| {
+                ProtocolError::invalid_request("aspect_ratio must be W:H with integers in 1..=100")
+            })
+        })
+        .transpose()?;
+    call.context.reject_unsupported_options(
+        "OpenAI image model",
+        &[(
+            "aspect_ratio",
+            dynamic && ratio.is_some_and(|(w, h)| w > h * 3 || h > w * 3),
+        )],
+    )?;
+    let size = match (size, ratio) {
+        (Some(size), _) => Some(size.to_owned()),
+        (None, Some((w, h))) if !fixed => {
+            let mut a = w;
+            let mut b = h;
+            while b != 0 {
+                let r = a % b;
+                a = b;
+                b = r;
+            }
+            let (w, h) = (w / a, h / a);
+            let scale = (1024.0 / (f64::from(w) * f64::from(h)).sqrt() / 16.0)
+                .round()
+                .max(1.0) as u32
+                * 16;
+            Some(format!("{}x{}", w * scale, h * scale))
+        }
+        (None, Some((w, h))) => Some(
+            if w == h {
+                "1024x1024"
+            } else if w * 2 == h * 3 {
+                "1536x1024"
+            } else if w * 3 == h * 2 {
+                "1024x1536"
+            } else {
+                call.context
+                    .reject_unsupported_options("OpenAI image model", &[("aspect_ratio", true)])?;
+                unreachable!()
+            }
+            .to_owned(),
+        ),
+        (None, None) => None,
+    };
+    if let Some(size) = &size {
+        if size == "auto" && ratio.is_none() {
+            return Ok(Some(size.clone()));
+        }
+        let dims = buckyos_api::parse_image_dimensions(size);
+        let supported = dims.is_some_and(|(w, h)| {
+            if dynamic {
+                w > 0
+                    && h > 0
+                    && w % 16 == 0
+                    && h % 16 == 0
+                    && u64::from(w) * u64::from(h) <= 3840 * 2160
+                    && w <= 3840
+                    && h <= 3840
+                    && u64::from(w) <= u64::from(h) * 3
+                    && u64::from(h) <= u64::from(w) * 3
+            } else if fixed {
+                matches!((w, h), (1024, 1024) | (1536, 1024) | (1024, 1536))
+            } else {
+                w > 0 && h > 0
+            }
+        });
+        call.context.reject_unsupported_options(
+            "OpenAI image model",
+            &[("size/output.size", !supported)],
+        )?;
+        if let (Some((w, h)), Some((rw, rh))) = (dims, ratio) {
+            if !buckyos_api::image_dimensions_match_aspect(w, h, (rw, rh)) {
+                return Err(ProtocolError::invalid_request(
+                    "size/output.size conflicts with aspect_ratio",
+                ));
+            }
+        }
+    }
+    Ok(size.map(|size| buckyos_api::parse_image_dimensions(&size).map(|(w, h)| format!("{w}x{h}")).unwrap_or(size)))
 }
 
 fn image_generation_tool(
@@ -2032,7 +2156,7 @@ fn image_format(media_type: &str) -> ProtocolResultValue<&'static str> {
         "image/webp" => Ok("webp"),
         _ => Err(ProtocolError::new(
             ProtocolErrorKind::UnsupportedOperation,
-            "OpenAI image operation does not support the requested media type",
+            "OpenAI image operation does not support output.media_type",
         )),
     }
 }
@@ -2278,20 +2402,26 @@ fn encode_image_generation(
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<HttpRequest> {
     require_parameter_subset(&call.input.resolved_parameters, &[], "Images generation")?;
-    call.context.ignore_unsupported_options(
+    call.context.reject_unsupported_options(
         "OpenAI Images generation",
         &[
             ("negative_prompt", request.negative_prompt.is_some()),
-            ("aspect_ratio", request.aspect_ratio.is_some()),
+            ("style", request.style.is_some() && provider_model_id(call)?.starts_with("gpt-image-")),
             ("seed", request.seed.is_some()),
         ],
-    );
+    )?;
     let mut body = Map::from_iter([
         ("model".to_string(), json!(provider_model_id(call)?)),
         ("prompt".to_string(), json!(request.prompt)),
     ]);
     insert_optional(&mut body, "n", request.n.map(Value::from));
-    insert_optional(&mut body, "size", request.size.as_ref().map(|v| json!(v)));
+    let size = openai_image_size(
+        request.size.as_deref(),
+        request.aspect_ratio.as_deref(),
+        call,
+        false,
+    )?;
+    insert_optional(&mut body, "size", size.map(Value::String));
     insert_optional(
         &mut body,
         "quality",
@@ -2328,13 +2458,20 @@ fn encode_image_edit(
             "OpenAI Images edit requires images",
         ));
     }
-    call.context.ignore_unsupported_options(
+    call.context.reject_unsupported_options(
         "OpenAI Images edit",
-        &[("strength", request.strength.is_some())],
-    );
+        &[
+            ("strength", request.strength.is_some()),
+            ("negative_prompt", request.negative_prompt.is_some()),
+            ("seed", request.seed.is_some()),
+        ],
+    )?;
     let mut body = MultipartBody::new(32, call.context.limits.max_request_bytes)?;
     body.push(MultipartPart::bytes("model", provider_model_id(call)?))?;
     body.push(MultipartPart::bytes("prompt", request.prompt.clone()))?;
+    if let Some(quality) = &request.quality {
+        body.push(MultipartPart::bytes("quality", quality.clone()))?;
+    }
     for (index, source) in request.images.iter().enumerate() {
         push_multipart_resource(
             &mut body,
@@ -2351,10 +2488,16 @@ fn encode_image_edit(
     if let Some(mask) = mask {
         push_multipart_resource(&mut body, "mask", mask, call.context, "mask.png")?;
     }
+    let size = openai_image_size(
+        request.output.as_ref().and_then(|o| o.size.as_deref()),
+        request.aspect_ratio.as_deref(),
+        call,
+        false,
+    )?;
+    if let Some(size) = size {
+        body.push(MultipartPart::bytes("size", size))?;
+    }
     if let Some(output) = &request.output {
-        if let Some(size) = &output.size {
-            body.push(MultipartPart::bytes("size", size.clone()))?;
-        }
         if let Some(media_type) = &output.media_type {
             body.push(MultipartPart::bytes(
                 "output_format",
@@ -2386,6 +2529,10 @@ fn encode_image_inpaint(
         images: vec![request.image.clone()],
         prompt: request.prompt.clone(),
         strength: None,
+        aspect_ratio: None,
+        negative_prompt: None,
+        quality: None,
+        seed: None,
         output: request.output.clone(),
         idempotency_key: request.idempotency_key.clone(),
         task_options: request.task_options.clone(),
@@ -2805,7 +2952,7 @@ fn audio_format(media_type: &str) -> ProtocolResultValue<&'static str> {
         "audio/pcm" | "audio/L16" => Ok("pcm"),
         _ => Err(ProtocolError::new(
             ProtocolErrorKind::UnsupportedOperation,
-            "OpenAI speech does not support the requested media type",
+            "OpenAI speech does not support output.media_type",
         )),
     }
 }
@@ -4107,6 +4254,101 @@ mod tests {
         };
         assert_eq!(output.value["data"][0]["embedding"][1], 0.75);
         assert_eq!(output.usage.unwrap().input_tokens, Some(3));
+    }
+
+    #[test]
+    fn compatible_image_models_forward_explicit_pixel_sizes() {
+        let mut request = TextToImageInvokeRequest::new("custom-image@compatible", "square");
+        request.size = Some("2048x2048".into());
+        let mut input = input(AiccCall::ImagesGenerate(request));
+        input
+            .resolved_parameters
+            .insert("provider_model_id".into(), json!("custom-image"));
+        let wire = registry()
+            .encode(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_IMAGES_GENERATE_OPERATION_ID,
+                ApiType::ImageTextToImage,
+                &input,
+                &context(),
+            )
+            .unwrap();
+        let GoldenBody::Json(body) = ProtocolContractHarness::default()
+            .request(&wire)
+            .unwrap()
+            .body
+        else {
+            panic!("json")
+        };
+        assert_eq!(body["model"], "custom-image");
+        assert_eq!(body["size"], "2048x2048");
+    }
+
+    #[test]
+    fn image_aspect_lowers_to_size_for_native_openai_and_sn_without_changing_model() {
+        for adapter in [
+            OPENAI_RESPONSES_ADAPTER_ID,
+            super::super::SN_OPENAI_ADAPTER_ID,
+        ] {
+            let mut request = TextToImageInvokeRequest::new("gpt-image-2@instance", "landscape");
+            request.aspect_ratio = Some("16:9".into());
+            let mut input = input(AiccCall::ImagesGenerate(request.clone()));
+            input
+                .resolved_parameters
+                .insert("provider_model_id".into(), json!("gpt-image-2"));
+            let wire = registry()
+                .encode(
+                    adapter,
+                    OPENAI_IMAGES_GENERATE_OPERATION_ID,
+                    ApiType::ImageTextToImage,
+                    &input,
+                    &context(),
+                )
+                .unwrap();
+            let GoldenBody::Json(body) = ProtocolContractHarness::default()
+                .request(&wire)
+                .unwrap()
+                .body
+            else {
+                panic!("json")
+            };
+            assert_eq!(body["model"], "gpt-image-2");
+            assert_eq!(body["size"], "1280x720");
+            assert!(body.get("aspect_ratio").is_none());
+            for size in ["1344x768", "1344X768", "1344*768"] {
+                request.size = Some(size.into());
+                input.canonical_request = AiccCall::ImagesGenerate(request.clone());
+                let wire = registry().encode(adapter, OPENAI_IMAGES_GENERATE_OPERATION_ID, ApiType::ImageTextToImage, &input, &context()).unwrap();
+                let GoldenBody::Json(body) = ProtocolContractHarness::default().request(&wire).unwrap().body else { panic!("json") };
+                assert_eq!(body["model"], "gpt-image-2");
+                assert_eq!(body["size"], "1344x768");
+            }
+            request.size = Some("1024x1024".into());
+            input.canonical_request = AiccCall::ImagesGenerate(request.clone());
+            assert!(registry()
+                .encode(
+                    adapter,
+                    OPENAI_IMAGES_GENERATE_OPERATION_ID,
+                    ApiType::ImageTextToImage,
+                    &input,
+                    &context()
+                )
+                .is_err());
+            request.size = None;
+            request.negative_prompt = Some("watermark".into());
+            input.canonical_request = AiccCall::ImagesGenerate(request);
+            let error = registry()
+                .encode(
+                    adapter,
+                    OPENAI_IMAGES_GENERATE_OPERATION_ID,
+                    ApiType::ImageTextToImage,
+                    &input,
+                    &context(),
+                )
+                .unwrap_err();
+            assert_eq!(error.kind, ProtocolErrorKind::UnsupportedOperation);
+            assert!(error.message.contains("negative_prompt"));
+        }
     }
 
     #[tokio::test]

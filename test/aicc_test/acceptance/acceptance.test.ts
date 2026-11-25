@@ -7092,16 +7092,19 @@ test("single-image contracts reject multi-image requests before Provider dispatc
 
 test("health recovery after canonical image rejection uses a valid success request", async () => {
   const catalog = await loadProviderProtocolCatalog();
-  const rejected = buildT15Manifest(catalog).find(c => c.tags.includes("image_count_rejected"))!;
-  const recovery = buildHealthRecoveryCase(rejected);
-  assert.equal(recovery.expected_task_status, "succeeded");
-  assert.equal(recovery.expected_error_class, null);
-  assert.equal(recovery.expected_aicc_error_code, undefined);
-  assert.equal(recovery.model_selector?.value, rejected.model_selector?.value);
-  assert.ok(!recovery.tags.includes("canonical_rejection"));
-  assert.ok(!recovery.tags.includes("image_count_rejected"));
-  const params = buildT15TypedParams(recovery.api_type!, "image@temporary", "recovery", recovery.execution_mode, recovery.case_id);
-  assert.equal(params.n, 1);
+  for (const tag of ["image_count_rejected", "image_output_rejected"]) {
+    const rejected = buildT15Manifest(catalog).find(c => c.tags.includes(tag))!;
+    const recovery = buildHealthRecoveryCase(rejected);
+    assert.equal(recovery.expected_task_status, "succeeded");
+    assert.equal(recovery.expected_error_class, null);
+    assert.equal(recovery.expected_aicc_error_code, undefined);
+    assert.equal(recovery.model_selector?.value, rejected.model_selector?.value);
+    assert.ok(!recovery.tags.includes("canonical_rejection"));
+    assert.ok(!recovery.tags.includes(tag));
+    const params = buildT15TypedParams(recovery.api_type!, "image@temporary", "recovery", recovery.execution_mode, recovery.case_id);
+    assert.equal(params.n, 1);
+    assert.equal(params.output, undefined);
+  }
 });
 
 
@@ -7131,5 +7134,45 @@ test("Doubao vision Mock accepts official reasoning levels and rejects unknown v
           `${provider}/${apiType}/${effort}: ${await response.text()}`);
       }
     }
+  }
+});
+
+test("image wire fixtures validate model size constraints and Qwen negative prompt and seed", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  for (const driver of ["openai", "sn-ai-provider"]) {
+    const contract = protocolContract(catalog, driver, driver === "openai" ? "openai.images.generations.v1" : "sn.openai-images-generations.v1");
+    const request = t15ProviderRequest("https://mock.invalid", contract, "gpt-image-2", { size: "1280x720" });
+    const body = JSON.parse(request.init.body as string);
+    const captured = { method: "POST", pathname: contract.path, query: new URLSearchParams(), headers: new Headers(request.init.headers), body };
+    assert.deepEqual(validateProviderRequest(contract, captured, "image.txt2img"), []);
+    for (const size of ["1281x720", "0x0", "4096x4096", "2048x256", "2K"]) {
+      body.size = size;
+      assert.ok(validateProviderRequest(contract, captured, "image.txt2img").some(error => error.includes("size")), size);
+    }
+  }
+  const contract = protocolContract(catalog, "qwen", "qwen.dashscope.image_generation.v1");
+  const request = t15ProviderRequest("https://mock.invalid", contract, "qwen-image-3.0-pro", { parameters: { size: "1536*1024", negative_prompt: "watermark", seed: 7 } });
+  const body = JSON.parse(request.init.body as string);
+  const captured = { method: "POST", pathname: contract.path, query: new URLSearchParams(), headers: new Headers(request.init.headers), body };
+  assert.deepEqual(validateProviderRequest(contract, captured, "image.txt2img"), []);
+  body.parameters.seed = 2147483648;
+  assert.ok(validateProviderRequest(contract, captured, "image.txt2img").some(error => error.includes("seed")));
+  body.parameters.seed = 7; body.parameters.negative_prompt = 12;
+  assert.ok(validateProviderRequest(contract, captured, "image.txt2img").some(error => error.includes("negative_prompt")));
+  const manifest = buildT15Manifest(catalog);
+  for (const provider of catalog.providers) for (const contract of provider.contracts) for (const api of Object.keys(contract.image_parameter_probes ?? {})) {
+    assert.ok(manifest.some(c => c.protocol_contract_id === contract.id && c.api_type === api && c.tags.includes("image_parameters")));
+    assert.ok(manifest.some(c => c.protocol_contract_id === contract.id && c.api_type === api && c.expected_aicc_error_code === "unsupported_operation"));
+  }
+});
+
+test("image parameter probes keep canonical size placement for generation and editing", async () => {
+  for (const api of ["image.txt2img", "image.img2img"]) {
+    const catalog = await loadProviderProtocolCatalog();
+    const contract = protocolContract(catalog, "google-gemini", "gemini.interactions.image.v1beta");
+    const request = contract.image_parameter_probes![api].request;
+    if (api === "image.txt2img") request.output = { ...(request.output as Record<string, unknown>), size: "2K" };
+    else request.size = "2K";
+    assert.throws(() => validateProviderProtocolCatalog(catalog), api === "image.txt2img" ? /top level/ : /output.size/);
   }
 });

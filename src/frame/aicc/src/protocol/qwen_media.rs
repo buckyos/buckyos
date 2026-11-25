@@ -99,7 +99,15 @@ fn task_operation(id: &str, api_types: &[ApiType]) -> OperationDescriptor {
         bindings: api_types
             .iter()
             .copied()
-            .map(|api_type| OperationBinding::new(api_type, [ExecutionMode::NativeTask]))
+            .map(|api_type| {
+                OperationBinding::new(api_type, [ExecutionMode::NativeTask]).with_image_parameters(
+                    match api_type {
+                        ApiType::ImageTextToImage => &["size", "seed", "n", "negative_prompt"],
+                        ApiType::ImageImageToImage => &["output.size", "negative_prompt", "seed"],
+                        _ => &[],
+                    },
+                )
+            })
             .collect(),
         supports_cancel: true,
         supports_webhook: false,
@@ -117,7 +125,8 @@ fn task_operation_without_cancel(id: &str, api_types: &[ApiType]) -> OperationDe
 fn immediate_operation(id: &str, api_type: ApiType) -> OperationDescriptor {
     OperationDescriptor {
         operation_id: id.to_owned(),
-        bindings: vec![OperationBinding::new(api_type, [ExecutionMode::Immediate])],
+        bindings: vec![OperationBinding::new(api_type, [ExecutionMode::Immediate])
+            .with_image_parameters(&["output.size", "negative_prompt", "seed"])],
         supports_cancel: false,
         supports_webhook: false,
         max_request_bytes: MAX_REQUEST_BYTES,
@@ -179,21 +188,22 @@ fn encode_qwen_image_request(
 ) -> ProtocolResultValue<Value> {
     require_only_model(resolved_parameters)?;
     let model = provider_model_id(resolved_parameters)?;
-    let (content, size, n, seed) = match canonical_request {
+    let (content, size, n, seed, negative_prompt) = match canonical_request {
         AiccCall::ImagesGenerate(request) if api_type == ApiType::ImageTextToImage => {
-            context.ignore_unsupported_options(
+            context.reject_unsupported_options(
                 "Qwen image generation",
                 &[
                     ("aspect_ratio", request.aspect_ratio.is_some()),
                     ("quality", request.quality.is_some()),
                     ("style", request.style.is_some()),
                 ],
-            );
+            )?;
             (
                 vec![json!({"text":request.prompt})],
                 request.size.as_ref(),
                 request.n,
                 request.seed,
+                request.negative_prompt.as_ref(),
             )
         }
         AiccCall::ImageToImage(request) if api_type == ApiType::ImageImageToImage => {
@@ -202,10 +212,14 @@ fn encode_qwen_image_request(
                     "Qwen image edit requires one to three images",
                 ));
             }
-            context.ignore_unsupported_options(
+            context.reject_unsupported_options(
                 "Qwen image edit",
-                &[("strength", request.strength.is_some())],
-            );
+                &[
+                    ("strength", request.strength.is_some()),
+                    ("aspect_ratio", request.aspect_ratio.is_some()),
+                    ("quality", request.quality.is_some()),
+                ],
+            )?;
             let mut content = request
                 .images
                 .iter()
@@ -219,7 +233,8 @@ fn encode_qwen_image_request(
                     .as_ref()
                     .and_then(|output| output.size.as_ref()),
                 None,
-                None,
+                request.seed,
+                request.negative_prompt.as_ref(),
             )
         }
         _ => {
@@ -228,12 +243,25 @@ fn encode_qwen_image_request(
             ));
         }
     };
+    context.reject_unsupported_options(
+        "Qwen image",
+        &[
+            ("seed", seed.is_some_and(|seed| seed > 2147483647)),
+            (
+                "negative_prompt",
+                negative_prompt.is_some() && model.starts_with("qwen-image-2.1"),
+            ),
+        ],
+    )?;
     let mut parameters = Map::new();
     if let Some(size) = size {
         parameters.insert(
             "size".to_owned(),
             json!(size.replace('x', "*").replace('X', "*")),
         );
+    }
+    if let Some(negative_prompt) = negative_prompt {
+        parameters.insert("negative_prompt".to_owned(), json!(negative_prompt));
     }
     if let Some(n) = n {
         parameters.insert("n".to_owned(), json!(n));
@@ -911,12 +939,15 @@ mod tests {
             "https://public.example/a.png".to_owned(),
             Some("image/png".to_owned()),
         );
+        let mut edit_request = ImageToImageRequest::new("ignored", vec![source], "edit".to_owned());
+        edit_request.negative_prompt = Some("watermark".into());
+        edit_request.seed = Some(7);
+        edit_request.output = Some(buckyos_api::AiOutputOptions {
+            size: Some("1536x1024".into()),
+            ..Default::default()
+        });
         let edit = CodecInput {
-            canonical_request: AiccCall::ImageToImage(ImageToImageRequest::new(
-                "ignored",
-                vec![source],
-                "edit".to_owned(),
-            )),
+            canonical_request: AiccCall::ImageToImage(edit_request),
             resolved_parameters: parameters.clone(),
         };
         let input = NativeTaskInput {
@@ -943,6 +974,10 @@ mod tests {
             body["input"]["messages"][0]["content"][0]["image"],
             "https://public.example/a.png"
         );
+
+        assert_eq!(body["parameters"]["negative_prompt"], "watermark");
+        assert_eq!(body["parameters"]["seed"], 7);
+        assert_eq!(body["parameters"]["size"], "1536*1024");
 
         let protected_source = ResourceRef::url(
             "https://owner-only.example/a.png".to_owned(),

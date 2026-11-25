@@ -276,11 +276,11 @@ Deno.test('host.js: pictures and clips are generated with the session, imported,
   const budget = { image_model: 'image.txt2img', video_model: 'video.generate', image_max_calls: 2, video_max_calls: 1, media_timeout_secs: 30 }
   const host = createBridgeHost({ tool, infer: async () => ({}), aicc, task, importAsset, budget })
   const declare = { inputs: {}, ai: { image: { max_calls: 5 }, video: { max_calls: 1 } } }
-  const a = await host.handle('ai.image', { prompt: '海报', aspect: '3:4', format: 'jpeg', declare })
+  const a = await host.handle('ai.image', { prompt: '海报', aspect: '9:16', format: 'jpeg', declare })
   assertEquals(a, { kind: 'image', object_id: id('1'), media_type: 'image/png', size: 123, width: 864, height: 1536, cached: false })
-  assertEquals(sent[0], ['helper.text_to_image', { prompt: '海报', aspect_ratio: '3:4', output: { media_type: 'image/jpeg' }, logical_model: 'image.txt2img', requirements: {}, disable: {}, policy: { profile: 'balanced', allow_fallback: true, runtime_failover: true } }])
+  assertEquals(sent[0], ['helper.text_to_image', { prompt: '海报', aspect_ratio: '9:16', output: { media_type: 'image/jpeg' }, logical_model: 'image.txt2img', requirements: {}, disable: {}, policy: { profile: 'balanced', allow_fallback: true, runtime_failover: true } }])
   // the same request: the same picture, staged again for this run, nothing generated
-  const b = await host.handle('ai.image', { prompt: '海报', aspect: '3:4', format: 'jpeg', declare })
+  const b = await host.handle('ai.image', { prompt: '海报', aspect: '9:16', format: 'jpeg', declare })
   assertEquals([b.object_id, b.cached, b.width, n, imported.length], [id('1'), true, 864, 1, 2])
   // reference pictures: the img2img twin of the model, routed first
   const c = await host.handle('ai.image', { prompt: '换成雨夜', images: [a], declare })
@@ -406,4 +406,152 @@ export default async function main(aiws) {
   assert(b.stdout.includes('control board: did:bns:alice#board (notes)'), b.stdout)
   const noSlots = await workdir(`export default async function main(aiws) { aiws.result.control('x', { def: 'did:bns:alice#board' }) }`)
   assert((await run(noSlots)).results.error.includes('slots is required'))
+})
+Deno.test('image edit sends size under output without losing format, ratio or tuning options', async () => {
+  const sent = []
+  const id = 'cyfile:' + '1'.repeat(64)
+  const host = createBridgeHost({
+    tool: async (name) => name === 'llm_cache.get' ? {} : {},
+    infer: async () => ({}),
+    aicc: async (method, params) => {
+      sent.push([method, params])
+      if (method === 'route.resolve') return { selected_exact_model: 'image@test' }
+      return { status: 'succeeded', images: [{ kind: 'named_object', obj_id: id }] }
+    },
+    importAsset: async () => ({ object_id: id, media_type: 'image/jpeg', image: { width: 1920, height: 1080 } }),
+    budget: { image_model: 'image.txt2img', image_max_calls: 2 },
+  })
+  const result = await host.handle('ai.image', { prompt: 'scene', images: [id], size: '2K', format: 'jpeg', aspect: '16:9', quality: 'high', negative: 'watermark', seed: 7,
+    declare: { inputs: {}, ai: { image: { max_calls: 2 } } } })
+  assertEquals(result.object_id, id)
+  const request = sent.find(([method]) => method === 'image.img2img')[1]
+  assertEquals(request.output, { media_type: 'image/jpeg', size: '2K' })
+  assertEquals(request.size, undefined)
+  assertEquals([request.aspect_ratio, request.negative_prompt, request.quality, request.seed], ['16:9', 'watermark', 'high', 7])
+})
+
+Deno.test('image host reports portrait output for a landscape request and does not cache it', async () => {
+  const id = 'cyfile:' + '2'.repeat(64)
+  let writes = 0
+  const host = createBridgeHost({
+    tool: async (name, args) => { if (name === 'llm_cache' && args.put) writes += 1; return {} }, infer: async () => ({}),
+    aicc: async () => ({ status: 'succeeded', images: [{ kind: 'named_object', obj_id: id }], artifacts: [{ resource: { kind: 'named_object', obj_id: id }, mime: 'image/png', metadata: { width: 1536, height: 864 } }] }),
+    importAsset: async () => ({ object_id: id, image: { width: 768, height: 1344 } }),
+    budget: { image_max_calls: 1 },
+  })
+  const result = await host.handle('ai.image', { prompt: 'landscape', aspect: '16:9', declare: { inputs: {}, ai: { image: { max_calls: 1 } } } })
+  assertEquals(result.code, 'AI_INVALID_ANSWER')
+  assert(result.error.includes('16:9') && result.error.includes('768x1344'))
+  assertEquals(writes, 0)
+})
+
+Deno.test('invalid image cache regenerates once and replaces the entry', async () => {
+  const id = 'cyfile:' + '3'.repeat(64)
+  let cached = { object_id: 'cyfile:' + '4'.repeat(64) }
+  let calls = 0
+  const host = createBridgeHost({
+    tool: async (name, args) => {
+      if (name === 'llm_cache' && args.get) return { status: 'ok', hits: Object.fromEntries(args.get.map(key => [key, cached])) }
+      if (name === 'llm_cache' && args.put) cached = args.put[0].value
+      return {}
+    }, infer: async () => ({}),
+    aicc: async () => { calls++; return { status: 'succeeded', images: [{ kind: 'named_object', obj_id: id }] } },
+    importAsset: async obj => ({ object_id: obj, image: obj === id ? { width: 1536, height: 864 } : { width: 864, height: 1536 } }),
+    budget: { image_max_calls: 1 },
+  })
+  const req = { prompt: 'landscape', aspect: '16:9', declare: { inputs: {}, ai: { image: { max_calls: 1 } } } }
+  assertEquals((await host.handle('ai.image', req)).cached, false)
+  assertEquals((await host.handle('ai.image', req)).cached, true)
+  assertEquals(calls, 1)
+  assertEquals(cached.object_id, id)
+})
+
+Deno.test('media refusals survive failed responses and task records through the macro bridge', async () => {
+  for (const kind of ['image', 'video']) for (const mode of ['rpc', 'failed-response', 'failed-task']) {
+    const dir = await workdir(`export default async function main(aiws) {
+      aiws.declare({ inputs: {}, ai: { ${kind}: { max_calls: 1 } } })
+      await aiws.ai.${kind}({ prompt: 'landscape', quality: 'high' })
+    }`)
+    const failure = { code: 'unsupported_operation', message: 'quality is unsupported for selected-model@test-provider' }
+    let calls = 0
+    const host = createBridgeHost({
+      tool: async () => ({}), infer: async () => ({}), importAsset: async () => { throw new Error('failed calls must not import an asset') },
+      aicc: async () => {
+        calls++
+        if (mode === 'rpc') throw Object.assign(new Error(failure.message), { code: failure.code })
+        return mode === 'failed-response' ? { status: 'failed', error: failure } : { status: 'running', task_id: 'failed-media-task' }
+      },
+      task: async () => ({ task: { phase: 'Terminal', outcome: 'Failed', message: 'task failed', error: failure } }),
+      budget: { image_max_calls: 1, video_max_calls: 1 },
+    })
+    const run = await runBridged(dir, (op, req) => host.handle(op, req))
+    assertEquals(run.code, 1, `${kind}/${mode}`)
+    assertEquals(run.results.error_code, 'AI_UNSUPPORTED_OPERATION', `${kind}/${mode}`)
+    assert(run.results.error.includes('quality') && run.results.error.includes('selected-model@test-provider'))
+    assertEquals(calls, 1)
+  }
+})
+
+Deno.test('image cache cannot use legacy dimensions when current import cannot measure the picture', async () => {
+  const oldId = 'cyfile:' + '5'.repeat(64), newId = 'cyfile:' + '6'.repeat(64)
+  let cached = { kind: 'image', object_id: oldId, width: 1920, height: 1080 }
+  let calls = 0
+  const host = createBridgeHost({
+    tool: async (name, args) => {
+      if (args.get) return { status: 'ok', hits: Object.fromEntries(args.get.map(key => [key, cached])) }
+      if (args.put) cached = args.put[0].value
+      return {}
+    }, infer: async () => ({}),
+    aicc: async () => { calls++; return { status: 'succeeded', images: [{ kind: 'named_object', obj_id: newId }] } },
+    importAsset: async object_id => ({ object_id, media_type: 'image/webp', ...(object_id === newId ? { image: { width: 1920, height: 1080 } } : {}) }),
+    budget: { image_max_calls: 1 },
+  })
+  const req = { prompt: 'landscape', aspect: '16:9', declare: { inputs: {}, ai: { image: { max_calls: 1 } } } }
+  const fresh = await host.handle('ai.image', req)
+  assertEquals([fresh.object_id, fresh.cached, calls], [newId, false, 1])
+  assertEquals((await host.handle('ai.image', req)).cached, true)
+  assertEquals(calls, 1)
+  assertEquals(cached.object_id, newId)
+})
+
+Deno.test('image bridge preserves method-specific size placement with common syntax and tolerance', async () => {
+  const sent = []
+  const id = 'cyfile:' + 'a'.repeat(64)
+  const declare = { inputs: {}, ai: { image: { max_calls: 20 } } }
+  const host = createBridgeHost({ tool: async () => ({ status: 'ok', hits: {} }), infer: async () => ({}),
+    aicc: async (method, request) => { sent.push([method, request]); return { status: 'failed', error: { code: 'unsupported_operation', message: 'model-specific size support' } } },
+    importAsset: async () => ({}), budget: { image_max_calls: 20 } })
+  for (const images of [undefined, [id]]) {
+    for (const size of ['3K', '512', 'auto', '1344X768', '1344*768']) {
+      await host.handle('ai.image', { prompt: 'cat', size, images, model: 'model@test', declare: { ...declare, ai: { image: { max_calls: 20, models: ['model@test'] } } } })
+      const [method, request] = sent.at(-1)
+      assertEquals(method, images ? 'image.img2img' : 'helper.text_to_image')
+      assertEquals(images ? request.output.size : request.size, size)
+      assertEquals(images ? request.size : request.output?.size, undefined)
+    }
+  }
+  const before = sent.length
+  for (const size of ['0x1024', 'nonsense', '768x1344']) {
+    const result = await host.handle('ai.image', { prompt: 'cat', size, aspect: '16:9', declare })
+    assert(typeof result.error === 'string')
+  }
+  assertEquals(sent.length, before)
+})
+
+Deno.test('image bridge rejects explicit malformed options without generation and preserves zero seed', async () => {
+  const sent = []
+  const host = createBridgeHost({ tool: async () => ({ status: 'ok', hits: {} }), infer: async () => ({}),
+    aicc: async (method, request) => { sent.push([method, request]); return { status: 'failed', error: { code: 'unsupported_operation', message: 'selected model rejects the option' } } },
+    importAsset: async () => ({}), budget: { image_max_calls: 20 } })
+  const declare = { inputs: {}, ai: { image: { max_calls: 20 } } }
+  for (const options of [{ size: '' }, { size: 0 }, { size: false }, { aspect: '' }, { aspect: false }, { quality: false }, { format: '' }, { negative: 7 }, { seed: 1.5 }, { seed: -1 }, { seed: Number.MAX_SAFE_INTEGER + 1 }, { aspect_ratio: '16:9' }]) {
+    const result = await host.handle('ai.image', { prompt: 'cat', declare, ...options })
+    assert(typeof result.error === 'string', JSON.stringify(options))
+  }
+  assertEquals(sent.length, 0)
+  for (const images of [undefined, ['cyfile:' + 'a'.repeat(64)]]) {
+    await host.handle('ai.image', { prompt: 'cat', images, model: 'image@test', seed: 0, negative: '', quality: '', declare: { inputs: {}, ai: { image: { max_calls: 20, models: ['image@test'] } } } })
+    const request = sent.at(-1)[1]
+    assertEquals([request.seed, request.negative_prompt, request.quality], [0, '', ''])
+  }
 })

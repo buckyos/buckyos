@@ -235,7 +235,15 @@ fn immediate_operation(id: &str, api_types: &[ApiType]) -> OperationDescriptor {
         bindings: api_types
             .iter()
             .copied()
-            .map(|api_type| OperationBinding::new(api_type, [ExecutionMode::Immediate]))
+            .map(|api_type| {
+                OperationBinding::new(api_type, [ExecutionMode::Immediate]).with_image_parameters(
+                    match api_type {
+                        ApiType::ImageTextToImage => &["size", "aspect_ratio", "seed", "n"],
+                        ApiType::ImageImageToImage => &["output.size", "aspect_ratio", "seed"],
+                        _ => &[],
+                    },
+                )
+            })
             .collect(),
         supports_cancel: false,
         supports_webhook: false,
@@ -278,6 +286,14 @@ impl OperationCodec for DoubaoImageCodec {
                 ("response_format".to_owned(), json!("url")),
             ]),
             (AiccCall::ImageToImage(request), ApiType::ImageImageToImage) => {
+                call.context.reject_unsupported_options(
+                    "Seedream image edit",
+                    &[
+                        ("negative_prompt", request.negative_prompt.is_some()),
+                        ("quality", request.quality.is_some()),
+                        ("strength", request.strength.is_some()),
+                    ],
+                )?;
                 let images = request
                     .images
                     .iter()
@@ -297,16 +313,27 @@ impl OperationCodec for DoubaoImageCodec {
             }
         };
         if let AiccCall::ImagesGenerate(request) = &call.input.canonical_request {
+            call.context.reject_unsupported_options(
+                "Seedream image generation",
+                &[
+                    ("negative_prompt", request.negative_prompt.is_some()),
+                    ("quality", request.quality.is_some()),
+                    ("style", request.style.is_some()),
+                ],
+            )?;
             if let Some(size) = &request.size {
-                body.insert("size".to_owned(), json!(size));
+                body.insert("size".to_owned(), json!(buckyos_api::normalize_image_size(size)));
             } else if let Some(ratio) = &request.aspect_ratio {
                 match seedream_size(ratio) {
                     Some(size) => {
                         body.insert("size".to_owned(), json!(size));
                     }
-                    None => call
-                        .context
-                        .ignore_unsupported_options("Seedream", &[("aspect_ratio", true)]),
+                    None => {
+                        return Err(ProtocolError::new(
+                            ProtocolErrorKind::UnsupportedOperation,
+                            "Seedream does not support this aspect_ratio",
+                        ))
+                    }
                 }
             }
             if let Some(seed) = request.seed {
@@ -323,6 +350,31 @@ impl OperationCodec for DoubaoImageCodec {
                     "sequential_image_generation_options".to_owned(),
                     json!({"max_images":n}),
                 );
+            }
+        }
+        if let AiccCall::ImageToImage(request) = &call.input.canonical_request {
+            let size = request
+                .output
+                .as_ref()
+                .and_then(|output| output.size.clone())
+                .or_else(|| {
+                    request
+                        .aspect_ratio
+                        .as_deref()
+                        .and_then(seedream_size)
+                        .map(str::to_owned)
+                });
+            if request.aspect_ratio.is_some() && size.is_none() {
+                return Err(ProtocolError::new(
+                    ProtocolErrorKind::UnsupportedOperation,
+                    "Seedream does not support this aspect_ratio",
+                ));
+            }
+            if let Some(size) = size {
+                body.insert("size".into(), json!(buckyos_api::normalize_image_size(&size)));
+            }
+            if let Some(seed) = request.seed {
+                body.insert("seed".into(), json!(seed));
             }
         }
         json_request(
@@ -586,7 +638,8 @@ fn encode_video_submit(
 }
 
 fn seedream_size(ratio: &str) -> Option<&'static str> {
-    Some(match ratio {
+    let ratio = buckyos_api::normalize_image_aspect_ratio(ratio);
+    Some(match ratio.as_str() {
         "1:1" => "2048x2048",
         "4:3" => "2304x1728",
         "3:4" => "1728x2304",
@@ -903,6 +956,14 @@ fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seedream_ratio_mapping_accepts_equivalent_canonical_ratios() {
+        for ratio in ["16:9", "016:009", "32:18"] {
+            assert_eq!(seedream_size(ratio), Some("2848x1600"));
+        }
+    }
+
     use crate::protocol::{
         CodecContext, CodecInput, CodecLimits, CodecRegistry, ResolvedCredential,
     };

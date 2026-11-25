@@ -853,9 +853,11 @@ fn local_runs_use_the_starters_ai() {
     srv.done(&srv.run("wish.xllm@1", stage("code")).await);
     let rev = srv.rpc("doc.read", json!({ "entity_id": "orders", "selector": { "kind": "table_cell", "record_id": "o1", "field_id": "amount" } })).await["content"]["rev"].clone();
     srv.commit(json!([{ "op": "table.set_values", "source_id": "orders", "values": [{ "record_id": "o1", "field_id": "amount", "value": "999.00", "expect": { "rev": rev } }] }])).await;
-    *m.refuse.lock().unwrap() = Some("AI_QUOTA_EXHAUSTED");
-    let r = srv.run("wish.xllm@1", stage("run")).await;
-    assert_eq!((r["state"].as_str(), r["error"]["sub_code"].as_str()), (Some("failed"), Some("AI_QUOTA_EXHAUSTED")), "{r}");
+    for code in ["AI_QUOTA_EXHAUSTED", "AI_UNSUPPORTED_OPERATION"] {
+        *m.refuse.lock().unwrap() = Some(code);
+        let r = srv.run("wish.xllm@1", stage("run")).await;
+        assert_eq!((r["state"].as_str(), r["error"]["sub_code"].as_str()), (Some("failed"), Some(code)), "{r}");
+    }
     });
 }
 

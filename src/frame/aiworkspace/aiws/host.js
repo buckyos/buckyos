@@ -115,7 +115,11 @@ function capped(declared, max) {
 }
 
 function refusal(error) {
-  const code = typeof error?.code === 'string' ? error.code : null
+  const rawCode = typeof error?.code === 'string' ? error.code : null
+  const codes = { quota_exhausted: 'AI_QUOTA_EXHAUSTED', quota_budget_exceeded: 'AI_QUOTA_BUDGET_EXCEEDED',
+    resource_not_permitted: 'AI_RESOURCE_NOT_PERMITTED', attribution_unavailable: 'AI_ATTRIBUTION_UNAVAILABLE',
+    no_candidate_model: 'AI_NO_CANDIDATE_MODEL', unsupported_operation: 'AI_UNSUPPORTED_OPERATION' }
+  const code = Object.hasOwn(codes, rawCode) ? codes[rawCode] : rawCode
   return { error: error instanceof Error ? error.message : String(error), ...(code ? { code } : {}) }
 }
 
@@ -158,20 +162,46 @@ function mediaRequest(kind, req) {
   if (typeof req.negative === 'string' && req.negative) out.negative_prompt = req.negative
   if (Number.isInteger(req.seed)) out.seed = req.seed
   if (kind === 'image') {
-    if (req.aspect) out.aspect_ratio = String(req.aspect)
-    if (req.size) {
-      if (!/^\d+x\d+$/.test(String(req.size))) throw new Error('aiws.ai.image: size is WxH, such as 1024x1536')
+    const allowed = ['prompt', 'negative', 'seed', 'aspect', 'size', 'quality', 'format', 'images', 'model', 'declare']
+    const unknown = Object.keys(req).find((key) => !allowed.includes(key))
+    if (unknown) throw new Error(`aiws.ai.image: unknown field ${unknown}`)
+    for (const field of ['negative', 'aspect', 'size', 'quality', 'format']) {
+      if (req[field] != null && typeof req[field] !== 'string') throw new Error(`aiws.ai.image: ${field} must be a string`)
+    }
+    if (req.seed != null && (!Number.isSafeInteger(req.seed) || req.seed < 0)) throw new Error('aiws.ai.image: seed must be a non-negative safe integer')
+    if (req.negative != null) out.negative_prompt = req.negative
+    if (req.aspect != null) {
+      const ratio = String(req.aspect).match(/^(\d{1,3}):(\d{1,3})$/)
+      if (!ratio || Number(ratio[1]) < 1 || Number(ratio[2]) < 1 || Number(ratio[1]) > 100 || Number(ratio[2]) > 100) throw new Error('aiws.ai.image: aspect is W:H with integers in 1..=100')
+      out.aspect_ratio = String(req.aspect)
+    }
+    if (req.size != null) {
+      const size = String(req.size)
+      const dims = /^(\d+)[xX*](\d+)$/.exec(size)
+      if (dims) {
+        const [w, h] = [Number(dims[1]), Number(dims[2])]
+        if (!(w > 0 && h > 0 && w <= 0xffffffff && h <= 0xffffffff)) throw new Error('aiws.ai.image: size dimensions must be positive 32-bit integers')
+        if (out.aspect_ratio) {
+          const [rw, rh] = out.aspect_ratio.split(':').map(Number)
+          if (Math.abs(w * rh - h * rw) * 20 > h * rw) throw new Error('aiws.ai.image: size conflicts with aspect')
+        }
+      } else if ((!/^(?:auto|[1-9]\d*(?:\.\d+)?[Kk]|[1-9]\d*)$/.test(size) || (size !== 'auto' && !Number.isFinite(Number(size.replace(/[Kk]$/, '')))))) {
+        throw new Error('aiws.ai.image: size is WxH, a positive resolution, or a model-supported K preset')
+      }
       out.size = String(req.size)
     }
-    if (req.quality) out.quality = String(req.quality)
-    if (req.format) {
+    if (req.quality != null) out.quality = String(req.quality)
+    if (req.format != null) {
       const media = FORMATS[String(req.format).toLowerCase()]
       if (!media) throw new Error(`aiws.ai.image: format is one of ${Object.keys(FORMATS).join(', ')}`)
       out.output = { media_type: media }
     }
     const images = req.images === undefined || req.images === null ? [] : Array.isArray(req.images) ? req.images : [req.images]
     if (images.length > 8) throw new Error('aiws.ai.image: at most 8 reference images')
-    if (images.length) out.images = images.map((x) => mediaRef(x, 'aiws.ai.image images'))
+    if (images.length) {
+      out.images = images.map((x) => mediaRef(x, 'aiws.ai.image images'))
+      if (out.size) { out.output = { ...out.output, size: out.size }; delete out.size }
+    }
     return out
   }
   const output = {}
@@ -196,6 +226,16 @@ function mediaRequest(kind, req) {
   }
   if (conditions.length) out.conditions = conditions
   return out
+}
+
+function imageAspectProblem(media, request) {
+  if (!request.aspect_ratio) return null
+  const [w, h] = request.aspect_ratio.split(':').map(Number)
+  if (!(media.width > 0 && media.height > 0)) return { error: `cannot verify requested aspect ${request.aspect_ratio}: image dimensions are missing`, code: 'AI_INVALID_ANSWER' }
+  if (Math.abs(media.width * h - media.height * w) * 20 > media.height * w) return {
+    error: `image aspect does not match requested ${request.aspect_ratio}: received ${media.width}x${media.height}`, code: 'AI_INVALID_ANSWER',
+  }
+  return null
 }
 
 /** The width and height the Workspace found in a staged picture. */
@@ -395,7 +435,7 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
       response = await aicc('helper.text_to_image', { ...request, logical_model: model, requirements: {}, disable: {}, policy: MEDIA_POLICY })
     }
     if (response?.status === 'succeeded') return response
-    if (response?.status === 'failed') throw new Error(`the AI service failed: ${JSON.stringify(response.error ?? response.message ?? response)}`)
+    if (response?.status === 'failed') throw Object.assign(new Error(`the AI service failed: ${JSON.stringify(response.error ?? response.message ?? response)}`), { code: response.error?.code })
     const id = response?.task_id
     if (typeof id !== 'string' || typeof task !== 'function') throw new Error(`the AI service answered without a result: ${JSON.stringify(response).slice(0, 500)}`)
     const secs = Number(budget.media_timeout_secs) || DEFAULT_MEDIA_TIMEOUT_SECS
@@ -404,7 +444,7 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
       const t = await task(id)
       const rec = t && typeof t === 'object' && 'task' in t ? t.task : t
       if (rec?.phase === 'Terminal') {
-        if (rec.outcome !== 'Succeeded') throw new Error(`AICC task ${id} ${String(rec.outcome ?? 'failed').toLowerCase()}: ${rec.message ?? JSON.stringify(rec.error ?? null)}`)
+        if (rec.outcome !== 'Succeeded') throw Object.assign(new Error(`AICC task ${id} ${String(rec.outcome ?? 'failed').toLowerCase()}: ${rec.error?.message ?? rec.message ?? JSON.stringify(rec.error ?? null)}`), { code: rec.error?.code })
         return taskOutput(rec) ?? {}
       }
       if (Date.now() > deadline) throw new Error(`AICC task ${id} is still running after ${secs} s`)
@@ -432,7 +472,11 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
     if (hit && typeof hit === 'object' && typeof hit.object_id === 'string') {
       // the same request made this before: stage it again for this run (it may have been applied, or have expired)
       const staged = await importAsset(hit.object_id).catch(() => null)
-      if (staged) return { ...hit, media_type: staged.media_type ?? hit.media_type, size: staged.size ?? hit.size, ...dims(staged), cached: true }
+      if (staged) {
+        const prior = kind === 'image' ? Object.fromEntries(Object.entries(hit).filter(([key]) => key !== 'width' && key !== 'height')) : hit
+        const media = { ...prior, media_type: staged.media_type ?? hit.media_type, size: staged.size ?? hit.size, ...dims(staged), cached: true }
+        if (kind !== 'image' || !imageAspectProblem(media, request)) return media
+      }
     }
     if (spent[kind] >= maxCalls) return { error: `the ${kind} budget of this run is spent: at most ${maxCalls} calls`, code: 'AI_BUDGET_EXCEEDED' }
     spent[kind] += 1
@@ -443,7 +487,7 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
       const staged = await importAsset(got.obj_id)
       out = { kind, object_id: staged.object_id ?? got.obj_id, media_type: staged.media_type ?? got.media_type, size: staged.size ?? null, ...dims(staged) }
       const m = got.metadata
-      if (m && typeof m === 'object') {
+      if (kind === 'video' && m && typeof m === 'object') {
         if (Number(m.duration_seconds) > 0) out.duration = Number(m.duration_seconds)
         if (Number(m.width) > 0 && Number(m.height) > 0) Object.assign(out, { width: Number(m.width), height: Number(m.height) })
       }
@@ -456,6 +500,10 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
           : ' — no image model of this Zone takes this request; try fewer reference images, another size or aspect'
       }
       return r
+    }
+    if (kind === 'image') {
+      const problem = imageAspectProblem(out, request)
+      if (problem) return problem
     }
     await cachePut([{ key, value: out }])
     return { ...out, cached: false }

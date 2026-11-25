@@ -125,7 +125,15 @@ fn immediate_operation(id: &str, api_types: &[ApiType]) -> OperationDescriptor {
         bindings: api_types
             .iter()
             .copied()
-            .map(|api_type| OperationBinding::new(api_type, [ExecutionMode::Immediate]))
+            .map(|api_type| {
+                OperationBinding::new(api_type, [ExecutionMode::Immediate]).with_image_parameters(
+                    match api_type {
+                        ApiType::ImageTextToImage => &["aspect_ratio", "n"],
+                        ApiType::ImageImageToImage => &["aspect_ratio"],
+                        _ => &[],
+                    },
+                )
+            })
             .collect(),
         supports_cancel: false,
         supports_webhook: false,
@@ -285,11 +293,46 @@ impl OperationCodec for MiniMaxImmediateCodec {
                 }
                 ("/v1/t2a_v2", Value::Object(body))
             }
-            (AiccCall::ImagesGenerate(request), ApiType::ImageTextToImage) => (
-                "/v1/image_generation",
-                Value::Object(image_body(request, &model)),
-            ),
+            (AiccCall::ImagesGenerate(request), ApiType::ImageTextToImage) => {
+                call.context.reject_unsupported_options(
+                    "MiniMax image generation",
+                    &[
+                        ("negative_prompt", request.negative_prompt.is_some()),
+                        ("quality", request.quality.is_some()),
+                        ("size", request.size.is_some()),
+                        ("style", request.style.is_some()),
+                        ("seed", request.seed.is_some()),
+                        (
+                            "output",
+                            request
+                                .output
+                                .as_ref()
+                                .is_some_and(|o| o != &Default::default()),
+                        ),
+                    ],
+                )?;
+                (
+                    "/v1/image_generation",
+                    Value::Object(image_body(request, &model)),
+                )
+            }
             (AiccCall::ImageToImage(request), ApiType::ImageImageToImage) => {
+                call.context.reject_unsupported_options(
+                    "MiniMax image edit",
+                    &[
+                        ("negative_prompt", request.negative_prompt.is_some()),
+                        ("quality", request.quality.is_some()),
+                        ("seed", request.seed.is_some()),
+                        ("strength", request.strength.is_some()),
+                        (
+                            "output",
+                            request
+                                .output
+                                .as_ref()
+                                .is_some_and(|o| o != &Default::default()),
+                        ),
+                    ],
+                )?;
                 if request.images.len() != 1 {
                     return Err(ProtocolError::new(
                         ProtocolErrorKind::UnsupportedOperation,
@@ -301,6 +344,9 @@ impl OperationCodec for MiniMaxImmediateCodec {
                     ("prompt".to_string(), json!(request.prompt)),
                     ("response_format".to_string(), json!("url")),
                 ]);
+                if let Some(ratio) = &request.aspect_ratio {
+                    body.insert("aspect_ratio".into(), json!(buckyos_api::normalize_image_aspect_ratio(ratio)));
+                }
                 body.insert(
                     "subject_reference".to_string(),
                     json!([{"type":"character","image_file":resource_string(&request.images[0], call.context)?}]),
@@ -702,7 +748,7 @@ fn image_body(request: &TextToImageInvokeRequest, model: &str) -> Map<String, Va
         body.insert("n".to_string(), json!(value));
     }
     if let Some(value) = &request.aspect_ratio {
-        body.insert("aspect_ratio".to_string(), json!(value));
+        body.insert("aspect_ratio".to_string(), json!(buckyos_api::normalize_image_aspect_ratio(value)));
     }
     body
 }
@@ -1216,6 +1262,31 @@ mod tests {
         let written = body(Some(false), Some("la la"));
         assert_eq!(written["lyrics"], "la la");
         assert!(written.get("lyrics_optimizer").is_none());
+    }
+
+    #[test]
+    fn image_generation_and_edit_normalize_equivalent_ratios() {
+        for ratio in ["16:9", "016:009", "32:18"] {
+            let mut generate = TextToImageInvokeRequest::new("image-01@test", "landscape");
+            generate.aspect_ratio = Some(ratio.into());
+            let mut edit = buckyos_api::ImageToImageRequest::new("image-01@test",
+                vec![ResourceRef::url("https://example.com/source.png".into(), Some("image/png".into()))], "landscape".into());
+            edit.aspect_ratio = Some(ratio.into());
+            for (api_type, canonical_request) in [
+                (ApiType::ImageTextToImage, AiccCall::ImagesGenerate(generate)),
+                (ApiType::ImageImageToImage, AiccCall::ImageToImage(edit)),
+            ] {
+                let codec = MiniMaxImmediateCodec {
+                    descriptor: minimax_media_adapter().0.operations[IMAGE_OPERATION_ID].clone(), api_type,
+                };
+                let input = CodecInput { canonical_request, resolved_parameters: BTreeMap::from([
+                    ("provider_model_id".into(), json!("image-01"))
+                ]) };
+                let wire = codec.encode(&CodecCall { api_type, input: &input, context: &context() }).unwrap();
+                let HttpBody::Json(body) = wire.body else { panic!("expected JSON") };
+                assert_eq!(body["aspect_ratio"], "16:9");
+            }
+        }
     }
 
     #[test]

@@ -1849,6 +1849,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn image_helper_preserves_all_generation_fields_when_resolving_the_exact_call() {
+        let mut expected = json!({"logical_model":"image.txt2img", "prompt":"cat", "size":"2048X1024", "aspect_ratio":"2:1", "n":2, "seed":0, "negative_prompt":"", "quality":"", "style":"natural", "output":{"media_type":"image/png"}, "trace_id":"trace", "session_id":"session", "idempotency_key":"same-request", "execution_mode":"immediate", "requirements":{}, "disable":{}});
+        let helper = TextToImageHelperRequest::from_json(expected.clone()).unwrap();
+        let exact = exact_call_for_route(AiccCall::HelperTextToImage(helper), "selected@provider").unwrap();
+        let object = expected.as_object_mut().unwrap();
+        for name in ["logical_model", "requirements", "disable"] { object.remove(name); }
+        object.insert("exact_model".into(), json!("selected@provider"));
+        assert_eq!(exact.to_params().unwrap(), expected);
+    }
+
+    #[test]
     fn provider_url_input_policy_uses_instance_and_protocol_form() {
         let base = Some("https://provider.example/v1");
         for (url, source_base) in [

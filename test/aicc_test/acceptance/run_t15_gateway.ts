@@ -1469,7 +1469,7 @@ export function buildHealthRecoveryCase(testCase: AcceptanceCase): AcceptanceCas
     expected_provider_error_code: undefined,
     expected_retriable: undefined,
     timeout_ms: 30_000,
-    tags: testCase.tags.filter(tag => !["official_error", "canonical_rejection", "image_count_rejected"].includes(tag)),
+    tags: testCase.tags.filter(tag => !["official_error", "canonical_rejection", "image_count_rejected", "image_output_rejected"].includes(tag)),
   };
 }
 
@@ -1537,6 +1537,8 @@ async function executeCase(
           { historyMessage },
         ),
         ...(contract.canonical_request_overrides ?? {}),
+        ...(testCase.tags.includes("image_parameters") ? contract.image_parameter_probes?.[testCase.api_type!]?.request ?? {} : {}),
+        ...(testCase.tags.includes("image_output_rejected") ? { output: { fps: 30 } } : {}),
         ...(testCase.tags.includes("image_count_rejected") ? {n:4} : {}),
       },
     ) as Record<string, unknown>;
@@ -1621,7 +1623,9 @@ async function executeCase(
   }
   if (testCase.tags.includes("canonical_rejection")) {
     if (requests.length !== 0) diagnostics.push("rejected canonical request reached the Provider");
-    if (!String(failed).includes(testCase.expected_aicc_error_code ?? "invalid_request")) {
+    const code = failed && typeof failed === "object" && "code" in failed ? failed.code : undefined;
+    const expected = testCase.expected_aicc_error_code ?? "invalid_request";
+    if (typeof code === "string" ? code !== expected : !String(failed).includes(expected)) {
       diagnostics.push("missing canonical rejection error code");
     }
   } else if (requests.length === 0) {
@@ -1695,6 +1699,12 @@ async function executeCase(
     testCase.provider_driver!,
     testCase.protocol_contract_id!,
   );
+  if (testCase.tags.includes("image_parameters")) {
+    for (const [pointer, expected] of Object.entries(contract.image_parameter_probes?.[testCase.api_type!]?.expected_body_paths ?? {})) {
+      const actual = pointer.split("/").slice(1).reduce<unknown>((v, k) => v && typeof v === "object" ? (v as Record<string, unknown>)[k] : undefined, wireBody);
+      if (JSON.stringify(actual) !== JSON.stringify(expected)) diagnostics.push(`image parameter ${pointer}: expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`);
+    }
+  }
   const observedAsyncSteps = new Set(
     requests.map((request) => request.async_step).filter(Boolean),
   );

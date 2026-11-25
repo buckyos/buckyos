@@ -1998,6 +1998,106 @@
     },
     {
       "expect": {
+        "dispatched": [],
+        "inferences": 1,
+        "outcome": {
+          "error": {
+            "failure": {
+              "refused": {
+                "code": "unsupported_operation"
+              }
+            },
+            "kind": "provider"
+          },
+          "kind": "error"
+        },
+        "run": {
+          "kind": "unsupported_operation",
+          "status": "failed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "refused_unsupported_operation",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "error": {
+            "failure": {
+              "refused": {
+                "code": "unsupported_operation"
+              }
+            },
+            "kind": "provider",
+            "message": "quality is unsupported on selected-model"
+          }
+        }
+      ],
+      "source": "aicc unsupported operation recovery",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
         "dispatched": [
           "c1"
         ],

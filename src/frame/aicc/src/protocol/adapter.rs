@@ -37,6 +37,7 @@ pub(crate) struct OperationBinding {
     pub api_type: ApiType,
     pub capability: Capability,
     pub supported_features: BTreeSet<String>,
+    pub image_parameters: BTreeSet<String>,
     pub execution_modes: BTreeSet<ExecutionMode>,
     /// Set when the wire protocol requires an output cap that the canonical
     /// request treats as optional. Call lowering fills an omitted
@@ -51,6 +52,11 @@ pub(crate) struct OperationBinding {
 }
 
 impl OperationBinding {
+    pub(crate) fn with_image_parameters(mut self, parameters: &[&str]) -> Self {
+        self.image_parameters = parameters.iter().map(|value| (*value).to_owned()).collect();
+        self
+    }
+
     pub(crate) fn new(
         api_type: ApiType,
         execution_modes: impl IntoIterator<Item = ExecutionMode>,
@@ -59,6 +65,7 @@ impl OperationBinding {
             api_type,
             capability: api_type.capability(),
             supported_features: BTreeSet::new(),
+            image_parameters: BTreeSet::new(),
             execution_modes: execution_modes.into_iter().collect(),
             default_max_output_tokens: None,
             default_priority: 0,
@@ -268,6 +275,61 @@ pub(crate) struct CodecInput {
 }
 
 impl CodecInput {
+    fn validate_image_parameters(
+        &self,
+        binding: &OperationBinding,
+        context: &CodecContext,
+    ) -> ProtocolResultValue<()> {
+        let options = match &self.canonical_request {
+            AiccCall::ImagesGenerate(r) => vec![
+                ("aspect_ratio", r.aspect_ratio.is_some()),
+                ("size", r.size.is_some()),
+                ("quality", r.quality.is_some()),
+                ("negative_prompt", r.negative_prompt.is_some()),
+                ("seed", r.seed.is_some()),
+                ("style", r.style.is_some()),
+                ("n", r.n.is_some_and(|n| n != 1)),
+            ],
+            AiccCall::ImageToImage(r) => vec![
+                ("aspect_ratio", r.aspect_ratio.is_some()),
+                ("quality", r.quality.is_some()),
+                ("negative_prompt", r.negative_prompt.is_some()),
+                ("seed", r.seed.is_some()),
+                ("strength", r.strength.is_some()),
+            ],
+            _ => return Ok(()),
+        };
+        let unsupported = options
+            .into_iter()
+            .map(|(name, present)| (name, present && !binding.image_parameters.contains(name)))
+            .collect::<Vec<_>>();
+        context.reject_unsupported_options("selected image operation", &unsupported)?;
+        let output = match &self.canonical_request {
+            AiccCall::ImagesGenerate(request) => request.output.as_ref(),
+            AiccCall::ImageToImage(request) => request.output.as_ref(),
+            _ => return Ok(()),
+        };
+        if let Some(output) = output {
+            context.reject_unsupported_options(
+                "selected image operation",
+                &[
+                    (
+                        "output.size",
+                        output.size.is_some() && !binding.image_parameters.contains("output.size"),
+                    ),
+                    (
+                        "output.media_type",
+                        output.media_type.is_some()
+                            && !binding.image_parameters.contains("output.media_type"),
+                    ),
+                    ("output.sample_rate", output.sample_rate.is_some()),
+                    ("output.fps", output.fps.is_some()),
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
     fn without_foreign_thinking(&self, context: &CodecContext) -> Option<Self> {
         super::drop_foreign_thinking(&self.canonical_request, &context.state_coordinate).map(
             |canonical_request| Self {
@@ -576,6 +638,46 @@ impl std::fmt::Debug for CodecContext {
 }
 
 impl CodecContext {
+    fn image_parameter_error(&self, api_type: ApiType, mut error: ProtocolError) -> ProtocolError {
+        if matches!(
+            api_type,
+            ApiType::ImageTextToImage | ApiType::ImageImageToImage
+        ) && error.kind == ProtocolErrorKind::UnsupportedOperation
+        {
+            error.message = format!(
+                "{} for {}/{}",
+                error.message,
+                self.state_coordinate.provider_profile_id,
+                self.state_coordinate.origin_model
+            );
+        }
+        error
+    }
+
+    pub(crate) fn reject_unsupported_options(
+        &self,
+        protocol: &str,
+        options: &[(&str, bool)],
+    ) -> ProtocolResultValue<()> {
+        let fields = options
+            .iter()
+            .filter(|(_, present)| *present)
+            .map(|(field, _)| *field)
+            .collect::<Vec<_>>();
+        if fields.is_empty() {
+            return Ok(());
+        }
+        Err(ProtocolError::new(
+            ProtocolErrorKind::UnsupportedOperation,
+            format!(
+                "{protocol} does not support parameter(s) {} for {}/{}",
+                fields.join(", "),
+                self.state_coordinate.provider_profile_id,
+                self.state_coordinate.origin_model
+            ),
+        ))
+    }
+
     /// Tuning options the protocol cannot express are dropped instead of
     /// failing the call; this warning is their only trace. Output format,
     /// input and edit-scope requirements must still be rejected.
@@ -1295,6 +1397,7 @@ impl CodecRegistry {
             ));
         }
         input.validate_for(&registered.binding)?;
+        input.validate_image_parameters(&registered.binding, context)?;
         context.validate()?;
         let filtered = input.without_foreign_thinking(context);
         registered
@@ -1306,6 +1409,7 @@ impl CodecRegistry {
                 input: filtered.as_ref().unwrap_or(input),
                 context,
             })
+            .map_err(|error| context.image_parameter_error(api_type, error))
     }
 
     #[cfg(test)]
@@ -1449,6 +1553,11 @@ impl CodecRegistry {
                 "native lifecycle operation is not supported",
             ));
         }
+        if input.operation == NativeTaskOperation::Submit {
+            if let Some(codec_input) = input.codec_input {
+                codec_input.validate_image_parameters(&registered.binding, input.context)?;
+            }
+        }
         let filtered = input
             .codec_input
             .and_then(|codec_input| codec_input.without_foreign_thinking(input.context));
@@ -1462,6 +1571,7 @@ impl CodecRegistry {
             }),
             None => codec.encode_native(input),
         }
+        .map_err(|error| input.context.image_parameter_error(api_type, error))
     }
 
     pub(crate) fn output_video_seconds(

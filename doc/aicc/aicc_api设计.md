@@ -999,11 +999,11 @@ Request：
   "negative_prompt": "blurry, low quality",
   "n": 1,
   "aspect_ratio": "1:1",
+  "size": "1024x1024",
   "quality": "high",
   "seed": 12345,
   "output": {
-    "media_type": "image/png",
-    "size": "1024x1024"
+    "media_type": "image/png"
   }
 }
 ```
@@ -1031,6 +1031,8 @@ OpenAI 渠道的 operation 由最终解析后的 metadata/Provider Rules 决定�
 
 Responses 返回的每个 completed `image_generation_call.result` 必须转换为通用图片 artifact，并同时保留对应 OpenAI `ProviderState` 以支持后续多轮编辑。ProviderState 中的 `result` 必须保存同一个 `ResourceRef`，物化后为 `named_object`，不得保留原始字符串；同坐标回放前以 `BytesOnly` 读取对象并恢复为官方要求的 base64 字符串。多个结果全部保留；MIME 根据实际输出格式确定。缺失结果、非法 Base64、tool failed/rejected 必须返回明确 Provider error。
 
+尺寸位于顶层 `size`，与 `helper.text_to_image` 一致；`output` 在此不接受 `size`。图生图的目标尺寸使用 `output.size`。像素尺寸与显式比例允许不超过 5% 的相对误差，具体值仍由选定模型支持范围决定。
+
 ### 8.2 `image.img2img`
 
 Request：
@@ -1050,6 +1052,8 @@ Request：
   }
 }
 ```
+
+可选参数还包括 `aspect_ratio`、`negative_prompt`、`quality`、`seed`，尺寸位于 `output.size`。支持范围由选定模型的 operation 决定；不支持的参数在发起上游请求前返回包含渠道、模型和字段的 `unsupported_operation`。参数不参与模型筛选或触发候选切换。详见 [图片契约与结果处理](image_parameters.md)。
 
 Response：同 `images.generate`。
 

@@ -155,3 +155,5 @@ T1.5 的 `async_poll_timeout` 验证 runner 等待期限届满时任务仍在运
 跨 Provider 资源回归可在源协议契约声明 `cross_provider_target`，显式指定目标 Provider、contract 和 API。SN 图片源使用已启用的 `gpt-image-2`，向 OpenAI 图片编辑传递稳定资源引用；图片 API 未声明供应商制品 ID 时，不伪造 ID 复用断言。跨渠道用例同时检查源端和目标端的禁用策略，已禁用的 Wan 视频组合继续按策略跳过。
 
 定向验证某个物理模型的所有预设时，可用 `--model <provider-model-id>` 隔离库存；它要求同时指定一个 `--provider` 和明确的 `--case`。Runner 保留选中模型的官方预设契约，并通过临时实例规则排除其他模型，防止其他模型掩盖缺口或阻塞无关的定向回归。未知模型和未知 case 仍会失败。默认参数用途的网关回归以 `server_default_mode` 标记，验证高级配置回读、模型/预设发现、基础模型准入和最终请求不注入思考档位。
+
+图片契约回归由官方协议契约的 `image_parameter_probes` 声明 canonical 请求与预期 wire 路径。T1.5 派生 `image-parameters`（校验尺寸、比例、质量、种子和负面提示词映射）及 `reject-image-output-fps`（`unsupported_operation` 且 Mock 无请求）用例。Mock 同时校验 GPT Image 2 的 16 倍数尺寸/比例范围与 Qwen 的负面提示词类型、种子范围。参数不参与路由筛选。

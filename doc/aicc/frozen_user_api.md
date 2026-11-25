@@ -117,6 +117,8 @@ Helper 接受逻辑模型，一次完成路由与推理。目前冻结三个 Hel
 
 method 已存在不表示任意模型都支持该能力。最终可用集合以 `models.list`、Provider inventory 和 route 结果为准。
 
+图片编辑支持 `aspect_ratio`、`negative_prompt`、`quality`、`seed` 和 `strength`；尺寸使用 `output.size`，拒绝顶层 `size`。参数在模型选定后校验；未支持的字段返回结构化 `unsupported_operation`，不参与路由筛选。见 [图片契约与结果处理](image_parameters.md)。
+
 ## 4. 通用请求语义
 
 typed request 共同字段：

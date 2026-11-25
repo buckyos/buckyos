@@ -18,6 +18,9 @@ edit_image 'obj://bucket/…/lamp.png' 'Make the lamp brass, keep the setting' o
 Replace the example URL with `detail.files[0].url` from generation. Quote the whole prompt. Work in the selected session directory. The AICC commands run on `private` and on nodes with `$BUCKYOS_ROOT/bin/agent-tools`. If the required command is missing, check `agent-session runtime list --available` or `agent-session runtime get <id>`. Delegate generation to a private Work session with `aigc_image`, `--workspace none`, and exchange files by `agent-session copy` or typed object id.
 
 - Inputs may be local paths, HTTP(S)/data URLs, bucket URLs or typed ids (`named_object:cyfile:…`, `cyfile:…`, `chunk:…`). Keep the attachment's exact id. A first cross-Zone fetch can take minutes, and `attachment-awaiting-acceptance` needs owner action. Local inputs above about 700 KB can exceed the inline RPC limit. Use the original object or resize a local copy.
+- `gen_image --size` accepts pixel dimensions (`1280x720`, `1280X720`, `1280*720`), positive resolutions, `auto` and model-specific K presets. Size and aspect may differ by at most 5%; use only values supported by the selected model.
+- `--n` is a positive integer; `--seed` is a non-negative safe integer, including zero. Invalid values are argument errors before login or generation.
+- Image parameters do not change model selection. On `unsupported_operation`, inspect the selected model and named field; change the request or explicitly choose another model. Do not repeat the same rejected request.
 - Inspect `<command> --help` for flags and `ai_provider models --api-type image.txt2img` for accessible models/prices. Select an exact `<model>@<provider>` when it matters. A misspelled logical subroute can fall back to its parent. For mask creation, model-specific flags, getting all `--n` results, and a runnable multi-reference edit, read `$OPENDAN_AGENT_ROOT/cmd_skills/aigc_image/references/editing.md`.
 
 #### Verify and deliver
