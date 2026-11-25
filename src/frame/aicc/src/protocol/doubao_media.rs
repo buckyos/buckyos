@@ -322,7 +322,7 @@ impl OperationCodec for DoubaoImageCodec {
                 ],
             )?;
             if let Some(size) = &request.size {
-                body.insert("size".to_owned(), json!(size));
+                body.insert("size".to_owned(), json!(buckyos_api::normalize_image_size(size)));
             } else if let Some(ratio) = &request.aspect_ratio {
                 match seedream_size(ratio) {
                     Some(size) => {
@@ -371,7 +371,7 @@ impl OperationCodec for DoubaoImageCodec {
                 ));
             }
             if let Some(size) = size {
-                body.insert("size".into(), json!(size));
+                body.insert("size".into(), json!(buckyos_api::normalize_image_size(&size)));
             }
             if let Some(seed) = request.seed {
                 body.insert("seed".into(), json!(seed));
@@ -638,7 +638,8 @@ fn encode_video_submit(
 }
 
 fn seedream_size(ratio: &str) -> Option<&'static str> {
-    Some(match ratio {
+    let ratio = buckyos_api::normalize_image_aspect_ratio(ratio);
+    Some(match ratio.as_str() {
         "1:1" => "2048x2048",
         "4:3" => "2304x1728",
         "3:4" => "1728x2304",
@@ -955,6 +956,14 @@ fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seedream_ratio_mapping_accepts_equivalent_canonical_ratios() {
+        for ratio in ["16:9", "016:009", "32:18"] {
+            assert_eq!(seedream_size(ratio), Some("2848x1600"));
+        }
+    }
+
     use crate::protocol::{
         CodecContext, CodecInput, CodecLimits, CodecRegistry, ResolvedCredential,
     };

@@ -162,12 +162,20 @@ function mediaRequest(kind, req) {
   if (typeof req.negative === 'string' && req.negative) out.negative_prompt = req.negative
   if (Number.isInteger(req.seed)) out.seed = req.seed
   if (kind === 'image') {
-    if (req.aspect) {
+    const allowed = ['prompt', 'negative', 'seed', 'aspect', 'size', 'quality', 'format', 'images', 'model', 'declare']
+    const unknown = Object.keys(req).find((key) => !allowed.includes(key))
+    if (unknown) throw new Error(`aiws.ai.image: unknown field ${unknown}`)
+    for (const field of ['negative', 'aspect', 'size', 'quality', 'format']) {
+      if (req[field] != null && typeof req[field] !== 'string') throw new Error(`aiws.ai.image: ${field} must be a string`)
+    }
+    if (req.seed != null && (!Number.isSafeInteger(req.seed) || req.seed < 0)) throw new Error('aiws.ai.image: seed must be a non-negative safe integer')
+    if (req.negative != null) out.negative_prompt = req.negative
+    if (req.aspect != null) {
       const ratio = String(req.aspect).match(/^(\d{1,3}):(\d{1,3})$/)
       if (!ratio || Number(ratio[1]) < 1 || Number(ratio[2]) < 1 || Number(ratio[1]) > 100 || Number(ratio[2]) > 100) throw new Error('aiws.ai.image: aspect is W:H with integers in 1..=100')
       out.aspect_ratio = String(req.aspect)
     }
-    if (req.size) {
+    if (req.size != null) {
       const size = String(req.size)
       const dims = /^(\d+)[xX*](\d+)$/.exec(size)
       if (dims) {
@@ -182,8 +190,8 @@ function mediaRequest(kind, req) {
       }
       out.size = String(req.size)
     }
-    if (req.quality) out.quality = String(req.quality)
-    if (req.format) {
+    if (req.quality != null) out.quality = String(req.quality)
+    if (req.format != null) {
       const media = FORMATS[String(req.format).toLowerCase()]
       if (!media) throw new Error(`aiws.ai.image: format is one of ${Object.keys(FORMATS).join(', ')}`)
       out.output = { media_type: media }

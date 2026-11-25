@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-11-25.image-contract.3",
+  "revision": "2026-11-25.image-contract.4",
   "checked_at": "2026-11-16",
   "providers": [
     {
@@ -2045,12 +2045,12 @@
           "image_parameter_probes": {
             "image.txt2img": {
               "request": {
-                "aspect_ratio": "16:9",
+                "aspect_ratio": "016:009",
                 "seed": 7,
                 "output": {
-                  "media_type": "image/jpeg",
-                  "size": "2K"
-                }
+                  "media_type": "image/jpeg"
+                },
+                "size": "2k"
               },
               "expected_body_paths": {
                 "/response_format/aspect_ratio": "16:9",
@@ -2060,11 +2060,11 @@
             },
             "image.img2img": {
               "request": {
-                "aspect_ratio": "16:9",
+                "aspect_ratio": "016:009",
                 "seed": 7,
                 "output": {
                   "media_type": "image/jpeg",
-                  "size": "2K"
+                  "size": "2k"
                 }
               },
               "expected_body_paths": {
@@ -3204,7 +3204,7 @@
           "image_parameter_probes": {
             "image.txt2img": {
               "request": {
-                "aspect_ratio": "16:9"
+                "aspect_ratio": "016:009"
               },
               "expected_body_paths": {
                 "/aspect_ratio": "16:9"
@@ -3212,7 +3212,7 @@
             },
             "image.img2img": {
               "request": {
-                "aspect_ratio": "16:9"
+                "aspect_ratio": "016:009"
               },
               "expected_body_paths": {
                 "/aspect_ratio": "16:9"
@@ -4528,26 +4528,32 @@
           "image_parameter_probes": {
             "image.txt2img": {
               "request": {
-                "aspect_ratio": "16:9",
+                "aspect_ratio": "016:009",
                 "seed": 7,
-                "quality": "high"
+                "quality": "high",
+                "size": "1280X720"
               },
               "expected_body_paths": {
                 "/aspect_ratio": "16:9",
                 "/seed": 7,
-                "/quality": "high"
+                "/quality": "high",
+                "/size": "1280x720"
               }
             },
             "image.img2img": {
               "request": {
-                "aspect_ratio": "16:9",
+                "aspect_ratio": "016:009",
                 "seed": 7,
-                "quality": "high"
+                "quality": "high",
+                "output": {
+                  "size": "1280*720"
+                }
               },
               "expected_body_paths": {
                 "/aspect_ratio": "16:9",
                 "/seed": 7,
-                "/quality": "high"
+                "/quality": "high",
+                "/size": "1280x720"
               }
             }
           }
@@ -6627,7 +6633,7 @@
           "image_parameter_probes": {
             "image.txt2img": {
               "request": {
-                "size": "2048x2048"
+                "size": "2048X2048"
               },
               "expected_body_paths": {
                 "/size": "2048x2048"
@@ -6636,7 +6642,7 @@
             "image.img2img": {
               "request": {
                 "output": {
-                  "size": "2048x2048"
+                  "size": "2048*2048"
                 }
               },
               "expected_body_paths": {
@@ -7825,7 +7831,7 @@
           "image_parameter_probes": {
             "image.txt2img": {
               "request": {
-                "size": "2048x2048"
+                "size": "2048X2048"
               },
               "expected_body_paths": {
                 "/size": "2048x2048"
@@ -7834,7 +7840,7 @@
             "image.img2img": {
               "request": {
                 "output": {
-                  "size": "2048x2048"
+                  "size": "2048*2048"
                 }
               },
               "expected_body_paths": {

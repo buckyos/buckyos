@@ -537,3 +537,21 @@ Deno.test('image bridge preserves method-specific size placement with common syn
   }
   assertEquals(sent.length, before)
 })
+
+Deno.test('image bridge rejects explicit malformed options without generation and preserves zero seed', async () => {
+  const sent = []
+  const host = createBridgeHost({ tool: async () => ({ status: 'ok', hits: {} }), infer: async () => ({}),
+    aicc: async (method, request) => { sent.push([method, request]); return { status: 'failed', error: { code: 'unsupported_operation', message: 'selected model rejects the option' } } },
+    importAsset: async () => ({}), budget: { image_max_calls: 20 } })
+  const declare = { inputs: {}, ai: { image: { max_calls: 20 } } }
+  for (const options of [{ size: '' }, { size: 0 }, { size: false }, { aspect: '' }, { aspect: false }, { quality: false }, { format: '' }, { negative: 7 }, { seed: 1.5 }, { seed: -1 }, { seed: Number.MAX_SAFE_INTEGER + 1 }, { aspect_ratio: '16:9' }]) {
+    const result = await host.handle('ai.image', { prompt: 'cat', declare, ...options })
+    assert(typeof result.error === 'string', JSON.stringify(options))
+  }
+  assertEquals(sent.length, 0)
+  for (const images of [undefined, ['cyfile:' + 'a'.repeat(64)]]) {
+    await host.handle('ai.image', { prompt: 'cat', images, model: 'image@test', seed: 0, negative: '', quality: '', declare: { inputs: {}, ai: { image: { max_calls: 20, models: ['image@test'] } } } })
+    const request = sent.at(-1)[1]
+    assertEquals([request.seed, request.negative_prompt, request.quality], [0, '', ''])
+  }
+})

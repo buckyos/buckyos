@@ -219,12 +219,12 @@ fn encode_text_to_image(
     insert_optional(
         body,
         "size",
-        request.size.as_ref().map(|value| json!(value)),
+        request.size.as_ref().map(|value| json!(buckyos_api::normalize_image_size(value))),
     );
     insert_optional(
         body,
         "aspect_ratio",
-        request.aspect_ratio.as_ref().map(|value| json!(value)),
+        request.aspect_ratio.as_ref().map(|value| json!(buckyos_api::normalize_image_aspect_ratio(value))),
     );
     insert_optional(
         body,
@@ -277,12 +277,12 @@ fn encode_image_to_image(
     insert_optional(
         body,
         "aspect_ratio",
-        request.aspect_ratio.as_ref().map(|v| json!(v)),
+        request.aspect_ratio.as_ref().map(|v| json!(buckyos_api::normalize_image_aspect_ratio(v))),
     );
     insert_optional(body, "quality", request.quality.as_ref().map(|v| json!(v)));
     insert_optional(body, "seed", request.seed.map(Value::from));
     if let Some(output) = &request.output {
-        insert_optional(body, "size", output.size.as_ref().map(|value| json!(value)));
+        insert_optional(body, "size", output.size.as_ref().map(|value| json!(buckyos_api::normalize_image_size(value))));
         if let Some(media_type) = output.media_type.as_deref() {
             body.insert("output_format".to_owned(), json!(image_format(media_type)?));
         }

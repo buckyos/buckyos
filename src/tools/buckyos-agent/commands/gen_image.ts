@@ -99,7 +99,10 @@ export async function run(argv: string[]): Promise<never> {
     const negative = requireString(parsed.flags, "negative");
     if (negative !== undefined) request.negative_prompt = negative;
     const n = flagInt(parsed.flags, "n");
-    if (n !== undefined) request.n = n;
+    if (n !== undefined) {
+      if (n < 1 || n > 0xffffffff) throw new ArgError("--n must be a positive 32-bit integer");
+      request.n = n;
+    }
     const aspect = requireString(parsed.flags, "aspect");
     const size = requireString(parsed.flags, "size");
     if (aspect !== undefined) {
@@ -120,7 +123,10 @@ export async function run(argv: string[]): Promise<never> {
     const quality = requireString(parsed.flags, "quality");
     if (quality !== undefined) request.quality = quality;
     const seed = flagInt(parsed.flags, "seed");
-    if (seed !== undefined) request.seed = seed;
+    if (seed !== undefined) {
+      if (!Number.isSafeInteger(seed) || seed < 0) throw new ArgError("--seed must be a non-negative safe integer");
+      request.seed = seed;
+    }
     const mime = formatToMime(requireString(parsed.flags, "format"));
     if (mime) request.output = { media_type: mime };
   } catch (err) {

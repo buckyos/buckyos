@@ -748,7 +748,7 @@ fn image_body(request: &TextToImageInvokeRequest, model: &str) -> Map<String, Va
         body.insert("n".to_string(), json!(value));
     }
     if let Some(value) = &request.aspect_ratio {
-        body.insert("aspect_ratio".to_string(), json!(value));
+        body.insert("aspect_ratio".to_string(), json!(buckyos_api::normalize_image_aspect_ratio(value)));
     }
     body
 }

@@ -3421,6 +3421,9 @@ impl TextToImageInvokeRequest {
             ))
         })?;
         validate_exact_model_name(&request.exact_model).map_err(|error| error.to_krpc_error())?;
+        if request.n == Some(0) {
+            return Err(AiccError::new(AiccErrorCode::InvalidRequest, "image count n must be greater than zero").to_krpc_error());
+        }
         if misplaced_size {
             return Err(AiccError::new(AiccErrorCode::InvalidRequest, "text-to-image size must be at the top level, not output.size").to_krpc_error());
         }
@@ -3506,6 +3509,9 @@ impl TextToImageHelperRequest {
         })?;
         validate_logical_model_name(&request.logical_model)
             .map_err(|error| error.to_krpc_error())?;
+        if request.n == Some(0) {
+            return Err(AiccError::new(AiccErrorCode::InvalidRequest, "image count n must be greater than zero").to_krpc_error());
+        }
         if misplaced_size {
             return Err(AiccError::new(AiccErrorCode::InvalidRequest, "text-to-image size must be at the top level, not output.size").to_krpc_error());
         }
@@ -3795,6 +3801,23 @@ pub fn parse_image_dimensions(size: &str) -> Option<(u32, u32)> {
     }
     let (w, h) = (w.parse::<u32>().ok()?, h.parse::<u32>().ok()?);
     (w > 0 && h > 0).then_some((w, h))
+}
+
+pub fn normalize_image_size(size: &str) -> String {
+    if let Some((w, h)) = parse_image_dimensions(size) {
+        return format!("{w}x{h}");
+    }
+    if let Some(number) = size.strip_suffix('k').filter(|number| number.parse::<f64>().is_ok_and(|n| n > 0.0 && n.is_finite())) {
+        return format!("{number}K");
+    }
+    size.to_owned()
+}
+
+pub fn normalize_image_aspect_ratio(aspect: &str) -> String {
+    crate::parse_aspect_ratio(aspect).map(|(w, h)| {
+        let (w, h) = crate::reduce_ratio(w, h);
+        format!("{w}:{h}")
+    }).unwrap_or_else(|| aspect.to_owned())
 }
 
 pub fn image_dimensions_match_aspect(width: u32, height: u32, ratio: (u32, u32)) -> bool {
@@ -7165,6 +7188,20 @@ mod image_edit_contract_tests {
         for size in ["1024x1024", "nonsense"] {
             assert!(TextToImageInvokeRequest::from_json(json!({"exact_model":"image@test", "prompt":"cat", "output":{"size":size}})).is_err());
             assert!(TextToImageHelperRequest::from_json(json!({"logical_model":"image.txt2img", "prompt":"cat", "output":{"size":size}})).is_err());
+        }
+    }
+
+    #[test]
+    fn image_normalizers_do_not_change_preset_or_pixel_meaning() {
+        for (input, expected) in [("1024X768", "1024x768"), ("1024*768", "1024x768"), ("2k", "2K"), ("3K", "3K"), ("512", "512"), ("auto", "auto")] {
+            assert_eq!(normalize_image_size(input), expected);
+        }
+        for input in ["04:03", "8:6", "004:003"] {
+            assert_eq!(normalize_image_aspect_ratio(input), "4:3");
+        }
+        for request in [json!({"exact_model":"image@test", "prompt":"cat", "n":0}), json!({"logical_model":"image.txt2img", "prompt":"cat", "n":0})] {
+            let result = if request.get("exact_model").is_some() { TextToImageInvokeRequest::from_json(request).map(|_| ()) } else { TextToImageHelperRequest::from_json(request).map(|_| ()) };
+            assert!(result.is_err());
         }
     }
 

@@ -7165,3 +7165,14 @@ test("image wire fixtures validate model size constraints and Qwen negative prom
     assert.ok(manifest.some(c => c.protocol_contract_id === contract.id && c.api_type === api && c.expected_aicc_error_code === "unsupported_operation"));
   }
 });
+
+test("image parameter probes keep canonical size placement for generation and editing", async () => {
+  for (const api of ["image.txt2img", "image.img2img"]) {
+    const catalog = await loadProviderProtocolCatalog();
+    const contract = protocolContract(catalog, "google-gemini", "gemini.interactions.image.v1beta");
+    const request = contract.image_parameter_probes![api].request;
+    if (api === "image.txt2img") request.output = { ...(request.output as Record<string, unknown>), size: "2K" };
+    else request.size = "2K";
+    assert.throws(() => validateProviderProtocolCatalog(catalog), api === "image.txt2img" ? /top level/ : /output.size/);
+  }
+});

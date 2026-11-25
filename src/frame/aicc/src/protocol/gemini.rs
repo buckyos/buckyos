@@ -1145,18 +1145,14 @@ fn encode_text_to_image(
         ],
     )?;
     let mut output = request.output.clone().unwrap_or_default();
-    if let Some(size) = &request.size {
-        if output.size.as_ref().is_some_and(|value| value != size) {
-            return Err(ProtocolError::invalid_request(
-                "size conflicts with output.size",
-            ));
-        }
-        output.size = Some(size.clone());
+    if output.size.is_some() {
+        return Err(ProtocolError::invalid_request("text-to-image size must be at the top level, not output.size"));
     }
-    let mut response_format = image_response_format(Some(&output))?;
+    output.size = request.size.clone();
+    let mut response_format = image_response_format(Some(&output), "size")?;
     let mut config = Map::new();
     if let Some(ratio) = &request.aspect_ratio {
-        response_format.insert("aspect_ratio".to_string(), ratio.clone().into());
+        response_format.insert("aspect_ratio".to_string(), buckyos_api::normalize_image_aspect_ratio(ratio).into());
     }
     if let Some(seed) = request.seed {
         config.insert("seed".to_string(), seed.into());
@@ -1194,9 +1190,9 @@ fn encode_image_to_image(
         input.push(encode_resource(image, "image", call.context)?);
     }
     body.insert("input".to_string(), Value::Array(input));
-    let mut format = image_response_format(request.output.as_ref())?;
+    let mut format = image_response_format(request.output.as_ref(), "output.size")?;
     if let Some(ratio) = &request.aspect_ratio {
-        format.insert("aspect_ratio".into(), json!(ratio));
+        format.insert("aspect_ratio".into(), json!(buckyos_api::normalize_image_aspect_ratio(ratio)));
     }
     if let Some(seed) = request.seed {
         body.insert("generation_config".into(), json!({"seed": seed}));
@@ -1207,6 +1203,7 @@ fn encode_image_to_image(
 
 fn image_response_format(
     output: Option<&buckyos_api::AiOutputOptions>,
+    size_field: &str,
 ) -> ProtocolResultValue<Map<String, Value>> {
     let mut format = Map::from_iter([("type".to_string(), json!("image"))]);
     if let Some(output) = output {
@@ -1220,9 +1217,10 @@ fn image_response_format(
             format.insert("mime_type".to_string(), json!(mime));
         }
         if let Some(size) = &output.size {
+            let size = buckyos_api::normalize_image_size(size);
             if !matches!(size.as_str(), "1K" | "2K" | "4K") {
                 return Err(ProtocolError::new(ProtocolErrorKind::UnsupportedOperation,
-                    "Gemini Interactions output.size must be 1K, 2K or 4K; exact pixel dimensions are not supported"));
+                    format!("Gemini Interactions {size_field} must be 1K, 2K or 4K; exact pixel dimensions are not supported")));
             }
             format.insert("image_size".to_string(), json!(size));
         }
@@ -3311,6 +3309,28 @@ mod tests {
     }
 
     #[test]
+    fn text_image_uses_top_level_size_and_reports_that_field() {
+        let mut request = TextToImageInvokeRequest::from_json(json!({
+            "exact_model":"image@google", "prompt":"landscape", "size":"2k", "aspect_ratio":"016:009"
+        })).unwrap();
+        let mut body = Map::new();
+        encode_text_to_image(&request, &context(), &mut body).unwrap();
+        assert_eq!(body["response_format"]["image_size"], "2K");
+        assert_eq!(body["response_format"]["aspect_ratio"], "16:9");
+        request.size = Some("3K".into());
+        let error = encode_text_to_image(&request, &context(), &mut Map::new()).unwrap_err();
+        assert_eq!(error.kind, ProtocolErrorKind::UnsupportedOperation);
+        assert!(error.message.contains("Interactions size"));
+        assert!(!error.message.contains("output.size"));
+        request.output = Some(buckyos_api::AiOutputOptions {
+            size: Some("2K".into()), ..Default::default()
+        });
+        let error = encode_text_to_image(&request, &context(), &mut Map::new()).unwrap_err();
+        assert_eq!(error.kind, ProtocolErrorKind::InvalidRequest);
+        assert!(error.message.contains("top level"));
+    }
+
+    #[test]
     fn image_edit_passes_landscape_ratio_and_resolution_and_rejects_unmapped_options() {
         let mut request = ImageToImageRequest::new(
             "image@google",
@@ -3320,9 +3340,9 @@ mod tests {
             )],
             "landscape edit".into(),
         );
-        request.aspect_ratio = Some("16:9".into());
+        request.aspect_ratio = Some("016:009".into());
         request.output = Some(buckyos_api::AiOutputOptions {
-            size: Some("2K".into()),
+            size: Some("2k".into()),
             ..Default::default()
         });
         let input = CodecInput {

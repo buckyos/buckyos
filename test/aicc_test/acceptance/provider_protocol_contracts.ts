@@ -665,6 +665,20 @@ export function validateProviderProtocolCatalog(
           );
         }
       }
+      if (contract.image_parameter_probes !== undefined) {
+        const probes = object(contract.image_parameter_probes, `${id}.image_parameter_probes`);
+        for (const [api, value] of Object.entries(probes)) {
+          const probe = object(value, `${id}.image_parameter_probes.${api}`);
+          const request = object(probe.request, `${id}.image_parameter_probes.${api}.request`);
+          const output = request.output === undefined ? {} : object(request.output, `${id}.image_parameter_probes.${api}.output`);
+          if (api === "image.txt2img" && Object.hasOwn(output, "size")) {
+            throw new Error(`${id}.image_parameter_probes.${api}: size must be at the top level`);
+          }
+          if (api === "image.img2img" && Object.hasOwn(request, "size")) {
+            throw new Error(`${id}.image_parameter_probes.${api}: size must be in output.size`);
+          }
+        }
+      }
       if (contract.video_generate_scenarios !== undefined) {
         const scenarios = stringArray(
           contract.video_generate_scenarios,
