@@ -82,6 +82,7 @@ def finish(directory: Path, deno: str | None) -> int:
         with tempfile.TemporaryDirectory() as temporary:
             entry = Path(temporary) / "entry.ts"
             entry.write_text(f'export * from "{spec}";\n', encoding="utf-8")
+            (entry.parent / "deno.json").write_text('{"nodeModulesDir": "none"}\n', encoding="utf-8")
             bundled = _run([deno, "bundle", "--platform", "deno", "--output", str(vendor_dir / f"{file_name}.mjs"), entry.name], entry.parent)
             if bundled.returncode != 0:
                 print(f"deno bundle {spec} failed:\n{bundled.stderr.strip()}")
