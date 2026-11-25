@@ -631,7 +631,7 @@ pub fn write_cross_zone_socks_credentials(etc_dir: &Path) -> std::io::Result<()>
     )
 }
 
-fn write_private_json(path: &Path, value: &Value) -> std::io::Result<()> {
+pub(crate) fn write_private_json(path: &Path, value: &Value) -> std::io::Result<()> {
     let tmp = path.with_extension("json.tmp");
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);

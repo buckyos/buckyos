@@ -18,6 +18,7 @@ import { getNotifyWatch } from '../../app/messagehub/notify'
 import { fetchAccountUsername } from '../../app/messagehub/datamodel/sessionApi'
 import type { MessageHubContext } from '../../app/messagehub/types'
 import { shellChannel } from '../../api/channel'
+import { onZoneRecovered } from '../../api/zone_link'
 import { isMockRuntime } from '../../runtime'
 import { loop } from '../../shared/activity/loop.ts'
 import type { UnreadConversations } from '../../shared/activity/messages.ts'
@@ -228,7 +229,7 @@ export function startTrayRuntime(sink: TrayRuntimeSink): () => void {
   }
   const onVisible = () => { if (visible()) kickAll() }
   document.addEventListener('visibilitychange', onVisible)
-  window.addEventListener('online', kickAll)
+  const stopRecovered = onZoneRecovered(kickAll)
   const stopRefresh = sink.onRefreshRequest(kickAll)
   return () => {
     messages.stop()
@@ -237,6 +238,6 @@ export function startTrayRuntime(sink: TrayRuntimeSink): () => void {
     summary.stop()
     stopRefresh()
     document.removeEventListener('visibilitychange', onVisible)
-    window.removeEventListener('online', kickAll)
+    stopRecovered()
   }
 }

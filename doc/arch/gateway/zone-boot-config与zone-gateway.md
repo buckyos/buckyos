@@ -309,7 +309,8 @@ SN托管只有`_pkx` TXT和NS `dns.<SN>`。
 * 激活前检测归属、NS、入口记录（含`ood1`、`sys`、`public`和一个随机子域）、证书挑战、CAA，全部通过才能激活；`commit_active`再检查一遍。规则见 `notepads/node-active-custom-domain-todo.md` §3.3.1。
 * 检测直接问权威NS，节点要能访问外网的53端口（UDP，截断时TCP）。出口拦了53端口的网络里检测通不过。
 * 激活后节点启动3分钟时检测一次，之后每6小时一次；有问题时每1小时一次。DNS API会顺带补回缺失的记录。
-* token被服务商拒绝时通知owner；自动签发的证书续期失败持续30分钟才通知，到期前14天内仍失败再通知一次。上传的证书不通知。
+* token被服务商拒绝时通知owner；自动签发的证书续期失败持续24小时才通知（还没有证书、或证书一天内到期时是30分钟），到期前14天内仍失败再通知一次。上传的证书不通知。
+* 一直没有可用证书的名字，签发累计被拒144次（按10分钟一次约一天；离线、服务端错误和限额不计）后停止申请，通知owner。owner解决原因后在Desktop“设置 > Cluster Manager”或“Zone Config”点“重新申请”（`domain.restart_certificate`，要sudo，node_daemon转给网关控制命令`restart_cert_order`）；`domain.update`成功后也会自动恢复。停止状态跨重启保留，停止期间上传证书照样生效。有证书的续期不会停止。
 
 ##### B1.3 证书
 

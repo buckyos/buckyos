@@ -5,35 +5,19 @@ import { checkDomain, domainErrorOf, fetchDomainStatus, planDomain, type DomainS
 import { useI18n } from '../../../../i18n/provider'
 import { formatDateTime, formatRelative } from '../shared/format'
 import { InfoRow, Section, SectionNote } from '../shared/Section'
+import { CertificateProgress } from './CertificateProgress'
+import { certificateState, useCertificateRestart, type CertificateRestart } from './certificates'
 import { DomainChecks } from './DomainChecks'
 import { DomainEditor } from './DomainEditor'
 import { newDraft, useDomainDraft, type EditorIntent } from './draft'
-import { certificateSourceText, failureOf, problemText, toDate, type DomainFailure, type Tone, type Translate } from './labels'
+import { certificateSourceText, failureOf, problemText, type DomainFailure } from './labels'
 import { Failure, Mono, Muted, StatusLine, StepTitle } from './parts'
 import { useDnsProviders } from './useDnsProviders'
 import { useDomainSudo } from './useDomainSudo'
 
-const SOON_MS = 14 * 86_400_000
-
-function certificateState(cert: HostCertStatus, t: Translate): { tone: Tone; state: string } {
-  const expires = toDate(cert.not_after)?.getTime()
-  if (!cert.loaded) {
-    return cert.acme?.state === 'ordering'
-      ? { tone: 'warn', state: t('settings.domain.cert.state.ordering') }
-      : { tone: 'fail', state: t('settings.domain.cert.state.missing') }
-  }
-  if (expires !== undefined && expires <= Date.now()) return { tone: 'fail', state: t('settings.domain.cert.state.expired') }
-  const late = cert.manager !== 'manual' && expires !== undefined && expires - Date.now() < SOON_MS
-  return {
-    tone: late || cert.acme?.last_error ? 'warn' : 'pass',
-    state: t(cert.acme?.state === 'renewing' ? 'settings.domain.cert.state.renewing' : 'settings.domain.cert.state.valid'),
-  }
-}
-
-function CertificateRow({ cert }: { cert: HostCertStatus }) {
+function CertificateRow({ cert, restart }: { cert: HostCertStatus; restart: CertificateRestart }) {
   const { t, locale } = useI18n()
   const { tone, state } = certificateState(cert, t)
-  const error = cert.acme?.last_error
   const facts = [
     cert.not_after != null ? t('settings.domain.cert.expires', undefined, { date: formatDateTime(cert.not_after, locale) }) : null,
     cert.issuer,
@@ -42,24 +26,19 @@ function CertificateRow({ cert }: { cert: HostCertStatus }) {
   return (
     <StatusLine tone={tone} title={<Mono>{cert.host}</Mono>} state={state} testId={`domain-cert-${cert.host}`}>
       {facts.length ? <Muted>{facts.join(' · ')}</Muted> : null}
-      {error ? (
-        <div className="mt-1">
-          <Failure failure={{ text: t('settings.domain.cert.lastError', undefined, { when: formatDateTime(error.at, locale) }), detail: error.message }} />
-          {cert.acme?.next_retry_at != null ? <Muted>{t('settings.domain.cert.nextRetry', undefined, { when: formatDateTime(cert.acme.next_retry_at, locale) })}</Muted> : null}
-        </div>
-      ) : null}
+      <CertificateProgress cert={cert} restart={restart} />
     </StatusLine>
   )
 }
 
-function Certificates({ status }: { status: DomainStatus }) {
+function Certificates({ status, restart }: { status: DomainStatus; restart: CertificateRestart }) {
   const { t } = useI18n()
   return (
     <div>
       <StepTitle>{t('settings.domain.certificates')}</StepTitle>
       {status.certificates.length ? (
         <div className="divide-y divide-[color:var(--cp-border)]">
-          {status.certificates.map((cert) => <CertificateRow key={cert.host} cert={cert} />)}
+          {status.certificates.map((cert) => <CertificateRow key={cert.host} cert={cert} restart={restart} />)}
         </div>
       ) : <Muted>{t('settings.domain.certificatesNone')}</Muted>}
     </div>
@@ -78,6 +57,7 @@ export function ZoneDomainSection() {
   const [failure, setFailure] = useState<DomainFailure | null>(null)
   const [savedNote, setSavedNote] = useState(false)
   const section = useRef<HTMLDivElement>(null)
+  const restart = useCertificateRestart(sudo, setStatus)
 
   const accept = useCallback(({ data, error }: Awaited<ReturnType<typeof fetchDomainStatus>>) => {
     if (data) {
@@ -197,7 +177,7 @@ export function ZoneDomainSection() {
                 </div>
                 {hosting ? null : <Muted>{t('settings.domain.defaultHint')}</Muted>}
 
-                <Certificates status={status} />
+                <Certificates status={status} restart={restart} />
 
                 {hosting ? (
                   <>

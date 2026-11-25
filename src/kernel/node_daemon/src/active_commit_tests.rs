@@ -511,6 +511,7 @@ impl Rig {
                 access_token: TOKEN.to_string(),
             },
             domain,
+            owner_mnemonic_words: None,
         }
     }
 
@@ -570,7 +571,7 @@ impl Rig {
             assert!(!content.contains(TOKEN), "{case}: {path}");
             if content.contains(key_line) {
                 assert!(
-                    is_device_key && path.contains("security/"),
+                    is_device_key && path.replace('\\', "/").contains("security/"),
                     "{case}: {path}"
                 );
             }

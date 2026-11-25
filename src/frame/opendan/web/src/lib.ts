@@ -1,15 +1,25 @@
 import { ago, lang } from './i18n'
-import useSWR, { type SWRResponse } from 'swr'
+import useSWR, { type RevalidatorOptions, type SWRConfiguration, type SWRResponse } from 'swr'
+import { OpenDanError } from './model'
 import type { AgentProfile, GoalDefinition, GoalSchedule, OpendanGoalExtension, RegistryEntry, UiBinding } from './model'
 
 export const REFRESH_MS = 4000
+
+const retryPoll = (revalidate: (options: RevalidatorOptions) => unknown, options: RevalidatorOptions) => {
+  setTimeout(() => document.hidden ? retryPoll(revalidate, options) : void revalidate(options), REFRESH_MS)
+}
+
+export const swrConfig: SWRConfiguration = {
+  isOnline: () => true,
+  onErrorRetry: (_error, _key, _config, revalidate, options) => retryPoll(revalidate, options),
+}
 
 export const useQuery = <T>(key: unknown[] | null, fetcher: () => Promise<T>, poll = true): SWRResponse<T, Error> =>
   useSWR<T, Error>(key, fetcher, {
     refreshInterval: poll ? REFRESH_MS : 0,
     revalidateOnFocus: false,
     keepPreviousData: true,
-    shouldRetryOnError: false,
+    shouldRetryOnError: (error) => poll && error instanceof OpenDanError && error.kind === 'transport',
   })
 
 export const fmtTime = (ms?: number | null): string => {

@@ -17,6 +17,9 @@ use super::dns::{
 };
 use super::plan::{apex_block, pkx_record_name, txt_matches, DomainSetup, NetId, SnNames};
 
+/// The code of every item while this node has no Internet access.
+pub const OFFLINE: &str = "offline";
+
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemStatus {
@@ -105,6 +108,12 @@ impl CheckReport {
             checked_at,
             items,
         }
+    }
+
+    pub fn is_offline(&self) -> bool {
+        self.items
+            .iter()
+            .any(|item| item.code.as_deref() == Some(OFFLINE))
     }
 
     pub fn item(&self, id: &str) -> Option<&CheckItem> {

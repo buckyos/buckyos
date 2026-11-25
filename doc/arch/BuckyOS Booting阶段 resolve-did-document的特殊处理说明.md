@@ -309,6 +309,18 @@ Resolve Zone Document
 
 ---
 
+### 8.3 唯一 OOD 的 Warm Restart：先启动，后 resolve
+
+Last Known Good State 里本节点是唯一的 OOD 时，启动不依赖任何别的设备，等 resolve 只会让断网启动慢最多 20 秒。这种节点直接用 Last Known Good State 启动，resolve 放到后台：
+
+- 启动后立即 resolve 一次，此后每小时一次；失败按 30 秒到 10 分钟退避重试。
+- 后台 resolve 绕开 zone locker 和 did cache：本节点此时已经在应答自己的 Zone，cache 里是启动时投影的文档，都不能当作新结果。校验不变，仍然只接受 owner 签名的 JWT。
+- 得到的文档走同一套 Accept 判断（§7、§11），接受的写进 Last Known Good State，**用于下一次启动**；正在运行的系统继续用启动时的文档，并记一条 warn 日志，写明 iat、OOD 列表和 SN 的变化。
+
+其它角色和多 OOD 的节点要靠 Zone Document 里当前的 OOD 列表才能进入 Zone，仍按 §8.2 先 resolve 再启动。`{zone host}.zone.json` 旁路文件存在时不 resolve，也没有后台刷新。
+
+---
+
 ## 9. Last Known Good State 原则
 
 BuckyOS Booting 阶段应始终遵循 Last Known Good State 原则：
@@ -474,7 +486,7 @@ Activation 的职责是：
 - 只写本次激活的 Zone。同一个 Zone 已有的状态直接覆盖，不经过 §7 的平滑升级判断：重新激活是 owner 的显式操作，旧状态对应的是上一次激活。
 - 写不成时删除旧状态。旧状态可能与新的 `node_identity` 不一致，留着会让节点用旧文档启动；删除后退回首次启动，激活本身不因此失败。
 - 其它 Zone 的状态文件不动。读取时按 `node_identity` 的 Zone DID 和 owner 公钥校验，对不上的当作没有。
-- 之后启动仍会做网络发现：发现到的文档 `iat` 更新且能平滑演进就接受并写入，否则忽略，规则不变（§8.2、§11）。
+- 之后仍会做网络发现（唯一 OOD 在启动后的后台，其它节点在启动时，§8.3）：发现到的文档 `iat` 更新且能平滑演进就接受并写入，否则忽略，规则不变（§8.2、§11）。
 
 ---
 

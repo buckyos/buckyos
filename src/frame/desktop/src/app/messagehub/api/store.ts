@@ -10,9 +10,10 @@ import { getAttachmentKey } from '../../../components/conversation/input/attachm
  * - viewer → owner isolation: caches, drafts, readers and late responses are
  *   keyed by `(viewerDid, ownerDid, sessionId)`; observers never write.
  */
-import { buckyos, identityKey, objectUrl, ndn, notifyCategoryFromSessionId } from 'buckyos'
+import { buckyos, identityKey, objectUrl, ndn, notifyCategoryFromSessionId, parseCurrentIdentity } from 'buckyos'
 import type { z } from 'zod'
 import { fetchAgentList } from '../../../api/user_mgr'
+import { onZoneRecovered, subscribeZoneEvents } from '../../../api/zone_link'
 import { onAgentsChanged, onOwnProfileChanged } from '../../agent-setup/events'
 import type { ComposerAttachmentInput } from '../../../components/conversation/input/attachmentDraft'
 import { InMemoryConversationMessageReader } from '../../../components/conversation/history/data-source'
@@ -182,6 +183,16 @@ async function hashKey(input: string): Promise<string> {
   return hash.toString(16)
 }
 
+/** The identity the SDK keeps for this browser, readable without the Zone. */
+function storedIdentityKey(): string | null {
+  try {
+    const identity = parseCurrentIdentity(JSON.parse(window.localStorage.getItem('buckyos.identity') ?? 'null'))
+    return identity && identityKey(identity)
+  } catch {
+    return null
+  }
+}
+
 export class MessageHubApiStore implements MessageHubStore {
   readonly isMock = false
   /** `identityKey` of the subject this store was loaded for; every cache below belongs to it. */
@@ -257,12 +268,15 @@ export class MessageHubApiStore implements MessageHubStore {
    * sign-out in another tab rewrites the shared Cookie and identity). The
    * store and every cache belong to the subject it was loaded for, so a
    * different one drops the attachments and reloads instead of showing the
-   * previous subject's data.
+   * previous subject's data. A session that cannot be read because the Zone
+   * does not answer is not a sign-out: only a sign-out or a refusal clears
+   * the identity the SDK keeps.
    */
   private async checkIdentity() {
     if (!this.identity) return
-    const current = identityKey(await buckyos.getCurrentIdentity())
-    if (current === this.identity) return
+    const identity = await buckyos.getCurrentIdentity()
+    if (!this.identity || identityKey(identity) === this.identity) return
+    if (identity.kind === 'anonymous' && storedIdentityKey() === this.identity) return
     this.identity = ''
     resetObjectCaches()
     window.location.reload()
@@ -463,10 +477,14 @@ export class MessageHubApiStore implements MessageHubStore {
       for (const agentDid of data.agentConversations.keys()) void this.loadConversations(context, agentDid)
     }, CONTACT_POLL_MS)
     const refreshPeople = () => { void this.refreshPeople(context) }
-    const reconnect = () => { void this.refreshSummaries(context) }
+    const refresh = () => {
+      if (stopped || data.epoch === -1) return
+      void this.refreshSummaries(context)
+      if (activeSessionId) void this.reconcileTail(context, activeSessionId)
+    }
     const checkIdentity = () => { void this.checkIdentity().catch(() => undefined) }
     const identityTimer = setInterval(checkIdentity, SUMMARY_POLL_MS)
-    window.addEventListener('online', reconnect)
+    const stopRecoveredListener = onZoneRecovered(refresh)
     window.addEventListener('storage', checkIdentity)
     const stopProfileListener = onOwnProfileChanged(refreshPeople)
     const stopAgentsListener = onAgentsChanged(refreshPeople)
@@ -478,16 +496,10 @@ export class MessageHubApiStore implements MessageHubStore {
       else void this.reconcileTail(context, activeSessionId)
       void this.refreshRuntime(context, activeSessionId); void this.ensureSessionPrefs(context, activeSessionId)
     }
-    let subscription: { close(): Promise<void> } | null = null
-    const patterns = [objectUrl.objEventPattern('msg-center', ['owners', context.ownerDid, 'sessions'])]
-    void buckyos.subscribeKEvent(patterns, () => {
-      if (stopped || data.epoch === -1) return
-      void this.refreshSummaries(context)
-      if (activeSessionId) void this.reconcileTail(context, activeSessionId)
-    }).then(handle => { if (stopped) void handle.close(); else subscription = handle }).catch(() => { /* polling remains the baseline */ })
+    const stopEvents = subscribeZoneEvents([objectUrl.objEventPattern('msg-center', ['owners', context.ownerDid, 'sessions'])], refresh)
     return () => {
       stopped = true
-      window.removeEventListener('online', reconnect)
+      stopRecoveredListener()
       window.removeEventListener('storage', checkIdentity)
       clearInterval(identityTimer)
       clearInterval(summaryTimer)
@@ -496,7 +508,7 @@ export class MessageHubApiStore implements MessageHubStore {
       stopAgentsListener()
       if (tailTimer) clearInterval(tailTimer)
       if (runtimeTimer) clearInterval(runtimeTimer)
-      if (subscription) void subscription.close()
+      stopEvents()
     }
   }
 

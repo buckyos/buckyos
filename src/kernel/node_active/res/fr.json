@@ -65,6 +65,8 @@
     "host_account_hint": "Les Agents auxquels vous ouvrez l'accès à l'hôte exécutent leurs commandes sur cette machine avec ce compte. Les autres Agents ne sont pas concernés. Un compte ordinaire ne peut pas utiliser sudo depuis un Agent.",
     "host_account_none": "Aucun (les Agents ne peuvent pas exécuter de commandes sur cette machine)",
     "host_account_root_warning": "Les Agents auxquels vous ouvrez l'accès à l'hôte auront le contrôle total de cette machine, et toute personne qui prend votre compte owner aura le même contrôle. Ne choisissez root que si un Agent doit entretenir cette machine.",
+    "save_mnemonic_label": "Enregistrer la phrase de récupération sur cet appareil (développement et tests uniquement)",
+    "save_mnemonic_warning": "La phrase de récupération est écrite en clair dans start_config.json. Toute personne pouvant lire ce fichier contrôle entièrement cette identité. À réserver aux comptes de test.",
     "activate_button": "Activer",
     "default_credentials": "Nom d'utilisateur de connexion : {{username}}",
     "copy_link": "Copier le lien",

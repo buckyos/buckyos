@@ -288,6 +288,7 @@ export type ActiveWizzardData = {
   owner_document: BuckyOSOwnerDocument | null;
   evm_address: string;
   web_owner_material: WebOwnerMaterial | null;
+  save_owner_mnemonic: boolean;
   device_public_key: Ed25519Jwk;
   device_private_key: string;
   is_wallet_runtime: boolean;

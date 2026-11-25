@@ -373,6 +373,7 @@ impl Account {
                 access_token: self.access_token.clone(),
             },
             domain,
+            owner_mnemonic_words: None,
         }
     }
 

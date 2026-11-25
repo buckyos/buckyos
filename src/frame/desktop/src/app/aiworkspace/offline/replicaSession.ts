@@ -19,7 +19,7 @@
  * `EPOCH_MISMATCH` / `BASE_TOO_OLD` / lost access stop everything; nothing is discarded. */
 
 import { ServiceFailure, type AiwsClient } from '../api/client'
-import { OnlineWorkspaceSession, SESSION_STOP_CODES, SESSION_STOP_TEXT, browserOffline, refusedVersion, versionMismatch } from '../api/session'
+import { OnlineWorkspaceSession, SESSION_STOP_CODES, SESSION_STOP_TEXT, refusedVersion, versionMismatch } from '../api/session'
 import type { CommitOptions, ImportedAsset, OfflineControls, ReadOk, SessionMode, SessionStatus, SubmissionEvent, UploadControl, WorkspaceSession } from '../api/session'
 import { TransportError } from '../api/transport'
 import { aiwsT, localizedLabels } from '../i18n'
@@ -209,7 +209,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   private setStatus(status: SessionStatus) {
     const previous = this.currentStatus
     if (previous.kind === 'stopped') return
-    const same = previous.kind === status.kind && (status.kind !== 'offline' || (previous.kind === 'offline' && previous.detail === status.detail && previous.browserOffline === status.browserOffline))
+    const same = previous.kind === status.kind && (status.kind !== 'offline' || (previous.kind === 'offline' && previous.detail === status.detail && previous.zoneUnreachable === status.zoneUnreachable))
     this.currentStatus = status
     if (!same) this.statusListeners.forEach((listener) => listener())
   }
@@ -324,7 +324,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
           this.stop('REPLICA_BROKEN')
           break
         }
-        this.setStatus({ kind: 'offline', detail: error.message, browserOffline: browserOffline() })
+        this.setStatus({ kind: 'offline', detail: error.message, zoneUnreachable: error.kind === 'network' })
         // local edits do not hurry the next attempt; the browser's `online` event does
         await wait(backoff, this.wakeAbort.signal)
         backoff = Math.min(backoff * 2, 8000)
@@ -618,7 +618,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
 
   private offlineFailure(what: string): ServiceFailure {
     const status = this.currentStatus
-    const why = aiwsT(status.kind === 'stopped' ? 'aiworkspace.core.replica.why.stopped' : status.kind === 'offline' && status.browserOffline ? 'aiworkspace.core.replica.why.browserOffline' : 'aiworkspace.core.replica.why.unreachable')
+    const why = aiwsT(status.kind === 'stopped' ? 'aiworkspace.core.replica.why.stopped' : status.kind === 'offline' && status.zoneUnreachable ? 'aiworkspace.core.replica.why.zoneUnreachable' : 'aiworkspace.core.replica.why.unreachable')
     return new ServiceFailure({ code: 'BACKEND_UNREACHABLE', detail: aiwsT('aiworkspace.core.replica.offlineFailure', { what, why }) })
   }
 

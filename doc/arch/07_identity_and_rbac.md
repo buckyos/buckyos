@@ -178,7 +178,7 @@ notepads 已明确标注了传播延迟：`new_doc/ref/notepads/rbac.md`。
 - runtime 会在接近过期时尝试 renew：`renew_token_from_verify_hub()` 内对 `exp - 30` 做判断并触发 `login_by_jwt`（`src/kernel/buckyos-api/src/runtime.rs`）。
 
 ### 3) “刷新 token 后，旧 token 立刻不能用了”
-- verify-hub 的 refresh family 存在本地 SQLite（`data/var/verify-hub/sessions.db`，`src/kernel/verify_hub/src/family_store.rs`），每次 refresh 轮换 jti；被替换的旧 refresh 只在 10 秒宽限期内返回当前那对 token，之后再出示视为重用并撤销整条 family。
+- verify-hub 的 refresh family 存在本地 SQLite（`data/var/verify-hub/sessions.db`，`src/kernel/verify_hub/src/family_store.rs`），每次 refresh 轮换 jti；被替换的旧 refresh 只在 35 秒宽限期内返回当前那对 token，之后再出示视为重用并撤销整条 family。
 - refresh 与宽限分支都会先复核账号状态、类型（会话上限只收窄不放宽）、来源（专属邀请未撤销）、联合会话的 30 天绝对期限和受限子会话的父 family。
 
 ### 4) “verify-hub 重启后，部分会话异常”

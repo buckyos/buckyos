@@ -28,6 +28,7 @@ import { fetchAgentList } from './user_mgr'
 import { getSharedAppServiceStore } from '../app/app-service/hooks/use-app-service-store'
 import type { InstallTask } from '../app/app-service/types'
 import { TaskCenterMockStore } from './task_mgr_mock.ts'
+import { subscribeZoneEvents } from './zone_link.ts'
 import { createDownloadTask, type CreateDownloadInput } from './downloads.ts'
 import { toProgressPercent } from './task_progress.ts'
 import {
@@ -1428,25 +1429,19 @@ export function createTaskWatchSource(): TaskWatchSource {
   // One event stream for every watched task: a stream per task would use up
   // the browser's connections to the zone host and starve the reads.
   const listeners = new Map<string, Set<() => void>>()
-  let stream: { close(): Promise<void> } | null = null
-  let generation = 0
+  let closeStream: (() => void) | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
   const reopen = () => {
     timer = null
-    const mine = ++generation
-    const previous = stream
-    stream = null
-    if (previous) void previous.close()
+    closeStream?.()
+    closeStream = null
     const paths = [...listeners.keys()]
     if (paths.length === 0) return
-    void buckyos.subscribeKEvent(paths, event => {
-      if (mine !== generation) return
+    closeStream = subscribeZoneEvents(paths, event => {
       for (const [path, set] of listeners) {
         if (event.eventid === path || event.eventid.startsWith(`${path}/`)) set.forEach(hint => hint())
       }
     })
-      .then(subscription => { if (mine === generation) stream = subscription; else void subscription.close() })
-      .catch(() => { /* polling remains the baseline */ })
   }
   const scheduleStream = () => { timer ??= setTimeout(reopen, 250) }
   return {

@@ -64,9 +64,6 @@ export const en: Record<string, string> = {
   'aiworkspace.core.list.cloned': 'Copied as the new workspace {{id}}.',
   'aiworkspace.core.list.confirmDelete': 'Confirm deleting the workspace (moves it to the recycle folder)',
   'aiworkspace.core.list.delete': 'Delete workspace',
-  'aiworkspace.core.list.preparedStatus': '{{network}} {{prepared}}',
-  'aiworkspace.core.list.browserOffline': 'The browser is offline.',
-  'aiworkspace.core.list.backendUnreachable': 'The browser is online but cannot reach the BuckyOS server.',
   'aiworkspace.core.list.preparedHint': 'The workspaces below are available offline on this device and can be opened and edited; changes are saved on this device and committed once the connection is back.',
   'aiworkspace.core.list.noneOffline': 'No workspace has been made available offline on this device.',
   'aiworkspace.core.list.offlineCopy': 'Offline copy',
@@ -154,7 +151,7 @@ export const en: Record<string, string> = {
   'aiworkspace.core.session.nothingToResend': 'There is no request to resend',
   'aiworkspace.core.session.unreachable': 'The server is unreachable',
   'aiworkspace.core.session.cannotConnect': 'Cannot connect to the server: {{error}}',
-  'aiworkspace.core.session.cannotConnectOffline': 'Cannot connect to the server (the browser is offline): {{error}}',
+  'aiworkspace.core.session.zoneUnreachable': 'Zone unreachable: {{error}}',
 
   'aiworkspace.core.transport.mockRuntime': 'The Desktop is running in the mock runtime, which has no aiworkspace service. AI Workspace has no mock backend: start the standalone backend and set localStorage[\'{{key}}\'] = {"token":"<test token>"} (see the app README), or open it in a real Zone.',
 
@@ -225,7 +222,7 @@ export const en: Record<string, string> = {
   'aiworkspace.core.replica.pendingLocalEdits': 'This device still has unsynced changes: run again once they are synced, so the server does not work from the old configuration',
   'aiworkspace.core.replica.lockedReadOnly': 'This object uses an edit lock: it is read-only while the server is unreachable, and this change was not saved',
   'aiworkspace.core.replica.why.stopped': 'sync stopped',
-  'aiworkspace.core.replica.why.browserOffline': 'the browser is offline',
+  'aiworkspace.core.replica.why.zoneUnreachable': 'the Zone is unreachable',
   'aiworkspace.core.replica.why.unreachable': 'the server is unreachable',
   'aiworkspace.core.replica.offlineFailure': '{{what}} ({{why}})',
 }
@@ -290,9 +287,6 @@ export const zh: Record<string, string> = {
   'aiworkspace.core.list.cloned': '已复制为新工作区 {{id}}。',
   'aiworkspace.core.list.confirmDelete': '确认删除工作区（移入回收目录）',
   'aiworkspace.core.list.delete': '删除工作区',
-  'aiworkspace.core.list.preparedStatus': '{{network}}{{prepared}}',
-  'aiworkspace.core.list.browserOffline': '浏览器处于离线状态。',
-  'aiworkspace.core.list.backendUnreachable': '浏览器网络在线，但连接不到 BuckyOS 后台。',
   'aiworkspace.core.list.preparedHint': '以下工作区已在本设备准备离线，可以打开并编辑；修改保存在本设备，恢复连接后提交。',
   'aiworkspace.core.list.noneOffline': '本设备上没有准备过离线的工作区。',
   'aiworkspace.core.list.offlineCopy': '离线副本',
@@ -374,7 +368,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.core.session.nothingToResend': '没有可重发的请求',
   'aiworkspace.core.session.unreachable': '后台不可达',
   'aiworkspace.core.session.cannotConnect': '无法连接后台：{{error}}',
-  'aiworkspace.core.session.cannotConnectOffline': '无法连接后台（浏览器处于离线状态）：{{error}}',
+  'aiworkspace.core.session.zoneUnreachable': 'Zone 连不上：{{error}}',
 
   'aiworkspace.core.transport.mockRuntime': 'Desktop 正在 Mock 运行时中运行，没有可用的 aiworkspace 服务。AI 工作区没有 Mock 后台：请启动独立后台并设置 localStorage[\'{{key}}\'] = {"token":"<测试令牌>"}（见应用 README），或在真实 Zone 中打开。',
 
@@ -440,7 +434,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.core.replica.pendingLocalEdits': '本机还有未同步的修改：同步完成后再运行，避免后台按旧配置执行',
   'aiworkspace.core.replica.lockedReadOnly': '此对象启用了写锁：后台不可达时它是只读的，这次修改没有保存',
   'aiworkspace.core.replica.why.stopped': '同步已停止',
-  'aiworkspace.core.replica.why.browserOffline': '浏览器处于离线状态',
+  'aiworkspace.core.replica.why.zoneUnreachable': 'Zone 连不上',
   'aiworkspace.core.replica.why.unreachable': '后台不可达',
   'aiworkspace.core.replica.offlineFailure': '{{what}}（{{why}}）',
 }

@@ -1,8 +1,9 @@
+use std::net::IpAddr;
 use std::path::Path;
 use std::process::exit;
 use std::sync::{Arc, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use tokio::sync::RwLock;
 
 use clap::ArgMatches;
@@ -24,6 +25,8 @@ use package_lib::*;
 
 use crate::active_server::*;
 use crate::app_mgr::*;
+use crate::app_sessions::AppSessions;
+use crate::background_call::BackgroundCall;
 use crate::boot::{
     build_boot_node_gateway_info, build_keep_tunnel_targets, dedup_keep_tunnel_targets,
     discover_oods_in_lan, extract_keep_tunnel_targets_from_gateway_info,
@@ -42,7 +45,7 @@ use crate::kernel_mgr::*;
 use crate::kevent_server::*;
 use crate::local_app_mgr::LocalAppRunItem;
 use crate::run_item::*;
-use crate::run_plist::begin_run_plist_batch;
+use crate::run_plist::{begin_run_plist_batch, last_run_plist_update};
 use crate::service_pkg::*;
 use crate::sn_zone_info::{load_sn_zone_info, relay_node_for_keep_tunnel, save_sn_zone_info};
 use crate::zone_boot_resolve::{
@@ -66,6 +69,11 @@ type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
 const PUBLISH_README: &str = include_str!("../../../rootfs/data/srv/publish/readme");
 const SN_ZONE_INFO_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+const SN_ZONE_INFO_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(15);
+const SN_ZONE_INFO_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// A successful report is repeated with every device info update.
+const SN_REPORT_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(30);
+const SN_REPORT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(2 * 60);
 
 // Zone Document 的 Boot 阶段解析（resolve + accept 状态机、Last Known Good
 // State、smooth upgrade 检查）在 zone_boot_resolve.rs，设计依据
@@ -1337,6 +1345,7 @@ async fn node_main(
     is_ood: bool,
     is_desktop: bool,
     buckyos_api_client: &SystemConfigClient,
+    app_sessions: &mut AppSessions,
 ) -> Result<bool> {
     //control replica instance to target state
     let node_config = load_node_config(node_host_name, buckyos_api_client)
@@ -1350,6 +1359,16 @@ async fn node_main(
         warn!("node_config.is_running is set to false manually, will restart node_daemon...");
         return Ok(false);
     }
+
+    app_sessions.zone_reached(
+        buckyos_get_unix_timestamp(),
+        node_config
+            .apps
+            .iter()
+            .filter(|(_, app)| app.target_state == ServiceInstanceState::Started)
+            .map(|(app_instance_id, _)| app_instance_id.clone()),
+    );
+    let app_sessions = &*app_sessions;
 
     let _run_plist_batch = begin_run_plist_batch();
     stop_orphan_native_apps(&node_config).await;
@@ -1406,6 +1425,19 @@ async fn node_main(
     let app_stream = stream::iter(node_config.apps);
     let app_task = app_stream.for_each_concurrent(4, |(app_id_with_name, app_cfg)| async move {
         let app_run_item = AppRunItem::new(&app_id_with_name, app_cfg.clone());
+
+        if app_sessions.is_lost(&app_id_with_name) {
+            match app_run_item.stop(None).await {
+                Ok(()) => app_sessions.stopped(&app_id_with_name),
+                Err(err) => {
+                    error!(
+                        "stop app {} whose session ended failed: {}",
+                        app_id_with_name, err
+                    );
+                    return;
+                }
+            }
+        }
 
         let target_state = RunItemTargetState::from_instance_state(&app_cfg.target_state);
         let _ = ensure_run_item_state(&app_run_item, target_state)
@@ -1481,7 +1513,18 @@ async fn node_daemon_main_loop(
     let mut keep_tunnel_config_id: Option<ObjId> = None;
     let mut network_observer = NetworkObserver::new(NetworkObserverConfig::default());
     let mut device_sampler = DeviceSystemInfoSampler::new();
-    let mut last_zone_info_refresh: Option<Instant> = None;
+    let mut app_sessions = AppSessions::new(last_run_plist_update());
+    let mut zone_info_refresh = BackgroundCall::new(
+        SN_ZONE_INFO_REFRESH_INTERVAL,
+        SN_ZONE_INFO_RETRY_BASE,
+        SN_ZONE_INFO_RETRY_MAX,
+    );
+    let mut sn_report = BackgroundCall::new(
+        std::time::Duration::ZERO,
+        SN_REPORT_RETRY_BASE,
+        SN_REPORT_RETRY_MAX,
+    );
+    let mut device_ips: Option<BTreeSet<IpAddr>> = None;
     let mut sn_zone_info = match load_sn_zone_info() {
         Ok(zone_info) => zone_info,
         Err(err) => {
@@ -1534,33 +1577,30 @@ async fn node_daemon_main_loop(
             )
         })?;
         let device_private_key = buckyos_runtime.device_private_key.as_ref().unwrap();
-        if last_zone_info_refresh
-            .as_ref()
-            .is_none_or(|last_refresh| last_refresh.elapsed() >= SN_ZONE_INFO_REFRESH_INTERVAL)
-        {
-            last_zone_info_refresh = Some(Instant::now());
-            let previous_relay_node = relay_node_for_keep_tunnel(
-                device_doc,
-                zone_document.sn.as_deref(),
-                sn_zone_info.as_ref(),
-            );
-            match refresh_sn_zone_info(device_doc, device_private_key, &zone_document).await {
-                Ok(new_zone_info) => {
-                    let new_relay_node = relay_node_for_keep_tunnel(
+        match zone_info_refresh.take_result().await {
+            Some(Ok(new_zone_info)) => {
+                let relay_node = |zone_info: &Option<SnZoneInfoResp>| {
+                    relay_node_for_keep_tunnel(
                         device_doc,
                         zone_document.sn.as_deref(),
-                        new_zone_info.as_ref(),
+                        zone_info.as_ref(),
+                    )
+                };
+                let previous_relay_node = relay_node(&sn_zone_info);
+                let new_relay_node = relay_node(&new_zone_info);
+                if previous_relay_node != new_relay_node {
+                    info!(
+                        "SN relay node changed: {:?} -> {:?}",
+                        previous_relay_node, new_relay_node
                     );
-                    if previous_relay_node != new_relay_node {
-                        info!(
-                            "SN relay node changed: {:?} -> {:?}",
-                            previous_relay_node, new_relay_node
-                        );
-                    }
-                    sn_zone_info = new_zone_info;
                 }
-                Err(err) => warn!("refresh SN zone info failed: {}", err),
+                sn_zone_info = new_zone_info;
             }
+            Some(Err(err)) => warn!("refresh SN zone info failed: {}", err),
+            None => {}
+        }
+        if let Some(Err(err)) = sn_report.take_result().await {
+            warn!("report ood info to sn failed: {}", err);
         }
         let now = buckyos_get_unix_timestamp();
         if now - last_register_time > 30 {
@@ -1584,13 +1624,26 @@ async fn node_daemon_main_loop(
             debug!("update device info: {:?}", device_info);
             update_device_info(&device_info, &system_config_client).await;
             publish_device_info_kevent(&device_info).await;
+            let ips: BTreeSet<IpAddr> = device_info.all_ip.iter().copied().collect();
+            if device_ips.as_ref().is_some_and(|known| *known != ips) {
+                sn_report.network_changed();
+                zone_info_refresh.network_changed();
+            }
+            device_ips = Some(ips);
             //TODO：SN的上报频率不用那么快
-            if let Err(err) =
-                report_ood_info_to_sn(&device_info, device_private_key, &zone_document).await
-            {
-                warn!("report ood info to sn failed: {}", err);
+            if sn_report.is_due() {
+                let zone_document = zone_document.clone();
+                sn_report.start(async move {
+                    report_ood_info_to_sn(&device_info, device_private_key, &zone_document).await
+                });
             }
             last_register_time = now;
+        }
+        if zone_info_refresh.is_due() {
+            let zone_document = zone_document.clone();
+            zone_info_refresh.start(async move {
+                refresh_sn_zone_info(device_doc, device_private_key, &zone_document).await
+            });
         }
 
         if is_ood {
@@ -1609,6 +1662,7 @@ async fn node_daemon_main_loop(
             is_ood,
             is_desktop,
             &system_config_client,
+            &mut app_sessions,
         )
         .await;
 

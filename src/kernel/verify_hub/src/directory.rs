@@ -40,6 +40,8 @@ pub trait ZoneDirectory: Send + Sync {
         read_optional(&buckyos_api::oauth_binding_key(issuer,sub)).await
     }
     async fn list_users(&self) -> Result<Vec<String>>;
+    /// Whether the Zone still has the device.
+    async fn device_registered(&self, device: &str) -> Result<bool>;
     async fn exclusive_invite(&self, invite_id: &str) -> Result<Option<ExclusiveInvite>>;
     async fn sso_settings(&self) -> Result<SsoSettings>;
     async fn has_share_acceptance(
@@ -133,6 +135,10 @@ impl ZoneDirectory for SystemConfigDirectory {
 
     async fn native_login_binding(&self, did: &DID) -> Result<Option<String>> {
         read_json(&buckyos_api::native_login_binding_key(&did.to_string())).await
+    }
+
+    async fn device_registered(&self, device: &str) -> Result<bool> {
+        Ok(read_optional(&format!("devices/{device}/doc")).await?.is_some())
     }
 
     async fn list_users(&self) -> Result<Vec<String>> {

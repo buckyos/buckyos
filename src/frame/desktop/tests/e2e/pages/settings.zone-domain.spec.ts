@@ -87,6 +87,29 @@ test.describe('settings: Zone domain and certificate', () => {
     await expect(section.getByTestId('domain-check-ownership')).toContainText('Passed')
   })
 
+  test('a certificate that is no longer requested is requested again, from here and from Cluster Manager', async ({ page }) => {
+    const stopped = { state: 'stopped', last_error: { message: 'urn:ietf:params:acme:error:dns', at: soon() }, next_retry_at: null }
+    const section = await openSection(page, hosted('dns_api', 'acme', {
+      certificates: certificates('acme', { loaded: false, not_after: null, issuer: null, fingerprint: null, acme: stopped }),
+    }))
+    const cert = section.getByTestId(`domain-cert-${DOMAIN}`)
+    await expect(cert).toContainText('Stopped')
+    await expect(cert).toContainText('no longer requested')
+    await cert.getByRole('button', { name: 'Request again' }).click()
+    await expect(cert).toContainText('Being issued')
+    await expect(cert).not.toContainText('no longer requested')
+    await expect(section.getByTestId(`domain-cert-*.${DOMAIN}`)).toContainText('Stopped')
+
+    const win = page.getByTestId('window-settings')
+    await win.getByRole('button', { name: 'Cluster Manager', exact: true }).click()
+    const list = win.getByTestId('settings-cluster-certificates')
+    const wildcard = list.getByTestId(`settings-certificate-*.${DOMAIN}`)
+    await expect(wildcard).toContainText('Stopped')
+    await wildcard.getByRole('button', { name: 'Request again' }).click()
+    await expect(wildcard).toContainText('Being issued')
+    await expect(list.getByTestId(`settings-certificate-${DOMAIN}`)).toContainText('Being issued')
+  })
+
   test('status: a delegated domain, an order under way and a failed one are explained, raw messages are folded away', async ({ page }) => {
     const item = (id: string, status: string, code: string, detail: string | null = null) => ({ id, status, code, detail, expected: [], actual: [], targets: [] })
     const check = (...items: object[]) => ({ ready: false, bound: null, checked_at: soon(), items })

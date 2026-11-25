@@ -65,6 +65,8 @@
     "host_account_hint": "Agenten, denen Sie den Zugriff auf den Host erlauben, führen Befehle auf diesem Rechner mit diesem Konto aus. Andere Agenten sind nicht betroffen. Ein normales Konto kann aus einem Agenten heraus kein sudo verwenden.",
     "host_account_none": "Keines (Agenten können auf diesem Rechner keine Befehle ausführen)",
     "host_account_root_warning": "Agenten, denen Sie den Zugriff auf den Host erlauben, haben die volle Kontrolle über diesen Rechner. Wer Ihr Owner-Konto übernimmt, erhält dieselbe Kontrolle. Wählen Sie root nur, wenn ein Agent diesen Rechner warten soll.",
+    "save_mnemonic_label": "Wiederherstellungsphrase auf diesem Gerät speichern (nur für Entwicklung und Tests)",
+    "save_mnemonic_warning": "Die Wiederherstellungsphrase wird im Klartext in start_config.json geschrieben. Wer diese Datei lesen kann, hat die volle Kontrolle über diese Identität. Nur für Testkonten verwenden.",
     "activate_button": "Aktivieren",
     "default_credentials": "Anmeldename: {{username}}",
     "copy_link": "Link kopieren",

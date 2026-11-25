@@ -1205,9 +1205,11 @@ mock store 同规则）。这些账号的会话仍可经 `entityById` / launch c
   观察模式显示被观察 owner（viewer 自己实体列表里的名字与头像）。昵称过长时截断为省略号，`title` 保留全名。
   昵称后的徽标为未读总数：未静音的顶层实体 `unreadCount` 之和。
 - **同步状态**：不在线时身份区的昵称与徽标换成状态（转圈 + 文字，`role="status"` 播报）：
-  浏览器离线 → “等待网络…”；`store.syncStatus(context) === 'connecting'` → “连接中…”。
+  Zone 连不上（`src/api/zone_link.ts`：kevent 断开后 5 秒内没有任何回应，不看 `navigator.onLine`）→ “Zone 连不上”；
+  `store.syncStatus(context) === 'connecting'` → “连接中…”。
   真实 store 在会话列表刷新（`refreshSummaries`）失败后置为 `connecting`，下一次成功刷新恢复 `online`；
-  浏览器 `online` 事件会立刻补一次刷新。mock 用 `configure({ sync })` 切换。
+  Zone 恢复连接（`onZoneRecovered`，也含浏览器 `online` 事件）会立刻补一次刷新。mock 用 `configure({ sync })` 切换，
+  Zone 连不上用 `window.__mockZoneLink.setDown`。
 - **`+`**：发起聊天（§4.1.2）、新建群聊、加入群；观察模式（`canManage` 为假）整组禁用。
 - **`⋮`**：返回桌面（仅独立路由）、媒体设置、收起列表（仅桌面布局）。
 - **编辑模式**：编辑按钮切换（再次点击或 Esc 退出），行首出现选择圈，点行即选择，顶部显示已选数量，

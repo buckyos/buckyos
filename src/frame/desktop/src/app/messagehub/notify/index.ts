@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
+import { onZoneRecovered } from '../../../api/zone_link'
 import { foldMessageRelations, messageObjId } from '../../../components/conversation/history/relations'
 import type { ConversationMessageReader } from '../../../components/conversation/history/types'
 import { getMockNotifyBackend } from '../mock/notify'
@@ -17,7 +18,7 @@ export function getNotifyWatch(): NotifyWatch {
   const watch = new NotifyWatch(isMessageHubMock() ? getMockNotifyBackend() : createApiNotifyBackend())
   instance = watch
   if (typeof window !== 'undefined') {
-    window.addEventListener('online', () => watch.resync())
+    onZoneRecovered(() => watch.resync())
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') watch.resync() })
     if (import.meta.env.DEV) Object.assign(window, { __messageHubNotifyWatch: watch })
   }

@@ -22,10 +22,10 @@ function range(start: number, count: number) {
 
 async function fixture(run: (store: MessageHubApiStore, backend: { records: MailboxRecord[]; pages: number }) => Promise<void>) {
   const backend = { records: range(1000, 10), pages: 0 }
-  const saved = { getCurrentIdentity: buckyos.getCurrentIdentity, getAccountInfo: buckyos.getAccountInfo, getServiceRpcClient: buckyos.getServiceRpcClient, subscribeKEvent: buckyos.subscribeKEvent }
+  const saved = { getCurrentIdentity: buckyos.getCurrentIdentity, getAccountInfo: buckyos.getAccountInfo, getServiceRpcClient: buckyos.getServiceRpcClient, createEventReader: buckyos.createEventReader }
   buckyos.getCurrentIdentity = async () => ({ kind: 'anonymous' })
   buckyos.getAccountInfo = async () => ({ user_id: 'me', user_name: 'Me', session_token: 'test-only' })
-  buckyos.subscribeKEvent = (async () => ({ close: async () => {} })) as unknown as typeof buckyos.subscribeKEvent
+  buckyos.createEventReader = (async () => ({ pullEvent: () => new Promise(() => {}), close: async () => {} })) as unknown as typeof buckyos.createEventReader
   Object.assign(globalThis, { window: globalThis })
   buckyos.getServiceRpcClient = (() => ({
     call: async (method: string, input: Record<string, unknown>) => {
@@ -108,3 +108,20 @@ Deno.test('a gap past the page limit restarts the timeline from the latest pages
     equal(store.hasOlder(store.defaultContext(), session), false)
   })
 })
+
+Deno.test('what arrived while the event stream was down shows once the Zone is reached again', () => fixture(async (store, backend) => {
+  let drop: (() => void) | undefined
+  buckyos.createEventReader = (async () => ({ pullEvent: () => new Promise(resolve => { drop = () => resolve(null) }), close: async () => {} })) as unknown as typeof buckyos.createEventReader
+  const stop = store.startSync(store.defaultContext(), session)
+  try {
+    await settle(() => backend.pages >= 1 && !!drop)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    backend.records.push(record(1010))
+    drop!()
+    await new Promise(resolve => setTimeout(resolve, 1_100))
+    await settle(() => store.reader(store.defaultContext(), session).totalCount === 11)
+    equal((await timelineIds(store)).at(-1), 1010)
+  } finally {
+    stop()
+  }
+}))

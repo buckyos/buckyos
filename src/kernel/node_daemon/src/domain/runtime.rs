@@ -49,10 +49,13 @@ const ROUND_INTERVAL: Duration = Duration::from_secs(6 * 3600);
 /// While something is wrong.
 const PROBLEM_ROUND_INTERVAL: Duration = Duration::from_secs(3600);
 /// A first failed issuance is usually gone by the next attempt.
-const RENEWAL_GRACE_SECS: u64 = 1800;
+const ISSUANCE_GRACE_SECS: u64 = 1800;
+/// Renewing begins long before the expiry, also on laptops that are often offline.
+const RENEWAL_GRACE_SECS: u64 = 24 * 3600;
 const EXPIRY_WARNING_SECS: u64 = 14 * 24 * 3600;
 /// An attempt this close counts as under way.
 const ORDER_LEAD_SECS: u64 = 30;
+const RENEWAL_FAILED: &str = "renewal_failed";
 const CHECK_TRIAL_WAIT: Duration = Duration::from_secs(8);
 const FULL_TRIAL_WAIT: Duration = Duration::from_secs(360);
 
@@ -75,6 +78,7 @@ pub trait ZoneAccess: Send + Sync {
     async fn hosting(&self) -> Result<Option<DomainHosting>, String>;
     async fn set_hosting(&self, hosting: &DomainHosting) -> Result<(), String>;
     async fn cert_status(&self) -> Result<Vec<Value>, String>;
+    async fn restart_cert(&self, host: &str) -> Result<(), String>;
     async fn notify_owner(&self, title: String, message: String, key: String)
         -> Result<(), String>;
     fn binding(&self) -> Box<dyn DomainBinding>;
@@ -172,6 +176,12 @@ struct UpdateParams {
     #[serde(default)]
     certificate_id: Option<String>,
     accept_warnings: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestartCertificateParams {
+    host: String,
 }
 
 fn parse<T: DeserializeOwned>(params: Value) -> Result<T, RPCErrors> {
@@ -312,10 +322,16 @@ impl DomainRuntime {
             .map_err(|error| DomainError::new("system_config_unavailable", error))?;
         let certificates = self.certificates(&self.facts.hostname).await;
         let check = self.state.lock().unwrap().check.clone();
-        let (check, problems) = match &hosting {
+        let (check, mut problems) = match &hosting {
             None => (None, BTreeSet::new()),
             Some(hosting) => (check, self.problems(hosting, &certificates)),
         };
+        // Nothing is renewed without Internet access, and nothing is wrong.
+        if let (true, Some(service)) = (problems.contains(RENEWAL_FAILED), &self.service) {
+            if !service.online().await {
+                problems.remove(RENEWAL_FAILED);
+            }
+        }
         let credential = hosting
             .as_ref()
             .and_then(|hosting| {
@@ -334,6 +350,24 @@ impl DomainRuntime {
             "check": check,
             "problems": problems,
         }))
+    }
+
+    /// Orders the certificate of a host again now, also after it was refused so
+    /// often that the gateway stopped.
+    async fn restart_certificate(&self, host: &str) -> DomainResult<Value> {
+        let certificates = self.certificates(&self.facts.hostname).await;
+        if !certificates
+            .iter()
+            .any(|status| status["host"] == host && status["acme"].is_object())
+        {
+            return Err(DomainError::new("certificate_not_automatic", host));
+        }
+        self.zone
+            .restart_cert(host)
+            .await
+            .map_err(|error| DomainError::new("gateway_unavailable", error))?;
+        info!("the certificate of {host} is ordered again on request");
+        self.status().await
     }
 
     fn problems(&self, hosting: &DomainHosting, certificates: &[Value]) -> BTreeSet<&'static str> {
@@ -355,7 +389,7 @@ impl DomainRuntime {
             }
         }
         if hosting.uses_acme() && renewal_failure(hosting, certificates).is_some() {
-            problems.insert("renewal_failed");
+            problems.insert(RENEWAL_FAILED);
         }
         problems
     }
@@ -397,6 +431,13 @@ impl DomainRuntime {
         };
         let challenge = Trial::Known(challenge_from_certificates(&hosting, &certificates));
         let report = self.run_check(&hosting, challenge).await.map_err(text)?;
+        if report.is_offline() {
+            info!(
+                "this node is offline: {} is not judged before it is back",
+                hosting.domain
+            );
+            return Ok(false);
+        }
         self.follow_episodes(&hosting, rejected, &certificates)
             .await;
         Ok(report.ready
@@ -477,7 +518,12 @@ impl DomainRuntime {
             let expiring = failure
                 .not_after
                 .is_some_and(|not_after| not_after < now + EXPIRY_WARNING_SECS);
-            if now >= since + RENEWAL_GRACE_SECS {
+            let grace = if failure.covered_until > now + RENEWAL_GRACE_SECS {
+                RENEWAL_GRACE_SECS
+            } else {
+                ISSUANCE_GRACE_SECS
+            };
+            if now >= since + grace {
                 notices.push((
                     format!("The certificate of {domain} could not be renewed"),
                     format!(
@@ -486,6 +532,16 @@ impl DomainRuntime {
                     ),
                     format!("domain-renewal-failed:{domain}:{since}"),
                 ));
+                if failure.stopped {
+                    notices.push((
+                        format!("The certificate of {domain} is not requested any more"),
+                        format!(
+                            "It was refused for about a day. {} Open Settings > Cluster Manager to see the cause and start again.",
+                            failure.message
+                        ),
+                        format!("domain-certificate-stopped:{domain}:{since}"),
+                    ));
+                }
                 if expiring {
                     let not_after = failure.not_after.unwrap_or_default();
                     notices.push((
@@ -639,11 +695,31 @@ impl DomainRuntime {
             state.episodes.clone()
         };
         self.save_episodes(&episodes);
+        if commit.hosting.uses_acme() {
+            self.restart_stopped_certificates(&commit.hosting.domain)
+                .await;
+        }
         info!(
             "domain {} is now hosted by {:?} with {:?} certificates",
             commit.hosting.domain, commit.hosting.mode, commit.hosting.certificate
         );
         Ok(())
+    }
+
+    /// What was refused before may be accepted with the new settings.
+    async fn restart_stopped_certificates(&self, domain: &str) {
+        let certificates = self.certificates(domain).await;
+        for status in cert_statuses(domain, &certificates) {
+            if !status.is_stopped() {
+                continue;
+            }
+            if let Err(error) = self.zone.restart_cert(&status.host).await {
+                warn!(
+                    "order the certificate of {} again failed: {error}",
+                    status.host
+                );
+            }
+        }
     }
 
     /// `start_config.json` follows: a Zone that boots from it again starts
@@ -703,6 +779,10 @@ impl DomainRuntime {
                     .map_err(domain_error)?;
                 value(self.service().map_err(domain_error)?.plan(&setup).await)
             }
+            "domain.restart_certificate" => {
+                let params: RestartCertificateParams = parse(params)?;
+                value(self.restart_certificate(&params.host).await)
+            }
             "domain.apply" => value(self.apply(parse(params)?).await),
             "domain.verify" => value(self.verify(parse(params)?).await),
             "domain.update" => {
@@ -753,7 +833,7 @@ fn order_under_way(domain: &str, certificates: &[Value], now: u64) -> bool {
 fn challenge_from_certificates(hosting: &DomainHosting, certificates: &[Value]) -> CheckItem {
     const ID: &str = "challenge";
     if let Some(failure) = renewal_failure(hosting, certificates) {
-        return CheckItem::fail(ID, "renewal_failed").detail(failure.message);
+        return CheckItem::fail(ID, RENEWAL_FAILED).detail(failure.message);
     }
     let statuses = cert_statuses(&hosting.domain, certificates);
     if order_under_way(&hosting.domain, certificates, buckyos_get_unix_timestamp()) {
@@ -765,9 +845,21 @@ fn challenge_from_certificates(hosting: &DomainHosting, certificates: &[Value]) 
     CheckItem::new(ID, ItemStatus::Skipped, None)
 }
 
+impl CertStatus {
+    fn is_stopped(&self) -> bool {
+        self.acme
+            .as_ref()
+            .is_some_and(|acme| acme.state == "stopped")
+    }
+}
+
 struct RenewalFailure {
     message: String,
     not_after: Option<u64>,
+    /// 0 when one of the hosts has no certificate.
+    covered_until: u64,
+    /// The gateway does not order one of them any more.
+    stopped: bool,
 }
 
 /// An uploaded certificate is never a failure (Q13).
@@ -778,19 +870,26 @@ fn renewal_failure(hosting: &DomainHosting, certificates: &[Value]) -> Option<Re
     let failing = cert_statuses(&hosting.domain, certificates)
         .into_iter()
         .filter_map(|status| {
+            let stopped = status.is_stopped();
             let acme = status.acme.filter(|acme| acme.state != "manual")?;
             let error = acme.last_error?;
             let message = error["message"].as_str().unwrap_or_default().to_string();
-            Some((status.host, message, status.not_after))
+            Some((status.host, message, status.not_after, stopped))
         })
         .collect::<Vec<_>>();
-    let (host, message, _) = failing.first()?;
+    let (host, message, ..) = failing.first()?;
     Some(RenewalFailure {
         message: format!("{host}: {}.", message.trim_end_matches('.')),
         not_after: failing
             .iter()
-            .filter_map(|(_, _, not_after)| *not_after)
+            .filter_map(|(_, _, not_after, _)| *not_after)
             .min(),
+        covered_until: failing
+            .iter()
+            .map(|(_, _, not_after, _)| not_after.unwrap_or_default())
+            .min()
+            .unwrap_or_default(),
+        stopped: failing.iter().any(|(.., stopped)| *stopped),
     })
 }
 
@@ -1020,6 +1119,20 @@ impl ZoneAccess for RuntimeZone {
             .ok_or_else(|| "get_cert_status returned no hosts".to_string())
     }
 
+    async fn restart_cert(&self, host: &str) -> Result<(), String> {
+        let token = crate::gateway_tunnel_probe::build_local_gateway_token()
+            .ok_or("no gateway control token")?;
+        let client = kRPC::new(CONTROL_SERVER, Some(token));
+        tokio::time::timeout(
+            GATEWAY_RPC_TIMEOUT,
+            client.call("restart_cert_order", json!({ "host": host })),
+        )
+        .await
+        .map_err(|_| "restart_cert_order timed out".to_string())?
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    }
+
     async fn notify_owner(
         &self,
         title: String,
@@ -1082,6 +1195,7 @@ mod tests {
         hosting: Mutex<Option<DomainHosting>>,
         certs: Mutex<Vec<Value>>,
         notices: Mutex<BTreeMap<String, String>>,
+        restarted: Mutex<Vec<String>>,
         read_only: AtomicBool,
         authorized: Mutex<Vec<bool>>,
     }
@@ -1109,6 +1223,11 @@ mod tests {
 
         async fn cert_status(&self) -> Result<Vec<Value>, String> {
             Ok(self.certs.lock().unwrap().clone())
+        }
+
+        async fn restart_cert(&self, host: &str) -> Result<(), String> {
+            self.restarted.lock().unwrap().push(host.to_string());
+            Ok(())
         }
 
         async fn notify_owner(
@@ -1661,8 +1780,14 @@ mod tests {
         let status = node.call("domain.status", json!({})).await.unwrap();
         assert_eq!(status["problems"], json!(["renewal_failed"]));
 
-        let since = now - RENEWAL_GRACE_SECS - 1;
-        node.runtime.state.lock().unwrap().episodes.renewal_failed = Some(since);
+        let failing_for = |secs: u64| {
+            node.runtime.state.lock().unwrap().episodes.renewal_failed = Some(now - secs - 1);
+        };
+        failing_for(RENEWAL_GRACE_SECS - 60);
+        node.runtime.round().await.unwrap();
+        assert!(node.notices().is_empty(), "the certificate is still good");
+
+        failing_for(RENEWAL_GRACE_SECS);
         node.runtime.round().await.unwrap();
         node.runtime.round().await.unwrap();
         assert_eq!(node.notices().len(), 1);
@@ -1679,6 +1804,96 @@ mod tests {
             node.runtime.state.lock().unwrap().episodes,
             Episodes::default()
         );
+    }
+
+    #[tokio::test]
+    async fn a_zone_without_a_certificate_for_the_next_day_is_told_of_soon() {
+        let now = buckyos_get_unix_timestamp();
+        let wildcard = format!("*.{DOMAIN}");
+        let valid = cert(&wildcard, Some("x"), now + 40 * 86400);
+        let mut missing = cert(DOMAIN, Some("x"), now);
+        missing["not_after"] = Value::Null;
+        for certs in [
+            vec![missing.clone()],
+            vec![missing, valid],
+            vec![cert(DOMAIN, Some("x"), now + 3600)],
+        ] {
+            let node = dns_api_node();
+            *node.zone.certs.lock().unwrap() = certs;
+            let failing_for = |secs: u64| {
+                node.runtime.state.lock().unwrap().episodes.renewal_failed = Some(now - secs - 1);
+            };
+            failing_for(ISSUANCE_GRACE_SECS - 60);
+            node.runtime.round().await.unwrap();
+            assert!(node.notices().is_empty());
+            failing_for(ISSUANCE_GRACE_SECS);
+            node.runtime.round().await.unwrap();
+            assert!(!node.notices().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_certificate_no_longer_ordered_is_told_of_and_can_be_started_again() {
+        let node = dns_api_node();
+        let now = buckyos_get_unix_timestamp();
+        let mut stopped = cert(DOMAIN, Some("no TXT record"), now);
+        stopped["not_after"] = Value::Null;
+        stopped["acme"]["state"] = json!("stopped");
+        *node.zone.certs.lock().unwrap() = vec![stopped, json!({"host": "*.home.example.com"})];
+        node.runtime.state.lock().unwrap().episodes.renewal_failed =
+            Some(now - ISSUANCE_GRACE_SECS - 1);
+        node.runtime.round().await.unwrap();
+        node.runtime.round().await.unwrap();
+        let notices = node.notices();
+        assert!(
+            notices.contains(&format!(
+                "The certificate of {DOMAIN} is not requested any more"
+            )),
+            "{notices:?}"
+        );
+
+        let restart = |host: &str| node.call("domain.restart_certificate", json!({ "host": host }));
+        let status = restart(DOMAIN).await.unwrap();
+        assert_eq!(status["certificates"][0]["host"], DOMAIN);
+        assert_eq!(*node.zone.restarted.lock().unwrap(), [DOMAIN]);
+        for host in ["*.home.example.com", "other.example"] {
+            let error = restart(host).await.unwrap_err();
+            assert!(error.contains("certificate_not_automatic"), "{error}");
+        }
+        assert_eq!(node.zone.restarted.lock().unwrap().len(), 1);
+
+        node.runtime.restart_stopped_certificates(DOMAIN).await;
+        assert_eq!(node.zone.restarted.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_offline_node_tells_no_trouble_with_the_domain() {
+        let node = dns_api_node();
+        let now = buckyos_get_unix_timestamp();
+        *node.zone.certs.lock().unwrap() = vec![cert(
+            DOMAIN,
+            Some("error sending request"),
+            now + 10 * 86400,
+        )];
+        let since = now - RENEWAL_GRACE_SECS - 1;
+        node.runtime.state.lock().unwrap().episodes.renewal_failed = Some(since);
+        node.dns.offline.store(true, Ordering::Relaxed);
+        assert!(!node.runtime.round().await.unwrap());
+        assert!(node.notices().is_empty());
+        let status = node.call("domain.status", json!({})).await.unwrap();
+        assert_eq!(status["problems"], json!([]));
+        for item in status["check"]["items"].as_array().unwrap() {
+            assert_eq!(
+                (&item["status"], &item["code"]),
+                (&json!("waiting"), &json!("offline"))
+            );
+        }
+
+        node.dns.offline.store(false, Ordering::Relaxed);
+        node.runtime.round().await.unwrap();
+        assert_eq!(node.notices().len(), 2);
+        let status = node.call("domain.status", json!({})).await.unwrap();
+        assert_eq!(status["problems"], json!(["renewal_failed"]));
     }
 
     fn ordering(host: &str, state: &str, next_retry_at: Option<u64>) -> Value {

@@ -60,6 +60,7 @@ const OWNER_DERIVATION_PATH: &str = "m/9777'/0'/0'";
 const EVM_DERIVATION_PATH: &str = "m/44'/60'/0'/0/0";
 const PROJECTION_DEADLINE: Duration = Duration::from_secs(60);
 pub(crate) const START_CONFIG_FILE: &str = "start_config.json";
+const START_CONFIG_OWNER_MNEMONIC: &str = "owner_mnemonic_words";
 /// Certificates travel as base64 in the request.
 const MAX_REQUEST_BODY: usize = 2 * 1024 * 1024;
 const CHECK_TRIAL_WAIT: Duration = Duration::from_secs(8);
@@ -333,6 +334,8 @@ pub struct CommitActiveReq {
     pub sn: SnCommitConfig,
     /// Exactly when `names.use_self_domain`.
     pub domain: Option<DomainCommitConfig>,
+    #[serde(default)]
+    pub owner_mnemonic_words: Option<Vec<String>>,
 }
 impl_from_secret_json!(CommitActiveReq);
 
@@ -769,29 +772,7 @@ impl ActiveServer {
         &self,
         req: SignWebActiveDocumentsReq,
     ) -> Result<SignedActiveDocuments, RPCErrors> {
-        let mnemonic = req.mnemonic_words.join(" ");
-        let owner = derive_bucky_key_from_mnemonic(mnemonic.as_str(), None, 0)
-            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        let evm = derive_evm_key_from_mnemonic(mnemonic.as_str(), None, 0)
-            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        let owner_key = req
-            .prepared
-            .owner_document
-            .get_default_key()
-            .ok_or_else(|| RPCErrors::ReasonError("OwnerDocument key is missing".to_string()))?;
-        if serde_json::to_value(owner_key).ok() != Some(owner.public_jwk.clone()) {
-            return Err(RPCErrors::ReasonError(
-                "mnemonic owner key does not match OwnerDocument".to_string(),
-            ));
-        }
-        let wallet = owner_main_wallet(&req.prepared.owner_document)?;
-        if !wallet.address.eq_ignore_ascii_case(evm.address.as_str()) {
-            return Err(RPCErrors::ReasonError(
-                "mnemonic EVM address does not match OwnerDocument".to_string(),
-            ));
-        }
-        let signing_key = EncodingKey::from_ed_pem(owner.private_key_pem.as_bytes())
-            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let signing_key = owner_signing_key(&req.mnemonic_words, &req.prepared.owner_document)?;
         let boot_document_jwt = req
             .prepared
             .boot_document
@@ -1131,6 +1112,33 @@ fn web_owner_material(mnemonic: &str) -> Result<WebOwnerMaterial, RPCErrors> {
         evm_address: evm.address,
         evm_derivation_path: EVM_DERIVATION_PATH.to_string(),
     })
+}
+
+fn owner_signing_key(
+    mnemonic_words: &[String],
+    owner_document: &OwnerDocument,
+) -> Result<EncodingKey, RPCErrors> {
+    let mnemonic = mnemonic_words.join(" ");
+    let owner = derive_bucky_key_from_mnemonic(mnemonic.as_str(), None, 0)
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    let evm = derive_evm_key_from_mnemonic(mnemonic.as_str(), None, 0)
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    let owner_key = owner_document
+        .get_default_key()
+        .ok_or_else(|| RPCErrors::ReasonError("OwnerDocument key is missing".to_string()))?;
+    if serde_json::to_value(owner_key).ok() != Some(owner.public_jwk.clone()) {
+        return Err(RPCErrors::ReasonError(
+            "mnemonic owner key does not match OwnerDocument".to_string(),
+        ));
+    }
+    let wallet = owner_main_wallet(owner_document)?;
+    if !wallet.address.eq_ignore_ascii_case(evm.address.as_str()) {
+        return Err(RPCErrors::ReasonError(
+            "mnemonic EVM address does not match OwnerDocument".to_string(),
+        ));
+    }
+    EncodingKey::from_ed_pem(owner.private_key_pem.as_bytes())
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))
 }
 
 async fn wait_for_device_authority(
@@ -1858,6 +1866,9 @@ fn validate_commit_request(
         req.device_private_key.as_str(),
         &req.prepared.device_document,
     )?;
+    if let Some(words) = req.owner_mnemonic_words.as_deref() {
+        owner_signing_key(words, &req.owner_document)?;
+    }
     if req.signed_documents.zone_document_jwt.len() >= MAX_INLINE_DOCUMENT {
         return Err(RPCErrors::ReasonError(
             "ZoneDocument JWT exceeds 4KB".to_string(),
@@ -2107,6 +2118,9 @@ fn build_start_config(
     if let Some(hosting) = hosting {
         config[buckyos_api::START_CONFIG_DOMAIN_HOSTING] = json!(hosting);
     }
+    if let Some(words) = req.owner_mnemonic_words.as_ref() {
+        config[START_CONFIG_OWNER_MNEMONIC] = json!(words);
+    }
     config
 }
 
@@ -2153,16 +2167,21 @@ fn write_activation(
     domain: Option<&DomainCommit>,
 ) -> Result<(), String> {
     let etc_dir = paths.etc_dir.as_path();
-    let start_config = serde_json::to_vec_pretty(&build_start_config(
+    let start_config = build_start_config(
         req,
         effective_owner,
         domain.map(|domain| &domain.hosting),
-    ))
-    .map_err(|error| error.to_string())?;
-    atomic_write(
-        paths.roots.security_root.join(START_CONFIG_FILE).as_path(),
-        &start_config,
-    )?;
+    );
+    let start_config_path = paths.roots.security_root.join(START_CONFIG_FILE);
+    if req.owner_mnemonic_words.is_some() {
+        std::fs::create_dir_all(&paths.roots.security_root)
+            .and_then(|_| crate::boot::write_private_json(&start_config_path, &start_config))
+            .map_err(|error| format!("write {} failed: {error}", start_config_path.display()))?;
+    } else {
+        let content =
+            serde_json::to_vec_pretty(&start_config).map_err(|error| error.to_string())?;
+        atomic_write(start_config_path.as_path(), &content)?;
+    }
     save_sn_zone_info_in(etc_dir, zone_info)?;
     save_zone_document_jwt(etc_dir, req.signed_documents.zone_document_jwt.as_str())?;
 
@@ -2518,6 +2537,7 @@ mod tests {
                 access_token: "secret-access-token".to_string(),
             },
             domain,
+            owner_mnemonic_words: None,
         }
     }
 
@@ -3262,6 +3282,61 @@ mod tests {
         ActivationPaths {
             etc_dir: root.join("etc"),
             roots: identity_roots_for_buckyos_root(root),
+        }
+    }
+
+    #[tokio::test]
+    async fn owner_mnemonic_is_stored_only_on_request() {
+        let (prepared, signed, key) = signed_documents(None, topology()).await;
+        let words = |text: &str| text.split_whitespace().map(ToString::to_string).collect::<Vec<_>>();
+        let mut request = commit_request(&prepared, signed, &key, None);
+        let store = |request: &CommitActiveReq| {
+            let root = tempfile::tempdir().unwrap();
+            let paths = activation_paths(root.path());
+            std::fs::create_dir_all(&paths.etc_dir).unwrap();
+            persist_activation(
+                &paths,
+                &FakeCertificates::default(),
+                request,
+                &prepared.owner_document,
+                &sn_zone_info(),
+                None,
+            )
+            .unwrap();
+            let path = paths.roots.security_root.join(START_CONFIG_FILE);
+            #[cfg(unix)]
+            if request.owner_mnemonic_words.is_some() {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o600);
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(!text.contains("PRIVATE KEY"));
+            serde_json::from_str::<Value>(&text).unwrap()
+        };
+
+        validate_commit_request(&request, &active_service_config()).unwrap();
+        let mut plain = store(&request);
+        assert!(!plain.to_string().contains("abandon"));
+
+        request.owner_mnemonic_words = Some(words(MNEMONIC));
+        validate_commit_request(&request, &active_service_config()).unwrap();
+        assert!(!format!("{request:?}").contains("abandon"));
+        let stored = store(&request);
+        buckyos_api::validate_start_config_schema(&stored).unwrap();
+        plain[START_CONFIG_OWNER_MNEMONIC] = json!(words(MNEMONIC));
+        assert_eq!(stored, plain);
+
+        for other in [
+            "legal winner thank year wave sausage worth useful legal winner thank yellow",
+            "abandon",
+            "",
+        ] {
+            request.owner_mnemonic_words = Some(words(other));
+            assert!(
+                validate_commit_request(&request, &active_service_config()).is_err(),
+                "{other}"
+            );
         }
     }
 

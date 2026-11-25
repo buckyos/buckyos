@@ -1,6 +1,6 @@
 import { ChevronRight, Globe, RefreshCw, Server, ShieldCheck, Wifi } from 'lucide-react'
 import { IconButton, Tooltip } from '@mui/material'
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
 import type {
   ZoneCertificate,
@@ -8,9 +8,13 @@ import type {
   ZoneDevice,
   ZoneDevicesResponse,
 } from '../../../api/settings'
+import { fetchDomainStatus, type DomainStatus, type HostCertStatus } from '../../../api/zone_domain'
 import { useZonePresentation } from '../../../presentation/zone'
 import { useSettingsResource, useSettingsStore } from '../hooks/use-settings-store'
 import { CollapsibleSection, InfoRow, ListCard, Section, SectionNote, StatusBadge } from '../components/shared/Section'
+import { CertificateProgress } from '../components/domain/CertificateProgress'
+import { certificateState, useCertificateRestart } from '../components/domain/certificates'
+import { useDomainSudo } from '../components/domain/useDomainSudo'
 import { CopyButton } from '../components/shared/CopyButton'
 import { formatBytes, formatDate, formatDateTime, formatRelative, formatUsage } from '../components/shared/format'
 
@@ -239,7 +243,7 @@ function ConnectivitySection({ localDevice }: { localDevice: ZoneDevice | null }
               value={
                 sn.dnsARecords.length > 0
                   ? <span className="font-mono text-xs">{sn.dnsARecords.join(', ')}</span>
-                  : <StatusBadge status="warn" label={t('settings.cluster.noRecord', 'No record')} />
+                  : sn.digError ? '—' : <StatusBadge status="warn" label={t('settings.cluster.noRecord', 'No record')} />
               }
             />
           ) : null}
@@ -274,57 +278,106 @@ function ConnectivitySection({ localDevice }: { localDevice: ZoneDevice | null }
   )
 }
 
+const PENDING = new Set(['ordering', 'renewing', 'stopped'])
+
 function CertificatesSection() {
   const { t, locale } = useI18n()
+  const store = useSettingsStore()
   const certs = useSettingsResource('certificates')
   const data = certs.data
+  // Only the owner is told how requesting certificates goes.
+  const [domain, setDomain] = useState<DomainStatus | null>(null)
+  const restart = useCertificateRestart(useDomainSudo(), setDomain)
+  const readDomain = useCallback(() => fetchDomainStatus().then((result) => { if (result.data) setDomain(result.data) }), [])
+  useEffect(() => { void readDomain() }, [readDomain])
+  const progressOf = (host: string): HostCertStatus | undefined => domain?.certificates.find((item) => item.host === host)
+  const wanted = domain?.certificates.filter((item) => item.acme && !data?.certificates.some((cert) => cert.host === item.host)) ?? []
 
   return (
-    <Section title={t('settings.cluster.certificates', 'Certificates')} testId="settings-cluster-certificates">
+    <Section
+      title={t('settings.cluster.certificates', 'Certificates')}
+      testId="settings-cluster-certificates"
+      actions={
+        <Tooltip title={t('settings.common.refresh', 'Refresh')}>
+          <span>
+            <IconButton
+              size="small"
+              aria-label={t('settings.common.refresh', 'Refresh')}
+              disabled={certs.status === 'loading'}
+              onClick={() => { void store.load('certificates', true); void readDomain() }}
+            >
+              <RefreshCw size={14} />
+            </IconButton>
+          </span>
+        </Tooltip>
+      }
+    >
       {data ? (
-        data.certificates.length > 0 ? (
+        data.certificates.length + wanted.length > 0 ? (
           <div className="space-y-2">
-            {data.certificates.map((cert) => (
-              <ListCard key={cert.host}>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <ShieldCheck size={14} className="shrink-0" style={{ color: 'var(--cp-muted)' }} />
-                    <span className="truncate font-mono text-xs font-medium" style={{ color: 'var(--cp-text)' }}>{cert.host}</span>
+            {wanted.map((cert) => {
+              const { tone, state } = certificateState(cert, t)
+              return (
+                <ListCard key={cert.host} testId={`settings-certificate-${cert.host}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <ShieldCheck size={14} className="shrink-0" style={{ color: 'var(--cp-muted)' }} />
+                      <span className="truncate font-mono text-xs font-medium" style={{ color: 'var(--cp-text)' }}>{cert.host}</span>
+                    </div>
+                    <StatusBadge status={tone} label={state} />
                   </div>
-                  <StatusBadge status={certificateStatus(cert)} label={certificateStateLabel(cert, t)} />
-                </div>
-                <div className="mt-1 space-y-0.5">
-                  <InfoRow
-                    label={t('settings.cluster.certSource', 'Source')}
-                    value={cert.source === 'acme' ? t('settings.cluster.certAcme', 'Issued and renewed automatically (ACME)') : t('settings.cluster.certCustom', 'Installed manually')}
-                  />
-                  <InfoRow label={t('settings.cluster.certIssuer', 'Issuer')} value={cert.issuer || '—'} />
-                  <InfoRow
-                    label={t('settings.cluster.certExpiry', 'Valid Until')}
-                    value={
-                      cert.days_remaining != null && cert.days_remaining >= 0
-                        ? t('settings.cluster.certExpiryDays', '{{date}} ({{days}} days left)', { date: formatDate(cert.not_after, locale), days: cert.days_remaining })
-                        : formatDate(cert.not_after, locale)
-                    }
-                  />
-                  {cert.dns_names.length > 0 ? (
-                    <InfoRow label={t('settings.cluster.certNames', 'Covers')} value={<span className="break-all font-mono text-xs">{cert.dns_names.join(', ')}</span>} />
+                  <CertificateProgress cert={cert} restart={restart} />
+                </ListCard>
+              )
+            })}
+            {data.certificates.map((cert) => {
+              const progress = progressOf(cert.host)
+              return (
+                <ListCard key={cert.host} testId={`settings-certificate-${cert.host}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <ShieldCheck size={14} className="shrink-0" style={{ color: 'var(--cp-muted)' }} />
+                      <span className="truncate font-mono text-xs font-medium" style={{ color: 'var(--cp-text)' }}>{cert.host}</span>
+                    </div>
+                    <StatusBadge status={certificateStatus(cert)} label={certificateStateLabel(cert, t)} />
+                  </div>
+                  <div className="mt-1 space-y-0.5">
+                    <InfoRow
+                      label={t('settings.cluster.certSource', 'Source')}
+                      value={cert.source === 'acme' ? t('settings.cluster.certAcme', 'Issued and renewed automatically (ACME)') : t('settings.cluster.certCustom', 'Installed manually')}
+                    />
+                    <InfoRow label={t('settings.cluster.certIssuer', 'Issuer')} value={cert.issuer || '—'} />
+                    <InfoRow
+                      label={t('settings.cluster.certExpiry', 'Valid Until')}
+                      value={
+                        cert.days_remaining != null && cert.days_remaining >= 0
+                          ? t('settings.cluster.certExpiryDays', '{{date}} ({{days}} days left)', { date: formatDate(cert.not_after, locale), days: cert.days_remaining })
+                          : formatDate(cert.not_after, locale)
+                      }
+                    />
+                    {cert.dns_names.length > 0 ? (
+                      <InfoRow label={t('settings.cluster.certNames', 'Covers')} value={<span className="break-all font-mono text-xs">{cert.dns_names.join(', ')}</span>} />
+                    ) : null}
+                    {progress?.acme && PENDING.has(progress.acme.state) ? (
+                      <InfoRow label={t('settings.cluster.certIssuing', 'Automatic issuing')} value={t(`settings.domain.cert.state.${progress.acme.state}`)} />
+                    ) : null}
+                  </div>
+                  {progress ? <CertificateProgress cert={progress} restart={restart} /> : null}
+                  {cert.cert_pem || cert.fingerprint_sha256 ? (
+                    <CollapsibleSection title={t('settings.cluster.x509Details', 'X.509 Certificate')}>
+                      {cert.fingerprint_sha256 ? (
+                        <InfoRow label={t('settings.cluster.certFingerprint', 'SHA-256 Fingerprint')} value={<span className="break-all font-mono text-xs">{cert.fingerprint_sha256}</span>} />
+                      ) : null}
+                      {cert.cert_pem ? (
+                        <pre className="mt-2 overflow-x-auto rounded-lg p-2 text-xs" style={{ color: 'var(--cp-text)', background: 'color-mix(in srgb, var(--cp-surface) 82%, transparent)' }}>
+                          {cert.cert_pem}
+                        </pre>
+                      ) : null}
+                    </CollapsibleSection>
                   ) : null}
-                </div>
-                {cert.cert_pem || cert.fingerprint_sha256 ? (
-                  <CollapsibleSection title={t('settings.cluster.x509Details', 'X.509 Certificate')}>
-                    {cert.fingerprint_sha256 ? (
-                      <InfoRow label={t('settings.cluster.certFingerprint', 'SHA-256 Fingerprint')} value={<span className="break-all font-mono text-xs">{cert.fingerprint_sha256}</span>} />
-                    ) : null}
-                    {cert.cert_pem ? (
-                      <pre className="mt-2 overflow-x-auto rounded-lg p-2 text-xs" style={{ color: 'var(--cp-text)', background: 'color-mix(in srgb, var(--cp-surface) 82%, transparent)' }}>
-                        {cert.cert_pem}
-                      </pre>
-                    ) : null}
-                  </CollapsibleSection>
-                ) : null}
-              </ListCard>
-            ))}
+                </ListCard>
+              )
+            })}
             {data.node ? (
               <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('settings.cluster.certReadOn', 'Read from node {{node}}.', { node: data.node })}</p>
             ) : null}

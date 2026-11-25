@@ -124,6 +124,19 @@ test("the default domain is prepared, signed and committed without a domain", as
   assert.deepEqual(plain(result), { accessHostname: "alice.web3.buckyos.ai", zoneDid: "did:bns:alice" });
 });
 
+test("the mnemonic is committed only when the web user asks for it", async () => {
+  const { api, data, calls } = await setup();
+  const committed = async (overrides) => {
+    await api.activateNode({ ...data, ...overrides }, { current: null });
+    return plain(calls.at(-1).request);
+  };
+  assert.equal("owner_mnemonic_words" in (await committed({})), false);
+  assert.equal("owner_mnemonic_words" in (await committed({ save_owner_mnemonic: false })), false);
+  assert.deepEqual((await committed({ save_owner_mnemonic: true })).owner_mnemonic_words, ["secret-word"]);
+  const wallet = { save_owner_mnemonic: true, is_wallet_runtime: true, sn_refresh_token: "r" };
+  assert.equal("owner_mnemonic_words" in (await committed(wallet)), false);
+});
+
 test("the topology carries the public IPs of a fixed address only", async () => {
   const { api, data } = await setup();
   data.public_ips = ["203.0.113.7"];

@@ -65,6 +65,8 @@
     "host_account_hint": "你为其开启宿主机访问的 Agent，会以这个账号在本机执行命令，其他 Agent 不受影响。普通账号在 Agent 里无法使用 sudo。",
     "host_account_none": "不指定（Agent 不能在本机执行命令）",
     "host_account_root_warning": "你为其开启宿主机访问的 Agent 将完全控制这台机器，盗用你 owner 账号的人也会获得同样的控制权。只有需要让 Agent 维护这台机器时才选 root。",
+    "save_mnemonic_label": "把助记词保存到这台设备（仅用于开发测试）",
+    "save_mnemonic_warning": "助记词会以明文写入 start_config.json，能读取这个文件的人就能完全控制此身份。只用于测试账户。",
     "activate_button": "激活",
     "default_credentials": "登录用户名:{{username}}",
     "copy_link": "复制链接",

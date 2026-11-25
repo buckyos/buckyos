@@ -1,5 +1,7 @@
 import { lazy, Suspense, useSyncExternalStore } from 'react'
 import { Navigate, RouterProvider, createBrowserRouter, useRouteError } from 'react-router-dom'
+import { SWRConfig, type SWRConfiguration } from 'swr'
+import { onZoneRecovered } from './api/zone_link'
 import { DesktopBackground } from './desktop/DesktopBackground'
 import {
   DesktopBackgroundProvider,
@@ -248,13 +250,27 @@ function AppShell() {
   )
 }
 
+const SWR_RETRY_MAX_MS = 30_000
+
+const swrConfig: SWRConfiguration = {
+  provider: () => new Map(),
+  isOnline: () => true,
+  initReconnect: onZoneRecovered,
+  onErrorRetry: (_error, _key, config, revalidate, options) => {
+    const delay = Math.min(config.errorRetryInterval * 2 ** (options.retryCount - 1), SWR_RETRY_MAX_MS)
+    setTimeout(() => void revalidate(options), delay)
+  },
+}
+
 function App() {
   const appearance = useSyncExternalStore(standaloneFrame.subscribe, standaloneFrame.getAppearance)
   return (
     <PrototypeThemeProvider mode={appearance?.theme}>
       <I18nProvider locale={appearance?.locale}>
         <DesktopBackgroundProvider>
-          <AppShell />
+          <SWRConfig value={swrConfig}>
+            <AppShell />
+          </SWRConfig>
         </DesktopBackgroundProvider>
       </I18nProvider>
     </PrototypeThemeProvider>

@@ -32,7 +32,7 @@ export function desktopWorkspaceInsets(taskbarPinned: boolean) {
  */
 export const mobilePagerRowHeight = 24
 
-export type ConnectionState = 'online' | 'degraded' | 'offline'
+export type ConnectionState = 'online' | 'offline'
 
 export function mobileStatusBarMode(app?: AppDefinition) {
   return app?.manifest.mobileStatusBarMode ?? 'compact'
@@ -49,29 +49,14 @@ export function mobileStatusBarHeight(activeApp?: AppDefinition) {
 }
 
 export function connectionTone(state: ConnectionState) {
-  if (state === 'online') {
-    return 'var(--cp-success)'
-  }
-
-  if (state === 'degraded') {
-    return 'var(--cp-warning)'
-  }
-
-  return 'var(--cp-danger)'
+  return state === 'online' ? 'var(--cp-success)' : 'var(--cp-danger)'
 }
 
 type TranslateFn = ReturnType<typeof useI18n>['t']
 
-export function connectionLabel(state: ConnectionState, t: TranslateFn) {
-  if (state === 'online') {
-    return t('shell.online')
-  }
-
-  if (state === 'degraded') {
-    return t('shell.connectionDegraded', 'Relay')
-  }
-
-  return t('shell.offline', 'Offline')
+export function sessionLabel(runtimeContainer: string, state: ConnectionState, t: TranslateFn) {
+  const runtime = t(`runtime.${runtimeContainer}`, runtimeContainer)
+  return state === 'online' ? runtime : `${runtime} · ${t('shell.offline', 'Offline')}`
 }
 
 export function useMinuteClock() {

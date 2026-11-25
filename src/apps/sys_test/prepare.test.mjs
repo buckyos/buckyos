@@ -101,6 +101,7 @@ test("package keeps static and lazy SDK dependencies and excludes development ar
   assert.equal(sdk.value, "runtime");
   assert.equal((await sdk.load()).value, "runtime");
   const config = JSON.parse(readFileSync(join(dist, "deno.json"), "utf8"));
+  assert.equal(config.vendor, true);
   assert.equal(
     existsSync(join(dist, config.imports["@sys-test/websdk-node-types"])),
     true,

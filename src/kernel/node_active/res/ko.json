@@ -65,6 +65,8 @@
     "host_account_hint": "호스트 사용을 허용한 Agent는 이 계정으로 이 컴퓨터에서 명령을 실행합니다. 다른 Agent에는 영향이 없습니다. 일반 계정은 Agent에서 sudo를 쓸 수 없습니다.",
     "host_account_none": "지정 안 함 (Agent가 이 컴퓨터에서 명령을 실행할 수 없음)",
     "host_account_root_warning": "호스트 사용을 허용한 Agent가 이 컴퓨터를 완전히 제어하게 되며, owner 계정을 탈취한 사람도 같은 권한을 얻습니다. Agent에게 이 컴퓨터의 관리를 맡길 때만 root를 선택하세요.",
+    "save_mnemonic_label": "복구 구문을 이 기기에 저장(개발 및 테스트 전용)",
+    "save_mnemonic_warning": "복구 구문이 start_config.json에 평문으로 기록됩니다. 이 파일을 읽을 수 있는 사람은 이 신원을 완전히 제어할 수 있습니다. 테스트 계정에만 사용하세요.",
     "activate_button": "활성화",
     "default_credentials": "로그인 사용자 이름: {{username}}",
     "copy_link": "링크 복사",

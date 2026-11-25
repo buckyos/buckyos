@@ -6,7 +6,10 @@ import { expect, test, type Page } from '@playwright/test'
  */
 
 declare global {
-  interface Window { __messageHubMock: import('../../../src/app/messagehub/mock/store').MessageHubMockStore }
+  interface Window {
+    __messageHubMock: import('../../../src/app/messagehub/mock/store').MessageHubMockStore
+    __mockZoneLink: { setDown(down: boolean): void }
+  }
 }
 
 const SELF = 'did:buckyos:user:self'
@@ -44,20 +47,32 @@ test('the title shows the signed-in user and the unread total; a long name is cu
   await page.screenshot({ path: 'test-results/messagehub-header-375.png' })
 })
 
-test('the sync status takes the identity\'s place while offline or reconnecting', async ({ page, context }) => {
+test('the sync status takes the identity\'s place while the Zone is out of reach or reconnecting', async ({ page }) => {
   await openHub(page)
   const status = page.getByTestId('hub-sync-status')
   await expect(status).toHaveCount(0)
-  await context.setOffline(true)
-  await expect(status).toHaveText('Waiting for network…')
+  await page.evaluate(() => window.__mockZoneLink.setDown(true))
+  await expect(status).toHaveText('Zone unreachable', { timeout: 10_000 })
   await expect(page.getByTestId('hub-identity-name')).toHaveCount(0)
-  await expect(page.getByRole('status').filter({ hasText: 'Waiting for network…' })).toHaveCount(1)
-  await context.setOffline(false)
+  await expect(page.getByRole('status').filter({ hasText: 'Zone unreachable' })).toHaveCount(1)
+  await page.evaluate(() => window.__mockZoneLink.setDown(false))
   await expect(status).toHaveCount(0)
   await page.evaluate(() => window.__messageHubMock.configure({ sync: 'connecting' }))
   await expect(status).toHaveText('Connecting…')
   await page.evaluate(() => window.__messageHubMock.configure({ sync: 'online' }))
   await expect(page.getByTestId('hub-identity-name')).toBeVisible()
+})
+
+test('without any network the Zone still answers: nothing says offline and everything can be marked read', async ({ page, context }) => {
+  await openHub(page)
+  await context.setOffline(true)
+  expect(await page.evaluate(() => navigator.onLine)).toBe(false)
+  await page.waitForTimeout(6_500)
+  await expect(page.getByTestId('hub-sync-status')).toHaveCount(0)
+  await expect(page.getByTestId('hub-unread-total')).toBeVisible()
+  await page.getByTestId('hub-more-menu').click()
+  await page.getByTestId('mark-all-read').click()
+  await expect(page.getByTestId('hub-unread-total')).toHaveCount(0)
 })
 
 test('+ holds the new entries and ⋮ the rest; Escape closes a menu back to its button', async ({ page }) => {
