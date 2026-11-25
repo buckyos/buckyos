@@ -70,7 +70,7 @@ ${COMMON_OPTIONS_HELP}${DELIVERY_HELP}`;
 
 
 function formatToMime(format: string | undefined): string | undefined {
-  if (!format) return undefined;
+  if (format === undefined) return undefined;
   if (format === "png") return "image/png";
   if (format === "jpg" || format === "jpeg") return "image/jpeg";
   if (format === "webp") return "image/webp";
@@ -92,7 +92,7 @@ export async function run(argv: string[]): Promise<never> {
 
   // ── 2. 构造 canonical helper request ──────────────────────────────────
   // 字段名 (prompt / negative_prompt / aspect_ratio / quality / seed / n /
-  // output.media_type / output.size) 来自 aicc_api设计.md image capability
+  // output.media_type / size) 来自 aicc_api设计.md image capability
   // 那一节。每个 method 的可选字段需要查 doc。
   const request: TextToImageOptions["request"] = { prompt };
   try {
@@ -122,6 +122,7 @@ export async function run(argv: string[]): Promise<never> {
     if (size !== undefined) request.size = size;
     const quality = requireString(parsed.flags, "quality");
     if (quality !== undefined) request.quality = quality;
+    if (requireString(parsed.flags, "seed")?.trim() === "") throw new ArgError("--seed must be a non-negative safe integer");
     const seed = flagInt(parsed.flags, "seed");
     if (seed !== undefined) {
       if (!Number.isSafeInteger(seed) || seed < 0) throw new ArgError("--seed must be a non-negative safe integer");
