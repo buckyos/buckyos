@@ -1071,6 +1071,9 @@ impl Supervisor {
     /// for (their leases are released). Sessions keep their committed state.
     pub async fn shutdown(&self) {
         self.closing.request();
+        if let Some(g) = &self.goals {
+            g.jobs.shutdown().await;
+        }
         let tasks: Vec<tokio::task::JoinHandle<DriveResult>> = self
             .slots
             .lock()

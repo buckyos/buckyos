@@ -14,7 +14,7 @@ test('home shows the memory counts and what was added most recently', async ({ p
   await expect(card.getByTestId('memory-cognitions')).toContainText('23')
   await expect(card.getByTestId('memory-perceptions')).toContainText('8')
   await expect(card.getByTestId('memory-perceptions')).toContainText('4 to consolidate')
-  await expect(card.getByTestId('memory-consolidation').getByRole('link')).toHaveAttribute('href', '#/goal/goal-memory-maintenance')
+  await expect(card.getByTestId('memory-consolidation').getByRole('link')).toHaveAttribute('href', '#/goal/goal-self-improve')
   await expect(card.getByTestId('memory-consolidation')).toContainText('Last consolidated 1 h ago')
   // Cognitions first, then perceptions.
   await expect(card.getByTestId('memory-recent-cognition')).toHaveCount(5)

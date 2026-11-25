@@ -9,9 +9,12 @@
 //! need the AgentRoot and are never served over kRPC.
 //!
 //! Permissions are decided by the caller's kind only (先能力后安全): the
-//! owner side may do everything; a UI Session creates goals and steers
-//! them; a Goal Session reads, archives itself or marks itself achieved;
-//! a Work Session reads.
+//! owner side may do everything; a UI Session creates goals and steers them
+//! (it rewrites those it created; the owner's own conversations any that is
+//! not built in); a Work a UI Session started itself, outside of any Goal,
+//! may what that UI may (it hands over what it built to the Goal that
+//! operates it); a Goal Session reads, changes its own check, archives
+//! itself or marks itself achieved; other Work reads.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,6 +26,7 @@ use serde_json::{json, Value};
 
 use crate::error::{OpenDanError, Result};
 use crate::fsutil;
+use crate::goal_jobs::{GoalJob, JobFiles, JobPut, JobRequest, JobRun, JobView};
 use crate::lock::Lease;
 use crate::protocol::*;
 
@@ -103,9 +107,10 @@ pub struct GoalCreate {
     pub check_package: Option<String>,
 }
 
-/// A change of a Goal's check: its script and its timetable. The Goal
-/// Session may make it for its own Goal; it is recorded (`changes.jsonl`
-/// kind `check`) but is not a content revision.
+/// A change of a Goal's check: its script and its timetable, and what its
+/// Activations read of the earlier ones. The Goal Session may make it for its
+/// own Goal; it is recorded (`changes.jsonl` kind `check`) but is not a
+/// content revision.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GoalCheckChange {
@@ -127,6 +132,9 @@ pub struct GoalCheckChange {
     pub cron: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
+    /// What an Activation reads of the earlier ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<GoalContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -270,6 +278,25 @@ pub trait GoalStore: Send + Sync {
     async fn epoch_state(&self, goal_id: &str, epoch: u64) -> Result<Option<GoalState>>;
     async fn activations(&self, goal_id: &str, q: &ActivationQuery) -> Result<Vec<GoalActivation>>;
     async fn schedule(&self, goal_id: &str) -> Result<Option<GoalSchedule>>;
+    /// What it did and spent in its last `periods` statistics periods.
+    async fn stats(&self, goal_id: &str, periods: usize) -> Result<crate::goal_stats::GoalStats>;
+
+    // ---- its jobs ----
+    async fn jobs(&self, goal_id: &str) -> Result<Vec<JobView>>;
+    /// The newest `limit` runs of a job, oldest first (`0`: all kept).
+    async fn job_runs(&self, goal_id: &str, job_id: &str, limit: usize) -> Result<Vec<JobRun>>;
+    /// The end of what a run printed (`None`: the newest run).
+    async fn job_log(&self, goal_id: &str, job_id: &str, run_id: Option<&str>) -> Result<Option<String>>;
+    /// Model tokens its jobs used since `since_ms` (read from the AgentRoot).
+    async fn job_usage(&self, goal_id: &str, since_ms: u64) -> Result<Vec<UsageRecord>>;
+    /// Install a job or a new version of one.
+    async fn job_put(&self, goal_id: &str, req: &JobPut, caller: &GoalCaller) -> Result<GoalJob>;
+    /// Ask the host to run it now.
+    async fn job_run(&self, goal_id: &str, job_id: &str, caller: &GoalCaller) -> Result<JobRequest>;
+    async fn job_set_enabled(&self, goal_id: &str, job_id: &str, enabled: bool, caller: &GoalCaller) -> Result<GoalJob>;
+    /// Back to an earlier version (`None`: the one before).
+    async fn job_rollback(&self, goal_id: &str, job_id: &str, to: Option<u64>, caller: &GoalCaller) -> Result<GoalJob>;
+    async fn job_delete(&self, goal_id: &str, job_id: &str, caller: &GoalCaller) -> Result<()>;
 
     // ---- the driver of the epoch's Goal Session (under its lease) ----
     /// Publish the Goal State the session committed (ignored when the file
@@ -294,15 +321,24 @@ pub trait GoalStore: Send + Sync {
     async fn write_schedule(&self, schedule: &GoalSchedule) -> Result<()>;
 }
 
+/// A UI Session, for the rules of a change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UiCaller {
+    pub sid: String,
+    /// The agent's owner is who it talks to.
+    pub owner: bool,
+}
+
 /// What the caller is, for the rules of a change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallerKind {
     Owner,
-    Ui(String),
+    Ui(UiCaller),
     /// A Goal Session: its sid and its goal.
     Goal(String, String),
-    Work(String),
-    Other(String),
+    /// A Work: its sid, and the UI Session that started it itself (none: a
+    /// Todo's, a Goal's, a Work's).
+    Work(String, Option<UiCaller>),
 }
 
 impl CallerKind {
@@ -310,11 +346,33 @@ impl CallerKind {
     pub fn via(&self) -> String {
         match self {
             CallerKind::Owner => "owner".into(),
-            CallerKind::Ui(sid) => format!("ui_session:{sid}"),
+            CallerKind::Ui(ui) => format!("ui_session:{}", ui.sid),
             CallerKind::Goal(sid, _) => format!("goal_session:{sid}"),
-            CallerKind::Work(sid) => format!("work_session:{sid}"),
-            CallerKind::Other(sid) => format!("session:{sid}"),
+            CallerKind::Work(sid, _) => format!("work_session:{sid}"),
         }
+    }
+
+    /// The conversation it acts for.
+    fn ui(&self) -> Option<&UiCaller> {
+        match self {
+            CallerKind::Ui(ui) => Some(ui),
+            CallerKind::Work(_, ui) => ui.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// It creates goals and changes their status and epochs.
+    fn steers(&self) -> bool {
+        *self == CallerKind::Owner || self.ui().is_some()
+    }
+
+    /// It rewrites `goal`: its definition, its check.
+    pub fn rewrites(&self, goal: &GoalDefinition) -> bool {
+        *self == CallerKind::Owner
+            || self.ui().is_some_and(|ui| {
+                goal.created_by.via == format!("ui_session:{}", ui.sid)
+                    || (ui.owner && goal.opendan().and_then(|e| e.builtin).is_none())
+            })
     }
 }
 
@@ -443,10 +501,32 @@ impl FsGoals {
             .await?
             .ok_or_else(|| OpenDanError::NotFound(format!("calling session {sid}")))?;
         Ok(match e.kind {
-            SessionKind::Ui => CallerKind::Ui(sid.clone()),
+            SessionKind::Ui => CallerKind::Ui(Self::ui_caller(&e)),
             SessionKind::Goal => CallerKind::Goal(sid.clone(), e.goal_id.unwrap_or_default()),
-            SessionKind::Work => CallerKind::Work(sid.clone()),
+            SessionKind::Work => {
+                let parent = match &e.origin {
+                    Some(o) if o.goal.is_none() => o.parent_session.clone(),
+                    _ => None,
+                };
+                let parent = match parent {
+                    Some(p) => self.registry.lookup(&p).await?.filter(|p| p.kind == SessionKind::Ui),
+                    None => None,
+                };
+                CallerKind::Work(sid.clone(), parent.as_ref().map(Self::ui_caller))
+            }
         })
+    }
+
+    fn ui_caller(e: &RegistryEntry) -> UiCaller {
+        // Who a conversation speaks for is what Memory binds it to.
+        let owner = crate::session::SessionDir::open(&e.location)
+            .and_then(|d| d.config())
+            .is_ok_and(|cfg| match (&cfg.channels.outbound, &cfg.session.owner) {
+                (Some(o), Some(owner)) => &o.to == owner,
+                (None, owner) => owner.is_some(),
+                _ => false,
+            });
+        UiCaller { sid: e.session_id.clone(), owner }
     }
 
     /// Work of the goal that is not finished.
@@ -508,6 +588,40 @@ impl FsGoals {
         Ok(())
     }
 
+    fn job_files(&self, goal_id: &str) -> JobFiles {
+        JobFiles::new(&self.dir(goal_id), goal_id)
+    }
+
+    /// Who may change a Goal's jobs: who may change its check.
+    fn may_change_jobs(ck: &CallerKind, goal: &GoalDefinition) -> Result<()> {
+        match ck {
+            c if c.rewrites(goal) => Ok(()),
+            CallerKind::Goal(_, g) if *g == goal.goal_id => Ok(()),
+            _ => Err(forbidden(&format!("change the jobs of goal {}", goal.goal_id), ck)),
+        }
+    }
+
+    async fn change_job(
+        &self,
+        goal_id: &str,
+        job_id: &str,
+        what: &str,
+        caller: &GoalCaller,
+        f: impl FnOnce(&JobFiles, &str, u64) -> Result<GoalJob> + Send,
+    ) -> Result<GoalJob> {
+        let ck = self.caller_kind(caller).await?;
+        let _lock = self.lock(goal_id)?;
+        let mut goal = self.must(goal_id)?;
+        Self::may_change_jobs(&ck, &goal)?;
+        let job = f(&self.job_files(goal_id), &ck.via(), crate::now_ms())?;
+        let mut change = Self::change("job", caller, &ck, None);
+        change.epoch = Some(goal.session.epoch);
+        change.detail = json!({ "job_id": job_id, "what": what, "version": job.version });
+        self.append_change(&mut goal, change)?;
+        self.write_goal(&goal)?;
+        Ok(job)
+    }
+
     fn state_file(&self, goal_id: &str) -> PathBuf {
         self.dir(goal_id).join("state.json")
     }
@@ -552,7 +666,7 @@ impl FsGoals {
     }
 }
 
-fn last_lines<T: serde::de::DeserializeOwned>(path: &Path, limit: usize) -> Result<Vec<T>> {
+pub(crate) fn last_lines<T: serde::de::DeserializeOwned>(path: &Path, limit: usize) -> Result<Vec<T>> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -615,7 +729,7 @@ impl GoalStore for FsGoals {
 
     async fn create(&self, req: &GoalCreate, caller: &GoalCaller) -> Result<GoalDefinition> {
         let ck = self.caller_kind(caller).await?;
-        if !matches!(ck, CallerKind::Owner | CallerKind::Ui(_)) {
+        if !ck.steers() {
             return Err(forbidden("create a goal", &ck));
         }
         if req.objective.trim().is_empty() {
@@ -648,9 +762,15 @@ impl GoalStore for FsGoals {
             &crate::ids::goal_session_key(&self.agent_did, &goal_id, 1),
             None,
         )?;
-        let via = match &ck {
-            CallerKind::Ui(sid) => format!("ui_session:{sid}"),
-            _ => "owner".to_string(),
+        // The conversation it comes from: where its notifications go, who
+        // may change it later.
+        let via = match ck.ui() {
+            Some(ui) => format!("ui_session:{}", ui.sid),
+            None => "owner".to_string(),
+        };
+        let work = match &ck {
+            CallerKind::Work(sid, _) => Some(sid.clone()),
+            _ => None,
         };
         let mut goal = GoalDefinition {
             schema: GOAL_SCHEMA.to_string(),
@@ -674,6 +794,7 @@ impl GoalStore for FsGoals {
             created_by: GoalCreatedBy {
                 principal: caller.principal.clone(),
                 via,
+                work,
             },
             beneficiaries: req.beneficiaries.clone(),
             budget: req.budget.clone(),
@@ -728,11 +849,11 @@ impl GoalStore for FsGoals {
         let ck = self.caller_kind(caller).await?;
         let _lock = self.lock(goal_id)?;
         let mut goal = self.must(goal_id)?;
-        match &ck {
-            CallerKind::Owner => {}
-            CallerKind::Ui(sid) if goal.created_by.via == format!("ui_session:{sid}") => {}
-            CallerKind::Ui(_) => return Err(forbidden("revise a goal another session created", &ck)),
-            _ => return Err(forbidden("revise a goal's definition, budget or schedule", &ck)),
+        if !ck.rewrites(&goal) {
+            return Err(match ck.ui() {
+                Some(_) => forbidden("revise a goal another session created", &ck),
+                None => forbidden("revise a goal's definition, budget or schedule", &ck),
+            });
         }
         if goal.revision != req.expected_revision {
             return Err(OpenDanError::GoalConflict(format!(
@@ -758,10 +879,12 @@ impl GoalStore for FsGoals {
         take!(beneficiaries);
         take!(budget);
         if let Some(v) = &req.schedule {
-            // The check script changes through `set_check` only.
-            let check = goal.schedule.check.clone();
+            // The check script and the context change through `set_check`
+            // only.
+            let (check, context) = (goal.schedule.check.clone(), goal.schedule.context);
             goal.schedule = v.clone();
             goal.schedule.check = check;
+            goal.schedule.context = context;
         }
         if req.achieved_when.is_some() {
             goal.achieved_when = req.achieved_when.clone();
@@ -836,7 +959,7 @@ impl GoalStore for FsGoals {
         let from = goal.status;
         let to = req.status;
         match &ck {
-            CallerKind::Owner | CallerKind::Ui(_) => {}
+            c if c.steers() => {}
             CallerKind::Goal(_, g) if g == goal_id => match to {
                 GoalStatus::Archived if req.reason.as_deref().is_some_and(|r| !r.trim().is_empty()) => {}
                 GoalStatus::Archived => {
@@ -903,7 +1026,7 @@ impl GoalStore for FsGoals {
         caller: &GoalCaller,
     ) -> Result<GoalDefinition> {
         let ck = self.caller_kind(caller).await?;
-        if !matches!(ck, CallerKind::Owner | CallerKind::Ui(_)) {
+        if !ck.steers() {
             return Err(forbidden("reopen a goal", &ck));
         }
         if req.reason.trim().is_empty() {
@@ -945,7 +1068,7 @@ impl GoalStore for FsGoals {
         caller: &GoalCaller,
     ) -> Result<GoalDefinition> {
         let ck = self.caller_kind(caller).await?;
-        if !matches!(ck, CallerKind::Owner | CallerKind::Ui(_)) {
+        if !ck.steers() {
             return Err(forbidden("restart a goal", &ck));
         }
         if req.reason.trim().is_empty() {
@@ -991,8 +1114,7 @@ impl GoalStore for FsGoals {
         let _lock = self.lock(goal_id)?;
         let mut goal = self.must(goal_id)?;
         match &ck {
-            CallerKind::Owner => {}
-            CallerKind::Ui(sid) if goal.created_by.via == format!("ui_session:{sid}") => {}
+            c if c.rewrites(&goal) => {}
             CallerKind::Goal(_, g) if g == goal_id => {}
             _ => return Err(forbidden(&format!("change the check of goal {goal_id}"), &ck)),
         }
@@ -1019,6 +1141,9 @@ impl GoalStore for FsGoals {
         }
         if let Some(t) = &req.timezone {
             goal.schedule.timezone = Some(t.trim().to_string()).filter(|t| !t.is_empty());
+        }
+        if req.context.is_some() {
+            goal.schedule.context = req.context;
         }
         check_schedule(&goal.schedule)?;
         let now = crate::now_ms();
@@ -1068,6 +1193,7 @@ impl GoalStore for FsGoals {
             "every_secs": goal.schedule.every_secs,
             "cron": goal.schedule.cron,
             "timezone": goal.schedule.timezone,
+            "context": goal.schedule.context,
             "script": goal.schedule.check,
         });
         self.append_change(&mut goal, change)?;
@@ -1128,6 +1254,64 @@ impl GoalStore for FsGoals {
     async fn schedule(&self, goal_id: &str) -> Result<Option<GoalSchedule>> {
         check_goal_id(goal_id)?;
         fsutil::read_json_opt(&self.dir(goal_id).join("schedule.json"))
+    }
+
+    async fn stats(&self, goal_id: &str, periods: usize) -> Result<crate::goal_stats::GoalStats> {
+        let d = crate::goal::defaults(Some(&self.layout.root), crate::goal::GOAL_CLASS);
+        crate::goal_stats::stats(self, &self.registry, goal_id, periods, &d, crate::now_ms()).await
+    }
+
+    async fn jobs(&self, goal_id: &str) -> Result<Vec<JobView>> {
+        check_goal_id(goal_id)?;
+        self.job_files(goal_id).views(crate::now_ms())
+    }
+
+    async fn job_runs(&self, goal_id: &str, job_id: &str, limit: usize) -> Result<Vec<JobRun>> {
+        check_goal_id(goal_id)?;
+        self.job_files(goal_id).runs(job_id, limit)
+    }
+
+    async fn job_log(&self, goal_id: &str, job_id: &str, run_id: Option<&str>) -> Result<Option<String>> {
+        check_goal_id(goal_id)?;
+        self.job_files(goal_id).log(job_id, run_id)
+    }
+
+    async fn job_usage(&self, goal_id: &str, since_ms: u64) -> Result<Vec<UsageRecord>> {
+        check_goal_id(goal_id)?;
+        Ok(self.job_files(goal_id).usage_since(since_ms))
+    }
+
+    async fn job_put(&self, goal_id: &str, req: &JobPut, caller: &GoalCaller) -> Result<GoalJob> {
+        self.change_job(goal_id, &req.job_id, "put", caller, |files, by, now| files.put(req, by, now)).await
+    }
+
+    async fn job_run(&self, goal_id: &str, job_id: &str, caller: &GoalCaller) -> Result<JobRequest> {
+        let ck = self.caller_kind(caller).await?;
+        let goal = self.must(goal_id)?;
+        Self::may_change_jobs(&ck, &goal)?;
+        if goal.status != GoalStatus::Active {
+            return Err(OpenDanError::GoalConflict(format!("goal {goal_id} is {}: its jobs do not run", goal.status.as_str())));
+        }
+        self.job_files(goal_id).request(job_id, &ck.via(), crate::now_ms())
+    }
+
+    async fn job_set_enabled(&self, goal_id: &str, job_id: &str, enabled: bool, caller: &GoalCaller) -> Result<GoalJob> {
+        let what = if enabled { "enable" } else { "disable" };
+        self.change_job(goal_id, job_id, what, caller, |files, by, now| files.set_enabled(job_id, enabled, by, now)).await
+    }
+
+    async fn job_rollback(&self, goal_id: &str, job_id: &str, to: Option<u64>, caller: &GoalCaller) -> Result<GoalJob> {
+        self.change_job(goal_id, job_id, "rollback", caller, |files, by, now| files.rollback(job_id, to, by, now)).await
+    }
+
+    async fn job_delete(&self, goal_id: &str, job_id: &str, caller: &GoalCaller) -> Result<()> {
+        self.change_job(goal_id, job_id, "delete", caller, |files, _, _| {
+            let job = files.must(job_id)?;
+            files.delete(job_id)?;
+            Ok(job)
+        })
+        .await
+        .map(|_| ())
     }
 
     async fn write_state(&self, lease: &Lease, state: &GoalState) -> Result<()> {

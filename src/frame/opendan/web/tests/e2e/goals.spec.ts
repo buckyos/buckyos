@@ -1,8 +1,9 @@
 import { expect, test, type Page } from '@playwright/test'
 
-const BUILTIN = 'goal-memory-maintenance'
+const BUILTIN = 'goal-self-improve'
 const TIDY = 'goal-downloads-tidy'
 const ARCHIVED = 'goal-photo-backlog'
+const SITES = 'goal-site-status'
 
 const open = async (page: Page, hash = '') => {
   const errors: string[] = []
@@ -15,17 +16,17 @@ const open = async (page: Page, hash = '') => {
 test('home lists every goal with its activation, next opportunity and skip reason', async ({ page }) => {
   const errors = await open(page)
   const goals = page.getByTestId('goals')
-  await expect(goals.getByRole('listitem')).toHaveCount(3)
+  await expect(goals.getByRole('listitem')).toHaveCount(4)
   // Active goals first, the archived one last.
   const ids = await goals.getByRole('listitem').evaluateAll((items) => items.map((li) => li.getAttribute('data-testid')))
-  expect(ids[2]).toBe(`goal-${ARCHIVED}`)
+  expect(ids[3]).toBe(`goal-${ARCHIVED}`)
 
   const builtin = goals.getByTestId(`goal-${BUILTIN}`)
-  await expect(builtin).toContainText('Memory maintenance')
+  await expect(builtin).toContainText('Self improvement')
   await expect(builtin.getByTestId('goal-builtin')).toHaveText('Built-in')
   await expect(builtin).toContainText('Active · Maintain')
   await expect(builtin.getByTestId('goal-last-activation')).toContainText('1 h ago · Acted')
-  await expect(builtin.getByTestId('goal-next')).toContainText(/Next opportunity: (\d{4}-\d\d-\d\d )?\d\d:\d\d:\d\d \(check false\)/)
+  await expect(builtin.getByTestId('goal-next')).toContainText(/Next opportunity: .*\d{1,2}:\d\d:\d\d.*\(check false\)/)
   await expect(builtin.getByTestId('goal-skip')).toContainText('Last skip: check_false')
   await expect(builtin.getByTestId('goal-candidates')).toContainText('1 candidates awaiting confirmation')
   await expect(builtin.getByRole('link')).toHaveAttribute('href', `#/goal/${BUILTIN}`)
@@ -35,6 +36,7 @@ test('home lists every goal with its activation, next opportunity and skip reaso
   await expect(tidy.getByTestId('goal-last-activation')).toContainText('Needs info')
   await expect(tidy.getByTestId('goal-skip')).toContainText('min_interval')
   await expect(tidy.getByTestId('goal-next')).not.toContainText('check')
+  await expect(goals.getByTestId(`goal-${SITES}`).getByTestId('goal-skip')).toHaveText('Last skip: the one before is still waiting')
 
   const archived = goals.getByTestId(`goal-${ARCHIVED}`)
   await expect(archived).toContainText('Archived · Achieve')
@@ -86,9 +88,9 @@ test('goal detail groups activations by epoch and links to the session detail', 
   expect(errors).toEqual([])
 })
 
-test('the built-in goal shows its maintenance block and cannot be archived', async ({ page }) => {
+test('the built-in goal shows its consolidation receipts and cannot be archived', async ({ page }) => {
   const errors = await open(page, `#/goal/${BUILTIN}`)
-  await expect(page.getByTestId('goal-header')).toContainText('Built-in: memory_maintenance')
+  await expect(page.getByTestId('goal-header')).toContainText('Built-in: self_improve')
   const info = page.getByTestId('goal-builtin-info')
   await expect(info).toContainText('System built-in goal')
   await expect(info).toContainText('Policy version: 1')
@@ -107,7 +109,14 @@ test('the built-in goal shows its maintenance block and cannot be archived', asy
   await expect(maintenance.getByTestId('candidate-row')).toHaveCount(1)
   await expect(maintenance.getByTestId('candidate-row')).toContainText('needs_confirmation')
   await expect(maintenance.getByTestId('candidate-row')).toContainText('Weekly release report')
-  await expect(page.getByTestId('goal-state').getByTestId('goal-question')).toContainText('cand-weekly-report')
+  // What the consolidation found for the owner is a question with options.
+  const question = page.getByTestId('goal-state').getByTestId('goal-question')
+  await expect(question).toContainText('weekly release report')
+  await expect(question).toContainText('cand-weekly-report')
+  await expect(question.getByTestId('goal-question-options')).toHaveText('Options: Add it to the calendar · No')
+  const definition = page.getByTestId('goal-definition')
+  await expect(definition).toContainText('activation ≤ 500k tokens · ≤ 6 runs · period ≤ 1.8M tokens · ≤ 48 activations · window 1d')
+  await expect(definition).toContainText('every 30m')
   expect(errors).toEqual([])
 })
 
@@ -202,12 +211,12 @@ test('the gates show the check of the built-in goal, its script and the package 
   await expect(gates.getByTestId('gate-guarantee')).toHaveText('3d (default)')
   await expect(gates.getByTestId('gate-interval')).toHaveText('15m (default)')
   const budget = gates.getByTestId('gate-budget')
-  await expect(budget).toContainText('41.2k / 200k tokens (159k remaining)')
-  await expect(budget).toContainText('goal sessions 41.2k · work 0')
+  await expect(budget).toContainText('41.2k / 1.8M tokens (1.8M remaining)')
+  await expect(budget).toContainText('goal sessions 41.2k · work 0 · jobs 0')
   await expect(budget).toContainText('window 1d · resets')
   await expect(gates.getByTestId('gate-timetable')).toHaveText('every 30m')
   await expect(gates.getByTestId('gate-script')).toContainText(`v2 · goal_session:${BUILTIN}-e1`)
-  await expect(gates.getByTestId('gate-script')).toContainText('package script: goal_checks/memory_maintenance.ts')
+  await expect(gates.getByTestId('gate-script')).toContainText('package script: goal_checks/self_improve.ts')
   await expect(gates.getByTestId('gate-last-check')).toContainText('false')
   await expect(gates.getByTestId('gate-last-check')).toContainText('v2 · 140 ms')
   await expect(gates.getByTestId('gate-last-check-held')).toHaveText('ran while held by the hard interval: a true would have waited')
@@ -228,11 +237,11 @@ test('the gates show the check of the built-in goal, its script and the package 
 
   await gates.getByTestId('gate-restore').click()
   const dialog = page.getByRole('dialog')
-  await expect(dialog).toContainText('goal_checks/memory_maintenance.ts')
+  await expect(dialog).toContainText('goal_checks/self_improve.ts')
   await dialog.getByLabel('Reason (optional)').fill('back to the shipped check')
   await dialog.getByRole('button', { name: 'Restore the package script' }).click()
   await expect(gates.getByTestId('gate-result')).toContainText('check script v3 restored from the package')
-  await expect(gates.getByTestId('gate-script')).toContainText('v3 · package:goal_checks/memory_maintenance.ts')
+  await expect(gates.getByTestId('gate-script')).toContainText('v3 · package:goal_checks/self_improve.ts')
   await expect(gates.getByTestId('gate-restore')).toHaveCount(0)
   await expect(gates.getByTestId('gate-script-text')).toContainText('its initial version')
   const latest = page.getByTestId('goal-changes').getByTestId('change-row').first()
@@ -253,7 +262,7 @@ test('an ordinary goal has no script; its events are held and its cost is counte
   await expect(gates.getByTestId('gate-budget')).toContainText('12.8k / 300k tokens')
 
   const cost = page.getByTestId('goal-cost')
-  await expect(cost.getByTestId('cost-period')).toHaveText('This period: 12.8k tokens (goal sessions 12.8k · work 0)')
+  await expect(cost.getByTestId('cost-period')).toHaveText('This period: 12.8k tokens (goal sessions 12.8k · work 0 · jobs 0)')
   await expect(cost.getByTestId('cost-day')).toHaveCount(7)
   await expect(cost.getByTestId('cost-week')).toHaveText('7 days: 12.8k tokens')
   expect(errors).toEqual([])
@@ -326,9 +335,9 @@ test('a built-in goal switched off in the configuration is shown off', async ({ 
   const goals = page.getByTestId('goals')
   const builtin = goals.getByTestId(`goal-${BUILTIN}`)
   await expect(builtin.getByTestId('goal-off')).toHaveText('Switched off')
-  // After the active goal, before the archived one.
+  // After the active goals, before the archived one.
   const ids = await goals.getByRole('listitem').evaluateAll((items) => items.map((li) => li.getAttribute('data-testid')))
-  expect(ids).toEqual([`goal-${TIDY}`, `goal-${BUILTIN}`, `goal-${ARCHIVED}`])
+  expect(ids).toEqual([SITES, TIDY, BUILTIN, ARCHIVED].map((id) => `goal-${id}`))
   await expect(builtin).not.toContainText('Active')
   await expect(builtin.getByTestId('goal-next')).toContainText('Next opportunity: Switched off')
   await expect(goals.getByTestId('goals-many')).toHaveCount(0)
@@ -347,10 +356,236 @@ test('a built-in goal switched off in the configuration is shown off', async ({ 
 test('more than 16 active goals: the list says goals are scarce', async ({ page }) => {
   const errors = await open(page, '&goals=many')
   const goals = page.getByTestId('goals')
-  await expect(goals.getByTestId('goals-many')).toContainText('18 active goals')
+  await expect(goals.getByTestId('goals-many')).toContainText('19 active goals')
   await expect(goals.getByTestId('goals-many')).toContainText('folded into an existing goal')
   await page.goto('/?data=mock&lang=zh&goals=many')
   await expect(page.getByTestId('goals-many')).toContainText('目标是稀缺资源')
+  expect(errors).toEqual([])
+})
+
+test('jobs show their state, last run and failures; runs and logs fold out', async ({ page }) => {
+  const errors = await open(page, `#/goal/${SITES}`)
+  const jobs = page.getByTestId('goal-jobs')
+  await expect(jobs.locator('> div > ul > li')).toHaveCount(4)
+
+  const check = jobs.getByTestId('job-check_sites')
+  await expect(check).toContainText('Check the sites')
+  await expect(check).toContainText('check_sites · v3')
+  await expect(check.getByTestId('job-state')).toHaveText('OK')
+  await expect(check.getByTestId('job-timetable')).toContainText(/every 1h · next run .*\d:\d\d/)
+  await expect(check.getByTestId('job-last-run')).toContainText('2s · scheduled')
+  await expect(check.getByTestId('job-last-run')).toContainText('blog.example.org answered 502')
+  await expect(check.getByTestId('job-failures')).toHaveCount(0)
+
+  const report = jobs.getByTestId('job-daily_report')
+  await expect(report.getByTestId('job-state')).toHaveText('Failed')
+  await expect(report.getByTestId('job-timetable')).toContainText('cron 0 8 * * * (America/Los_Angeles)')
+  await expect(report.getByTestId('job-last-run')).toContainText('41s · scheduled · no permission · exit code 77 · 3.1k tokens')
+  await expect(report.getByTestId('job-failures')).toHaveText('Failed 3 times in a row')
+
+  const render = jobs.getByTestId('job-render_page')
+  await expect(render.getByTestId('job-state')).toHaveText('Running')
+  await expect(render.getByRole('button', { name: 'Run now' })).toBeDisabled()
+  // One version is kept: nothing to go back to.
+  await expect(render.getByLabel('Roll back to…')).toHaveCount(0)
+
+  const trim = jobs.getByTestId('job-trim_history')
+  await expect(trim.getByTestId('job-state')).toHaveText('Switched off')
+  await expect(trim.getByTestId('job-timetable')).not.toContainText('next run')
+  await expect(trim.getByTestId('job-last-run')).toContainText('Ended by the host')
+  await expect(trim.getByRole('button', { name: 'Run now' })).toBeDisabled()
+
+  await check.getByTestId('job-runs-toggle').click()
+  const runs = check.getByTestId('job-run')
+  await expect(runs).toHaveCount(3)
+  await expect(runs.nth(0)).toContainText('{"sites":4,"down":1}')
+  await expect(runs.nth(1)).toContainText('34s · after install · 2 attempts')
+  await runs.nth(0).getByRole('button', { name: 'Log' }).click()
+  await expect(check.getByTestId('job-log')).toContainText('GET https://blog.example.org 502')
+  await runs.nth(2).getByRole('button', { name: 'Log' }).click()
+  await expect(check.getByTestId('job-log')).toHaveText('No log of this run is kept.')
+  await check.getByTestId('job-runs-toggle').click()
+  await expect(runs).toHaveCount(0)
+
+  // A goal without jobs says so in one line.
+  await page.goto(`/?data=mock&lang=en#/goal/${TIDY}`)
+  await expect(jobs).toContainText('No jobs.')
+  await expect(jobs.getByRole('button')).toHaveCount(0)
+  expect(errors).toEqual([])
+})
+
+test('the owner runs, disables, enables, rolls back and deletes a job', async ({ page }) => {
+  const errors = await open(page, `#/goal/${SITES}`)
+  const jobs = page.getByTestId('goal-jobs')
+  const report = jobs.getByTestId('job-daily_report')
+  const result = jobs.getByTestId('job-result')
+  const dialog = page.getByRole('dialog')
+  const change = page.getByTestId('goal-changes').getByTestId('change-row').first()
+  await expect(report.getByTestId('job-state')).toHaveText('Failed')
+  await report.getByRole('button', { name: 'Run now' }).click()
+  await expect(result).toContainText('run of “Send the daily report” requested')
+  await expect(report.getByTestId('job-state')).toHaveText('Running')
+  await expect(report.getByTestId('job-running')).toContainText('v2 · on request')
+  await expect(report.getByTestId('job-state')).toHaveText('OK', { timeout: 12_000 })
+  await expect(report.getByTestId('job-failures')).toHaveCount(0)
+  await expect(report.getByTestId('job-last-run')).toContainText('on request')
+
+  await report.getByRole('button', { name: 'Disable' }).click()
+  await expect(dialog).toContainText('Disable “Send the daily report”?')
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(report.getByTestId('job-state')).toHaveText('OK')
+  await report.getByRole('button', { name: 'Disable' }).click()
+  await dialog.getByRole('button', { name: 'Disable' }).click()
+  await expect(dialog).toBeHidden()
+  await expect(report.getByTestId('job-state')).toHaveText('Switched off')
+  await expect(change).toContainText('job daily_report disabled')
+  await report.getByRole('button', { name: 'Enable' }).click()
+  await expect(result).toContainText('“Send the daily report” enabled')
+  await expect(report.getByTestId('job-state')).toHaveText('OK')
+
+  await report.getByLabel('Roll back to…').selectOption('1')
+  await expect(dialog).toContainText('Roll “Send the daily report” back to v1?')
+  await dialog.getByRole('button', { name: 'Roll back' }).click()
+  await expect(result).toContainText('“Send the daily report” is back at v1')
+  await expect(report).toContainText('daily_report · v1')
+  await expect(report.getByTestId('job-running')).toContainText('v1 · after install')
+  // The version it came from is still kept.
+  await expect(report.getByLabel('Roll back to…').locator('option')).toHaveText(['Roll back to…', 'v2'])
+  await expect(change).toContainText('job daily_report rolled back to v1')
+
+  await jobs.getByTestId('job-trim_history').getByRole('button', { name: 'Delete' }).click()
+  await expect(dialog).toContainText('cannot be undone')
+  await dialog.getByRole('button', { name: 'Delete' }).click()
+  await expect(jobs.getByTestId('job-trim_history')).toHaveCount(0)
+  await expect(change).toContainText('job trim_history deleted')
+
+  // The jobs of a dormant goal do not run.
+  await page.getByTestId('goal-operations').getByRole('button', { name: 'Sleep' }).click()
+  await dialog.getByRole('button', { name: 'Sleep' }).click()
+  await expect(jobs.getByTestId('jobs-asleep')).toContainText('its jobs do not run')
+  await expect(report.getByRole('button', { name: 'Run now' })).toBeDisabled()
+  await expect(jobs.getByTestId('job-check_sites').getByTestId('job-timetable')).not.toContainText('next run')
+  expect(errors).toEqual([])
+})
+
+test('the gates show what an activation remembers; the owner switches it as a check change', async ({ page }) => {
+  const errors = await open(page, `#/goal/${TIDY}`)
+  const gates = page.getByTestId('goal-gates')
+  const changes = page.getByTestId('goal-changes').getByTestId('change-row')
+  await expect(gates.getByTestId('gate-context')).toContainText('Fresh (default)')
+  await expect(gates.getByTestId('gate-context')).toContainText('starts with its header alone')
+  await expect(changes).toHaveCount(4)
+  await gates.getByTestId('gate-context-switch').click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toContainText('Change the context of “Keep Downloads tidy”?')
+  await expect(dialog).toContainText('every round pays for it')
+  await dialog.getByLabel('Reason (optional)').fill('it keeps reading the same folder')
+  await dialog.getByRole('button', { name: 'Carry the history' }).click()
+  await expect(gates.getByTestId('gate-result')).toContainText('context is now: Carried')
+  await expect(gates.getByTestId('gate-context')).toContainText('Carried')
+  await expect(gates.getByTestId('gate-context')).not.toContainText('default')
+  await expect(changes).toHaveCount(5)
+  await expect(changes.first()).toContainText('"context":"carry"')
+  await expect(changes.first()).toContainText('it keeps reading the same folder')
+  // Not a content revision, and a revision leaves it alone.
+  await expect(page.getByTestId('goal-definition').getByLabel('Revision')).toHaveValue('2')
+  await gates.getByTestId('gate-edit').click()
+  await gates.getByTestId('gate-form').getByLabel('Hard interval (seconds)').fill('1800')
+  await gates.getByTestId('gate-form').getByRole('button', { name: 'Save' }).click()
+  await expect(gates.getByTestId('gate-result')).toContainText('(revision 3)')
+  await expect(gates.getByTestId('gate-context')).toContainText('Carried')
+  await gates.getByTestId('gate-context-switch').click()
+  await dialog.getByRole('button', { name: 'Start fresh' }).click()
+  await expect(gates.getByTestId('gate-context')).toContainText('Fresh')
+  expect(errors).toEqual([])
+})
+
+test('failures in a row, the options of a question, job tokens, the Work that created it and the periods', async ({ page }) => {
+  const errors = await open(page, `#/goal/${SITES}`)
+  const summary = page.getByTestId('goal-summary')
+  await expect(summary.getByTestId('goal-failing-activations')).toHaveText('Activations failed in a row: 2')
+  await expect(summary.getByTestId('goal-failing-works')).toHaveText('Work failed in a row: 3')
+  await expect(summary).toContainText('Last skip: the one before is still waiting')
+  await expect(page.getByTestId('goal-created-by').getByRole('link')).toHaveText('work-5c8e17aa')
+
+  const questions = page.getByTestId('goal-state').getByTestId('goal-question')
+  await expect(questions.nth(0).getByTestId('goal-question-options')).toHaveText('Options: I will sign in again · Send it by mail instead · Stop the report · or free text')
+  await expect(questions.nth(1).getByTestId('goal-question-options')).toHaveText('Options: Yes · No · Only above 10 seconds')
+  await expect(questions.nth(1)).toContainText('Answer: Only above 10 seconds')
+  await expect(page.getByTestId('goal-usage')).toContainText('30.7k / 400k')
+
+  const gates = page.getByTestId('goal-gates')
+  await expect(gates.getByTestId('gate-budget')).toContainText('goal sessions 18.2k · work 9.4k · jobs 3.1k')
+  await expect(gates.getByTestId('gate-last-check-held')).toHaveText('ran while the run opportunity before it was still waiting: a true was set aside')
+  await expect(gates.getByTestId('gate-context')).toContainText('Carried')
+  await expect(page.getByTestId('cost-period')).toHaveText('This period: 30.7k tokens (goal sessions 18.2k · work 9.4k · jobs 3.1k)')
+  await expect(page.getByTestId('goal-changes').getByTestId('change-row').nth(1)).toContainText('job check_sites installed (v3)')
+
+  // Newest first, and nothing from before the goal existed (it is 3 days old).
+  const periods = page.getByTestId('goal-periods').getByTestId('period-row')
+  await expect(periods).toHaveCount(4)
+  await expect(periods.nth(0)).toContainText('current')
+  await expect(periods.nth(0)).toContainText('18.2k / 9.4k / 3.1k')
+  await expect(periods.nth(0)).toContainText('2 / 17 / 0')
+  await expect(periods.nth(0)).toContainText('19 / 1')
+  await expect(periods.nth(1)).toContainText('80k / 2.1k / 0')
+  await expect(periods.nth(2)).toContainText('3.5k')
+
+  // Without failures nothing is said about them.
+  await page.goto(`/?data=mock&lang=en#/goal/${TIDY}`)
+  await expect(page.getByTestId('goal-header')).toContainText('Keep Downloads tidy')
+  await expect(summary.getByTestId('goal-failing-activations')).toHaveCount(0)
+  await expect(summary.getByTestId('goal-failing-works')).toHaveCount(0)
+  expect(errors).toEqual([])
+})
+
+test('the self improvement goal shows its duties with their last conclusions, and is off when every duty is', async ({ page }) => {
+  const errors = await open(page, `#/goal/${BUILTIN}`)
+  const duties = page.getByTestId('goal-duties')
+  await expect(duties.locator('li')).toHaveCount(3)
+  const memory = duties.getByTestId('duty-memory')
+  const manuals = duties.getByTestId('duty-manuals')
+  const tools = duties.getByTestId('duty-tools')
+  await expect(manuals).toContainText('On')
+  await expect(memory).toContainText('lasting memory')
+  await expect(memory.getByTestId('duty-last')).toContainText('#1.7')
+  await expect(memory.getByTestId('duty-last')).toContainText('Consolidated 2 batches')
+  await expect(manuals.getByTestId('duty-last')).toContainText('#1.5')
+  await expect(manuals.getByTestId('duty-last')).toContainText('Rewrote the steps of aigc_audio')
+  await expect(tools.getByTestId('duty-last')).toContainText('#1.4')
+  await expect(tools.getByTestId('duty-last')).toContainText('Made xlsx2csv and its manual')
+  await expect(page.getByTestId('goal-header')).toContainText('Active')
+
+  await duties.getByRole('link').click()
+  await expect(page).toHaveURL(/#\/skills$/)
+  await page.getByTestId('skills-duty-manuals').getByRole('switch').click()
+  await expect(page.getByTestId('skills-duty-manuals').getByTestId('duty-state')).toHaveText('Off')
+  await page.getByTestId('skills-self-improve').getByRole('link', { name: 'Open the goal' }).click()
+  // One duty off: the goal goes on with the others.
+  await expect(manuals).toContainText('Off')
+  await expect(tools).toContainText('On')
+  await expect(page.getByTestId('goal-header')).toContainText('Active')
+
+  await duties.getByRole('link').click()
+  for (const duty of ['memory', 'tools']) {
+    await page.getByTestId(`skills-duty-${duty}`).getByRole('switch').click()
+    await expect(page.getByTestId(`skills-duty-${duty}`).getByTestId('duty-state')).toHaveText('Off')
+    await expect(page.getByTestId(`skills-duty-${duty}`).getByRole('switch')).toBeEnabled()
+  }
+  await page.getByTestId('skills-self-improve').getByRole('link', { name: 'Open the goal' }).click()
+  const header = page.getByTestId('goal-header')
+  await expect(header.getByTestId('goal-off')).toHaveText('Switched off')
+  await expect(header).not.toContainText('Active')
+  await expect(page.getByTestId('goal-off-hint')).toContainText('Every duty of it is switched off')
+  await expect(page.getByTestId('goal-config-switch')).toHaveCount(0)
+  await expect(page.getByTestId('goal-operations').getByRole('button', { name: 'Activate' })).toHaveCount(0)
+
+  await page.getByRole('link', { name: 'Goals', exact: true }).click()
+  await expect(page.getByTestId(`goal-${BUILTIN}`).getByTestId('goal-off')).toHaveText('Switched off')
+  // An ordinary goal has no duties.
+  await page.getByTestId(`goal-${TIDY}`).getByRole('link').click()
+  await expect(page.getByTestId('goal-definition')).toBeVisible()
+  await expect(duties).toHaveCount(0)
   expect(errors).toEqual([])
 })
 
@@ -372,6 +607,32 @@ test.describe('on a phone', () => {
     await expect(page.getByTestId('goal-revision-diff')).toContainText('修订 1 → 2')
     expect(await overflow()).toBeLessThanOrEqual(0)
     await page.screenshot({ path: 'test-results/goal-edit-mobile-zh.png', fullPage: true })
+    expect(errors).toEqual([])
+  })
+
+  test('jobs, runs, logs, periods and duties fit the screen', async ({ page }) => {
+    const errors = await open(page, `#/goal/${SITES}`)
+    const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+    const inside = (id: string) => page.getByTestId(id).locator('> div').evaluate((e) => e.scrollWidth - e.clientWidth)
+    const check = page.getByTestId('job-check_sites')
+    await check.getByTestId('job-runs-toggle').click()
+    await check.getByTestId('job-run').first().getByRole('button', { name: 'Log' }).click()
+    await expect(check.getByTestId('job-log')).toContainText('answered 502')
+    await expect(page.getByTestId('period-row')).toHaveCount(4)
+    expect(await overflow()).toBeLessThanOrEqual(0)
+    for (const id of ['goal-jobs', 'goal-periods', 'goal-gates', 'goal-state']) expect(await inside(id)).toBeLessThanOrEqual(0)
+    // What did not happen in a period is left out here.
+    await expect(page.getByTestId('period-row').nth(0)).toContainText('Jobs: ok / failed')
+    await expect(page.getByTestId('period-row').nth(3).getByText('Jobs: ok / failed')).toBeHidden()
+    await check.getByLabel('Roll back to…').selectOption('2')
+    await expect(page.getByRole('dialog')).toContainText('back to v2?')
+    expect(await overflow()).toBeLessThanOrEqual(0)
+
+    await page.goto(`/?data=mock&lang=zh#/goal/${BUILTIN}`)
+    await expect(page.getByTestId('duty-memory')).toContainText('整理 Memory')
+    await expect(page.getByTestId('duty-tools')).toContainText('最近一次结论')
+    expect(await overflow()).toBeLessThanOrEqual(0)
+    expect(await inside('goal-duties')).toBeLessThanOrEqual(0)
     expect(errors).toEqual([])
   })
 })

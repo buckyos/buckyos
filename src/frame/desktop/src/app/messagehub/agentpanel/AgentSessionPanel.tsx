@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Bell, BellOff, Download, ExternalLink, File, FileText, Film, Forward, Image, LocateFixed, MoreHorizontal, Music, Pin, PinOff, Play, RefreshCw, Star, X } from 'lucide-react'
+import { Bell, BellOff, ChevronRight, Download, ExternalLink, File, FileText, Film, Forward, Image, LocateFixed, MoreHorizontal, Music, Pin, PinOff, Play, RefreshCw, Star, X } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
 import { useWindowDialog } from '../../../desktop/windows/dialogs'
 import { fetchAgentList } from '../../../api/user_mgr'
@@ -49,6 +49,8 @@ interface AgentSessionPanelProps {
   onEntityPreferences?: (entityIds: string[], patch: EntityPreferencePatch) => Promise<void>
   /** Opens a work session's whole work log. */
   onOpenWorklog: (destination: WorklogDestination) => void
+  /** Opens the list of the Agent's goals. */
+  onOpenGoals: () => void
   /** Brings a message of this conversation into view. */
   onLocateMessage: (messageId: string) => void
   onForward: (message: MessageObject) => void
@@ -68,7 +70,7 @@ interface AgentSessionPanelProps {
  * from the Agent's own service while the panel is open; a part that cannot
  * be read says so and the rest stays usable.
  */
-export function AgentSessionPanel({ entity, session, context, answering, timeline, onClose, onEntityPreferences, onOpenWorklog, onLocateMessage, onForward, onRotating, sessionDetails, entityDetails }: AgentSessionPanelProps) {
+export function AgentSessionPanel({ entity, session, context, answering, timeline, onClose, onEntityPreferences, onOpenWorklog, onOpenGoals, onLocateMessage, onForward, onRotating, sessionDetails, entityDetails }: AgentSessionPanelProps) {
   const { t } = useI18n()
   const agentDid = entity.id
   const source = getAgentPanelSource()
@@ -87,7 +89,7 @@ export function AgentSessionPanel({ entity, session, context, answering, timelin
     <section className="flex h-full flex-col bg-[color:var(--cp-surface)]" data-testid="agent-panel" data-agent={agentDid}>
       <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1"><h2 className="text-sm font-medium">{t('messagehub.agentPanel.title')}</h2><button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={onClose}><X size={18} /></button></header>
       <div className="shell-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto overflow-x-hidden p-4 text-sm" data-testid="agent-panel-body">
-        <AgentOverview entity={entity} context={context} onEntityPreferences={onEntityPreferences} />
+        <AgentOverview entity={entity} context={context} onEntityPreferences={onEntityPreferences} onOpenGoals={onOpenGoals} />
         <hr className="border-[color:var(--cp-border)]" />
         {session ? <>
           <ConversationState session={session} context={context} conversation={conversation} answering={answering} />
@@ -118,15 +120,17 @@ function Unavailable({ testId }: { testId: string }) {
   return <p className="text-[13px] text-[color:var(--cp-muted)]" role="note" data-testid={testId}>{t('messagehub.agentPanel.unavailable')}</p>
 }
 
+const statClass = 'min-w-0 rounded-lg bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)] px-2 py-1.5'
+
 function Stat({ label, value, tone, testId }: { label: string; value: string | number; tone?: 'warning' | 'danger'; testId: string }) {
-  return <div className="min-w-0 rounded-lg bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)] px-2 py-1.5" data-testid={testId}>
+  return <div className={statClass} data-testid={testId}>
     <p className="truncate text-[15px] font-medium tabular-nums" style={tone ? { color: `var(--cp-${tone})` } : undefined}>{value}</p>
     <p className="break-words text-[11px] leading-tight text-[color:var(--cp-muted)]">{label}</p>
   </div>
 }
 
 /** The Agent as a whole: who it is, how it is doing, its home, and whether it may notify. */
-function AgentOverview({ entity, context, onEntityPreferences }: { entity: EntityDetail; context: MessageHubContext; onEntityPreferences?: (entityIds: string[], patch: EntityPreferencePatch) => Promise<void> }) {
+function AgentOverview({ entity, context, onEntityPreferences, onOpenGoals }: { entity: EntityDetail; context: MessageHubContext; onEntityPreferences?: (entityIds: string[], patch: EntityPreferencePatch) => Promise<void>; onOpenGoals: () => void }) {
   const { t, locale } = useI18n()
   const now = useMessageHubClock()
   const source = getAgentPanelSource()
@@ -160,6 +164,10 @@ function AgentOverview({ entity, context, onEntityPreferences }: { entity: Entit
             {value.sessions.interrupted > 0 ? <Stat label={t('messagehub.agentPanel.interrupted')} value={value.sessions.interrupted} tone="warning" testId="summary-interrupted" /> : null}
             <Stat label={t('messagehub.agentPanel.cognitions')} value={value.memory.cognitions} testId="summary-cognitions" />
             <Stat label={value.memory.pending > 0 ? t('messagehub.agentPanel.perceptionsPending', undefined, { count: value.memory.pending }) : t('messagehub.agentPanel.perceptions')} value={value.memory.perceptions} testId="summary-perceptions" />
+            <button type="button" className={`${statClass} flex min-h-11 flex-col text-left hover:bg-[color:color-mix(in_srgb,var(--cp-text)_9%,transparent)]`} aria-label={t('messagehub.goals.openList', undefined, { count: value.goals.active })} title={t('messagehub.goals.openList', undefined, { count: value.goals.active })} onClick={onOpenGoals} data-testid="summary-goals">
+              <span className="flex w-full items-center justify-between text-[15px] font-medium tabular-nums text-[color:var(--cp-accent)]">{value.goals.active}<ChevronRight size={15} aria-hidden /></span>
+              <span className="block break-words text-[11px] leading-tight text-[color:var(--cp-muted)]">{t('messagehub.goals.activeCount')}</span>
+            </button>
           </div>
           <p className="mt-1.5 text-xs text-[color:var(--cp-muted)]" data-testid="summary-consolidation">{value.memory.last_consolidation_at_ms ? t('messagehub.agentPanel.lastConsolidation', undefined, { time: relativeActivity(value.memory.last_consolidation_at_ms, now, t('messagehub.now'), locale) }) : t('messagehub.agentPanel.neverConsolidated')}</p>
         </div>}

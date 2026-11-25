@@ -1866,10 +1866,8 @@ async fn the_jarvis_package_loads_and_answers() {
     // manuals, the owner's methods over the service, and an import that starts a draft-writing work and installs nothing.
     let plan = loader.agent.behaviors().get("plan_simple").await.unwrap().unwrap();
     assert_eq!(plan.capabilities.cmd_skills, CmdSkillsUse::Candidates);
-    for name in ["skill_import", "skill_crystallize"] {
-        assert!(loader.agent.behaviors().get(name).await.unwrap().is_some(), "{name}");
-    }
-    assert!(!libopendan::goal::defaults(loader.agent.agent_root(), libopendan::goal::GOAL_CLASS).crystallize.enabled, "crystallization is the owner's to switch on");
+    assert!(loader.agent.behaviors().get("skill_import").await.unwrap().is_some());
+    assert!(libopendan::goal::defaults(loader.agent.agent_root(), libopendan::goal::GOAL_CLASS).self_improve.enabled);
     let listed = rpc(port, "skills.list", json!({ "kind": "plan" })).await.unwrap();
     let mut plans: Vec<&str> = listed.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
     plans.sort();

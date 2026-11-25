@@ -203,7 +203,7 @@ task = "{{args.request}}"          # 子 context 的 task 模板，只能引用 
 
 `[model] / [capabilities] / [budget] / prompt.mode` 叠加为该 behavior 的 run 的有效 `.llm_context`（只产生 `model / loop_model / max_tool_iterations / max_tokens / tools` 这几个键），结果进 run.json `config`，xllm 接手时不需要理解 behavior。`prompt.llm_context` 里的 `prompt / groups / runs_dir` 在宿主装配下无效，冻结时拒绝。
 
-Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one" | "unbounded" | <n>`、`wait_user_msg`（`allowed | finish_failed | finish_completed | end_turn`）、`input = "none" | "queue"`、`tick_secs`、`tick_max_secs`、`waits_idle`、`max_life_secs`、`observe`、`load_hints`、`default_behavior`、`max_process_depth`、`max_sub_sessions`、`max_session_depth`；内建 class 为 `work / ui / goal`，其它 class 必须在这里声明（self_check 已于 2026-11-11 退役）。`goal` 类另有 `min_interval_secs`、`guarantee_secs`、`check_every_secs`、`[session.goal.budget.activation|period]`、`[session.goal.agent_budget]`（§9.4）、`[session.goal.maintenance] enabled / behavior`（§9.7）与 `[session.goal.crystallize] enabled / behavior`（§9.8）。
+Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one" | "unbounded" | <n>`、`wait_user_msg`（`allowed | finish_failed | finish_completed | end_turn`）、`input = "none" | "queue"`、`tick_secs`、`tick_max_secs`、`waits_idle`、`max_life_secs`、`observe`、`load_hints`、`default_behavior`、`max_process_depth`、`max_sub_sessions`、`max_session_depth`；内建 class 为 `work / ui / goal`，其它 class 必须在这里声明（self_check 已于 2026-11-11 退役）。`goal` 类另有 `min_interval_secs`、`guarantee_secs`、`check_every_secs`、`[session.goal.budget.activation|period]`、`context`（`fresh | carry`）、`[session.goal.agent_budget]`（§9.4）与 `[session.goal.self_improve] enabled`（§9.7）。
 
 定位（不是协议）：`connect(agent_did, who)` 依次取进程内注册的实现、`$OPENDAN_AGENT_ROOT` 或 `~/.opendan/agents.toml`（`"<did>" = "<agent_root>"`）指向的 AgentRoot、`$OPENDAN_AGENT_STATE_URL` 的 kRPC 服务（服务端随 OpenDAN 改造提供）。
 
@@ -232,18 +232,19 @@ Goal 是 Agent State 中的持久对象，是唯一的真相；它的 Goal Sessi
 
 | 文件 | schema | 写者 | 规则 |
 |---|---|---|---|
-| `goal.json` | `opendan.goal/1` | GoalStore（`.lock` 上 flock，读改写） | 内容修订 `revision` 只因定义 / 预算 / 计划变化而 +1，且要求调用方给出看到的修订号（不一致 → `goal_conflict`）；状态变化、reopen、restart、检查脚本与检查时间表的变化（`set_check`）不增加它。`change_seq` 是 `changes.jsonl` 最后一条的 seq |
+| `goal.json` | `opendan.goal/1` | GoalStore（`.lock` 上 flock，读改写） | 内容修订 `revision` 只因定义 / 预算 / 计划变化而 +1，且要求调用方给出看到的修订号（不一致 → `goal_conflict`）；状态变化、reopen、restart、检查脚本、检查时间表与 `context` 的变化（`set_check`）、作业的变化不增加它。`change_seq` 是 `changes.jsonl` 最后一条的 seq |
 | `revisions/<rev>.json` | 同上 | GoalStore | 每个内容修订的不可变快照（不覆盖发布） |
 | `checks/<version>.ts` | TypeScript | GoalStore | 检查脚本的各版本（不可变；`goal.json.schedule.check.version` 指向当前的） |
-| `changes.jsonl` | `GoalChange` | GoalStore | 每次变化一行：`kind = created / revised / status / reopened / restarted / epoch_ended / check`、`who`、`via`（`owner / ui_session:<sid> / goal_session:<sid> / opendan`）、`reason`、`revision`、`epoch`、`detail` |
+| `changes.jsonl` | `GoalChange` | GoalStore | 每次变化一行：`kind = created / revised / status / reopened / restarted / epoch_ended / check / job`、`who`、`via`（`owner / ui_session:<sid> / work_session:<sid> / goal_session:<sid> / opendan`）、`reason`、`revision`、`epoch`、`detail` |
 | `state.json` | `opendan.goal_state/1` | 当前 epoch 的 Goal Session 的驱动者（持其 session lease） | 真相在该 Session 的 `state.goal.state`（与 Session 同一次提交），这里是提交后发布的投影：`rev` 不大于已发布的、或 `epoch` 更旧的写入被忽略 / 拒绝 |
 | `activations.jsonl` | `opendan.goal_activation/1` | 同上 | 按 `(epoch, seq)` 幂等追加（只追加大于末行的记录） |
 | `epochs/<n>/state.json` | `opendan.goal_state/1` | 宿主 | epoch n 结束时的 Goal State（不覆盖发布） |
-| `schedule.json` | `opendan.goal_schedule/1` | 宿主 | 检查时间表的进度与闸门的记录：`backend`、`timetable`（`every:<秒>` 或 `cron:<表达式>@<时区>`，变了从当前槽重新计）、`last_slot`、`pending`（已准入待投递的 fire）、`last_posted_key`、`start_posted_epoch`、`skipped[]`（最近 16 次：`paused / not_active / min_interval / period_budget / agent_budget / check_false / check_error / guarantee`）、`last_error`、`last_check{at_ms, outcome: true / false / error, reason, script_version, elapsed_ms}`、`check_errors`（连续出错次数）、`last_check_error`、`check_state`（脚本上次返回的 `state`）、`stats`（本周期：被硬间隔 / 预算拦下的槽、检查 true / false / error 次数、硬保障次数）、`guarantee_posted_for_ms`、`switched_off`（内置 Goal 被开关关掉） |
+| `jobs/` | `opendan.goal_job/1` 等 | GoalStore（定义与程序）、宿主（进度、运行、日志） | 作业，见 §9.9 |
+| `schedule.json` | `opendan.goal_schedule/1` | 宿主 | 检查时间表的进度与闸门的记录：`backend`、`timetable`（`every:<秒>` 或 `cron:<表达式>@<时区>`，变了从当前槽重新计）、`last_slot`、`pending`（已准入待投递的 fire）、`last_posted_key`、`waiting{key, trigger, since_ms, merged}`（已投递、Goal Session 还没消费的那一次；在它被消费之前不再投第二次，期间的槽并进 `merged`）、`start_posted_epoch`、`skipped[]`（最近 16 次：`paused / not_active / min_interval / period_budget / agent_budget / check_false / check_error / guarantee`）、`last_error`、`last_check{at_ms, outcome: true / false / error, reason, script_version, elapsed_ms}`、`check_errors`（连续出错次数）、`last_check_error`、`check_state`（脚本上次返回的 `state`）、`stats`（本周期：被硬间隔 / 预算拦下的槽、检查 true / false / error 次数、硬保障次数）、`past_stats`（之前 14 个周期的 `stats`）、`guarantee_posted_for_ms`、`guarantee_posted_for_errors`（这一串检查错误已经按硬保障投过）、`failing_notified_for_ms`（这一段连续失败已经通知过主人）、`switched_off`（内置 Goal 被开关关掉） |
 
-`goal.json` 的主要字段：`goal_id`（`g-<yyyymmddThhmmss>-<8 hex>`；带幂等键创建时为 `g-k<24 hex>` = H(agent, 创建者, key)）、`title`、`objective`、`scope{objects, paths, workspace}`、`lifecycle = achieve | maintain`、`achieved_when` / `healthy_state`、`distance_evaluation`、`constraints`、`initial_skills`、`owner`、`created_by{principal, via}`、`beneficiaries`、`budget`、`schedule{every_secs | cron + timezone, check{version, sha256, source, package?, updated_at_ms}, min_interval_secs, guarantee_secs, start_on_create}`（§9.4）、`behavior`、`status = active | paused | achieved | archived`（及 `status_changed_at_ms / status_reason / status_by`）、`session{epoch, sid}`、`epochs[]{epoch, sid, started_at_ms, start: created | reopened | restarted, reason, keep: all | facts, ended_at_ms, end: archived | achieved | restarted, end_reason}`。
+`goal.json` 的主要字段：`goal_id`（`g-<yyyymmddThhmmss>-<8 hex>`；带幂等键创建时为 `g-k<24 hex>` = H(agent, 创建者, key)）、`title`、`objective`、`scope{objects, paths, workspace}`、`lifecycle = achieve | maintain`、`achieved_when` / `healthy_state`、`distance_evaluation`、`constraints`、`initial_skills`、`owner`、`created_by{principal, via, work?}`（`work` 是替 UI 会话创建它的 Work 的 sid，§9.5）、`beneficiaries`、`budget`、`schedule{every_secs | cron + timezone, check{version, sha256, source, package?, updated_at_ms}, context?, min_interval_secs, guarantee_secs, start_on_create}`（§9.4）、`behavior`、`status = active | paused | achieved | archived`（及 `status_changed_at_ms / status_reason / status_by`）、`session{epoch, sid}`、`epochs[]{epoch, sid, started_at_ms, start: created | reopened | restarted, reason, keep: all | facts, ended_at_ms, end: archived | achieved | restarted, end_reason}`。
 
-`state.json`：`epoch`、`goal_revision_seen`、`last_activation`、`distance{text, observed_at_ms, evidence_refs, unknowns}`、`pending[]`、`questions[]`（每条可带 `candidate_id`）、`active_works[]{sid, objective, epoch, created_in_activation, goal_revision}`、`absorbed[]`（已吸收 Work，最多 512，跨 epoch 去重的依据）、`recent_works[]`、`current_skills[]`、`usage{period_start_ms, tokens, activations, works, work_tokens}`（tokens 是本周期各 epoch 的 Goal Session、work_tokens 是它的 Work 及其子 Session 本周期的用量，按 `usage.jsonl` 记录的时间计，运行中的也算）、`consecutive_no_action`、`holding{reason: min_interval / period_budget / agent_budget, since_ms, until_ms, checked_at_ms}`（事件正被闸门留在队列里）、`holds{period_start_ms, min_interval, budget}`（本周期被拦的次数，一次拦截记一次）、`last_error`（最近一次 Activation 的错误，下一次无错的 Activation 清掉；Goal Session 因 Workspace 绑定失效而 failed 时是 `{kind: "workspace_binding_invalid", message, workspace_binding, recovery, …}`，这时 Goal 要 restart 才会再运行）、`maintenance`（§9.7，restart 的 `facts` 也保留）。
+`state.json`：`epoch`、`goal_revision_seen`、`last_activation`、`distance{text, observed_at_ms, evidence_refs, unknowns}`、`pending[]`、`questions[]`（每条可带 `options[]{id, label}`（至多 8 个）、`allow_text`、`candidate_id`）、`active_works[]{sid, objective, epoch, created_in_activation, goal_revision}`、`absorbed[]`（已吸收 Work，最多 512，跨 epoch 去重的依据）、`recent_works[]`、`current_skills[]`、`usage{period_start_ms, tokens, activations, works, work_tokens, job_tokens}`（tokens 是本周期各 epoch 的 Goal Session、work_tokens 是它的 Work 及其子 Session、job_tokens 是它的作业本周期的用量，按 `usage.jsonl` 记录的时间计，运行中的也算）、`consecutive_no_action`、`activations_failed_in_a_row`（连续以 failed / budget_exhausted 结束或没有有效结果的 Activation；stopped 不计，成功清零）、`failing_since_ms`（这一段的开始）、`works_failed_in_a_row`（连续不成功的派生 Work）、`holding{reason: min_interval / period_budget / agent_budget, since_ms, until_ms, checked_at_ms}`（事件正被闸门留在队列里）、`holds{period_start_ms, min_interval, budget}`（本周期被拦的次数，一次拦截记一次）、`last_error`（最近一次 Activation 的错误，下一次无错的 Activation 清掉；Goal Session 因 Workspace 绑定失效而 failed 时是 `{kind: "workspace_binding_invalid", message, workspace_binding, recovery, …}`，这时 Goal 要 restart 才会再运行）、`maintenance`（§9.7，restart 的 `facts` 也保留）。修订里新增的 `initial_skills` 在下一次 Activation 打开时并入 `current_skills`。
 
 `goal.json.extensions.opendan`（Schema `goal_opendan_extension`）是宿主的受信标记 `{builtin?, policy_version, capabilities[], records_perception}`：只有 owner 侧（`GoalCaller.session` 为空）的 `create` / `revise` 可以写，kRPC 的 `goals.create / revise` 带这个键一律 `forbidden`；Goal Session 按 `goal_id` 读取它得到能力，不复制进 SessionConfig。
 
@@ -260,23 +261,27 @@ Goal Session 派生的 Work 的 `origin.goal = {goal_id, revision, epoch, activa
 
 ### 9.4 预算与运行机会的门槛
 
-`budget = {activation: {max_total_tokens, max_runs, max_wall_secs}, period: {window_secs, max_total_tokens, max_activations, max_works}}`，缺省字段取 `agent.toml [session.goal] budget`，再缺省取内建值（activation 400000 tokens / 8 runs / 1800 s 墙钟，period 86400 s / 2000000 tokens / 24 works）。单次 Activation 的用量 = 该 Goal Session `usage.jsonl` 中 Activation 打开之后的记录（`OpenActivation.usage_offset`）；墙钟从 Activation 打开时算，到了不再开新的 run 段，以 `budget_exhausted` 关闭。周期是按 `window_secs` 对齐的固定窗口；周期用量 = 这个 Goal 的所有 Session（各 epoch 的 Goal Session、它的 Work 及其子 Session）在本周期 `usage.jsonl` 里的 token。Agent 总量 `[session.goal.agent_budget] {window_secs = 86400, max_total_tokens = 5000000}`（0 表示不设）是所有 Goal 这样算出来的用量之和。
+`budget = {activation: {max_total_tokens, max_runs, max_wall_secs}, period: {window_secs, max_total_tokens, max_activations, max_works}}`，缺省字段取 `agent.toml [session.goal] budget`，再缺省取内建值（activation 400000 tokens / 8 runs / 1800 s 墙钟，period 86400 s / 2000000 tokens / 24 works）。单次 Activation 的用量 = 该 Goal Session `usage.jsonl` 中 Activation 打开之后的记录（`OpenActivation.usage_offset`）；墙钟从 Activation 打开时算，到了不再开新的 run 段，以 `budget_exhausted` 关闭。周期是按 `window_secs` 对齐的固定窗口；周期用量 = 这个 Goal 的所有 Session（各 epoch 的 Goal Session、它的 Work 及其子 Session）在本周期 `usage.jsonl` 里的 token，加上它的作业的模型用量（`jobs/usage.jsonl`，§9.9）。Agent 总量 `[session.goal.agent_budget] {window_secs = 86400, max_total_tokens = 5000000}`（0 表示不设）是所有 Goal 这样算出来的用量之和。
 
 一次运行机会要不要变成推理（[架构设计](<../OpenDAN Agent Session架构设计.md>) §12.1.1），按这个顺序判断（宿主 `goal::gate`）：
 
 1. Goal 不是 `active`：不推理。休眠压过硬保障。
-2. 距上次推理（上一次 Activation 关闭）不到硬间隔 `schedule.min_interval_secs`（缺省 `[session.goal] min_interval_secs`，内建 900）：不推理。
-3. 距上次推理（没有过则从 epoch 开始）超过硬保障 `schedule.guarantee_secs`（缺省 `[session.goal] guarantee_secs`，内建 259200；0 关闭，否则不小于 3600——它压过预算，太短就成了不受预算约束的定时推理；创建、修订和 `agent.toml` 都拒绝更小的值，已存的更小值按 3600 算）：推理，跳过 4、5。宿主每个 quiet 段只投一次 `guarantee` 运行机会，原因里写最近一次检查的结果、连续出错次数和最后一次错误。
+2. 距上次推理（上一次 Activation 关闭）不到硬间隔 `schedule.min_interval_secs`（缺省 `[session.goal] min_interval_secs`，内建 900）：不推理。用户对它说的话（`feedback`）不过这一条。
+3. 距上次推理（没有过则从 epoch 开始）超过硬保障 `schedule.guarantee_secs`（缺省 `[session.goal] guarantee_secs`，内建 259200；0 关闭，否则不小于 3600——它压过预算，太短就成了不受预算约束的定时推理；创建、修订和 `agent.toml` 都拒绝更小的值，已存的更小值按 3600 算）：推理，跳过 4、5。宿主每个 quiet 段只投一次 `guarantee` 运行机会，原因里写最近一次检查的结果、连续出错次数和最后一次错误。检查脚本连续出错 3 次按硬保障到点处理，每一串错误投一次。
 4. 周期预算用完，或 Agent 总量用完：不推理，到周期重置。此时宿主让这个 Goal 正在运行的 Work 在下一个推理边界暂停（暂停来源 `budget`），周期重置后只恢复因此暂停的。
 5. 检查时间表到点时跑检查脚本：`true` 推理（`reason` 成为这次 Activation 的原因），`false` 或出错不推理。没有脚本的 Goal 每个槽都通过。
 
-2–4 拦下一个检查槽、或硬保障占了这个槽时，有脚本的 Goal 照样跑检查（`ctx.held` 是原因：`min_interval / period_budget / agent_budget / guarantee`）：检查本身不花 token，它要发的通知也不需要推理。返回 `run: false` 的结果照常生效（`state`、`notify`）；返回 `run: true` 的结果整个搁置（不发通知，`state` 不变，记一次 `true`），下一次检查会再看到同样的情况。
+2–4 拦下一个检查槽、或硬保障占了这个槽时，有脚本的 Goal 照样跑检查（`ctx.held` 是原因：`min_interval / period_budget / agent_budget / guarantee / waiting`，`waiting` 是前一次投递还没被消费）：检查本身不花 token，它要发的通知也不需要推理。返回 `run: false` 的结果照常生效（`state`、`notify`）；返回 `run: true` 的结果整个搁置（不发通知，`state` 不变，记一次 `true`），下一次检查会再看到同样的情况。
 
-检查时间表是 `every_secs`（不小于 60）或 `cron` + `timezone`（5 段 cron，按该时区的墙上时间计槽，夏令时跳过的时刻不触发、重复的取早的那个；`timezone` 缺省时 `goal create` / `goal check set` 取调用会话的用户时区，再缺省 UTC）；有脚本而没有时间表时按 `[session.goal] check_every_secs`（内建 300）。检查脚本是 TypeScript，默认导出 `check(ctx, state)`，返回 `{run, reason?, state?, notify?}`（只返回布尔值等于 `{run}`），`state` 由宿主存进 `schedule.json.check_state` 并在下一次传回（最大 64 KiB）；`ctx` 有 `goal_id / title / objective / epoch / scope / agent_root / trigger / held / now_ms / timezone / last_inference_at_ms / last_check_at_ms / last_check / pending / active_works`（`timezone` 是 Goal 的 `schedule.timezone`，没有为 `null`），`ctx.host.call(method, params)` 是宿主提供的只读调用（目前 `memory.status {full?}`）。`notify = {title, message?, url?, level?}`（`title` 非空、不超过 200 字符，`message` 不超过 4000，`url` 是 `https://`、`http://` 或本 Zone 的 `/…` 路径，`level` 为 `quiet | normal | timely | urgent`）是一条给 owner 的通知：宿主当场以这个 Goal 的名义发出（`kind = notice`，来源带 Goal Session 与 `goal_id`，幂等键是这次运行机会的 key 加 `:notify`），不打开 Activation。到点就要说的事（提醒、固定时间的消息）由检查发出，不必每次推理。发不出去（宿主没有通知服务、发送失败）算这次检查出错，`state` 不变，下一次检查再决定。检查记录里 `last_check.notified` 是发出的通知标题，`last_check.held` 是跑检查时被拦下的原因，本周期发出的条数记在 `stats.notified`。宿主用标准层 Tool 的 Deno 和 `buckyos-agent` 的 `deno.json`（Agent 容器里是 `$BUCKYOS_ROOT/bin/opendan/deno` 与 `bin/opendan/buckyos-agent/deno.json`，宿主安装是 `libexec/buckyos-tool/runtime/deno` 与 `libexec/buckyos-agent/deno.json`，开发环境退回 `PATH` 上的 `deno`）只给 `--allow-read --allow-net --allow-env` 运行，30 秒超时，日志最多 64 KiB；抛异常、超时、返回值不合约定都记为出错。
+检查时间表是 `every_secs`（不小于 60）或 `cron` + `timezone`（5 段 cron，按该时区的墙上时间计槽，夏令时跳过的时刻不触发、重复的取早的那个；`timezone` 缺省时 `goal create` / `goal check set` 取调用会话的用户时区，再缺省 UTC）；有脚本而没有时间表时按 `[session.goal] check_every_secs`（内建 300）。检查脚本是 TypeScript，默认导出 `check(ctx, state)`，返回 `{run, reason?, state?, notify?}`（只返回布尔值等于 `{run}`），`state` 由宿主存进 `schedule.json.check_state` 并在下一次传回（最大 64 KiB）；`ctx` 有 `goal_id / title / objective / epoch / scope / agent_root / trigger / held / now_ms / slot_ms / missed / timezone / last_inference_at_ms / last_check_at_ms / last_check / pending / active_works / jobs`（`timezone` 是 Goal 的 `schedule.timezone`，没有为 `null`；`slot_ms` 是这次检查对应的槽，宿主不在线时错过的槽合并成一次，`missed` 是合并掉的个数，脚本用它们算出到点的东西；`jobs` 是各作业的最近一次运行和连续失败次数），`ctx.host.call(method, params)` 是宿主提供的只读调用（目前 `memory.status {full?}`）。`notify = {title, message?, url?, level?}`（`title` 非空、不超过 200 字符，`message` 不超过 4000，`url` 是 `https://`、`http://` 或本 Zone 的 `/…` 路径，`level` 为 `quiet | normal | timely | urgent`）是一条给 owner 的通知：宿主当场以这个 Goal 的名义发出（`kind = notice`，来源带 Goal Session 与 `goal_id`，幂等键是这次运行机会的 key 加 `:notify`），不打开 Activation。到点就要说的事（提醒、固定时间的消息）由检查发出，不必每次推理。发不出去（宿主没有通知服务、发送失败）算这次检查出错，`state` 不变，下一次检查再决定。检查记录里 `last_check.notified` 是发出的通知标题，`last_check.held` 是跑检查时被拦下的原因，本周期发出的条数记在 `stats.notified`。`goal check run` 跑的是同一个 Deno、同样的权限和 `ctx`；不给 Goal 时用 `--every / --cron / --workspace / --path` 描述一个还不存在的 Goal，`state` 为空。宿主用标准层 Tool 的 Deno 和 `buckyos-agent` 的 `deno.json`（Agent 容器里是 `$BUCKYOS_ROOT/bin/opendan/deno` 与 `bin/opendan/buckyos-agent/deno.json`，宿主安装是 `libexec/buckyos-tool/runtime/deno` 与 `libexec/buckyos-agent/deno.json`，开发环境退回 `PATH` 上的 `deno`）只给 `--allow-read --allow-net --allow-env` 运行，30 秒超时，日志最多 64 KiB；抛异常、超时、返回值不合约定都记为出错。
 
-事件（Work 结束、真正要人回答的问题、转来的消息、问题得到回答）不跑检查，在 Goal Session 打开 Activation 之前过 1–4：被拦下的留在队列里（`state.holding`），放行时合并成一次 Activation。手动激活、定时检查与硬保障投来的运行机会、epoch 的开始不再过这道闸（它们是 owner 的显式操作，或宿主已经放行的）。Goal 带检查脚本且不是 `--start` 创建时，epoch 的开始先跑一次检查。Activation 关闭时 Goal Session 不再跟它启动的后台任务（结束也不打开新的 Activation）；Goal 只为 Work 的结束和能被回答的问题醒来：不收消息的 Work 在两个 Turn 之间的 `needs_input` 不唤醒它。
+事件（Work 结束、真正要人回答的问题、转来的消息、问题得到回答）不跑检查，在 Goal Session 打开 Activation 之前过 1–4：被拦下的留在队列里（`state.holding`），放行时合并成一次 Activation。手动激活、定时检查与硬保障投来的运行机会、epoch 的开始不再过这道闸（它们是 owner 的显式操作，或宿主已经放行的）。Goal 带检查脚本且不是 `--start` 创建时，epoch 的开始先跑一次检查。定时投递的运行机会带稳定的 key，Goal Session 接不了（例如 Workspace 被别的会话占着）时不累计：前一次没被消费就不再投，放行时只打开一次 Activation，原因里写合并了几个槽。Activation 关闭时 Goal Session 不再跟它启动的后台任务（结束也不打开新的 Activation）；Goal 只为 Work 的结束和能被回答的问题醒来：不收消息的 Work 在两个 Turn 之间的 `needs_input` 不唤醒它。
 
-每次 Activation 的 Goal 头（`<budget>`、`<gate>`）告诉 Goal：周期用量（自己的、Work 的）、上限、重置时刻、Agent 总量、硬间隔与硬保障、检查时间表与脚本版本、本周期检查与拦截的次数和检查发出的通知数（`notifications_by_checks`）、最近一次检查（被拦下时带 `held`，发了通知带 `notified`）、连续出错、连续 `no_action` 的次数。
+`schedule.context` 决定一次 Activation 的上下文带不带更早的历史：`fresh`（`[session.goal] context` 的内建缺省）只有系统提示词、Goal 头和本批输入，Activation 内部的历史照常；`carry` 带上全部历史，更早的 Goal 头留一行，走通用压缩。打开 Activation 时记进 `OpenActivation.context` 与起点 `worklog_offset`，中途改了下一次才生效；worklog 总是完整的。`fresh` 时观察 Memory 的已展示记录也从空开始。
+
+连续 3 次 Activation 失败（failed、budget_exhausted 或没有有效结果）时，宿主以这个 Goal 的名义发一条通知（key `goal:<goal_id>:failing:<failing_since_ms>`，一段失败一次），不改状态。
+
+每次 Activation 的 Goal 头（`<budget>`、`<gate>`、`<state>`、`<jobs>`）告诉 Goal：周期用量（自己的、Work 的、作业的）、上限、重置时刻、Agent 总量、硬间隔与硬保障、检查时间表与脚本版本、本周期检查与拦截的次数和检查发出的通知数（`notifications_by_checks`）、最近一次检查（被拦下时带 `held`，发了通知带 `notified`）、连续出错、连续 `no_action` 的次数、连续失败的 Activation 与 Work（大于 0 时）、`context`，以及各作业的最近一次运行。
 
 ### 9.5 调用方与权限（只按类型区分）
 
@@ -285,35 +290,66 @@ Goal Session 派生的 Work 的 `origin.goal = {goal_id, revision, epoch, activa
 | 调用方 | 可做 |
 |---|---|
 | owner | 全部 |
-| UI Session | create；revise、`set_check` 自己创建的 Goal（`created_by.via = ui_session:<sid>`）；pause / resume / archive / achieved / reopen / restart |
-| Goal Session（自己的 Goal） | 读；archive（须给 reason）；lifecycle 为 achieve 时 achieved（须给 evidence）；`set_check` 改自己的检查脚本和检查时间表（不能指定包内脚本，`restore_package` 可以）。不能 revise、pause / resume、reopen、restart |
-| Work Session 等 | 只读 |
+| UI Session | create；pause / resume / archive / achieved / reopen / restart；revise、`set_check`、作业：自己创建的 Goal（`created_by.via = ui_session:<sid>`），以及对端是这个 Agent 的 owner 时的任何非内置 Goal |
+| UI 会话直接创建、不属于某个 Goal 的 Work | 等同它的父 UI 会话。创建时 `created_by.via` 写父 UI 会话，`created_by.work` 写它自己；`changes.jsonl` 的 `via` 是 `work_session:<sid>` |
+| Goal Session（自己的 Goal） | 读；archive（须给 reason）；lifecycle 为 achieve 时 achieved（须给 evidence）；`set_check` 改自己的检查脚本、检查时间表和 `context`（不能指定包内脚本，`restore_package` 可以）；自己的作业。不能 revise、pause / resume、reopen、restart |
+| 其余（Todo 子会话、Goal 派的 Work、Work 的 Work） | 只读 |
+
+“对端是 owner”指会话的 `outbound.to` 是这个 Agent 的 owner，或没有 outbound；群会话不是。会话身份是自报的，这套规则只防误用。
 
 `achieved` 只在该 Goal 没有未结束的 Work 时允许（否则 `goal_conflict`）。越权返回 `forbidden`；Goal 不存在返回 `not_found`。
 
 ### 9.6 kRPC
 
-`goals.list`、`goals.get {goal_id}`、`goals.revision {goal_id, revision}`、`goals.changes {goal_id, limit?}`、`goals.state {goal_id}`、`goals.epoch_state {goal_id, epoch}`、`goals.activations {goal_id, query?: {epoch?, limit?}}`、`goals.schedule {goal_id}`、`goals.check_script {goal_id, version?}`（脚本源码）、`memory.status {full?}`（Memory 的版本摘要，`full` 时带待处理 / 到期数与到期复核数）；写：`goals.set_check {goal_id, request: {script?, package?（owner）, restore_package?, clear_script?, every_secs?, cron?, timezone?, reason?}, session?}`、`goals.create {request, session?}`、`goals.revise {goal_id, request: {expected_revision, …}, session?}`、`goals.set_status {goal_id, request: {status, reason?, evidence?}, session?}`、`goals.reopen {goal_id, request: {reason, fresh_state?}, session?}`、`goals.restart {goal_id, request: {reason, carry_state?}, session?}`。驱动者 / 宿主写一律拒绝（§8）。宿主进程额外提供 `goals.activate` / `goals.post`（见 [opendan README](../../../src/frame/opendan/README.md)）。
+`goals.list`、`goals.get {goal_id}`、`goals.revision {goal_id, revision}`、`goals.changes {goal_id, limit?}`、`goals.state {goal_id}`、`goals.epoch_state {goal_id, epoch}`、`goals.activations {goal_id, query?: {epoch?, limit?}}`、`goals.schedule {goal_id}`、`goals.check_script {goal_id, version?}`（脚本源码）、`goals.stats {goal_id, periods?}`（各周期的 Activation 数、决定 / 结果 / 原因的分布、token、检查与拦截、作业；至多 15 个周期，最后一个是当前周期）、`goals.jobs {goal_id}`、`goals.job_runs {goal_id, job_id, limit?}`、`goals.job_log {goal_id, job_id, run_id?}`、`memory.status {full?}`（Memory 的版本摘要，`full` 时带待处理 / 到期数与到期复核数）；写：`goals.set_check {goal_id, request: {script?, package?（owner）, restore_package?, clear_script?, every_secs?, cron?, timezone?, context?: fresh | carry, reason?}, session?}`、`goals.job_put {goal_id, request: {job_id, title?, command[], every_secs? | cron? + timezone?, timeout_secs?, files, executable?}, session?}`、`goals.job_run / job_set_enabled {enabled} / job_rollback {to?} / job_delete {goal_id, job_id, session?}`、`goals.create {request, session?}`、`goals.revise {goal_id, request: {expected_revision, …}, session?}`、`goals.set_status {goal_id, request: {status, reason?, evidence?}, session?}`、`goals.reopen {goal_id, request: {reason, fresh_state?}, session?}`、`goals.restart {goal_id, request: {reason, carry_state?}, session?}`。驱动者 / 宿主写一律拒绝（§8）。宿主进程额外提供 `goals.activate` / `goals.post`（见 [opendan README](../../../src/frame/opendan/README.md)）。
 
-### 9.7 内置整理 Goal（memory_maintenance）
+### 9.7 内置 Goal（self_improve）
 
-设计与验收见 [Jarvis 默认 Goal Session TODO](../../../notepads/jarvis-default-goal-session-todo.md)。要点：
+内置 Goal 只有这一个（2026-11-24 由 `memory_maintenance` 和 `skill_crystallize` 合并）。设计见 [Goal Session 改进 TODO](../../../notepads/opendan-goal-session-improve-todo.md) §4.3、[Jarvis 默认 Goal Session TODO](../../../notepads/jarvis-default-goal-session-todo.md) 与 [Skills 体系 TODO](../../../notepads/opendan-skills-system-todo.md) §3.8。要点：
 
-- **播种**：`[session.goal.maintenance] enabled = true` 时宿主每进程一次在 `GoalHost::tick` 里以 `GoalCaller::owner(<Agent DID>)` 调 `GoalStore::create`，`key = builtin:memory_maintenance`（同 key 返回同一 Goal，重启不重建），`extensions.opendan = {builtin: "memory_maintenance", policy_version, capabilities: ["memory_consolidation"], records_perception: false}`，`schedule.every_secs = 1800`，预算 120000 tokens / 4 runs 每次、24 h 内 1200000 tokens / 48 次、`max_works = 0`，`behavior` 取 `maintenance.behavior`（Jarvis：`memory_maintenance`）。`policy_version` 更高时只用 owner 路径 revise 标记，不改 owner 改过的预算 / 计划 / 状态。`enabled = false` 时不播种、不检查（已有 Goal 原样保留，`schedule.json.switched_off = true`）；pause / archive 走现有生命周期，重启不复活。
-- **检查脚本**：初始脚本是 AgentRoot 的 `goal_checks/memory_maintenance.ts`（随 Jarvis 包分发），播种时经 `set_check` 写成这个 Goal 的脚本（`source = package:goal_checks/memory_maintenance.ts`）。它只是初始状态：Goal 可以改写自己的脚本；包升级时只在 Goal 仍用包内版本（`source` 以 `package:` 开头）且内容变了时替换，Goal 或 owner 改过的保留；`restore_package` 恢复成包内版本。初始脚本先用 `memory.status` 比 Memory 的版本向量，变了、到了暂缓或复核的期限、上次看到积压、或距上次完整检查满 2 小时才做完整检查，有新 / 到期材料或到期复核才返回 `true`（`reason` 是材料计数）。没有材料时整理 Goal 只在硬保障到点时推理一次（缺省 72 小时）。
+- **播种**：`[session.goal.self_improve] enabled = true` 时宿主每进程一次在 `GoalHost::tick` 里以 `GoalCaller::owner(<Agent DID>)` 调 `GoalStore::create`，`key = builtin:self_improve`（同 key 返回同一 Goal，重启不重建），`extensions.opendan = {builtin: "self_improve", policy_version: 1, capabilities: ["memory_consolidation"], records_perception: false}`，`schedule.every_secs = 1800`，预算每次 500000 tokens / 6 runs，24 h 内 1800000 tokens / 48 次，Work 数不限，`behavior = goal`，初始 skill 是 `self_improve_memory / self_improve_manuals / self_improve_tools / goal_upkeep`。库的缺省是关，Jarvis 模板打开。
+- **已有的 Zone**：有以前的内置 Goal 时不新建，把留下的那一个（先取 `self_improve`，再取 `memory_maintenance`，再取 `skill_crystallize`）用 owner 路径改写成现在的定义并 restart，其余归档，原因写并入了哪个；owner 改过的预算和间隔保留（周期 Work 上限取消）。`policy_version` 更高时走同一条路。
+- **职责与开关**：`memory`、`manuals`、`tools` 各有一份 goal skill，owner 逐项开关，存在 `.meta/skills_state.json` 的 `self_improve`（kRPC `skills.self_improve_set {duty, enabled}`，owner 专用；没有记录为开）。`enabled = false` 或职责全部关掉时不播种、不检查，已有的这个 Goal 也不建 Session（`schedule.json.switched_off = true`）；pause / archive 走现有生命周期，重启不复活。
+- **检查脚本**：初始脚本是 AgentRoot 的 `goal_checks/self_improve.ts`（随 Jarvis 包分发），播种时经 `set_check` 写成这个 Goal 的脚本（`source = package:goal_checks/self_improve.ts`）。它只是初始状态：Goal 可以改写自己的脚本；包升级时只在 Goal 仍用包内版本（`source` 以 `package:` 开头）且内容变了时替换，Goal 或 owner 改过的保留；`restore_package` 恢复成包内版本。`reason` 指明职责：
+  - `memory`：先用 `memory.status` 比 Memory 的版本向量，变了、到了暂缓或复核的期限、上次看到积压、或距上次完整检查满 2 小时才做完整检查，有新 / 到期材料或到期复核才返回 `true`。
+  - `manuals`：手册使用记录里的 Work 数比上次看时多 3 个以上，或多了且距上次看满一周。
+  - `tools`：同一个命令被两个以上已结束的 Work 报告不存在（读 worklog，每个只读一次）。后两项的材料每 6 小时收集一次。
 - **机械维护**：清理重试、未完成 receipt 这些不需要模型的事由宿主在每个检查槽 drive 一次 Goal Session 完成，不算运行机会。
-- **整理**（runner `consolidation.rs`）：drive 开始先持 `memory_consolidation` lease（Busy 即返回，不开 Activation），先做机械维护（未完成 receipt 推进、读了未提交的批次丢弃、`sweep_expired`、清理重试），再处理输入。宿主工具只对带能力的 Goal Session 暴露：`memory_consolidation_begin {limit?}` 读一批材料并把完整 `Batch` 写成 receipt（`GoalState.maintenance.receipts[]`，`operation_id = mc-<hash>`，一次 Activation 最多 3 批，有未完成 receipt 时拒绝）；`memory_consolidation_commit {operation_id, summary, operations[], dispositions[], tags?}` 先把计划持久化进 receipt，再以 `operation_id` 为幂等键提交 Memory envelope，再发布候选（P1），再清理（失败记 `cleanup_pending` 由下次机械维护重试）；阶段 `prepared → memory_committed → published → completed`，每步可重入，`StaleLease` 记 `failed` 与 `last_error`（不自动修锁）。`abandon: true` 关闭批次不处置。Activation 的 `report` 带 `acted / created_work` 而有未提交批次时被拒。Activation 的 token 上限取 `min(activation 上限, 周期剩余)`。Goal 头多一块 `<memory_maintenance …>`（材料计数、到期复核、簿记）。
-- `GoalState.maintenance`：`receipts[]`（完成的保留 32 条）、`candidates[]`（§5.1 契约，P1 填）、`last_successful_consolidation_at_ms`、`consolidations / operations / dispositions / abandoned_batches`、`last_error`。
+- **整理**（runner `consolidation.rs`）：drive 开始先持 `memory_consolidation` lease（Busy 即返回，不开 Activation），先做机械维护（未完成 receipt 推进、读了未提交的批次丢弃、`sweep_expired`、清理重试），再处理输入。宿主工具只对带能力的 Goal Session 暴露：`memory_consolidation_begin {limit?}` 读一批材料并把完整 `Batch` 写成 receipt（`GoalState.maintenance.receipts[]`，`operation_id = mc-<hash>`，一次 Activation 最多 3 批，有未完成 receipt 时拒绝）；`memory_consolidation_commit {operation_id, summary, operations[], dispositions[], tags?}` 先把计划持久化进 receipt，再以 `operation_id` 为幂等键提交 Memory envelope，再清理（失败记 `cleanup_pending` 由下次机械维护重试）；阶段 `prepared → memory_committed → published → completed`，每步可重入，`StaleLease` 记 `failed` 与 `last_error`（不自动修锁）。`abandon: true` 关闭批次不处置。Activation 的 `report` 带 `acted / created_work` 而有未提交批次时被拒。Activation 的 token 上限取 `min(activation 上限, 周期剩余)`。Goal 头多一块 `<memory_maintenance …>`（材料计数、到期复核、簿记）。
+- **整理中发现的日程、待办、长期职责**：写成带选项的 `questions`，主人同意后由 Goal 调 `owner.cal` / `owner.todo`，长期职责并入已有 Goal。没有宿主的类型化候选；`maintenance.candidates[]` 没有写者。
+- `GoalState.maintenance`：`receipts[]`（完成的保留 32 条）、`candidates[]`、`last_successful_consolidation_at_ms`、`consolidations / operations / dispositions / abandoned_batches`、`last_error`。
+- **手册与工具**没有专用的宿主工具：读 `.meta/skills_state.json` 的使用记录和它指向的 Work Session，用 `agent-session skill revise` 改写来源为 `local` / `imported` 的手册（旧文本留在 `revisions/`）；做出的命令放 `<agent_root>/tools/`，同时用 `agent-session skill add <name> --file <SKILL.md> --reason <原因>` 装上它的手册（来源 `local`，只允许 `scope: work`，只有这个 Goal 的 Goal Session 和它派的 Work 能用）；其余改动写成 `skills_drafts/<slug>/` 草稿并通知 owner。
 
-### 9.8 内置经验结晶 Goal（skill_crystallize）
+### 9.8 问题的选项
 
-设计见 [Skills 体系 TODO](../../../notepads/opendan-skills-system-todo.md) §3.8。要点：
+Activation 结果的 `questions[]` 的一项可以是一句话，或 `{text, options: [{id, label}], allow_text?}`（`options` 至多 8 个；`allow_text` 缺省为 `false`，没有选项时总是可以回一句话）。宿主把每个问题发成一条可回答的通知，选项映射到通知的选项；回答以所选的 `id` 与文字打开后续 Activation。对被归档或重启的 Goal 的回答，不打开 Activation。
 
-- **播种**：开关打开时宿主每进程一次以 `GoalCaller::owner(<Agent DID>)` 创建，`key = builtin:skill_crystallize`，`extensions.opendan = {builtin: "skill_crystallize", policy_version: 1, capabilities: [], records_perception: true}`。开关是 owner 在 Skills 页设的 `.meta/skills_state.json` 的 `crystallize`（kRPC `skills.crystallize_set {enabled}`，owner 专用），没设时取 `[session.goal.crystallize] enabled`；库和 Jarvis 模板的缺省都是关：不播种，已有的这个 Goal 也不建 Session（`schedule.json.switched_off = true`）。
-- **时间表与预算**：`schedule.every_secs = 86400`、`min_interval_secs = 3600`；每次 300000 tokens / 6 runs，24 h 内 600000 tokens / 2 次，`max_works = 0`。`behavior` 取 `crystallize.behavior`（缺省 `skill_crystallize`）。
-- 初始检查脚本 `goal_checks/skill_crystallize.ts`（规则同 §9.7）：手册使用记录里的 Work 数比上次看时多 3 个以上，或多了且距上次看满一周，才返回 `true`。一次查看约 18 万 token（2026-11-10 实测）。
-- 没有专用的宿主工具，按普通 Goal 运行：读 `.meta/skills_state.json` 的使用记录和它指向的 Work Session，用 `agent-session skill revise` 改写来源为 `local` / `imported` 的手册（旧文本留在 `revisions/`），其余改动写成 `skills_drafts/<slug>/` 草稿并通知 owner。
+### 9.9 作业 `jobs/`
 
+作业是属于一个 Goal、由宿主按时间表以 Agent 的身份在 Agent 的私有 runtime 里运行、不推理的程序（架构设计 §7.10）。布局：
+
+```text
+jobs/
+  usage.jsonl            作业的模型用量（UsageRecord，run_id 是作业运行的）
+  <job_id>/
+    job.json             opendan.goal_job/1：title、version、command[]、every_secs | cron + timezone、timeout_secs、enabled、updated_at_ms / updated_by
+    versions/<n>/        安装的程序，不改；保留 5 个
+    data/                作业自己的目录，也是运行时的工作目录；升级不动
+    schedule.json        timetable、last_slot、version_run、failures（连续失败）、running
+    request.json         “现在运行”的请求，由宿主取走
+    runs.jsonl           运行记录，保留 200 条
+    logs/<run_id>.log    输出的末尾，至多 64 KiB，保留 20 份
+```
+
+- **安装即复制**：`job_put` 把程序目录（至多 20 MiB）复制成新版本；第一次安装和每个新版本立即跑一次，之后按时间表。`job_rollback` 换回保留的版本（缺省上一个）。`job_delete` 删掉作业的一切（含 `data/`），正在跑的运行由宿主结束。
+- **命令**不经过 shell：是程序和参数的数组，`{dir}` 换成安装版本的目录，程序名先在安装版本的目录里找，再在 `PATH` 上找；命令行的 `--command` 按 shell 的引号规则拆成数组。由宿主进程直接启动，自成一个进程组。
+- **时间表**：`every_secs ≥ 300` 或 cron + 时区，算槽与检查相同，错过的槽合并成一次。`timeout_secs` 缺省 300，至多 600（借给它的会话令牌只保证至少 600 秒）。
+- **并发**：一个作业同时只有一次运行，一个 Agent 同时至多 2 个，一个 Goal 至多 64 个作业。
+- **环境**：宿主的环境（不含会话的变量），`PATH` 前面加 `<agent_root>/tools` 和托管的工具目录，借来的会话令牌，另有 `OPENDAN_GOAL_ID / OPENDAN_JOB_ID / OPENDAN_JOB_RUN_ID / OPENDAN_JOB_DIR`（安装版本的目录，只读使用）、`OPENDAN_USAGE_LOG`、`OPENDAN_MODEL_BUDGET`；工作目录是 `data/`。
+- **结果**：退出码 0 为 `ok`，其余 `failed`，超时 `timeout`，被宿主结束 `killed`。stdout 最后一行是 JSON 对象时取 `summary / kind / metrics`（`kind = transient | auth | program | budget`）；`transient` 隔 30、120 秒再试，计在同一次运行里（`attempts`）。
+- **结束**：Goal 休眠、被关掉、归档、达成，作业停用，宿主关闭时，正在跑的运行连同它启动的进程被结束（`killed`）；Goal 醒来后补跑一次。宿主死掉时留下的运行由下一个宿主记成 `killed`（先结束还活着的进程组）并补跑。
+- **预算**：`xllm` 把每次模型调用的用量写进 `OPENDAN_USAGE_LOG`，计入 Goal 的周期预算和 Agent 总量；`OPENDAN_MODEL_BUDGET` 是本次运行还能用的 token，用完时模型调用以 `model_budget` 被拒绝，运行照常继续，失败的 `kind` 记为 `budget`。
+- **权限**：owner、能改写这个 Goal 的 UI / Work，以及 Goal Session 对自己的 Goal（§9.5）。每次变化在 `changes.jsonl` 记一行 `kind = job`。
 
 ## 10. Runtimes `state/runtimes/<runtime_id>.json`
 

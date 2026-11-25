@@ -3,7 +3,7 @@
 //! both as the session's host-bound identity
 //! ([`crate::memory::session_caller`]: its grants decide what is visible,
 //! never the caller's arguments). Cognitions are written only by the
-//! consolidation of the memory_maintenance Goal
+//! consolidation of the self improvement Goal
 //! ([`crate::memory::Consolidator`]).
 
 use async_trait::async_trait;

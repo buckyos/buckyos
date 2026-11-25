@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 pub mod plan;
+pub mod replay;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

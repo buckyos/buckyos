@@ -13,6 +13,10 @@ export const mockWorklogs = {
     session.entries.push({ ...entry, seq: session.entries.length + 1, ...(turn === null ? {} : { turn }) })
     session.complete = complete
   },
+  /** Scripts the log of one Turn. */
+  seed(sessionId: string, turn: number, entries: Array<Omit<WorklogEntry, 'seq'>>, complete: boolean) {
+    sessions.set(`${sessionId}/${turn}`, { entries: entries.map((entry, index) => ({ ...entry, seq: index + 1, turn })), complete })
+  },
 }
 if (import.meta.env.DEV && typeof window !== 'undefined') Object.assign(window, { __messageHubMockWorklogs: mockWorklogs })
 

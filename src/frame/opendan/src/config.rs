@@ -286,18 +286,18 @@ max_total_tokens = 1000
         assert_eq!(d.min_interval_secs, 120);
         assert_eq!(d.budget.activation.max_total_tokens, Some(1000));
         assert_eq!(d.budget.activation.max_runs, Some(8), "built-in default kept");
-        assert!(!d.maintenance.enabled, "the default consolidation goal is opt-in per template");
+        assert!(!d.self_improve.enabled, "the built-in goal is opt-in per template");
         assert!(load("[session.goal.budget]\nnope = 1\n").is_err());
         std::fs::write(
             dir.path().join("agent.toml"),
-            "[session.goal.maintenance]\nenabled = true\nbehavior = \"memory_maintenance\"\n",
+            "[session.goal.self_improve]\nenabled = true\n",
         )
         .unwrap();
         let d = libopendan::goal::defaults(Some(dir.path()), "goal");
-        assert!(d.maintenance.enabled);
-        assert_eq!(d.maintenance.behavior.as_deref(), Some("memory_maintenance"));
-        assert!(load("[session.goal.maintenance]\ndecision = \"off\"\n").is_err(), "the decision pre-check is gone");
-        assert!(load("[session.goal.maintenance]\nnope = 1\n").is_err());
+        assert!(d.self_improve.enabled);
+        assert_eq!(d.context, libopendan::protocol::GoalContext::Fresh);
+        assert!(load("[session.goal]\ncontext = \"all\"\n").is_err());
+        assert!(load("[session.goal.self_improve]\nbehavior = \"x\"\n").is_err(), "it has the standard one");
     }
 
     #[test]

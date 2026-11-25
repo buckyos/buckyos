@@ -14,9 +14,11 @@ export type NotifyReadFailure = 'missing' | 'denied' | 'error'
  * implementations: the msg-center / TaskMgr client (`api.ts`) and the
  * scripted mock (`mock/notify.ts`).
  */
-/** `notify.list` filters the status-bar bell uses; newest first. */
+/** The `notify.list` filters used; newest first. */
 export interface NotifyListQuery {
   status?: NotifyView['status'][]
+  agent_did?: string
+  goal_id?: string
   limit?: number
 }
 

@@ -28,10 +28,11 @@ use crate::goal::{
     post_feedback, scheduled_key, start_key, window_secs, GateVerdict, GOAL_CLASS,
 };
 use crate::goal_check::{CheckNotify, CheckRun, CheckRunner, CheckWhen, DenoCheckRunner, MissingRunner};
+use crate::goal_jobs::{JobEnv, JobFiles, JobHost};
 use crate::goal_time::Timetable;
 use crate::protocol::*;
 use crate::session::SessionDir;
-use crate::state::GoalStore;
+use crate::state::{ActivationQuery, GoalStore};
 use crate::template::GoalDefaults;
 
 use super::maintenance;
@@ -286,6 +287,9 @@ pub struct GoalHostOptions {
     /// How often the budget of a Goal with running Work is read (its Work is
     /// paused when it runs out, resumed when the period resets).
     pub budget_every: std::time::Duration,
+    /// Pauses before a job's run that failed for a passing reason is tried
+    /// again.
+    pub job_retry: Vec<std::time::Duration>,
 }
 
 impl GoalHostOptions {
@@ -307,6 +311,7 @@ impl GoalHostOptions {
             answers_every: std::time::Duration::from_secs(30),
             checks,
             budget_every: std::time::Duration::from_secs(30),
+            job_retry: crate::goal_jobs::JOB_RETRY_SECS.iter().map(|s| std::time::Duration::from_secs(*s)).collect(),
         }
     }
 }
@@ -344,12 +349,12 @@ pub struct GoalHost {
     answered: Mutex<std::collections::BTreeSet<String>>,
     /// When the questions of a Goal were looked at last.
     answers_checked: Mutex<std::collections::HashMap<String, std::time::Instant>>,
-    /// The built-in consolidation Goal was seeded by this process.
+    /// The self improvement Goal was seeded by this process.
     seeded: AtomicBool,
-    /// The skill crystallization Goal was.
-    seeded_crystallize: AtomicBool,
     /// When the budget of a Goal was read last (pausing its Work).
     budget_checked: Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    /// The jobs of the Goals.
+    pub jobs: Arc<JobHost>,
 }
 
 fn push(list: &mut Vec<GoalEventRecord>, r: GoalEventRecord) {
@@ -361,6 +366,7 @@ fn push(list: &mut Vec<GoalEventRecord>, r: GoalEventRecord) {
 impl GoalHost {
     pub fn new(options: GoalHostOptions) -> Self {
         Self {
+            jobs: JobHost::new(options.clock.clone(), options.job_retry.clone()),
             status: Mutex::new(GoalHostStatus {
                 backend: options.backend.name().to_string(),
                 ..Default::default()
@@ -370,36 +376,26 @@ impl GoalHost {
             answered: Mutex::new(std::collections::BTreeSet::new()),
             answers_checked: Mutex::new(std::collections::HashMap::new()),
             seeded: AtomicBool::new(false),
-            seeded_crystallize: AtomicBool::new(false),
             budget_checked: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
-    /// Seed the agent's built-in Goals once per process when they are
-    /// switched on in `agent.toml` (idempotent across restarts by their
-    /// keys; a failure is retried at the next tick). Seeding also gives them
-    /// the package's check script while they still run the package's.
+    /// Seed the agent's built-in Goal once per process when it is switched
+    /// on in `agent.toml` (idempotent across restarts by its key; a failure
+    /// is retried at the next tick). Seeding also gives it the package's
+    /// check script while it still runs the package's.
     async fn seed_builtin(&self, sup: &Supervisor) {
         let agent = sup.host.agent.as_ref();
         let d = defaults(agent.agent_root(), &self.options.class);
-        if d.crystallize.enabled && !self.seeded_crystallize.load(Ordering::SeqCst) {
-            match maintenance::seed_crystallize(agent.goals(), agent.agent_did(), agent.agent_root(), d.crystallize.behavior.clone()).await {
-                Ok(g) => {
-                    log::info!("goals: skill crystallization goal {}", g.goal_id);
-                    self.seeded_crystallize.store(true, Ordering::SeqCst);
-                }
-                Err(e) => self.error(BUILTIN_SKILL_CRYSTALLIZE, format!("seeding: {e}")),
-            }
-        }
-        if self.seeded.load(Ordering::SeqCst) || !d.maintenance.enabled {
+        if self.seeded.load(Ordering::SeqCst) || !d.self_improve.enabled {
             return;
         }
-        match maintenance::seed(agent.goals(), agent.agent_did(), agent.agent_root(), &d.maintenance).await {
+        match maintenance::seed_self_improve(agent.goals(), agent.agent_did(), agent.agent_root()).await {
             Ok(g) => {
-                log::info!("goals: memory maintenance goal {} (policy {})", g.goal_id, g.opendan().map(|e| e.policy_version).unwrap_or(0));
+                log::info!("goals: self improvement goal {}", g.goal_id);
                 self.seeded.store(true, Ordering::SeqCst);
             }
-            Err(e) => self.error(BUILTIN_MEMORY_MAINTENANCE, format!("seeding: {e}")),
+            Err(e) => self.error(BUILTIN_SELF_IMPROVE, format!("seeding: {e}")),
         }
     }
 
@@ -468,6 +464,7 @@ impl GoalHost {
         match &run.verdict {
             Ok(v) => {
                 schedule.check_errors = 0;
+                schedule.guarantee_posted_for_errors = false;
                 if let (Some(st), false) = (&v.state, set_aside) {
                     schedule.check_state = Some(st.clone());
                 }
@@ -493,15 +490,7 @@ impl GoalHost {
             format!("{key}:notify"),
         );
         req.level = n.level;
-        let mut source = crate::notify::NotifySource {
-            session_id: Some(goal.session.sid.clone()),
-            goal_id: Some(goal.goal_id.clone()),
-            operation: Some(goal.title.chars().take(200).collect::<String>()).filter(|t| !t.is_empty()),
-            link: n.url.as_deref().map(str::trim).filter(|u| !u.is_empty()).map(str::to_string),
-            ..Default::default()
-        };
-        crate::notify::complete_notify_source(sup.host.agent.as_ref(), &mut source).await;
-        req.source = Some(source);
+        req.source = Some(self.goal_source(sup, goal, n.url.as_deref()).await);
         Ok(notify.send(req).await?.notify_id)
     }
 
@@ -613,10 +602,7 @@ impl GoalHost {
             if !view.status.is_closed() {
                 continue;
             }
-            let answer = view.result.as_ref().and_then(|r| {
-                r.text().map(str::to_string).or_else(|| r.option().map(str::to_string))
-            });
-            let note = match (view.status, answer) {
+            let note = match (view.status, crate::notify::answer_text(&view)) {
                 (crate::notify::NotifyStatus::Answered, Some(a)) => {
                     format!("the user answered the question \"{}\": {a}", q.text)
                 }
@@ -741,11 +727,13 @@ impl GoalHost {
         Ok(!state.goal.as_ref().is_some_and(|g| g.needs_flush()))
     }
 
-    /// A built-in Goal switched off in `agent.toml`.
+    /// A built-in Goal switched off: in `agent.toml`, or every duty of it
+    /// by the owner.
     fn switched_off(&self, sup: &Supervisor, goal: &GoalDefinition) -> bool {
-        let d = defaults(sup.host.agent.agent_root(), &self.options.class);
-        (goal.is_builtin(BUILTIN_MEMORY_MAINTENANCE) && !d.maintenance.enabled)
-            || (goal.is_builtin(BUILTIN_SKILL_CRYSTALLIZE) && !d.crystallize.enabled)
+        let root = sup.host.agent.agent_root();
+        let d = defaults(root, &self.options.class);
+        let duties = || root.is_some_and(|r| crate::skills::SELF_IMPROVE_DUTIES.iter().any(|duty| crate::skills::duty_on(r, duty)));
+        goal.is_builtin(BUILTIN_SELF_IMPROVE) && !(d.self_improve.enabled && duties())
     }
 
     async fn reconcile(&self, sup: &Supervisor, goal: &GoalDefinition) -> Result<()> {
@@ -761,8 +749,9 @@ impl GoalHost {
             }
         }
         if off {
-            // Switched off: no session, no checks; the Goal and the
+            // Switched off: no session, no checks, no jobs; the Goal and the
             // cognitions stay as they are.
+            self.jobs.stop_goal(&goal.goal_id);
             return Ok(());
         }
         // Epochs before the current one end first (their sessions end by
@@ -799,6 +788,7 @@ impl GoalHost {
         let sid = goal.session.sid.clone();
         match goal.status {
             GoalStatus::Archived | GoalStatus::Achieved => {
+                self.jobs.stop_goal(&goal.goal_id);
                 let end = if goal.status == GoalStatus::Archived {
                     EpochEnd::Archived
                 } else {
@@ -825,6 +815,9 @@ impl GoalHost {
             GoalStatus::Active | GoalStatus::Paused => {}
         }
         self.sync_dormant_work(sup, goal).await;
+        if let Err(e) = self.run_jobs(sup, goal).await {
+            self.error(&goal.goal_id, format!("jobs: {e}"));
+        }
         if previous_open {
             return Ok(());
         }
@@ -875,9 +868,131 @@ impl GoalHost {
             schedule.updated_at_ms = now;
             goals.write_schedule(&schedule).await?;
         }
-        // The hard guarantee: too long without an inference.
+        if let Err(e) = self.tell_failing(sup, goal, state.as_ref()).await {
+            self.error(&goal.goal_id, format!("failing notice: {e}"));
+        }
+        // The hard guarantee: too long without an inference, or a check that
+        // keeps failing.
         self.guarantee(sup, goal, &d, state.as_ref(), now).await?;
         self.scheduled(sup, goal, &d, state.as_ref(), now).await
+    }
+
+    /// The user is told once that a Goal keeps failing (its prompts' own way
+    /// to ask for help has no chance when the Activation itself fails); told
+    /// again only after it recovered.
+    async fn tell_failing(&self, sup: &Supervisor, goal: &GoalDefinition, state: Option<&GoalState>) -> Result<()> {
+        let Some(st) = state else {
+            return Ok(());
+        };
+        if st.activations_failed_in_a_row < crate::goal::FAILING_NOTIFY || st.failing_since_ms == 0 {
+            return Ok(());
+        }
+        let Some(notify) = sup.host.notify.clone() else {
+            return Ok(());
+        };
+        let goals = sup.host.agent.goals();
+        let mut schedule = schedule_of(goals, &goal.goal_id).await?;
+        if schedule.failing_notified_for_ms == st.failing_since_ms {
+            return Ok(());
+        }
+        let title = if goal.title.trim().is_empty() { goal.objective.as_str() } else { goal.title.as_str() };
+        let last = st.last_activation.as_ref();
+        let mut message = format!(
+            "Its last {} activations did not finish properly (the last one: {}).",
+            st.activations_failed_in_a_row,
+            last.map(|l| l.outcome.as_str()).unwrap_or("unknown")
+        );
+        let error = st.last_error.as_ref().and_then(|e| e.get("message")).and_then(Value::as_str);
+        if let Some(e) = error.or_else(|| last.map(|l| l.summary.as_str())).filter(|t| !t.trim().is_empty()) {
+            message.push_str(&format!("\n{}", e.trim().chars().take(600).collect::<String>()));
+        }
+        message.push_str("\nIt goes on as before. Tell it or me what to change, or put it to sleep.");
+        let mut req = crate::notify::NotifySendReq::notice(
+            String::new(),
+            format!("Goal “{}” keeps failing", title.chars().take(120).collect::<String>()),
+            message,
+            format!("goal:{}:failing:{}", goal.goal_id, st.failing_since_ms),
+        );
+        req.source = Some(self.goal_source(sup, goal, None).await);
+        let id = notify.send(req).await?.notify_id;
+        log::info!("goals: {}: the user was told it keeps failing ({id})", goal.goal_id);
+        schedule.failing_notified_for_ms = st.failing_since_ms;
+        schedule.updated_at_ms = self.now();
+        goals.write_schedule(&schedule).await
+    }
+
+    /// The notification source of a Goal.
+    async fn goal_source(&self, sup: &Supervisor, goal: &GoalDefinition, link: Option<&str>) -> crate::notify::NotifySource {
+        let mut source = crate::notify::NotifySource {
+            session_id: Some(goal.session.sid.clone()),
+            goal_id: Some(goal.goal_id.clone()),
+            operation: Some(goal.title.chars().take(200).collect::<String>()).filter(|t| !t.is_empty()),
+            link: link.map(str::trim).filter(|u| !u.is_empty()).map(str::to_string),
+            ..Default::default()
+        };
+        crate::notify::complete_notify_source(sup.host.agent.as_ref(), &mut source).await;
+        source
+    }
+
+    /// The scheduled run opportunity posted last is not taken in by the Goal
+    /// Session yet (it waits for its workspace, it is busy).
+    async fn waiting(&self, sup: &Supervisor, goal: &GoalDefinition) -> Result<bool> {
+        let agent = sup.host.agent.as_ref();
+        let goals = agent.goals();
+        let mut schedule = schedule_of(goals, &goal.goal_id).await?;
+        let Some(w) = schedule.waiting.clone() else {
+            return Ok(false);
+        };
+        if w.epoch == goal.session.epoch && !self.taken_in(sup, goal, &w.key).await? {
+            return Ok(true);
+        }
+        schedule.waiting = None;
+        goals.write_schedule(&schedule).await?;
+        Ok(false)
+    }
+
+    /// An Activation of the current epoch carries the run opportunity `key`.
+    async fn taken_in(&self, sup: &Supervisor, goal: &GoalDefinition, key: &str) -> Result<bool> {
+        let agent = sup.host.agent.as_ref();
+        let has = |reasons: &[ActivationReason]| reasons.iter().any(|r| r.key == key);
+        if let Some(entry) = agent.sessions().lookup(&goal.session.sid).await? {
+            let state = SessionDir::open(&entry.location)?.state()?;
+            if let Some(g) = &state.goal {
+                let open = g.activation.as_ref().map(|a| a.reasons.as_slice()).unwrap_or_default();
+                let last = g.state.last_activation.as_ref().map(|l| l.reasons.as_slice()).unwrap_or_default();
+                if has(open) || has(last) || g.unwritten.iter().any(|a| has(&a.reasons)) {
+                    return Ok(true);
+                }
+            }
+        }
+        let q = ActivationQuery { epoch: Some(goal.session.epoch), limit: 16 };
+        Ok(agent.goals().activations(&goal.goal_id, &q).await?.iter().any(|a| has(&a.reasons)))
+    }
+
+    /// The Goal's jobs that are due (a sleeping Goal's are ended). They need
+    /// no session and no inference; what their models may use is what the
+    /// budgets have left.
+    async fn run_jobs(&self, sup: &Supervisor, goal: &GoalDefinition) -> Result<()> {
+        let agent = sup.host.agent.as_ref();
+        let Some(root) = agent.agent_root() else {
+            return Ok(());
+        };
+        if goal.status != GoalStatus::Active {
+            self.jobs.stop_goal(&goal.goal_id);
+            return Ok(());
+        }
+        let files = JobFiles::of(root, &goal.goal_id);
+        let due = self.jobs.due(&files);
+        if due.is_empty() {
+            return Ok(());
+        }
+        let d = defaults(Some(root), &self.options.class);
+        let model_budget = crate::goal_jobs::model_budget(agent, goal, &d, self.now()).await?;
+        for (job, trigger, slot) in due {
+            let env = JobEnv { agent_did: agent.agent_did().to_string(), agent_root: root.to_path_buf(), model_budget };
+            self.jobs.start(&files, job, trigger, slot, env)?;
+        }
+        Ok(())
     }
 
     /// The start event of an epoch. Explicit starts (`--start`, and a reopen
@@ -931,14 +1046,16 @@ impl GoalHost {
     /// without an inference (once per quiet stretch). It says how the checks
     /// went: a Goal that broke its own check script learns it here.
     async fn guarantee(&self, sup: &Supervisor, goal: &GoalDefinition, d: &GoalDefaults, state: Option<&GoalState>, now: u64) -> Result<()> {
-        if goal.status != GoalStatus::Active || !crate::goal::guarantee_due(goal, state, d, now) {
+        if goal.status != GoalStatus::Active {
             return Ok(());
         }
         let since = guarantee_since_ms(goal, state);
         let agent = sup.host.agent.as_ref();
         let goals = agent.goals();
         let mut schedule = schedule_of(goals, &goal.goal_id).await?;
-        if schedule.guarantee_posted_for_ms == since {
+        let quiet = crate::goal::guarantee_due(goal, state, d, now) && schedule.guarantee_posted_for_ms != since;
+        let broken = crate::goal::errors_due(goal, state, &schedule, d, now);
+        if !quiet && !broken {
             return Ok(());
         }
         let secs = crate::goal::guarantee_secs(goal, d).unwrap_or(0);
@@ -949,7 +1066,11 @@ impl GoalHost {
         } else {
             format!("{secs}s")
         };
-        let mut note = format!("hard guarantee: no inference for {span} or more");
+        let mut note = if quiet {
+            format!("hard guarantee: no inference for {span} or more")
+        } else {
+            "the check script keeps failing: until it is fixed no check wakes you and none of its notifications is sent".to_string()
+        };
         match &schedule.last_check {
             Some(c) => note.push_str(&format!(
                 "; last check {} at {}",
@@ -970,12 +1091,19 @@ impl GoalHost {
             goal,
             &sup.host.who,
             ActivationReasonKind::Guarantee,
-            &crate::goal::guarantee_key(&goal.goal_id, since),
+            &if quiet {
+                crate::goal::guarantee_key(&goal.goal_id, since)
+            } else {
+                crate::goal::errors_key(&goal.goal_id, schedule.last_check.as_ref().map(|c| c.at_ms).unwrap_or(now))
+            },
             &note,
         )
         .await?;
         schedule = schedule_of(goals, &goal.goal_id).await?;
-        schedule.guarantee_posted_for_ms = since;
+        if quiet {
+            schedule.guarantee_posted_for_ms = since;
+        }
+        schedule.guarantee_posted_for_errors = schedule.check_errors > 0;
         let start = crate::goal::period_start(now, window_secs(&effective_budget(goal, d)));
         schedule.stats_mut(start).guarantees += 1;
         schedule.updated_at_ms = now;
@@ -1004,6 +1132,12 @@ impl GoalHost {
         };
         let kind = ActivationReasonKind::Scheduled;
         let key = fire.key.clone();
+        let when = |held: Option<&str>| CheckWhen {
+            trigger: "scheduled".into(),
+            held: held.map(str::to_string),
+            slot_ms: timetable.as_ref().map(|t| t.slot_ms(fire.slot)),
+            missed: fire.missed.saturating_sub(1),
+        };
         if !fire.retry {
             if goal.has_capability(CAP_MEMORY_CONSOLIDATION) && goal.status == GoalStatus::Active {
                 // Recovery, sweep and cleanup need the drive, not a model.
@@ -1021,7 +1155,7 @@ impl GoalHost {
                     // The check still runs: what it sends needs no
                     // inference; a `true` waits for the gate.
                     if goal.schedule.check.is_some() {
-                        self.check(sup, goal, &CheckWhen::held("scheduled", reason.as_str()), &key, now).await?;
+                        self.check(sup, goal, &when(Some(reason.as_str())), &key, now).await?;
                     }
                     backend.settle(goals, &goal.goal_id, &fire, &skip(reason.as_str()), now).await?;
                     self.count_skip(goals, goal, d, reason, now).await?;
@@ -1031,13 +1165,30 @@ impl GoalHost {
                 GateVerdict::Pass { guarantee: true } => {
                     // The hard guarantee was posted on its own this pass.
                     if goal.schedule.check.is_some() {
-                        self.check(sup, goal, &CheckWhen::held("scheduled", "guarantee"), &key, now).await?;
+                        self.check(sup, goal, &when(Some("guarantee")), &key, now).await?;
                     }
                     backend.settle(goals, &goal.goal_id, &fire, &skip("guarantee"), now).await?;
                     return Ok(());
                 }
+                GateVerdict::Pass { guarantee: false } if self.waiting(sup, goal).await? => {
+                    // The run opportunity before this one is still in the
+                    // session's queue: no second one behind it. The check
+                    // runs for what it sends.
+                    if goal.schedule.check.is_some() {
+                        self.check(sup, goal, &when(Some("waiting")), &key, now).await?;
+                    }
+                    backend.settle(goals, &goal.goal_id, &fire, &skip("waiting"), now).await?;
+                    let mut schedule = schedule_of(goals, &goal.goal_id).await?;
+                    if let Some(w) = schedule.waiting.as_mut() {
+                        w.missed += fire.missed;
+                    }
+                    goals.write_schedule(&schedule).await?;
+                    self.skipped(&goal.goal_id, format!("slot {} skipped: the one before is still waiting", fire.slot), now);
+                    self.drive(sup, &sid, "goal scheduled").await;
+                    return Ok(());
+                }
                 GateVerdict::Pass { guarantee: false } if goal.schedule.check.is_some() => {
-                    let run = self.check(sup, goal, &CheckWhen::new("scheduled"), &key, now).await?;
+                    let run = self.check(sup, goal, &when(None), &key, now).await?;
                     match run.verdict {
                         Ok(v) if v.run => {
                             note = match v.reason {
@@ -1066,6 +1217,9 @@ impl GoalHost {
         backend
             .settle(goals, &goal.goal_id, &fire, &FireOutcome::Posted, now)
             .await?;
+        let mut schedule = schedule_of(goals, &goal.goal_id).await?;
+        schedule.waiting = Some(WaitingFire { key: key.clone(), epoch: goal.session.epoch, missed: fire.missed });
+        goals.write_schedule(&schedule).await?;
         {
             let mut s = self.status.lock().expect("goal status");
             s.last_fire = Some(GoalEventRecord {

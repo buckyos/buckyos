@@ -441,6 +441,23 @@ async fn an_activation_out_of_budget_ends_alone() {
     h.shutdown().await;
 }
 
+/// A model that sends the result as JSON text is understood.
+#[tokio::test]
+async fn a_goal_result_sent_as_text_is_its_object() {
+    let env = Env::new();
+    let llm = ScriptedLlm::new(|_, _| report(json!("{\"decision\": \"needs_info\", \"questions\": [{\"text\": \"Which one?\", \"options\": [{\"id\": \"a\", \"label\": \"A\"}]}]}")));
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("result as text");
+    req.schedule.start_on_create = true;
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("activation", |h| h.activations(&g.goal_id).len() == 1).await;
+    let a = &h.activations(&g.goal_id)[0];
+    assert_eq!((a.outcome, a.decision), (ActivationOutcome::Completed, ActivationDecision::NeedsInfo));
+    assert_eq!(a.result.as_ref().unwrap()["decision"], "needs_info");
+    assert_eq!(h.state(&g.goal_id).unwrap().questions[0].options.len(), 1);
+    h.shutdown().await;
+}
+
 /// The Goal result is checked when it is reported: a wrong one is refused
 /// to the model, which can correct it.
 #[tokio::test]
@@ -1220,6 +1237,7 @@ async fn earlier_headers_are_one_line_in_history() {
     let h = hosted(&env, llm.clone());
     let mut req = goal_req("long lived");
     req.schedule.start_on_create = true;
+    req.schedule.context = Some(GoalContext::Carry);
     let g = h.agent.goals().create(&req, &owner()).await.unwrap();
     h.until("activation 1", |h| h.activations(&g.goal_id).len() == 1).await;
     for i in 2..=3 {
@@ -2448,5 +2466,868 @@ async fn goal_skills_are_readable_from_the_header_and_survive_a_restart() {
     h.until("epoch 2", |h| h.state(&g.goal_id).is_some_and(|s| s.epoch == 2)).await;
     let names: Vec<String> = h.state(&g.goal_id).unwrap().current_skills.iter().map(|k| k.name.clone()).collect();
     assert_eq!(names, ["watch_folder", "inbox_check"]);
+    h.shutdown().await;
+}
+
+/// CX2: an Activation starts with its header alone unless the Goal carries
+/// its history; switching is no revision, and the Goal Session may do it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_activation_starts_fresh_unless_the_goal_carries_its_history() {
+    use libopendan::state::GoalCheckChange;
+    let env = Env::new();
+    let llm = ScriptedLlm::new(|req, _| {
+        if !is_goal_req(req) {
+            return text("not a goal");
+        }
+        let n = act(req);
+        match this_result(req, &format!("s{n}")) {
+            None => tool_call(&format!("s{n}"), "shell", json!({ "command": format!("echo marker-{n}") })),
+            Some(_) => no_action(),
+        }
+    });
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("long lived");
+    req.schedule.start_on_create = true;
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("activation 1", |h| h.activations(&g.goal_id).len() == 1).await;
+    h.sup.goal_activate(&g.goal_id, "r2", "again").await.unwrap();
+    h.until("activation 2", |h| h.activations(&g.goal_id).len() == 2).await;
+    let last = render(&llm.requests.lock().unwrap().last().unwrap().messages);
+    assert!(last.contains("marker-2"), "{last}");
+    assert!(!last.contains("marker-1"), "the first activation is not in the second: {last}");
+    assert!(last_header(&llm).contains(" context=\"fresh\""), "{}", last_header(&llm));
+    // The worklog keeps everything.
+    assert!(read_worklog(&h.session(&g.goal_id)).iter().any(|e| serde_json::to_string(&e.body).unwrap().contains("marker-1")));
+    // The Goal Session itself switches; no revision.
+    let me = GoalCaller::from_session(APP, &g.session.sid);
+    let change = GoalCheckChange { context: Some(GoalContext::Carry), reason: Some("a long thread".into()), ..Default::default() };
+    let g2 = h.agent.goals().set_check(&g.goal_id, &change, &me).await.unwrap();
+    assert_eq!((g2.revision, g2.schedule.context), (g.revision, Some(GoalContext::Carry)));
+    let logged = h.agent.goals().changes(&g.goal_id, 1).await.unwrap();
+    assert_eq!((logged[0].kind.as_str(), &logged[0].detail["context"]), ("check", &json!("carry")));
+    h.sup.goal_activate(&g.goal_id, "r3", "again").await.unwrap();
+    h.until("activation 3", |h| h.activations(&g.goal_id).len() == 3).await;
+    let last = render(&llm.requests.lock().unwrap().last().unwrap().messages);
+    assert!(last.contains("marker-1") && last.contains("marker-2") && last.contains("marker-3"), "{last}");
+    // A revision of the schedule leaves it as it is.
+    let req = GoalRevise { expected_revision: g.revision, schedule: Some(GoalScheduleSpec { every_secs: Some(600), ..Default::default() }), ..Default::default() };
+    let g3 = h.agent.goals().revise(&g.goal_id, &req, &owner()).await.unwrap();
+    assert_eq!(g3.schedule.context, Some(GoalContext::Carry));
+    h.shutdown().await;
+}
+
+/// A fresh Activation rebuilt in its middle (here: the context limit) keeps
+/// its own history and none of the earlier ones'.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fresh_activation_rewritten_midway_keeps_its_own_history() {
+    use llm_context::error::{LLMComputeError, ProviderFailure};
+    let env = Env::new();
+    let refused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let once = refused.clone();
+    let llm = ScriptedLlm::fallible(move |req, _| {
+        if !is_goal_req(req) {
+            return Ok(text("not a goal"));
+        }
+        let n = act(req);
+        match this_result(req, &format!("s{n}")) {
+            None => Ok(tool_call(&format!("s{n}"), "shell", json!({ "command": format!("echo marker-{n}") }))),
+            Some(_) if n == 2 && !once.swap(true, std::sync::atomic::Ordering::SeqCst) => {
+                Err(LLMComputeError::provider(ProviderFailure::ContextLimit, "context_length_exceeded"))
+            }
+            Some(_) => Ok(no_action()),
+        }
+    });
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("long lived");
+    req.schedule.start_on_create = true;
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("activation 1", |h| h.activations(&g.goal_id).len() == 1).await;
+    h.sup.goal_activate(&g.goal_id, "r2", "again").await.unwrap();
+    h.until("activation 2", |h| h.activations(&g.goal_id).len() == 2).await;
+    assert!(refused.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(h.activations(&g.goal_id)[1].outcome, ActivationOutcome::Completed);
+    let rewritten = read_worklog(&h.session(&g.goal_id))
+        .iter()
+        .any(|e| matches!(&e.body, WorklogBody::Outcome { kind, .. } if kind == "context_rewritten"));
+    assert!(rewritten, "the run was rewritten");
+    let last = render(&llm.requests.lock().unwrap().last().unwrap().messages);
+    assert!(last.contains("marker-2"), "{last}");
+    assert!(!last.contains("marker-1"), "{last}");
+    h.shutdown().await;
+}
+
+/// FH1 / FH2: failed Activations and Work are counted in a row and shown to
+/// the Goal; the user is told once at the third, and again only after it
+/// recovered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_goal_that_keeps_failing_tells_the_user_once_per_row() {
+    use libopendan::notify::{LocalNotify, NotifyHost, NotifyListReq};
+    let env = Env::new();
+    let local = Arc::new(LocalNotify::enable(&env.agent_root, AGENT).unwrap());
+    let good = env.root.join("good");
+    let flag = good.clone();
+    let llm = ScriptedLlm::new(move |req, _| {
+        if !is_goal_req(req) {
+            return text("not a goal");
+        }
+        // Never a valid result: the Activation ends as failed.
+        if flag.exists() { no_action() } else { tool_call("r1", "report", json!({ "report": "I could not reach it", "is_end": true })) }
+    });
+    let h = hosted_notify(&env, llm.clone(), json!({ "tools": { "enabled": true } }), Some(local.clone()), |_| {});
+    let mut req = goal_req("watch a site");
+    req.title = Some("site watcher".into());
+    req.schedule.start_on_create = true;
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    let sent = || async { local.list(NotifyListReq::default()).await.unwrap().len() };
+    for n in 1..=4u32 {
+        if n > 1 {
+            h.sup.goal_activate(&g.goal_id, &format!("r{n}"), "again").await.unwrap();
+        }
+        h.until("activation", |h| h.activations(&g.goal_id).len() == n as usize).await;
+        h.until("the count", |h| h.state(&g.goal_id).is_some_and(|s| s.activations_failed_in_a_row == n)).await;
+        for _ in 0..3 {
+            h.tick().await;
+        }
+        assert_eq!(sent().await, usize::from(n >= 3), "after {n}");
+    }
+    assert!(last_header(&llm).contains("<state activations_failed_in_a_row=\"3\">"), "{}", last_header(&llm));
+    let v = local.list(NotifyListReq::default()).await.unwrap().remove(0);
+    assert!(v.prompt.title.as_deref().unwrap().contains("site watcher"), "{v:?}");
+    assert!(v.prompt.message.as_deref().unwrap().contains("the last one: failed"), "{v:?}");
+    assert_eq!(v.source.goal_id.as_deref(), Some(g.goal_id.as_str()));
+    // It recovers: the row ends. Three more: told again.
+    std::fs::write(&good, "").unwrap();
+    h.clock.advance(60_000);
+    h.sup.goal_activate(&g.goal_id, "ok", "again").await.unwrap();
+    h.until("recovered", |h| h.state(&g.goal_id).is_some_and(|s| s.activations_failed_in_a_row == 0)).await;
+    std::fs::remove_file(&good).unwrap();
+    for n in 6..=8usize {
+        h.sup.goal_activate(&g.goal_id, &format!("r{n}"), "again").await.unwrap();
+        h.until("activation", |h| h.activations(&g.goal_id).len() == n).await;
+    }
+    h.until("the second notice", |h| schedule_of(h, &g.goal_id).failing_notified_for_ms == h.state(&g.goal_id).unwrap().failing_since_ms).await;
+    assert_eq!(sent().await, 2);
+    h.shutdown().await;
+}
+
+/// FH1: Work of the Goal that does not succeed is counted in a row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_work_is_counted_in_a_row() {
+    let env = Env::new();
+    let root = env.root.clone();
+    let llm = ScriptedLlm::new(move |req, _| {
+        if !is_goal_req(req) {
+            return tool_call("e1", "report", json!({ "report": "it did not work", "is_end": true, "outcome": "failed" }));
+        }
+        if act(req) <= 2 {
+            if this_result(req, "r1").is_none() {
+                create_work(&root, &session_id_of(req), &format!("try {}", act(req)), &format!("w{}", act(req))).unwrap();
+            }
+            return report(json!({ "decision": "created_work" }));
+        }
+        no_action()
+    });
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("try things");
+    req.schedule.start_on_create = true;
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("three activations", |h| h.activations(&g.goal_id).len() >= 3).await;
+    h.until("both taken in", |h| h.state(&g.goal_id).is_some_and(|s| s.recent_works.len() == 2)).await;
+    assert_eq!(h.state(&g.goal_id).unwrap().works_failed_in_a_row, 2);
+    h.sup.goal_activate(&g.goal_id, "look", "again").await.unwrap();
+    h.until("one more", |h| h.activations(&g.goal_id).len() >= 4).await;
+    assert!(last_header(&llm).contains("works_failed_in_a_row=\"2\""), "{}", last_header(&llm));
+    h.shutdown().await;
+}
+
+/// FH4: a question may offer choices; the answer names the choice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_goal_question_may_offer_choices() {
+    use libopendan::notify::{prompt_options, LocalNotify, NotifyAnswer, NotifyHost, NotifyListReq};
+    let env = Env::new();
+    let local = Arc::new(LocalNotify::enable(&env.agent_root, AGENT).unwrap());
+    let llm = ScriptedLlm::new(|req, _| {
+        if !is_goal_req(req) {
+            return text("not a goal");
+        }
+        match act(req) {
+            1 if this_result(req, "r1").is_none() => report(json!({ "decision": "needs_info",
+                "questions": [{ "text": "x", "options": [{ "id": "a", "label": "A" }, { "id": "a", "label": "B" }] }] })),
+            1 => tool_call("r2", "report", json!({ "report": "asked", "is_end": true, "result": { "decision": "needs_info",
+                "questions": [{ "text": "Upgrade the site?", "options": [{ "id": "yes", "label": "Upgrade now" }, { "id": "no", "label": "Not now" }], "allow_text": true },
+                              "Anything else?"] } })),
+            _ => report(json!({ "decision": "acted" })),
+        }
+    });
+    let h = hosted_notify(&env, llm.clone(), json!({ "tools": { "enabled": true } }), Some(local.clone()), |o| o.answers_every = Duration::ZERO);
+    let mut req = goal_req("keep the site");
+    req.schedule.start_on_create = true;
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("activation 1", |h| h.activations(&g.goal_id).len() == 1).await;
+    let refused = render(&llm.requests.lock().unwrap().last().unwrap().messages);
+    assert!(refused.contains("different ids"), "{refused}");
+    let sent = local.list(NotifyListReq::default()).await.unwrap();
+    let v = sent.iter().find(|v| v.prompt.title.as_deref() == Some("Upgrade the site?")).unwrap();
+    let labels: Vec<String> = prompt_options(&v.prompt).into_iter().map(|o| o.label).collect();
+    assert_eq!(labels, vec!["Upgrade now", "Not now"]);
+    assert_eq!(v.prompt.controls.len(), 2, "free text besides the choices");
+    let plain = sent.iter().find(|v| v.prompt.title.as_deref() == Some("Anything else?")).unwrap();
+    assert!(prompt_options(&plain.prompt).is_empty());
+    local.answer(&v.notify_id, NotifyAnswer::option("yes"), None).await.unwrap();
+    h.until("answer activation", |h| h.activations(&g.goal_id).len() == 2).await;
+    let header = last_header(&llm);
+    assert!(header.contains("<option id=\"yes\">Upgrade now</option>"), "{header}");
+    assert!(header.contains("answered the question") && header.contains("Upgrade now"), "{header}");
+    let st = h.state(&g.goal_id).unwrap();
+    assert!(st.questions.iter().all(|q| q.notify_id.is_some()));
+    h.shutdown().await;
+}
+
+/// FH5: three check errors in a row wake the Goal once like the hard
+/// guarantee, never closer than the hard interval; a check that works again
+/// starts a new row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn check_errors_in_a_row_wake_the_goal_once() {
+    use libopendan::goal_check::{CheckVerdict, FnCheckRunner};
+    let env = Env::new();
+    let broken = env.root.join("broken");
+    std::fs::write(&broken, "").unwrap();
+    let flag = broken.clone();
+    let llm = ScriptedLlm::new(|req, _| if is_goal_req(req) { no_action() } else { text("not a goal") });
+    let h = hosted_opts(&env, llm.clone(), json!({ "tools": { "enabled": true } }), move |o| {
+        o.checks = Arc::new(FnCheckRunner(move |_: &Path, _: &Value, _: &Value| {
+            if flag.exists() { Err("ReferenceError: x is not defined".into()) } else { Ok(CheckVerdict::default()) }
+        }));
+    });
+    let mut req = goal_req("guarded");
+    req.schedule.every_secs = Some(SLOT);
+    req.schedule.min_interval_secs = Some(4 * SLOT);
+    req.check_script = Some("export default () => x;\n".into());
+    // The budget does not hold it: a broken script is what it wakes for.
+    req.budget.period.max_activations = Some(0);
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    for _ in 0..2 {
+        h.tick().await;
+        h.clock.advance(SLOT * 1000);
+    }
+    h.tick().await;
+    h.clock.advance(SLOT * 1000);
+    h.until("woken", |h| h.activations(&g.goal_id).len() == 1).await;
+    let a = &h.activations(&g.goal_id)[0];
+    assert_eq!(a.reasons[0].kind, ActivationReasonKind::Guarantee, "{a:?}");
+    let note = a.reasons[0].note.clone().unwrap();
+    assert!(note.contains("keeps failing") && note.contains("x is not defined"), "{note}");
+    assert!(schedule_of(&h, &g.goal_id).check_errors >= 3);
+    // Once per row.
+    for _ in 0..8 {
+        h.clock.advance(SLOT * 1000);
+        h.tick().await;
+    }
+    assert_eq!(h.activations(&g.goal_id).len(), 1);
+    // It works again, then breaks again: a new row (past the hard interval).
+    std::fs::remove_file(&broken).unwrap();
+    h.clock.advance(SLOT * 1000);
+    h.until("works", |h| schedule_of(h, &g.goal_id).check_errors == 0).await;
+    std::fs::write(&broken, "").unwrap();
+    for _ in 0..4 {
+        h.clock.advance(SLOT * 1000);
+        h.tick().await;
+    }
+    h.until("woken again", |h| h.activations(&g.goal_id).len() == 2).await;
+    h.shutdown().await;
+}
+
+/// CA2: a check is told the slot it runs for and how many passed before it,
+/// so a reminder at a known time is sent once however late the host is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_late_check_is_told_its_slot() {
+    use libopendan::goal_check::{CheckNotify, CheckVerdict, FnCheckRunner};
+    use libopendan::notify::{LocalNotify, NotifyHost, NotifyListReq};
+    let env = Env::new();
+    let local = Arc::new(LocalNotify::enable(&env.agent_root, AGENT).unwrap());
+    let llm = ScriptedLlm::new(|_, _| no_action());
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let ctxs = seen.clone();
+    let due = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let at = due.clone();
+    let h = hosted_notify(&env, llm, json!({ "tools": { "enabled": true } }), Some(local.clone()), move |o| {
+        o.checks = Arc::new(FnCheckRunner(move |_: &Path, ctx: &Value, state: &Value| {
+            ctxs.lock().unwrap().push(ctx.clone());
+            let (slot, due) = (ctx["slot_ms"].as_u64().unwrap(), at.load(std::sync::atomic::Ordering::SeqCst));
+            let hit = slot == due && state["sent"] != json!(due);
+            Ok(CheckVerdict {
+                notify: hit.then(|| CheckNotify { title: "Stand up".into(), message: None, url: None, level: None }),
+                state: hit.then(|| json!({ "sent": due })),
+                ..Default::default()
+            })
+        }));
+    });
+    let mut req = goal_req("remind the user");
+    req.schedule.every_secs = Some(SLOT);
+    req.check_script = Some("export default () => false;\n".into());
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.tick().await;
+    let start = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!((start["trigger"].as_str(), start["missed"].as_u64()), (Some("start"), Some(0)));
+    assert_eq!(start["slot_ms"], start["now_ms"], "the start has no slot");
+    // Three minutes into the next slot.
+    let next = (h.clock.0.load(std::sync::atomic::Ordering::SeqCst) / (SLOT * 1000) + 1) * SLOT * 1000;
+    due.store(next, std::sync::atomic::Ordering::SeqCst);
+    h.clock.set(next + 180_000);
+    h.tick().await;
+    h.tick().await;
+    let ctx = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!((ctx["slot_ms"].as_u64(), ctx["now_ms"].as_u64()), (Some(next), Some(next + 180_000)));
+    assert_eq!(ctx["missed"], 0);
+    assert_eq!(local.list(NotifyListReq::default()).await.unwrap().len(), 1, "sent, once");
+    // Down for three slots: the check runs once and says two were missed.
+    h.clock.set(next + 3 * SLOT * 1000 + 5_000);
+    h.tick().await;
+    let ctx = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!((ctx["slot_ms"].as_u64(), ctx["missed"].as_u64()), (Some(next + 3 * SLOT * 1000), Some(2)));
+    assert_eq!(local.list(NotifyListReq::default()).await.unwrap().len(), 1);
+    assert!(h.activations(&g.goal_id).is_empty());
+    h.shutdown().await;
+}
+
+/// RT1: while the Goal Session cannot take the scheduled run opportunity in
+/// (its workspace is taken), no second one is posted behind it: one
+/// Activation opens when it can, and it knows how many slots passed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scheduled_run_opportunities_do_not_pile_up() {
+    let env = Env::new();
+    let directory = env.root.join("project");
+    std::fs::create_dir(&directory).unwrap();
+    let reference = env.workspace(&directory).await;
+    // A Work of the owner holds the workspace.
+    let mut spec = work_spec("first writer");
+    spec.workspace = Some(reference.clone());
+    let writer = env.create_work(spec).await;
+    let llm = ScriptedLlm::new(|req, _| if is_goal_req(req) { no_action() } else { text("not a goal") });
+    let hold = |on: bool| {
+        let lease = writer.acquire(env.deps(llm.clone()).holder()).unwrap().into_result("session").unwrap();
+        let mut session = writer.load(&lease).unwrap();
+        session.state.watched_tasks = if on { vec!["external-task-unconfirmed".into()] } else { Vec::new() };
+        session.commit_state(&lease).unwrap();
+    };
+    assert!(drive_idle(&env, &writer, &llm).await);
+    hold(true);
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("keep the project tidy");
+    req.schedule.every_secs = Some(SLOT);
+    req.scope.workspace = Some(reference.workspace_id.clone());
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.tick().await;
+    for _ in 0..36 {
+        h.clock.advance(SLOT * 1000);
+        h.tick().await;
+    }
+    assert!(h.activations(&g.goal_id).is_empty(), "the workspace is taken");
+    let s = schedule_of(&h, &g.goal_id);
+    assert_eq!(s.waiting.as_ref().unwrap().missed, 36, "{s:?}");
+    assert!(s.skipped.iter().all(|k| k.reason == "waiting"), "{s:?}");
+    hold(false);
+    for _ in 0..1600 {
+        h.tick().await;
+        if !h.activations(&g.goal_id).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    for _ in 0..20 {
+        h.tick().await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let acts = h.activations(&g.goal_id);
+    assert_eq!(acts.len(), 1, "{acts:?}");
+    assert_eq!(acts[0].reasons[0].missed, Some(36), "{acts:?}");
+    // Taken in: the next slot is posted again.
+    h.clock.advance(SLOT * 1000);
+    h.until("the next slot", |h| h.activations(&g.goal_id).len() == 2).await;
+    h.shutdown().await;
+}
+
+async fn drive_idle(env: &Env, sd: &SessionDir, llm: &Arc<ScriptedLlm>) -> bool {
+    use libopendan::runner::{drive, StopWhen};
+    drive(sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    true
+}
+
+/// RT2: a shell task of another session that a result of the Goal names is
+/// let go of with the Activation: its end is no reason of a later one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_task_the_goal_only_reads_about_is_not_followed() {
+    let env = Env::new();
+    let llm = ScriptedLlm::new(|req, _| {
+        if !is_goal_req(req) {
+            return text("not a goal");
+        }
+        match this_result(req, "s1") {
+            None => tool_call(
+                "s1",
+                "shell",
+                json!({ "command": "printf '%s\\n' '{\"agent_tool_protocol\":\"1\",\"status\":\"success\",\"cmd_name\":\"task\",\"task_id\":\"local:shell:call_of_a_work\",\"summary\":\"still running\",\"detail\":{\"state\":\"running\"}}'" }),
+            ),
+            Some(_) => text("looked, waiting"),
+        }
+    });
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("follow the work");
+    req.schedule.start_on_create = true;
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("the call returned", |h| llm.count() >= 2 && block(h.agent.sessions().lookup(&g.session.sid)).unwrap().is_some()).await;
+    for _ in 0..20 {
+        h.tick().await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let first = render(&llm.requests.lock().unwrap()[1].messages);
+    assert!(first.contains("call_of_a_work"), "{first}");
+    assert!(h.session(&g.goal_id).state().unwrap().watched_tasks.is_empty());
+    let acts = h.activations(&g.goal_id);
+    assert!(acts.iter().all(|a| a.reasons.iter().all(|r| r.kind != ActivationReasonKind::Event)), "{acts:?}");
+    h.shutdown().await;
+}
+
+/// UX4: what the user says opens an Activation inside the hard interval;
+/// the budget still holds it, and says until when.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_users_words_do_not_wait_for_the_hard_interval() {
+    let env = Env::new();
+    let llm = ScriptedLlm::new(|req, _| if is_goal_req(req) { no_action() } else { text("not a goal") });
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("listen");
+    req.schedule.start_on_create = true;
+    req.schedule.min_interval_secs = Some(3600);
+    req.budget.period.max_activations = Some(2);
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("activation 1", |h| h.activations(&g.goal_id).len() == 1).await;
+    h.sup.goal_feedback(&g.goal_id, "leave the weekends out", "the owner").await.unwrap();
+    h.until("activation 2", |h| h.activations(&g.goal_id).len() == 2).await;
+    assert_eq!(h.activations(&g.goal_id)[1].reasons[0].kind, ActivationReasonKind::Feedback);
+    h.sup.goal_feedback(&g.goal_id, "and the holidays", "the owner").await.unwrap();
+    h.until("held by the budget", |h| h.state(&g.goal_id).is_some_and(|s| s.holding.is_some())).await;
+    let hold = h.state(&g.goal_id).unwrap().holding.unwrap();
+    assert_eq!(hold.reason, HoldReason::PeriodBudget);
+    assert!(hold.until_ms.is_some());
+    assert_eq!(h.activations(&g.goal_id).len(), 2);
+    h.shutdown().await;
+}
+
+/// CX1: the numbers of `goal stats` against 50 Activation records.
+#[tokio::test]
+async fn goal_stats_add_up() {
+    let env = Env::new();
+    let agent = env.agent();
+    let mut req = goal_req("counted");
+    req.budget.period.window_secs = Some(3600);
+    let g = agent.goals().create(&req, &owner()).await.unwrap();
+    let now = libopendan::now_ms();
+    let start = libopendan::goal::period_start(now, 3600);
+    let dir = env.agent_root.join("state/goals").join(&g.goal_id);
+    // 10 Activations in each of the last five periods; the current one is
+    // the last. Every fifth acts (and creates a Work), one fails.
+    let mut lines = String::new();
+    for p in 0..5u64 {
+        for i in 0..10u64 {
+            let at = start - (4 - p) * 3_600_000 + i * 1000;
+            let (decision, outcome, works) = match i {
+                0 => ("unknown", "failed", vec![]),
+                5 => ("created_work", "completed", vec!["work-1"]),
+                _ => ("no_action", "completed", vec![]),
+            };
+            lines.push_str(&format!(
+                "{}\n",
+                json!({ "schema": GOAL_ACTIVATION_SCHEMA, "goal_id": g.goal_id, "epoch": 1, "seq": p * 10 + i + 1, "session_id": "goal-x",
+                        "goal_revision": 1, "started_at_ms": at, "ended_at_ms": at, "outcome": outcome, "decision": decision,
+                        "works_created": works, "cost": { "runs": 1, "total_tokens": 1000 * (p + 1) },
+                        "reasons": [{ "kind": "scheduled", "key": "k" }, { "kind": "scheduled", "key": "k2" }] })
+            ));
+        }
+    }
+    std::fs::write(dir.join("activations.jsonl"), lines).unwrap();
+    let mut s = GoalSchedule::new(&g.goal_id, "local");
+    for p in 0..5u64 {
+        let st = s.stats_mut(start - (4 - p) * 3_600_000);
+        st.checks_true = p;
+        st.checks_false = 10 + p;
+        st.skipped_budget = 1;
+    }
+    s.check_errors = 2;
+    agent.goals().write_schedule(&s).await.unwrap();
+    let t = agent.goals().stats(&g.goal_id, 3).await.unwrap();
+    assert_eq!((t.period_secs, t.periods.len(), t.check_errors_in_a_row), (3600, 3, 2));
+    for (i, p) in t.periods.iter().enumerate() {
+        let n = i as u64 + 2;
+        assert_eq!(p.start_ms, start - (4 - n) * 3_600_000);
+        assert_eq!((p.activations, p.works_created, p.tokens_per_activation), (10, 1, 1000 * (n + 1)));
+        assert_eq!((p.decisions["no_action"], p.decisions["created_work"], p.decisions["unknown"]), (8, 1, 1));
+        assert_eq!((p.outcomes["completed"], p.outcomes["failed"]), (9, 1));
+        assert_eq!(p.reasons["scheduled"], 10, "counted once per Activation");
+        assert_eq!((p.checks_true, p.checks_false, p.skipped_by_budget), (n, 10 + n, 1));
+    }
+    let all = agent.goals().stats(&g.goal_id, 99).await.unwrap();
+    assert_eq!(all.periods.iter().map(|p| p.activations).sum::<u64>(), 50);
+}
+
+/// A conversation of `peer`, of an agent owned by `did:bns:alice`.
+async fn conversation(env: &Env, peer: &str) -> SessionDir {
+    let mut spec = libopendan::SessionTemplate::load("ui", None).unwrap().spec("chat");
+    spec.prompt.llm_context = json!({ "tools": { "enabled": true } });
+    spec.owner = Some("did:bns:alice".into());
+    spec.outbound = Some(OutboundBinding { to: peer.into(), to_session: None, kind: "chat".into() });
+    env.create_work(spec).await
+}
+
+async fn sub(env: &Env, parent: &str, objective: &str, class: Option<&str>) -> SessionDir {
+    create_sub_session(
+        env.agent().as_ref(),
+        APP,
+        parent,
+        SubSessionSpec { objective: objective.into(), msgs: vec!["go".into()], class: class.map(str::to_string), key: Some(objective.into()), ..Default::default() },
+        env.channels().as_ref(),
+    )
+    .await
+    .unwrap()
+}
+
+/// WG1: a Work a conversation started itself builds a Goal, rewrites it and
+/// ends it as that conversation could; a Todo's and a Goal's Work may not;
+/// the owner's conversations rewrite every Goal that is not built in, any
+/// other only those it created.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn work_of_a_conversation_hands_over_to_a_goal() {
+    use libopendan::state::GoalCheckChange;
+    let env = Env::new();
+    std::fs::write(env.agent_root.join("agent.toml"), "[session.plan_simple]\nbase = \"work\"\n").unwrap();
+    let root = env.root.clone();
+    let llm = ScriptedLlm::new(move |req, _| {
+        if !is_goal_req(req) {
+            return text("working");
+        }
+        if this_result(req, "r1").is_none() && act(req) == 1 {
+            create_work(&root, &session_id_of(req), "a goal's own work", "gw").unwrap();
+        }
+        report(json!({ "decision": "created_work" }))
+    });
+    let h = hosted(&env, llm);
+    let goals = h.agent.goals();
+    let from = |sid: &str| GoalCaller::from_session(APP, sid);
+    let ui = conversation(&env, "did:bns:alice").await;
+    let later = conversation(&env, "did:bns:alice").await;
+    let group = conversation(&env, "did:bns:some-group").await;
+    let work = sub(&env, ui.sid(), "build the status page", None).await;
+    let plan = sub(&env, ui.sid(), "build the station", Some("plan_simple")).await;
+    let todo = sub(&env, plan.sid(), "a todo of the station", None).await;
+
+    // The Work creates it: it belongs to its conversation, the Work is named.
+    let mut req = goal_req("keep the status page up");
+    req.check_script = Some("export default () => false;\n".into());
+    req.schedule.every_secs = Some(SLOT);
+    let g = goals.create(&req, &from(work.sid())).await.unwrap();
+    assert_eq!(g.created_by.via, format!("ui_session:{}", ui.sid()));
+    assert_eq!(g.created_by.work.as_deref(), Some(work.sid()));
+    assert_eq!(g.schedule.check.as_ref().unwrap().source, format!("work_session:{}", work.sid()));
+    // A plan may as well, its Todos and a Goal's Work not.
+    assert!(goals.create(&goal_req("of the plan"), &from(plan.sid())).await.is_ok());
+    let me = h.agent.goals().create(&{ let mut r = goal_req("has work"); r.schedule.start_on_create = true; r }, &owner()).await.unwrap();
+    h.until("the goal's work", |h| !works_of(h, &me.goal_id).is_empty()).await;
+    let gw = works_of(&h, &me.goal_id).remove(0).session_id;
+    for sid in [todo.sid(), gw.as_str()] {
+        assert!(matches!(goals.create(&goal_req("no"), &from(sid)).await, Err(OpenDanError::Forbidden(_))), "{sid}");
+    }
+
+    // Revising: the Work, its conversation, a later conversation of the
+    // owner; not a group's, a Todo's, a Goal's Work, the Goal itself.
+    let mut rev = 1;
+    let mut revise = |sid: &str, objective: &str| {
+        let req = GoalRevise { expected_revision: rev, objective: Some(objective.into()), ..Default::default() };
+        let (agent, id, who) = (h.agent.clone(), g.goal_id.clone(), from(sid));
+        let r = block(async move { agent.goals().revise(&id, &req, &who).await });
+        if let Ok(g) = &r {
+            rev = g.revision;
+        }
+        r
+    };
+    for (n, sid) in [work.sid(), ui.sid(), later.sid(), plan.sid()].iter().enumerate() {
+        assert_eq!(revise(sid, &format!("step {n}")).unwrap().revision, n as u64 + 2);
+    }
+    for sid in [group.sid(), todo.sid(), gw.as_str(), g.session.sid.as_str()] {
+        if sid == g.session.sid {
+            h.tick().await;
+        }
+        assert!(matches!(revise(sid, "no"), Err(OpenDanError::Forbidden(_))), "{sid}");
+    }
+    let check = |every: u64| GoalCheckChange { every_secs: Some(every), reason: Some("x".into()), ..Default::default() };
+    goals.set_check(&g.goal_id, &check(600), &from(work.sid())).await.unwrap();
+    goals.set_check(&g.goal_id, &check(700), &from(later.sid())).await.unwrap();
+    for sid in [group.sid(), todo.sid(), gw.as_str()] {
+        assert!(matches!(goals.set_check(&g.goal_id, &check(800), &from(sid)).await, Err(OpenDanError::Forbidden(_))), "{sid}");
+    }
+    // A group's own goal is its to rewrite; a built-in one nobody's but the
+    // owner side's.
+    let own = goals.create(&goal_req("of the group"), &from(group.sid())).await.unwrap();
+    let req = GoalRevise { expected_revision: 1, title: Some("t".into()), ..Default::default() };
+    goals.revise(&own.goal_id, &req, &from(group.sid())).await.unwrap();
+    let mut builtin = goal_req("built in");
+    builtin.extensions.insert(OPENDAN_EXTENSION.into(), OpendanGoalExtension::self_improve().to_value());
+    let b = goals.create(&builtin, &owner()).await.unwrap();
+    for sid in [later.sid(), work.sid()] {
+        assert!(matches!(goals.revise(&b.goal_id, &req, &from(sid)).await, Err(OpenDanError::Forbidden(_))), "{sid}");
+    }
+    // Its notifications find the conversation.
+    let mut source = libopendan::notify::NotifySource { goal_id: Some(g.goal_id.clone()), session_id: Some(g.session.sid.clone()), ..Default::default() };
+    libopendan::notify::complete_notify_source(h.agent.as_ref(), &mut source).await;
+    assert_eq!(source.conversation.map(|c| c.to).as_deref(), Some("did:bns:alice"));
+    // It failed half way: the Work takes its goal back.
+    let gone = GoalStatusChange { status: GoalStatus::Archived, reason: Some("the page could not be built".into()), evidence: None };
+    assert!(matches!(goals.set_status(&g.goal_id, &gone, &from(todo.sid())).await, Err(OpenDanError::Forbidden(_))));
+    assert_eq!(goals.set_status(&g.goal_id, &gone, &from(work.sid())).await.unwrap().status, GoalStatus::Archived);
+    h.shutdown().await;
+}
+
+/// A skill a revision hands over is among the Goal's current ones from its
+/// next Activation on; the ones the Goal added stay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_revision_hands_over_skills() {
+    let env = Env::new();
+    let llm = ScriptedLlm::new(|req, _| {
+        report(json!({ "decision": "acted", "skills": { "add": [{ "name": format!("own-{}", act(req)) }] } }))
+    });
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("operate the page");
+    req.schedule.start_on_create = true;
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("activation 1", |h| h.activations(&g.goal_id).len() == 1).await;
+    let req = GoalRevise {
+        expected_revision: 1,
+        initial_skills: Some(vec![GoalSkill { name: "page_ops".into(), reference: Some("docs/ops.md".into()), version: None, note: None }]),
+        ..Default::default()
+    };
+    h.agent.goals().revise(&g.goal_id, &req, &owner()).await.unwrap();
+    h.sup.goal_activate(&g.goal_id, "r2", "again").await.unwrap();
+    h.until("activation 2", |h| h.activations(&g.goal_id).len() == 2).await;
+    let header = last_header(&llm);
+    assert!(header.contains("<skill name=\"page_ops\"") && header.contains("<skill name=\"own-1\""), "{header}");
+    let names: Vec<String> = h.state(&g.goal_id).unwrap().current_skills.into_iter().map(|k| k.name).collect();
+    assert_eq!(names, vec!["own-1", "page_ops", "own-2"]);
+    h.shutdown().await;
+}
+
+/// Q6: a Goal's Work is one bounded task unless the Goal asks for a plan.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_goal_may_send_a_plan() {
+    let env = Env::new();
+    for name in ["work_simple", "plan_simple"] {
+        let dir = env.agent_root.join("behaviors");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{name}.toml")),
+            format!("[meta]\nname = \"{name}\"\nobjective = \"x\"\n\n[prompt]\nmode = \"function_call\"\nsystem = \"\"\"\nyou are {name}\n\"\"\"\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        env.agent_root.join("agent.toml"),
+        "[session.work]\ndefault_behavior = \"plan_simple\"\ncompletion = \"explicit_report\"\n[session.plan_simple]\nbase = \"work\"\ndefault_behavior = \"plan_simple\"\n",
+    )
+    .unwrap();
+    let llm = ScriptedLlm::new(|req, _| if is_goal_req(req) { no_action() } else { text("working") });
+    let h = hosted(&env, llm);
+    let g = h.agent.goals().create(&goal_req("sends work"), &owner()).await.unwrap();
+    h.tick().await;
+    let one = sub(&env, &g.session.sid, "one thing", None).await;
+    let plan = sub(&env, &g.session.sid, "find out, then act", Some("plan_simple")).await;
+    assert_eq!(one.config().unwrap().prompt.behavior.as_deref(), Some("work_simple"));
+    assert_eq!(plan.config().unwrap().prompt.behavior.as_deref(), Some("plan_simple"));
+    h.shutdown().await;
+}
+
+const JARVIS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/jarvis_agent/agent");
+
+/// SI2 on the real Deno: the package's check of the self improvement Goal
+/// names the duty that has material — manuals used, commands not found —
+/// and has none otherwise; a duty switched off has none either. (Skipped
+/// without a Deno.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_self_improvement_check_names_the_duty() {
+    use libopendan::goal_check::{run_for, CheckWhen, DenoCheckRunner};
+    let env = Env::new();
+    let Some(runner) = DenoCheckRunner::discover(env.root.join("checks")) else {
+        eprintln!("no Deno: skipped");
+        return;
+    };
+    let agent = env.agent();
+    let g = agent.goals().create(&goal_req("self improvement"), &owner()).await.unwrap();
+    let script = Path::new(JARVIS).join("goal_checks/self_improve.ts");
+    let state = |v: Value| {
+        std::fs::create_dir_all(env.agent_root.join(".meta")).unwrap();
+        std::fs::write(env.agent_root.join(".meta/skills_state.json"), v.to_string()).unwrap();
+    };
+    let now = libopendan::now_ms();
+    // Each look is a gathering of its own (6 hours apart).
+    let looks = std::sync::atomic::AtomicU64::new(0);
+    let run = || {
+        let (agent, g, runner, script) = (agent.clone(), g.clone(), &runner, script.clone());
+        let at = now + looks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) * 6 * 3_600_000;
+        async move {
+            let r = run_for(agent.as_ref(), runner, &g, Some(&script), &CheckWhen::new("scheduled"), at).await.unwrap();
+            r.verdict.unwrap_or_else(|e| panic!("{e}\n{}", r.log))
+        }
+    };
+    let keep = |v: Option<Value>| {
+        let mut s = GoalSchedule::new(&g.goal_id, "local");
+        s.check_state = v;
+        block(agent.goals().write_schedule(&s)).unwrap();
+    };
+    // Nothing at all.
+    let v = run().await;
+    assert!(!v.run, "{v:?}");
+    // Manuals only.
+    state(json!({ "usage": { "work:share": { "frozen": 3 }, "none": { "frozen": 2 } } }));
+    let v = run().await;
+    assert!(v.run && v.reason.as_deref().unwrap().starts_with("manuals: 5 new"), "{v:?}");
+    keep(v.state);
+    let v = run().await;
+    assert!(!v.run, "looked at: {v:?}");
+    // Two works that did not find the same command, one that missed another.
+    let work = |sid: &str, command: &str| {
+        let dir = env.agent_root.join("sessions").join(sid);
+        std::fs::create_dir_all(dir.join(".opendan_agent_session")).unwrap();
+        let entry = json!({ "session_id": sid, "kind": "work", "location": dir.display().to_string(),
+            "status": { "run_state": "finished", "updated_at_ms": now + looks.load(std::sync::atomic::Ordering::SeqCst) } });
+        std::fs::create_dir_all(env.agent_root.join("state/sessions")).unwrap();
+        std::fs::write(env.agent_root.join("state/sessions").join(format!("{sid}.json")), entry.to_string()).unwrap();
+        let line = json!({ "seq": 1, "t": "action_result", "run_id": "r", "turn": 1, "call_id": "c", "status": "error",
+            "result": format!("bash: line 1: {command}: command not found\n(exit 127)") });
+        std::fs::write(dir.join(".opendan_agent_session/worklog.jsonl"), format!("{line}\n")).unwrap();
+    };
+    work("work-1", "xlsx2csv");
+    work("work-2", "jq5");
+    let v = run().await;
+    assert!(!v.run, "one work each is an incident: {v:?}");
+    let incident = v.state.clone();
+    work("work-3", "xlsx2csv");
+    let v = run().await;
+    assert!(v.run, "{v:?}");
+    let reason = v.reason.clone().unwrap();
+    assert!(reason.starts_with("tools: `xlsx2csv`") && reason.contains("work-1") && reason.contains("work-3") && !reason.contains("jq5"), "{reason}");
+    keep(v.state);
+    assert!(!run().await.run, "told once");
+    // The evidence of separate looks adds up.
+    keep(incident);
+    work("work-4", "jq5");
+    std::fs::remove_file(env.agent_root.join("state/sessions/work-3.json")).unwrap();
+    let v = run().await;
+    assert!(v.run && v.reason.as_deref().unwrap().contains("`jq5`"), "{v:?}");
+    // A command two works only looked for: theirs when the task names it.
+    keep(v.state);
+    let looked = |sid: &str, task: &str| {
+        work(sid, "nothing-lacking-here");
+        let lines = [
+            json!({ "seq": 1, "t": "user_message", "run_id": "r", "turn": 1, "content": task }),
+            json!({ "seq": 2, "t": "assistant_message", "run_id": "r", "turn": 1, "assistant": "", "tool_calls": [{ "call_id": "c1", "tool": "shell", "args": { "command": "which fwxsum python 2>/dev/null; echo ---" } }] }),
+            json!({ "seq": 3, "t": "action_result", "run_id": "r", "turn": 1, "call_id": "c1", "status": "ok", "result": "/usr/bin/python\n---" }),
+        ];
+        let dir = env.agent_root.join("sessions").join(sid).join(".opendan_agent_session/worklog.jsonl");
+        std::fs::write(dir, lines.map(|l| format!("{l}\n")).concat()).unwrap();
+    };
+    looked("work-5", "sum it with `fwxsum a.fwx`");
+    looked("work-6", "sum it with fwxsum, or another way");
+    looked("work-7", "write the report");
+    let v = run().await;
+    let reason = v.reason.clone().unwrap_or_default();
+    assert!(v.run && reason.contains("`fwxsum` not found by 2 work sessions") && !reason.contains("work-7") && !reason.contains("python"), "{v:?}");
+    // A duty the owner switched off has no material.
+    keep(None);
+    state(json!({ "usage": { "none": { "frozen": 9 } }, "self_improve": { "memory": false, "manuals": false, "tools": false } }));
+    assert!(!run().await.run);
+    // Memory has none here; its part is looked at every time.
+    state(json!({ "self_improve": { "manuals": false, "tools": false } }));
+    let v = run().await;
+    assert!(!v.run && v.state.as_ref().unwrap()["memory"]["digest"].is_string(), "{v:?}");
+}
+
+/// SI1 / SI6: the self improvement Goal is seeded once, with the standard
+/// goal behavior; an agent that had the built-in Goals before it keeps the
+/// one that consolidated Memory, rewritten with a fresh context, the other is
+/// merged into it; a switched-off Goal says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_self_improvement_goal_is_seeded_and_takes_over() {
+    let env = Env::new();
+    std::fs::write(env.agent_root.join("agent.toml"), "[session.goal.self_improve]\nenabled = true\n").unwrap();
+    std::fs::create_dir_all(env.agent_root.join("goal_checks")).unwrap();
+    let llm = ScriptedLlm::new(|_, _| no_action());
+    let former = |key: &str, builtin: &str, budget: u64| {
+        let mut req = goal_req(builtin);
+        req.key = Some(key.into());
+        req.behavior = Some(builtin.into());
+        req.budget.period.max_total_tokens = Some(budget);
+        req.budget.period.max_works = Some(0);
+        req.check_script = Some("export default () => false;\n".into());
+        req.check_package = Some(format!("goal_checks/{builtin}.ts"));
+        req.extensions.insert(
+            OPENDAN_EXTENSION.into(),
+            json!({ "builtin": builtin, "policy_version": 1, "capabilities": [], "records_perception": false }),
+        );
+        block({
+            let agent = env.agent();
+            async move { agent.goals().create(&req, &owner()).await.unwrap() }
+        })
+    };
+    let manuals = former("builtin:skill_crystallize", "skill_crystallize", 600_000);
+    let old = former("builtin:memory_maintenance", "memory_maintenance", 123_000);
+    // It had a check script of its own, at its own times.
+    block({
+        let (agent, id) = (env.agent(), old.goal_id.clone());
+        async move {
+            let own = libopendan::state::GoalCheckChange { script: Some("export default () => true;\n".into()), every_secs: Some(7200), ..Default::default() };
+            agent.goals().set_check(&id, &own, &owner()).await.unwrap()
+        }
+    });
+    std::fs::write(env.agent_root.join("goal_checks/self_improve.ts"), "export default () => ({ run: false });\n").unwrap();
+    let h = hosted(&env, llm.clone());
+    for _ in 0..3 {
+        h.tick().await;
+    }
+    let goals = h.agent.goals().list().await.unwrap();
+    assert_eq!(goals.len(), 2, "none is added: {goals:?}");
+    let merged = goals.iter().find(|g| g.goal_id == manuals.goal_id).unwrap();
+    assert_eq!(merged.status, GoalStatus::Archived);
+    assert!(merged.status_reason.as_deref().unwrap().contains(&old.goal_id));
+    let g = goals.iter().find(|g| g.goal_id == old.goal_id).unwrap();
+    assert!(g.is_builtin(BUILTIN_SELF_IMPROVE) && g.has_capability(CAP_MEMORY_CONSOLIDATION));
+    assert_eq!((g.behavior.as_deref(), g.session.epoch), (Some("goal"), 2));
+    assert_eq!(g.budget.period.max_total_tokens, Some(123_000), "the owner's budget stays");
+    assert_eq!(g.budget.period.max_works, None, "it may send work");
+    assert_eq!(g.schedule.check.as_ref().unwrap().source, "package:goal_checks/self_improve.ts");
+    assert_eq!(g.schedule.every_secs, Some(1800), "the times of its check");
+    let names: Vec<&str> = g.initial_skills.iter().map(|k| k.name.as_str()).collect();
+    assert_eq!(names, vec!["self_improve_memory", "self_improve_manuals", "self_improve_tools", "goal_upkeep"]);
+    // A restart of the host changes nothing more.
+    let h2 = hosted(&env, llm.clone());
+    for _ in 0..2 {
+        h2.tick().await;
+    }
+    assert_eq!(h2.goal(&g.goal_id).await.revision, g.revision);
+    // Every duty off: no session, no checks, and it says so; one on again.
+    for duty in libopendan::skills::SELF_IMPROVE_DUTIES {
+        libopendan::skills::set_duty(&env.agent_root, duty, false, "owner").unwrap();
+    }
+    h2.tick().await;
+    assert!(schedule_of(&h2, &g.goal_id).switched_off);
+    libopendan::skills::set_duty(&env.agent_root, "tools", true, "owner").unwrap();
+    h2.tick().await;
+    assert!(!schedule_of(&h2, &g.goal_id).switched_off);
+    h.shutdown().await;
+    h2.shutdown().await;
+
+    // A new agent: one Goal, the standard behavior.
+    let env = Env::new();
+    std::fs::write(env.agent_root.join("agent.toml"), "[session.goal.self_improve]\nenabled = true\n").unwrap();
+    let h = hosted(&env, ScriptedLlm::new(|_, _| no_action()));
+    h.tick().await;
+    let goals = h.agent.goals().list().await.unwrap();
+    assert_eq!(goals.len(), 1);
+    assert_eq!((goals[0].behavior.clone(), goals[0].idempotency_key.as_deref()), (None, Some(BUILTIN_SELF_IMPROVE_KEY)));
     h.shutdown().await;
 }

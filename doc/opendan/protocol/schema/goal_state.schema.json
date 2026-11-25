@@ -334,6 +334,10 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "allow_text": {
+          "description": "Free text is taken besides the choices.",
+          "type": "boolean"
+        },
         "answer": {
           "type": [
             "string",
@@ -363,6 +367,13 @@
             "string",
             "null"
           ]
+        },
+        "options": {
+          "description": "Choices it offers (none: free text only).",
+          "items": {
+            "$ref": "#/definitions/QuestionOption"
+          },
+          "type": "array"
         },
         "status": {
           "anyOf": [
@@ -432,6 +443,13 @@
       "properties": {
         "activations": {
           "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "job_tokens": {
+          "default": 0,
+          "description": "Model tokens of its jobs in the period.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -812,6 +830,23 @@
       ],
       "type": "string"
     },
+    "QuestionOption": {
+      "additionalProperties": false,
+      "description": "A choice of a [`GoalQuestion`].",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
     "ReceiptStage": {
       "description": "Stage of a consolidation receipt (§4.1): each step is re-entrant, a crash resumes from the stage it reached.",
       "oneOf": [
@@ -912,6 +947,13 @@
       },
       "type": "array"
     },
+    "activations_failed_in_a_row": {
+      "default": 0,
+      "description": "Activations in a row that failed, ran out of budget or left no valid result (a stopped one changes nothing).",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "active_works": {
       "items": {
         "$ref": "#/definitions/GoalWork"
@@ -942,6 +984,13 @@
       ]
     },
     "epoch": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "failing_since_ms": {
+      "default": 0,
+      "description": "When that row began (names it: the host tells the user once per row).",
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
@@ -1043,11 +1092,19 @@
       ],
       "default": {
         "activations": 0,
+        "job_tokens": 0,
         "period_start_ms": 0,
         "tokens": 0,
         "work_tokens": 0,
         "works": 0
       }
+    },
+    "works_failed_in_a_row": {
+      "default": 0,
+      "description": "Work taken in that did not succeed, in a row.",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
     }
   },
   "required": [

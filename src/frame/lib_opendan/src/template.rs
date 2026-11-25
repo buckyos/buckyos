@@ -74,40 +74,13 @@ pub const UI_OBJECTIVE: &str = "The long-lived conversation of this agent with o
 /// Objective of a group UI session.
 pub const GROUP_OBJECTIVE: &str = "The long-lived presence of this agent in one group, serving its owner only. Answer what a conversation can answer; hand work that must happen outside the conversation to intent analysis and relay what it created; when a work session or goal reports back, relay the result. The conversation never ends by itself.";
 
-/// `agent.toml [session.goal.maintenance]`: the agent's default Memory
-/// consolidation Goal (Jarvis default Goal TODO §2, §6).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MaintenanceDefaults {
-    /// Seed and run the built-in `memory_maintenance` Goal (off: no seeding,
-    /// no checks; an existing Goal keeps its state).
+/// `agent.toml [session.goal.self_improve]`: the agent's self improvement Goal — it consolidates Memory, keeps the
+/// manuals in step with what the work shows and makes the tools work lacks. Which of its duties it has is the owner's
+/// (`.meta/skills_state.json` `self_improve`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SelfImproveDefaults {
+    /// Seed and run the built-in `self_improve` Goal (off: no seeding; an existing Goal gets no session).
     pub enabled: bool,
-    /// Behavior of its Goal Session (`None`: the class default).
-    pub behavior: Option<String>,
-}
-
-impl Default for MaintenanceDefaults {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            behavior: Some("memory_maintenance".to_string()),
-        }
-    }
-}
-
-/// `agent.toml [session.goal.crystallize]`: the agent's skill crystallization Goal — it reads the work sessions the
-/// usage record points at, revises the manuals that are the agent's own, and leaves drafts for the owner.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CrystallizeDefaults {
-    /// Seed and run the built-in `skill_crystallize` Goal (off: no seeding; an existing Goal gets no session).
-    pub enabled: bool,
-    /// Behavior of its Goal Session (`None`: the class default).
-    pub behavior: Option<String>,
-}
-
-impl Default for CrystallizeDefaults {
-    fn default() -> Self {
-        Self { enabled: false, behavior: Some("skill_crystallize".to_string()) }
-    }
 }
 
 /// `agent.toml [session.goal.agent_budget]`: the agent's background total,
@@ -140,9 +113,10 @@ pub struct GoalDefaults {
     pub guarantee_secs: u64,
     /// Check timetable of a Goal with a check script and no timetable.
     pub check_every_secs: u64,
+    /// What an Activation reads of the earlier ones.
+    pub context: GoalContext,
     pub agent_budget: AgentBudget,
-    pub maintenance: MaintenanceDefaults,
-    pub crystallize: CrystallizeDefaults,
+    pub self_improve: SelfImproveDefaults,
 }
 
 impl Default for GoalDefaults {
@@ -164,9 +138,9 @@ impl Default for GoalDefaults {
             min_interval_secs: 900,
             guarantee_secs: 259_200,
             check_every_secs: 300,
+            context: GoalContext::default(),
             agent_budget: AgentBudget::default(),
-            maintenance: MaintenanceDefaults::default(),
-            crystallize: CrystallizeDefaults::default(),
+            self_improve: SelfImproveDefaults::default(),
         }
     }
 }
@@ -459,6 +433,12 @@ impl SessionTemplate {
             if g.check_every_secs < CHECK_MIN_EVERY_SECS {
                 return Err(bad("check_every_secs (at least 60)"));
             }
+            if let Some(v) = over.get("context") {
+                g.context = v
+                    .as_str()
+                    .and_then(GoalContext::parse)
+                    .ok_or_else(|| bad("context (fresh | carry)"))?;
+            }
             if g.guarantee_secs > 0 && g.guarantee_secs < GUARANTEE_MIN_SECS {
                 return Err(bad("guarantee_secs (0: off, otherwise at least 3600)"));
             }
@@ -484,39 +464,17 @@ impl SessionTemplate {
                     g.agent_budget.max_total_tokens = (n > 0).then_some(n);
                 }
             }
-            if let Some(m) = over.get("maintenance") {
-                let m = m.as_table().ok_or_else(|| bad("maintenance"))?;
-                for key in m.keys() {
-                    if !matches!(key.as_str(), "enabled" | "behavior") {
-                        return Err(OpenDanError::InvalidArgument(format!(
-                            "agent.toml [session.{class}.maintenance]: unknown key `{key}`"
-                        )));
-                    }
-                }
-                if let Some(v) = m.get("enabled") {
-                    g.maintenance.enabled = v.as_bool().ok_or_else(|| bad("maintenance.enabled"))?;
-                }
-                if let Some(v) = m.get("behavior") {
-                    g.maintenance.behavior =
-                        Some(v.as_str().ok_or_else(|| bad("maintenance.behavior"))?.to_string())
-                            .filter(|b| !b.trim().is_empty());
-                }
-            }
-            if let Some(c) = over.get("crystallize") {
-                let c = c.as_table().ok_or_else(|| bad("crystallize"))?;
+            if let Some(c) = over.get("self_improve") {
+                let c = c.as_table().ok_or_else(|| bad("self_improve"))?;
                 for key in c.keys() {
-                    if !matches!(key.as_str(), "enabled" | "behavior") {
+                    if key != "enabled" {
                         return Err(OpenDanError::InvalidArgument(format!(
-                            "agent.toml [session.{class}.crystallize]: unknown key `{key}`"
+                            "agent.toml [session.{class}.self_improve]: unknown key `{key}`"
                         )));
                     }
                 }
                 if let Some(v) = c.get("enabled") {
-                    g.crystallize.enabled = v.as_bool().ok_or_else(|| bad("crystallize.enabled"))?;
-                }
-                if let Some(v) = c.get("behavior") {
-                    g.crystallize.behavior =
-                        Some(v.as_str().ok_or_else(|| bad("crystallize.behavior"))?.to_string()).filter(|b| !b.trim().is_empty());
+                    g.self_improve.enabled = v.as_bool().ok_or_else(|| bad("self_improve.enabled"))?;
                 }
             }
         }

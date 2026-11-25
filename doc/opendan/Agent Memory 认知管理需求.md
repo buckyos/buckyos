@@ -2013,6 +2013,7 @@ Session 侧的库函数（组件提供实现，状态由 Session 保存）：
 - 改为：实现维护型 Memory 整理 Goal：运行前用不调用 LLM 的查询判断有无新增、到期或待重试的材料；按 §5.6 整理并经 `commit` 提交；暂缓材料有观察窗口与到期处置；整理测试断言实际的认知变化。
 - 进度（2026-10-10，组件阶段）：组件完成：不调用模型的 `pending_work`（新增/到期/等待/待重试清理，排除整理自身）、暂缓窗口与不可延长、到期选材、兜底清扫、清理单独重试（S22、S30）。
 - 进度（2026-10-23，Jarvis 默认 Goal P0）：维护型整理 Goal `memory_maintenance` 由 GoalHost 播种并经 30m / 2h 确定性 gate 调度（`pending_work` + `due_reviews` 是闸门；`memory_snapshot` 版本向量是快速路径）；`create_self_improve_session`、字节游标、`[loader.self_improve]` 与两份 self_improve behavior 已删除；`tests/memory_maintenance.rs` 断言实际认知变化、正文清理、receipt 完成与崩溃恢复。
+- 进度（2026-11-24）：整理是内置 Goal `self_improve` 的一项职责（规则在 goal skill `self_improve_memory`），由 `memory_maintenance` 并入；宿主工具、receipt、租约不变（Agent State Protocol §9.7）。
 
 **TD-20 只保留一条感知管线**（A.1）
 - 现状：`agent_tool/src/agent_attention_signal.rs`（SQLite，Stage1 扫描与 `ListPendingAttentionSignals` 等 CLI）与 `lo` 的感知流并行；`self_improve_signals.toml`、`self_improve_set_memory.toml` 走前者。

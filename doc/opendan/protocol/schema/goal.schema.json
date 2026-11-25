@@ -118,14 +118,40 @@
       ],
       "type": "object"
     },
+    "GoalContext": {
+      "description": "What the context of an Activation starts with besides the system prompt, the Goal header and the inputs of this Activation.",
+      "oneOf": [
+        {
+          "description": "Nothing: what the earlier Activations left is in the header.",
+          "enum": [
+            "fresh"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The history of the Goal Session (compressed like any session's).",
+          "enum": [
+            "carry"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "GoalCreatedBy": {
       "properties": {
         "principal": {
           "type": "string"
         },
         "via": {
-          "description": "`owner | ui_session:<sid> | opendan`.",
+          "description": "`owner | ui_session:<sid> | opendan` (a Work's: the conversation that started it).",
           "type": "string"
+        },
+        "work": {
+          "description": "The Work that created it.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -231,6 +257,17 @@
             }
           ],
           "description": "The script each scheduled check runs: `true` makes the run opportunity an inference (none: every scheduled check passes). Changed through `set_check` only, never by a revision."
+        },
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GoalContext"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What an Activation reads of the earlier ones (`None`: `[session.goal] context`). Changed through `set_check` only, never by a revision."
         },
         "cron": {
           "description": "Check timetable as a 5-field cron expression on the wall clock of `timezone` (instead of `every_secs`).",

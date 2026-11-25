@@ -4,6 +4,7 @@ import { getTaskWatchSource } from '../../../components/conversation/tasks'
 import { flattenWork, isWorkFinished, workChildren, type WorkCard, type WorkNode } from '../../../components/conversation/worksessions/model'
 import { MOCK_AGENT_TASKS, MOCK_SELF_DID } from '../../../components/conversation/mock/ids'
 import { MockTaskSource } from '../../../components/conversation/mock/tasks'
+import { mockGoals } from '../../../components/conversation/mock/goals'
 import { MOCK_WORK_UI_SESSION, mockSessionCards } from '../../../components/conversation/mock/worksessions'
 
 const AGENT = 'did:buckyos:agent:codeassistant'
@@ -72,7 +73,7 @@ function findWork(sid: string): WorkCard | undefined {
 const SUMMARY: AgentSummary = {
   sessions: { working: 3, waiting: 1, failed: 0, interrupted: 0, total: 42 },
   memory: { perceptions: 128, pending: 6, cognitions: 37, last_consolidation_at_ms: Date.now() - 5 * 3_600_000 },
-  goals: { active: 2 },
+  goals: { active: 0 },
   skills: { work: 13, plan: 3, goal: 0, disabled: 1 },
   runtimes: { enabled: 2, unavailable: 0 },
 }
@@ -132,7 +133,7 @@ export const mockAgentPanelSource: AgentPanelSource = {
     await served('home.summary', {})
     if (agentDid !== AGENT) throw Error('Agent service unavailable')
     const interrupted = Object.values(state()).reduce((sum, item) => sum + (item.paused === 'interrupted' ? 1 : 0) + flattenWork(item.uiSession ? mockSessionCards(item.uiSession) : []).filter(card => card.paused === 'interrupted').length, 0)
-    return structuredClone({ ...mockAgentPanel.summary, sessions: { ...mockAgentPanel.summary.sessions, interrupted } })
+    return structuredClone({ ...mockAgentPanel.summary, sessions: { ...mockAgentPanel.summary.sessions, interrupted }, goals: { active: mockGoals.activeCount() } })
   },
   async conversation(agentDid, peerDid, sessionId) {
     await served('ui.conversation', { peer_did: peerDid, session_id: sessionId })

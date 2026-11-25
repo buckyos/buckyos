@@ -2,8 +2,9 @@ import { useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { BookOpen, ChevronRight, X } from 'lucide-react'
 import { useSWRConfig } from 'swr'
+import { BUILTIN_SELF_IMPROVE, SELF_IMPROVE_DAILY_TOKENS, dutiesOf, dutyOn } from '../goals'
 import { lang, ago, t, type TextKey } from '../i18n'
-import { sessionHref, toText, useQuery } from '../lib'
+import { fmtTokens, goalExtension, goalHref, sessionHref, toText, useQuery } from '../lib'
 import {
   dataModel,
   type InstallPlan,
@@ -257,33 +258,43 @@ function UiSetPanel({ busy, run }: { busy: boolean; run: (action: () => Promise<
   )
 }
 
-/** The owner's switch of the skill crystallization goal. */
-function CrystallizePanel({ busy, run }: { busy: boolean; run: (action: () => Promise<unknown>) => void }) {
+/** The duties of the self improvement goal, each with the owner's switch. */
+function SelfImprovePanel({ busy, run }: { busy: boolean; run: (action: () => Promise<unknown>) => void }) {
   const state = useQuery(['skills.state'], () => dataModel.skillsState())
-  const on = state.data?.crystallize === true
+  const goals = useQuery(['goals.list'], () => dataModel.goals())
+  const goal = goals.data?.find((g) => goalExtension(g)?.builtin === BUILTIN_SELF_IMPROVE)
   return (
-    <Panel title={t('skCrystallize')} testId="skills-crystallize">
+    <Panel
+      title={t('skSelfImprove')}
+      testId="skills-self-improve"
+      extra={goal && <a className="text-accent hover:underline" href={goalHref(goal.goal_id)}>{t('skSelfImproveGoal')}</a>}
+    >
       <ErrorBox error={state.error} />
-      <label className="mb-3 flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          role="switch"
-          className="h-4 w-4 accent-[var(--accent)]"
-          checked={on}
-          disabled={busy || !state.data}
-          onChange={(e) => run(() => dataModel.setCrystallize(e.target.checked))}
-          data-testid="skills-crystallize-switch"
-        />
-        <span>{t('skCrystallize')}</span>
-        <span className={clsx('text-xs', on ? 'text-ok' : 'text-mute')} data-testid="skills-crystallize-state">{t(on ? 'switchOn' : 'switchOff')}</span>
-      </label>
-      <p className="max-w-3xl text-xs leading-5 text-mute">{t('skCrystallizeHint')}</p>
-      <p className="text-xs leading-5 text-mute">{t('skCrystallizeCost')}</p>
-      {state.data && (
-        <p className="text-xs leading-5 text-mute" data-testid="skills-crystallize-source">
-          {t(state.data.crystallize == null ? 'skCrystallizeDefault' : 'skCrystallizeOwner')}
-        </p>
-      )}
+      <p className="mb-4 max-w-3xl text-xs leading-5 text-mute">
+        {t('skSelfImproveHint')} {t('skSelfImproveBudget', { n: fmtTokens(SELF_IMPROVE_DAILY_TOKENS) })}
+      </p>
+      <ul className="grid gap-4">
+        {dutiesOf(state.data).map((duty) => {
+          const on = dutyOn(state.data, duty.id)
+          return (
+            <li key={duty.id} data-testid={`skills-duty-${duty.id}`}>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  className="h-4 w-4 shrink-0 accent-[var(--accent)]"
+                  checked={Boolean(state.data) && on}
+                  disabled={busy || !state.data}
+                  onChange={(e) => run(() => dataModel.setSelfImprove(duty.id, e.target.checked))}
+                />
+                <span>{duty.label ? t(duty.label) : duty.id}</span>
+                {state.data && <span className={clsx('text-xs', on ? 'text-ok' : 'text-mute')} data-testid="duty-state">{t(on ? 'switchOn' : 'switchOff')}</span>}
+              </label>
+              {duty.hint && <p className="ms-6 max-w-3xl text-xs leading-5 text-mute">{t(duty.hint)}</p>}
+            </li>
+          )
+        })}
+      </ul>
     </Panel>
   )
 }
@@ -727,7 +738,7 @@ export default function SkillsPage() {
       })}
 
       <UiSetPanel busy={busy} run={run} />
-      <CrystallizePanel busy={busy} run={run} />
+      <SelfImprovePanel busy={busy} run={run} />
       <InstallPanel plan={setPlan} />
       <DraftsPanel plan={setPlan} ask={ask} />
       <ImportPanel />

@@ -445,15 +445,15 @@ impl Loader {
         if enabled {
             tasks.push(tokio::spawn(browser.clone().run()));
         }
-        let maintenance = libopendan::goal::defaults(Some(&env.agent_root), libopendan::goal::GOAL_CLASS).maintenance;
+        let self_improve = libopendan::goal::defaults(Some(&env.agent_root), libopendan::goal::GOAL_CLASS).self_improve;
         module(
-            "memory_maintenance",
-            maintenance.enabled,
-            maintenance.enabled && config.loader.goals.enabled,
-            Some(if maintenance.enabled {
+            "self_improve",
+            self_improve.enabled,
+            self_improve.enabled && config.loader.goals.enabled,
+            Some(if self_improve.enabled {
                 "built-in goal seeded by the goals module; its check script decides when it infers"
             } else {
-                "[session.goal.maintenance] enabled = false"
+                "[session.goal.self_improve] enabled = false"
             }),
         );
 

@@ -1967,8 +1967,13 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             // A Memory failure is said once while it lasts; the clues are
             // deduplicated by the session's observation, not by this map.
             candidates.extend(memory.as_ref().and_then(|m| m.error_line()));
+            // A fresh Activation sees nothing of what was shown before it.
+            let fresh = goal_def.as_ref().is_some_and(|g| {
+                is_goal && state.open_turn.is_none() && super::goal::opens_fresh(sh, g, &cfg.session.class)
+            });
+            let background_shown = if fresh { Default::default() } else { state.background_shown.clone() };
             let (mut lines, mut map) =
-                super::background::select(candidates, &state.background_shown, now_ms);
+                super::background::select(candidates, &background_shown, now_ms);
             if let Some(m) = &memory {
                 lines.extend(m.lines.iter().cloned());
             }
@@ -1982,7 +1987,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             if let Some(text) = &msg {
                 let placed = super::background::settle(
                     &mut map,
-                    &state.background_shown,
+                    &background_shown,
                     &material.background,
                     text,
                 );

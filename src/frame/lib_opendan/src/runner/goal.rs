@@ -99,10 +99,17 @@ pub(super) async fn load(sh: &Arc<Shared>) -> Result<()> {
         state,
         published_rev: published,
         unwritten: Vec::new(),
+        context: GoalContext::default(),
         activation: None,
         ending: None,
     });
     commit_and_report(sh, &mut s).await
+}
+
+/// The Activation that opens next reads nothing of the earlier ones.
+pub(super) fn opens_fresh(sh: &Shared, goal: &GoalDefinition, class: &str) -> bool {
+    let d = crate::goal::defaults(sh.agent_root.as_deref(), class);
+    crate::goal::context_of(goal, &d) == GoalContext::Fresh
 }
 
 /// The Goal's word on this session right now.
@@ -223,15 +230,17 @@ pub(super) async fn hold_events(sh: &Arc<Shared>, goal: &GoalDefinition, picked:
         }
     }
     let d = crate::goal::defaults(sh.agent_root.as_deref(), &class);
+    // What the user says does not wait for the hard interval.
+    let spoken = picked.iter().any(|p| crate::goal::reason_of(p).kind == ActivationReasonKind::Feedback);
     let verdict = match crate::goal::last_inference_ms(Some(&st)) {
-        Some(last) if t.saturating_sub(last) < crate::goal::min_interval_secs(goal, &d) * 1000 => {
+        Some(last) if !spoken && t.saturating_sub(last) < crate::goal::min_interval_secs(goal, &d) * 1000 => {
             crate::goal::GateVerdict::Held {
                 reason: HoldReason::MinInterval,
                 until_ms: Some(last + crate::goal::min_interval_secs(goal, &d) * 1000),
                 why: String::new(),
             }
         }
-        _ => crate::goal::gate_now(sh.agent(), goal, Some(&st), &d, t).await?.0,
+        _ => crate::goal::gate_for(sh.agent(), goal, Some(&st), &d, t, spoken).await?.0,
     };
     match verdict {
         crate::goal::GateVerdict::Pass { .. } => {
@@ -492,6 +501,7 @@ pub(super) struct GateView {
     #[serde(skip_serializing_if = "Option::is_none")]
     last_check_error: Option<String>,
     no_action_in_a_row: u32,
+    context: GoalContext,
 }
 
 fn render_gate(v: &GateView) -> String {
@@ -512,7 +522,11 @@ fn render_gate(v: &GateView) -> String {
         )),
         None => s.push_str(" check_script=\"none\""),
     }
-    s.push_str(&format!(" no_action_in_a_row=\"{}\">\n", v.no_action_in_a_row));
+    s.push_str(&format!(
+        " context=\"{}\" no_action_in_a_row=\"{}\">\n",
+        v.context.as_str(),
+        v.no_action_in_a_row
+    ));
     s.push_str(&format!(
         "<this_period checks_true=\"{}\" checks_false=\"{}\" checks_error=\"{}\" notifications_by_checks=\"{}\" skipped_by_interval=\"{}\" skipped_by_budget=\"{}\" events_held_by_interval=\"{}\" events_held_by_budget=\"{}\" hard_guarantees=\"{}\"/>\n",
         v.stats.checks_true,
@@ -553,6 +567,50 @@ fn render_gate(v: &GateView) -> String {
     s
 }
 
+/// The programs the host runs for the Goal, and how their last runs went.
+fn render_jobs(jobs: &[crate::goal_jobs::JobView]) -> String {
+    if jobs.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("<jobs run=\"installed copies: `goal job put` again after a repair of the source\">\n");
+    for j in jobs {
+        let mut attrs = format!(
+            "id=\"{}\" version=\"{}\" timetable=\"{}\"",
+            escape_xml_attr(&j.job.job_id),
+            j.job.version,
+            escape_xml_attr(&j.job.timetable().map(|t| t.describe()).unwrap_or_default())
+        );
+        if !j.job.enabled {
+            attrs.push_str(" enabled=\"false\"");
+        }
+        if let Some(r) = &j.last_run {
+            attrs.push_str(&format!(
+                " last=\"{}\" at=\"{}\" of_version=\"{}\"",
+                r.status.as_str(),
+                crate::runner::input_view::utc_rfc3339(r.at_ms),
+                r.version
+            ));
+            if let Some(k) = &r.kind {
+                attrs.push_str(&format!(" kind=\"{}\"", escape_xml_attr(k)));
+            }
+        }
+        if j.failures > 0 {
+            attrs.push_str(&format!(" failures_in_a_row=\"{}\"", j.failures));
+        }
+        if j.running.is_some() {
+            attrs.push_str(" running=\"true\"");
+        }
+        let said = j.last_run.as_ref().map(|r| cut(&r.summary, 300)).filter(|t| !t.is_empty());
+        s.push_str(&format!(
+            "<job {attrs}>{}{}</job>\n",
+            escape_xml_text(&j.job.title),
+            said.map(|t| format!(" — {}", escape_xml_text(&t))).unwrap_or_default()
+        ));
+    }
+    s.push_str("</jobs>\n");
+    s
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_builtin(
     goal: &GoalDefinition,
@@ -563,6 +621,7 @@ fn render_builtin(
     budget: &GoalBudget,
     usage: &GoalUsage,
     gate: &GateView,
+    jobs: &[crate::goal_jobs::JobView],
     agent_root: Option<&std::path::Path>,
     extra: &str,
 ) -> String {
@@ -660,7 +719,16 @@ fn render_builtin(
         s.push_str("</current_skills>\n");
     }
     // The state the last Activations left.
-    s.push_str("<state>\n");
+    s.push_str("<state");
+    for (name, n) in [
+        ("activations_failed_in_a_row", st.activations_failed_in_a_row),
+        ("works_failed_in_a_row", st.works_failed_in_a_row),
+    ] {
+        if n > 0 {
+            s.push_str(&format!(" {name}=\"{n}\""));
+        }
+    }
+    s.push_str(">\n");
     match &st.last_activation {
         Some(l) => s.push_str(&format!(
             "<last_activation epoch=\"{}\" activation=\"{}\" outcome=\"{}\" decision=\"{}\" at=\"{}\">{}</last_activation>\n",
@@ -691,6 +759,13 @@ fn render_builtin(
             }
             s.push('>');
             s.push_str(&escape_xml_text(&q.text));
+            for o in &q.options {
+                s.push_str(&format!(
+                    "<option id=\"{}\">{}</option>",
+                    escape_xml_attr(&o.id),
+                    escape_xml_text(&o.label)
+                ));
+            }
             if let Some(a) = &q.answer {
                 s.push_str("<answer>");
                 s.push_str(&escape_xml_text(a));
@@ -748,6 +823,7 @@ fn render_builtin(
         }
         s.push_str("</recent_works>\n");
     }
+    s.push_str(&render_jobs(jobs));
     // Budget of this Activation and of the period: everything the user gives
     // this goal to work in the background, its Work included.
     let mut b = String::new();
@@ -761,12 +837,13 @@ fn render_builtin(
         b.push_str(&format!(" activation_max_wall_secs=\"{n}\""));
     }
     b.push_str(&format!(
-        " period_secs=\"{}\" period_resets_at=\"{}\" period_tokens_used=\"{}\" tokens_used_by_goal=\"{}\" tokens_used_by_works=\"{}\" period_activations_used=\"{}\" period_works_created=\"{}\"",
+        " period_secs=\"{}\" period_resets_at=\"{}\" period_tokens_used=\"{}\" tokens_used_by_goal=\"{}\" tokens_used_by_works=\"{}\" tokens_used_by_jobs=\"{}\" period_activations_used=\"{}\" period_works_created=\"{}\"",
         crate::goal::window_secs(budget),
         crate::runner::input_view::utc_rfc3339(gate.period_resets_at_ms),
         usage.total_tokens(),
         usage.tokens,
         usage.work_tokens,
+        usage.job_tokens,
         usage.activations,
         usage.works
     ));
@@ -788,7 +865,7 @@ fn render_builtin(
     s.push_str(&format!("<budget{b}/>\n"));
     s.push_str(&render_gate(gate));
     s.push_str(extra);
-    s.push_str("<result_format>End this activation with report(is_end=true, result={decision: no_action | acted | created_work | needs_info, distance?: text, pending?: [..], questions?: [..], skills?: {add?: [..], remove?: [..]}}). Not acting is a valid result; not observed is not \"no change\".</result_format>\n");
+    s.push_str("<result_format>End this activation with report(is_end=true, result={decision: no_action | acted | created_work | needs_info, distance?: text, pending?: [..], questions?: [\"text\" | {text, options?: [{id, label}], allow_text?}], skills?: {add?: [..], remove?: [..]}}). Not acting is a valid result; not observed is not \"no change\".</result_format>\n");
     s.push_str("</goal_activation>");
     s
 }
@@ -801,7 +878,7 @@ pub(super) async fn opening(
     picked: &[FetchedInput],
     template: Option<&str>,
 ) -> Result<Opening> {
-    let (st, seq, class) = {
+    let (mut st, seq, class) = {
         let s = sh.session.lock().await;
         let g = s
             .state
@@ -811,6 +888,14 @@ pub(super) async fn opening(
         (g.state.clone(), s.state.turn_seq + 1, s.config.session.class.clone())
     };
     let d = crate::goal::defaults(sh.agent_root.as_deref(), &class);
+    let context = crate::goal::context_of(goal, &d);
+    let worklog_offset = {
+        let mut s = sh.session.lock().await;
+        if let Some(g) = s.state.goal.as_mut() {
+            g.context = context;
+        }
+        s.state.worklog.committed_bytes
+    };
     let budget = crate::goal::effective_budget(goal, &d);
     let t = now(sh);
     let window = crate::goal::window_secs(&budget);
@@ -837,9 +922,17 @@ pub(super) async fn opening(
         check_errors: schedule.check_errors,
         last_check_error: schedule.last_check_error.clone(),
         no_action_in_a_row: st.consecutive_no_action,
+        context,
     };
     let mut reasons: Vec<ActivationReason> = picked.iter().map(crate::goal::reason_of).collect();
     reasons.dedup_by(|a, b| a.key == b.key);
+    // Slots that came while the scheduled one waited for the session are
+    // told with it.
+    if let Some(w) = &schedule.waiting {
+        if let Some(r) = reasons.iter_mut().find(|r| r.key == w.key) {
+            r.missed = Some(w.missed).filter(|n| *n > 1);
+        }
+    }
     let changed: Vec<String> = if st.goal_revision_seen > 0 && st.goal_revision_seen < goal.revision {
         let mut fields: Vec<String> = sh
             .agent()
@@ -863,6 +956,19 @@ pub(super) async fn opening(
     } else {
         Vec::new()
     };
+    // Skills a revision handed over join the current ones.
+    if changed.iter().any(|f| f == "initial_skills") {
+        let mut s = sh.session.lock().await;
+        if let Some(g) = s.state.goal.as_mut() {
+            let given: Vec<GoalSkill> =
+                goal.initial_skills.iter().filter(|k| !g.state.current_skills.contains(k)).cloned().collect();
+            if !given.is_empty() {
+                apply_skills(&mut g.state.current_skills, &given, &[]);
+                g.state.rev += 1;
+                st.current_skills = g.state.current_skills.clone();
+            }
+        }
+    }
     let works = works_of(sh, goal, &st).await?;
     let mut activation_budget = budget.activation.clone();
     let caps = super::consolidation::caps(sh);
@@ -885,10 +991,13 @@ pub(super) async fn opening(
         reasons: reasons.clone(),
         started_at_ms: t,
         usage_offset: usage_len(&sh.dir),
+        context,
+        worklog_offset,
         budget: activation_budget,
         absorbed: Vec::new(),
     };
-    let builtin = render_builtin(goal, &st, &open, &changed, &works, &budget, &usage, &gate, sh.agent_root.as_deref(), &extra);
+    let jobs = sh.agent().goals().jobs(&goal.goal_id).await?;
+    let builtin = render_builtin(goal, &st, &open, &changed, &works, &budget, &usage, &gate, &jobs, sh.agent_root.as_deref(), &extra);
     let text = match template {
         Some(tpl) => {
             let view = GoalView {
@@ -1111,21 +1220,29 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
     };
     let sid = s.sid().to_string();
     let period_start = crate::goal::period_start(now, window);
-    let (own_tokens, work_tokens) = crate::goal::goal_tokens_since(sh.agent(), &binding.goal_id, period_start)
+    let used = crate::goal::goal_tokens_since(sh.agent(), &binding.goal_id, period_start)
         .await
-        .unwrap_or((0, 0));
+        .unwrap_or_default();
     let g = s.state.goal.as_mut().expect("goal state");
     let st = &mut g.state;
     let mut dropped: Vec<GoalQuestion> = Vec::new();
     crate::goal::roll_usage(&mut st.usage, now, window);
-    st.usage.tokens = own_tokens;
+    st.usage.tokens = used.own;
     st.usage.activations += 1;
-    st.usage.work_tokens = work_tokens;
+    st.usage.work_tokens = used.works;
+    st.usage.job_tokens = used.jobs;
     st.consecutive_no_action = if decision == ActivationDecision::NoAction {
         st.consecutive_no_action.saturating_add(1)
     } else {
         0
     };
+    st.note_activation_end(outcome, decision, now);
+    for w in &recent {
+        st.works_failed_in_a_row = match w.outcome {
+            Some(Outcome::Succeeded) => 0,
+            _ => st.works_failed_in_a_row.saturating_add(1),
+        };
+    }
     st.holding = None;
     st.usage.works = entries
         .iter()
@@ -1143,7 +1260,7 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
         reasons: open.reasons.clone(),
         outcome,
         decision,
-        summary: cut(&summary, 600),
+        summary: summary.clone(),
     });
     st.goal_revision_seen = open.goal_revision;
     if let Some(r) = &result {
@@ -1175,10 +1292,10 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
             let before = std::mem::take(&mut st.questions);
             st.questions = q
                 .iter()
-                .map(|t| match before.iter().find(|b| &b.text == t) {
+                .map(|t| match before.iter().find(|b| b.text == t.text()) {
                     Some(b) => b.clone(),
                     None => GoalQuestion {
-                        text: t.clone(),
+                        text: t.text().to_string(),
                         at_ms: now,
                         epoch: binding.epoch,
                         activation: open.seq,
@@ -1186,6 +1303,8 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
                         status: None,
                         answer: None,
                         candidate_id: None,
+                        options: t.options().to_vec(),
+                        allow_text: t.allow_text(),
                     },
                 })
                 .collect();
@@ -1211,6 +1330,8 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
                 status: None,
                 answer: None,
                 candidate_id: None,
+                options: Vec::new(),
+                allow_text: false,
             });
         }
     }
@@ -1338,18 +1459,7 @@ async fn questions_to_user(
         match notify.state(id).await {
             Ok(v) => {
                 q.status = Some(question_status(v.status));
-                q.answer = v.result.as_ref().and_then(|r| {
-                    r.text().map(str::to_string).or_else(|| {
-                        let o = r.option()?;
-                        Some(
-                            crate::notify::prompt_options(&v.prompt)
-                                .into_iter()
-                                .find(|x| x.value == o)
-                                .map(|x| x.label)
-                                .unwrap_or_else(|| o.to_string()),
-                        )
-                    })
-                });
+                q.answer = crate::notify::answer_text(&v);
             }
             Err(e) => log::warn!("goal {goal_id}: answer {id} not readable: {e}"),
         }
@@ -1370,7 +1480,12 @@ async fn questions_to_user(
             kind: crate::notify::NotifyKind::Input,
             level: Some(crate::notify::NotifyLevel::Normal),
             category: None,
-            prompt: crate::notify::input_prompt(head, message, Vec::new(), true),
+            prompt: crate::notify::input_prompt(
+                head,
+                message,
+                q.options.iter().map(|o| crate::notify::HumanPromptOption::new(o.id.clone(), o.label.clone())).collect(),
+                q.options.is_empty() || q.allow_text,
+            ),
             source: Some(source),
             expires_at_ms: None,
             idempotency_key: question_key(goal_id, &q.text),

@@ -1,8 +1,11 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useMemo, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { useSWRConfig } from 'swr'
 import {
+  BUILTIN_SELF_IMPROVE,
   CHECK_MIN_EVERY_SECS,
+  CONTEXT_HINT,
+  CONTEXT_LABEL,
   GUARANTEE_MIN_SECS,
   DECISION_LABEL,
   DECISION_TONE,
@@ -11,8 +14,12 @@ import {
   OUTCOME_TONE,
   STATUS_LABEL,
   STATUS_TONE,
+  concernsDuty,
+  dutiesOf,
+  dutyOn,
   errorText,
   lastSkipReason,
+  usageTokens,
 } from '../goals'
 import { lang, t, type TextKey } from '../i18n'
 import { fmtDuration, fmtTime, fmtTokens, goalExtension, toText, useQuery } from '../lib'
@@ -22,20 +29,23 @@ import {
   type CheckOutcome,
   type GoalActivation,
   type GoalBudget,
+  type GoalChange,
   type GoalCheckChange,
   type GoalDefinition,
   type GoalSchedule,
   type GoalScheduleSpec,
   type GoalState,
   type GoalUsage,
-  type HoldReason,
   type MaintenanceState,
+  type SkillsState,
 } from '../model'
 import { Badge, Dot, Empty, ErrorBox, Fields, Mono, Note, PageHead, Panel, Pre, Sid, Tag, Time } from '../ui'
-import { NextOpportunity } from './Goals'
+import { JobsPanel } from './GoalJobs'
+import { NextOpportunity, SkipReason } from './Goals'
 
 const ACTIVATIONS = 200
 const CHANGES = 50
+const PERIODS = 7
 
 const list = (items?: string[]): ReactNode => (items?.length ? <ul className="list-disc pl-4 text-xs leading-5 marker:text-mute">{items.map((x) => <li key={x}>{x}</li>)}</ul> : null)
 
@@ -107,7 +117,8 @@ function GoalDialog({ spec, onClose, onDone }: { spec: DialogSpec; onClose: () =
   )
 }
 
-function Operations({ goal, schedule, onDone }: { goal: GoalDefinition; schedule?: GoalSchedule | null; onDone: () => void }) {
+/** `dutiesOff`: the self improvement Goal is off because every duty of it is. */
+function Operations({ goal, schedule, dutiesOff, onDone }: { goal: GoalDefinition; schedule?: GoalSchedule | null; dutiesOff: boolean; onDone: () => void }) {
   const [spec, setSpec] = useState<DialogSpec | null>(null)
   const [done, setDone] = useState('')
   const ext = goalExtension(goal)
@@ -134,16 +145,18 @@ function Operations({ goal, schedule, onDone }: { goal: GoalDefinition; schedule
           <span className="text-mute">
             {t('goalPolicyVersion')}: <Mono className="text-fg">{ext?.policy_version ?? 0}</Mono>
           </span>
-          <span className="inline-flex items-baseline gap-2 text-mute">
-            {t('goalConfigSwitch')}:
-            <span className="inline-flex items-baseline gap-1.5 text-fg" data-testid="goal-config-switch">
-              <Dot tone={off ? 'bad' : 'ok'} className="self-center" />
-              {t(off ? 'switchOff' : 'switchOn')}
+          {!dutiesOff && (
+            <span className="inline-flex items-baseline gap-2 text-mute">
+              {t('goalConfigSwitch')}:
+              <span className="inline-flex items-baseline gap-1.5 text-fg" data-testid="goal-config-switch">
+                <Dot tone={off ? 'bad' : 'ok'} className="self-center" />
+                {t(off ? 'switchOff' : 'switchOn')}
+              </span>
             </span>
-          </span>
+          )}
         </div>
       )}
-      {off && <p className="mb-3 text-xs leading-5 text-mute" data-testid="goal-off-hint">{t('goalSwitchedOffHint')}</p>}
+      {off && <p className="mb-3 text-xs leading-5 text-mute" data-testid="goal-off-hint">{t(dutiesOff ? 'goalSwitchedOffDuties' : 'goalSwitchedOffHint')}</p>}
       <div className="flex flex-wrap items-center gap-2">
         {live && (
           <button
@@ -376,7 +389,13 @@ function Definition({ goal }: { goal: GoalDefinition }) {
           ],
           [t('goalBehavior'), shown.behavior ? <Mono>{shown.behavior}</Mono> : null],
           [t('goalRevision'), <Mono>{shown.revision}{shown.revision !== goal.revision ? ` / ${goal.revision}` : ''}</Mono>],
-          [t('goalCreatedBy'), <Mono>{goal.created_by.principal} {t('observeVia')} {goal.created_by.via}</Mono>],
+          [
+            t('goalCreatedBy'),
+            <span data-testid="goal-created-by">
+              <Mono>{goal.created_by.principal} {t('observeVia')} {goal.created_by.via}</Mono>
+              {goal.created_by.work && <span className="text-xs text-mute"> · {t('observeWork')} <Sid sid={goal.created_by.work} /></span>}
+            </span>,
+          ],
           [
             t('goalStatusField'),
             <span className="flex flex-wrap items-center gap-1">
@@ -426,7 +445,7 @@ function GoalStatePanel({ goal, state }: { goal: GoalDefinition; state?: GoalSta
   }
   const usage = state.usage
   const period = goal.budget?.period
-  const used = (usage.tokens ?? 0) + (usage.work_tokens ?? 0)
+  const used = usageTokens(usage).total
   const remaining = (max: number | undefined, value: number) => (max != null ? ` / ${fmtTokens(max)} (${t('goalRemaining', { n: fmtTokens(Math.max(0, max - value)) })})` : '')
   return (
     <Panel title={t('goalStateTitle')} testId="goal-state" extra={<span className="font-mono tabular-nums">{t('observeRev')} {state.rev} {t('observeEpoch')} {state.epoch}</span>}>
@@ -459,7 +478,12 @@ function GoalStatePanel({ goal, state }: { goal: GoalDefinition; state?: GoalSta
                       {q.notify_id && <> · {t('goalNotification')} <Mono>{q.notify_id}</Mono></>}
                       {q.candidate_id && <> · {t('goalCandidate')} <Mono>{q.candidate_id}</Mono></>}
                     </span>
-                    {q.answer && <span className="block">{t('goalAnswer')}: {q.answer}</span>}
+                    {q.options?.length ? (
+                      <span className="block text-mute" data-testid="goal-question-options">
+                        {t('goalOptions')}: {q.options.map((o) => o.label).join(' · ')}{q.allow_text && ` · ${t('goalOptionText')}`}
+                      </span>
+                    ) : null}
+                    {q.answer && <span className="block whitespace-pre-line">{t('goalAnswer')}: {q.answer}</span>}
                   </li>
                 ))}
               </ul>
@@ -595,7 +619,8 @@ const currentPeriod = (goal: GoalDefinition, state?: GoalState | null) => {
 }
 
 const CHECK_TONE: Record<CheckOutcome, string> = { true: 'ok', false: 'finished', error: 'bad' }
-const HOLD_LABEL: Record<HoldReason, TextKey> = { min_interval: 'gateHoldInterval', period_budget: 'gateHoldPeriod', agent_budget: 'gateHoldAgent' }
+const HOLD_LABEL: Record<string, TextKey> = { min_interval: 'gateHoldInterval', period_budget: 'gateHoldPeriod', agent_budget: 'gateHoldAgent', guarantee: 'gateHoldGuarantee' }
+const heldText = (held: string) => (held === 'waiting' ? t('gateCheckHeldWaiting') : t('gateCheckHeld', { reason: held in HOLD_LABEL ? t(HOLD_LABEL[held]) : held }))
 const withDefault = (value: number | undefined, fallback: number) =>
   value != null ? fmtDuration(value) : `${fmtDuration(fallback)} (${t('gateDefault')})`
 
@@ -809,9 +834,7 @@ function Gates({ goal, state, schedule, onDone }: { goal: GoalDefinition; state?
   const check = s.check
   const limits = goal.budget?.period
   const { windowSecs, start, usage } = currentPeriod(goal, state)
-  const goalTokens = usage?.tokens ?? 0
-  const workTokens = usage?.work_tokens ?? 0
-  const used = goalTokens + workTokens
+  const tokens = usageTokens(usage)
   const limit = limits?.max_total_tokens ?? GOAL_DEFAULTS.period_max_total_tokens
   const stats = schedule && schedule.stats.period_start_ms >= start ? schedule.stats : undefined
   const holds = state && state.holds.period_start_ms >= start ? state.holds : undefined
@@ -820,6 +843,8 @@ function Gates({ goal, state, schedule, onDone }: { goal: GoalDefinition; state?
   const pkg = check?.package
   const restorable = Boolean(pkg) && check?.source !== `package:${pkg}`
   const editable = (goal.status === 'active' || goal.status === 'paused') && !schedule?.switched_off
+  const context = s.context ?? GOAL_DEFAULTS.context
+  const otherContext = context === 'fresh' ? 'carry' : 'fresh'
   const timetable = s.cron
     ? t('gateCron', { expr: s.cron, zone: s.timezone || 'UTC' })
     : s.every_secs
@@ -848,11 +873,11 @@ function Gates({ goal, state, schedule, onDone }: { goal: GoalDefinition; state?
             t('gatePeriodBudget'),
             <span className="text-xs" data-testid="gate-budget">
               {t('gateUsed', {
-                used: fmtTokens(used),
+                used: fmtTokens(tokens.total),
                 limit: limits?.max_total_tokens != null ? fmtTokens(limit) : `${fmtTokens(limit)} (${t('gateDefault')})`,
-                remaining: fmtTokens(Math.max(0, limit - used)),
+                remaining: fmtTokens(Math.max(0, limit - tokens.total)),
               })}
-              <span className="block text-mute">{t('gateUsedSplit', { goal: fmtTokens(goalTokens), works: fmtTokens(workTokens) })}</span>
+              <span className="block text-mute">{t('gateUsedSplit', { goal: fmtTokens(tokens.goal), works: fmtTokens(tokens.works), jobs: fmtTokens(tokens.jobs) })}</span>
               {limits?.max_works != null && <span className="block text-mute">{t('gateWorks', { n: usage?.works ?? 0, max: limits.max_works })}</span>}
               <span className="block text-mute">{t('gateWindow', { window: fmtDuration(windowSecs), time: fmtTime(start + windowSecs * 1000) })}</span>
             </span>,
@@ -877,7 +902,7 @@ function Gates({ goal, state, schedule, onDone }: { goal: GoalDefinition; state?
                 <span className="text-mute"> · v{last.script_version} · {last.elapsed_ms} ms</span>
                 {last.held && (
                   <span className="block text-mute" data-testid="gate-last-check-held">
-                    {t('gateCheckHeld', { reason: last.held in HOLD_LABEL ? t(HOLD_LABEL[last.held as HoldReason]) : t('gateHoldGuarantee') })}
+                    {heldText(last.held)}
                   </span>
                 )}
                 {last.notified && (
@@ -904,6 +929,13 @@ function Gates({ goal, state, schedule, onDone }: { goal: GoalDefinition; state?
               <span className="block">{t('gateCountHeld', { interval: holds?.min_interval ?? 0, budget: holds?.budget ?? 0 })}</span>
               <span className="block">{t('gateCountGuarantees', { n: stats?.guarantees ?? 0 })}</span>
               <span className="block">{t('gateCountNotified', { n: stats?.notified ?? 0 })}</span>
+            </span>,
+          ],
+          [
+            t('gateContext'),
+            <span className="text-xs" data-testid="gate-context">
+              {t(CONTEXT_LABEL[context])}{!s.context && ` (${t('gateDefault')})`}
+              <span className="block max-w-2xl text-mute">{t(CONTEXT_HINT[context])}</span>
             </span>,
           ],
           [t('gateNoAction'), <span className="text-xs" data-testid="gate-no-action">{state?.consecutive_no_action ?? 0}</span>],
@@ -942,6 +974,25 @@ function Gates({ goal, state, schedule, onDone }: { goal: GoalDefinition; state?
             }
           >
             {t('gateRestore')}
+          </button>
+        )}
+        {editable && (
+          <button
+            className="btn"
+            data-testid="gate-context-switch"
+            onClick={() =>
+              setSpec({
+                title: t('gateContextTitle', { title: goal.title }),
+                hint: t(CONTEXT_HINT[otherContext]),
+                confirmLabel: t(otherContext === 'fresh' ? 'gateContextToFresh' : 'gateContextToCarry'),
+                run: async (reason) => {
+                  await dataModel.setGoalCheck(goal.goal_id, { context: otherContext, ...(reason ? { reason } : {}) })
+                  return t('gateContextSet', { context: t(CONTEXT_LABEL[otherContext]) })
+                },
+              })
+            }
+          >
+            {t(otherContext === 'fresh' ? 'gateContextToFresh' : 'gateContextToCarry')}
           </button>
         )}
         {editable && !editing && (
@@ -1003,16 +1054,17 @@ function Cost({ goal, state, activations }: { goal: GoalDefinition; state?: Goal
       return { from, tokens }
     })
   }, [activations])
-  const { usage } = currentPeriod(goal, state)
+  const tokens = usageTokens(currentPeriod(goal, state).usage)
   const max = Math.max(1, ...days.map((d) => d.tokens))
   const week = days.reduce((sum, d) => sum + d.tokens, 0)
   return (
     <Panel title={t('costTitle')} testId="goal-cost">
       <p className="mb-4 text-xs" data-testid="cost-period">
         {t('costPeriod', {
-          total: fmtTokens((usage?.tokens ?? 0) + (usage?.work_tokens ?? 0)),
-          goal: fmtTokens(usage?.tokens ?? 0),
-          works: fmtTokens(usage?.work_tokens ?? 0),
+          total: fmtTokens(tokens.total),
+          goal: fmtTokens(tokens.goal),
+          works: fmtTokens(tokens.works),
+          jobs: fmtTokens(tokens.jobs),
         })}
       </p>
       <p className="mb-2 text-xs text-mute">{t('costByDay')}</p>
@@ -1037,33 +1089,128 @@ function Cost({ goal, state, activations }: { goal: GoalDefinition; state?: Goal
   )
 }
 
-function Maintenance({ maintenance }: { maintenance?: MaintenanceState }) {
+/** What the goal did and spent in each of its last statistics periods, newest first; those before it existed are left out. */
+function Periods({ goal, rev }: { goal: GoalDefinition; rev?: number }) {
+  // The service reads every record for this: asked again when the Goal State moves, not on every poll.
+  const stats = useQuery(['goals.stats', goal.goal_id, rev], () => dataModel.goalStats(goal.goal_id, PERIODS), false)
+  const rows = (stats.data?.periods ?? []).filter((p, i, all) => i === all.length - 1 || p.end_ms > goal.created_at_ms).reverse()
+  const labels = [t('periodActivations'), t('periodTokens'), t('periodPerActivation'), t('periodChecks'), t('periodJobs')]
+  const columns = 'sm:grid-cols-[minmax(9rem,1fr)_minmax(0,1.2fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,1fr)] sm:gap-x-4'
+  return (
+    <Panel title={t('periodsTitle')} testId="goal-periods">
+      <ErrorBox error={stats.error} />
+      {rows.length ? (
+        <>
+          <div aria-hidden className={clsx('hidden border-b border-line pb-2 text-xs text-mute sm:grid', columns)}>
+            {[t('periodStart'), ...labels].map((label) => <span key={label}>{label}</span>)}
+          </div>
+          <ul className="divide-y divide-line text-xs tabular-nums">
+            {rows.map((p, i) => {
+              const groups = [
+                [p.activations, p.decisions.no_action ?? 0],
+                [p.tokens_by_goal, p.tokens_by_works, p.tokens_by_jobs],
+                [p.tokens_per_activation],
+                [p.checks_true, p.checks_false, p.checks_error],
+                [p.job_runs_ok, p.job_runs_failed],
+              ]
+              const none = (numbers: number[]) => numbers.every((n) => !n)
+              return (
+                <li key={p.start_ms} className={clsx('py-2 leading-5 last:pb-0 sm:grid sm:items-baseline', columns)} data-testid="period-row">
+                  <span className="flex items-baseline gap-2">
+                    {new Date(p.start_ms).toLocaleString(lang, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                    {i === 0 && <Tag>{t('periodCurrent')}</Tag>}
+                    {groups.every(none) && <span className="ms-auto text-mute sm:hidden">–</span>}
+                  </span>
+                  {groups.map((numbers, k) => (
+                    // A phone leaves out what did not happen.
+                    <span key={labels[k]} className={clsx('items-baseline justify-between gap-4 sm:block', none(numbers) ? 'hidden' : 'flex')}>
+                      <span className="text-mute sm:sr-only">{labels[k]}</span>
+                      <span className={clsx('font-mono', none(numbers) && 'text-mute')}>{numbers.map((n, j) => <Fragment key={j}>{j > 0 && ' / '}<bdi>{fmtTokens(n)}</bdi></Fragment>)}</span>
+                    </span>
+                  ))}
+                </li>
+              )
+            })}
+          </ul>
+        </>
+      ) : (
+        !stats.error && <Empty>{t('loading')}</Empty>
+      )}
+    </Panel>
+  )
+}
+
+/** The duties of the self improvement goal, each with what its last activation came to. */
+function Duties({ skills, error, activations }: { skills?: SkillsState; error?: unknown; activations?: GoalActivation[] }) {
+  const newest = [...(activations ?? [])].sort((a, b) => b.epoch - a.epoch || b.seq - a.seq)
+  return (
+    <Panel title={t('goalDuties')} testId="goal-duties" extra={<a className="text-accent hover:underline" href="#/skills">{t('goalDutiesOpen')}</a>}>
+      <ErrorBox error={error} />
+      <p className="mb-3 text-xs leading-5 text-mute">{t('goalDutiesHint')}</p>
+      <ul className="divide-y divide-line">
+        {dutiesOf(skills).map((duty) => {
+          const last = newest.find((a) => concernsDuty(a.reasons, duty.id))
+          const on = dutyOn(skills, duty.id)
+          return (
+            <li key={duty.id} className="py-3 text-xs leading-5 first:pt-0 last:pb-0" data-testid={`duty-${duty.id}`}>
+              <div className="flex flex-wrap items-baseline gap-x-3">
+                <span className="font-medium">{duty.label ? t(duty.label) : duty.id}</span>
+                {skills && <Badge value={t(on ? 'switchOn' : 'switchOff')} tone={on ? 'ok' : 'finished'} />}
+              </div>
+              {duty.hint && <p className="max-w-3xl text-mute">{t(duty.hint)}</p>}
+              <div className="mt-1" data-testid="duty-last">
+                {last ? (
+                  <>
+                    <span className="flex flex-wrap items-baseline gap-x-3 text-mute">
+                      {t('dutyLast')} <Badge value={t(DECISION_LABEL[last.decision])} tone={DECISION_TONE[last.decision]} /> <Time ms={last.ended_at_ms} />
+                      <Mono>#{last.epoch}.{last.seq}</Mono>
+                    </span>
+                    <span className="block">{last.summary || last.end_reason}</span>
+                  </>
+                ) : (
+                  <span className="text-mute">{activations ? t('dutyNoConclusion') : t('loading')}</span>
+                )}
+              </div>
+            </li>
+          )
+        })}
+      </ul>
+    </Panel>
+  )
+}
+
+const JOB_CHANGE: Record<string, TextKey> = { put: 'jobChangePut', enable: 'jobChangeEnable', disable: 'jobChangeDisable', rollback: 'jobChangeRollback', delete: 'jobChangeDelete' }
+
+function ChangeDetail({ change }: { change: GoalChange }) {
+  if (change.detail == null) return null
+  const job = change.kind === 'job' ? (change.detail as { job_id?: string; what?: string; version?: number }) : null
+  const label = job?.what ? JOB_CHANGE[job.what] : undefined
+  return label ? <span className="block">{t(label, { job: job?.job_id ?? '', v: job?.version ?? '' })}</span> : <Mono className="text-mute">{errorText(change.detail)}</Mono>
+}
+
+function Maintenance({ maintenance }: { maintenance: MaintenanceState }) {
   return (
     <Panel title={t('goalMaintenance')} testId="goal-maintenance">
       <h3 className="mb-2 text-xs font-medium text-mute">{t('mntTitle')}</h3>
-      {maintenance ? (
-        <Fields
-          rows={[
-            [
-              t('goalSummary'),
-              <span className="text-xs">
-                {t('mntCounts', {
-                  consolidations: maintenance.consolidations ?? 0,
-                  operations: maintenance.operations ?? 0,
-                  dispositions: maintenance.dispositions ?? 0,
-                  abandoned: maintenance.abandoned_batches ?? 0,
-                })}
-              </span>,
-            ],
-            [t('mntLastSuccess'), maintenance.last_successful_consolidation_at_ms ? <Time ms={maintenance.last_successful_consolidation_at_ms} /> : null],
-            [t('goalLastError'), maintenance.last_error ? <span className="text-xs text-bad">{maintenance.last_error}</span> : null],
-          ]}
-        />
-      ) : (
-        <Empty />
-      )}
-      <h3 className="mb-1 mt-4 text-xs font-medium text-mute">{t('mntReceipts')} ({maintenance?.receipts?.length ?? 0})</h3>
-      {maintenance?.receipts?.length ? (
+      <Fields
+        rows={[
+          [
+            t('goalSummary'),
+            <span className="text-xs">
+              {t('mntCounts', {
+                consolidations: maintenance.consolidations ?? 0,
+                operations: maintenance.operations ?? 0,
+                dispositions: maintenance.dispositions ?? 0,
+                abandoned: maintenance.abandoned_batches ?? 0,
+              })}
+            </span>,
+          ],
+          [t('mntLastSuccess'), maintenance.last_successful_consolidation_at_ms ? <Time ms={maintenance.last_successful_consolidation_at_ms} /> : null],
+          [t('goalLastError'), maintenance.last_error ? <span className="text-xs text-bad">{maintenance.last_error}</span> : null],
+        ]}
+      />
+      <h3 className="mb-1 mt-4 text-xs font-medium text-mute">{t('mntReceipts')} ({maintenance.receipts?.length ?? 0})</h3>
+      {maintenance.receipts?.length ? (
         <table className="tbl">
           <thead>
             <tr>
@@ -1096,8 +1243,8 @@ function Maintenance({ maintenance }: { maintenance?: MaintenanceState }) {
       ) : (
         <Empty>{t('mntNoReceipts')}</Empty>
       )}
-      <h3 className="mb-1 mt-4 text-xs font-medium text-mute">{t('mntCandidates')} ({maintenance?.candidates?.length ?? 0})</h3>
-      {maintenance?.candidates?.length ? (
+      <h3 className="mb-1 mt-4 text-xs font-medium text-mute">{t('mntCandidates')} ({maintenance.candidates?.length ?? 0})</h3>
+      {maintenance.candidates?.length ? (
         <table className="tbl">
           <thead>
             <tr>
@@ -1138,6 +1285,8 @@ export default function GoalDetailPage({ goalId }: { goalId: string }) {
   const schedule = useQuery(['goals.schedule', goalId], () => dataModel.goalSchedule(goalId))
   const activations = useQuery(['goals.activations', goalId], () => dataModel.goalActivations(goalId, undefined, ACTIVATIONS))
   const changes = useQuery(['goals.changes', goalId], () => dataModel.goalChanges(goalId, CHANGES))
+  const selfImprove = Boolean(goal.data && goalExtension(goal.data)?.builtin === BUILTIN_SELF_IMPROVE)
+  const skills = useQuery(selfImprove ? ['skills.state'] : null, () => dataModel.skillsState())
   const back = { href: '#/', label: t('goals') }
   if (!goal.data) {
     return (
@@ -1152,6 +1301,9 @@ export default function GoalDetailPage({ goalId }: { goalId: string }) {
   const off = Boolean(schedule.data?.switched_off)
   const skip = schedule.data && !off ? lastSkipReason(schedule.data) : undefined
   const last = state.data?.last_activation
+  const dutiesOff = off && selfImprove && Boolean(skills.data) && dutiesOf(skills.data).every((d) => !dutyOn(skills.data, d.id))
+  const failedActivations = state.data?.activations_failed_in_a_row ?? 0
+  const failedWorks = state.data?.works_failed_in_a_row ?? 0
   const refresh = () => void mutate(() => true)
   return (
     <>
@@ -1171,8 +1323,14 @@ export default function GoalDetailPage({ goalId }: { goalId: string }) {
             )}
             {skip && (
               <span>
-                {t('goalLastSkip')}: <Mono>{skip}</Mono>
+                {t('goalLastSkip')}: <SkipReason reason={skip} />
               </span>
+            )}
+            {failedActivations > 0 && (
+              <span className="inline-flex items-baseline gap-2 text-bad" data-testid="goal-failing-activations"><Dot tone="bad" className="self-center" />{t('goalFailingActivations', { n: failedActivations })}</span>
+            )}
+            {failedWorks > 0 && (
+              <span className="inline-flex items-baseline gap-2 text-bad" data-testid="goal-failing-works"><Dot tone="bad" className="self-center" />{t('goalFailingWorks', { n: failedWorks })}</span>
             )}
             {schedule.data?.last_error && <span className="inline-flex items-baseline gap-2 text-bad"><Dot tone="bad" className="self-center" />{t('goalLastError')}: {schedule.data.last_error}</span>}
           </div>
@@ -1190,7 +1348,8 @@ export default function GoalDetailPage({ goalId }: { goalId: string }) {
         {builtin && <Badge value={`${t('goalBuiltin')}: ${builtin}`} />}
       </PageHead>
       <ErrorBox error={goal.error ?? state.error ?? schedule.error} />
-      <Operations goal={def} schedule={schedule.data} onDone={refresh} />
+      <Operations goal={def} schedule={schedule.data} dutiesOff={dutiesOff} onDone={refresh} />
+      {selfImprove && <Duties skills={skills.data} error={skills.error} activations={activations.data} />}
       <div className="grid grid-cols-1 gap-x-4 lg:grid-cols-2">
         <Definition goal={def} />
         <GoalStatePanel goal={def} state={state.data} />
@@ -1199,7 +1358,9 @@ export default function GoalDetailPage({ goalId }: { goalId: string }) {
         <Gates goal={def} state={state.data} schedule={schedule.data} onDone={refresh} />
         <Cost goal={def} state={state.data} activations={activations.data} />
       </div>
-      {builtin === 'memory_maintenance' && <Maintenance maintenance={state.data?.maintenance} />}
+      <Periods goal={def} rev={state.data?.rev} />
+      <JobsPanel goal={def} off={off} onDone={refresh} />
+      {state.data?.maintenance && <Maintenance maintenance={state.data.maintenance} />}
       <Activations goal={def} activations={activations.data} error={activations.error} />
       <Panel title={t('goalChanges')} count={changes.data?.length ?? 0} testId="goal-changes">
         <ErrorBox error={changes.error} />
@@ -1215,7 +1376,7 @@ export default function GoalDetailPage({ goalId }: { goalId: string }) {
                     {c.revision != null && <span className="text-mute"> {t('observeRevMeta')} {c.revision}</span>}
                     {c.epoch != null && <span className="text-mute"> {t('observeEpoch')} {c.epoch}</span>}
                     {c.reason && <span className="block">{c.reason}</span>}
-                    {c.detail != null && <Mono className="text-mute">{errorText(c.detail)}</Mono>}
+                    <ChangeDetail change={c} />
                   </td>
                   <td className="w-px"><Time ms={c.at_ms} /></td>
                 </tr>

@@ -1,4 +1,4 @@
-//! The host side of the Memory consolidation of the `memory_maintenance`
+//! The host side of the Memory consolidation of the `self_improve`
 //! Goal (Jarvis default Goal TODO §4, §4.1), and the perception entry of
 //! every session (Memory §4.2).
 //!

@@ -11,7 +11,7 @@ import type { OutgoingPayload } from './model/outgoing'
 import type { ConversationSource } from './source'
 import './conversation.css'
 
-export interface SessionConversationProps extends Omit<ConversationSurfaceProps, 'source' | 'historyReader' | 'composer' | 'banner' | 'leadingPane' | 'panelDetails'> {
+export interface SessionConversationProps extends Omit<ConversationSurfaceProps, 'source' | 'historyReader' | 'composer' | 'banner' | 'leadingPane' | 'panelIcon' | 'panelDetails'> {
   /** A session of the signed-in viewer's own messages. */
   sessionId: string
   testId?: string
@@ -32,7 +32,8 @@ function withOutgoing(source: ConversationSource, outgoing: (payload: OutgoingPa
   return next
 }
 
-function Status({ testId, text, loading, action }: { testId: string; text: string; loading?: boolean; action?: { label: string; onClick: () => void } }) {
+/** What stands in the place of a conversation that is not there. */
+export function ConversationStatus({ testId, text, loading, action }: { testId: string; text: string; loading?: boolean; action?: { label: string; onClick: () => void } }) {
   return (
     <div className="mh-session-conversation-status" role={loading ? 'status' : 'alert'} data-testid={testId}>
       {loading ? <LoadingOrb size={32} /> : null}
@@ -45,18 +46,29 @@ function Status({ testId, text, loading, action }: { testId: string; text: strin
 function Bound({ sessionId, testId = 'session-conversation', outgoing, ...surface }: SessionConversationProps) {
   const { t } = useI18n()
   const backend = useConversationBackend()
-  if (!backend) return <Status testId="session-conversation-loading" loading text={t('messagehub.loadingHistory')} />
+  if (!backend) return <ConversationStatus testId="session-conversation-loading" loading text={t('messagehub.loadingHistory')} />
   return (
     <backend.SessionSource sessionId={sessionId}>
       {state => state.status === 'ready' ? (
         <div className="mh-session-conversation" data-testid={testId} data-session={sessionId}>
           <ConversationSurface {...surface} source={outgoing ? withOutgoing(state.source, outgoing) : state.source} />
         </div>
-      ) : state.status === 'loading' ? <Status testId="session-conversation-loading" loading text={t('messagehub.loadingHistory')} />
-        : state.status === 'missing' ? <Status testId="session-conversation-missing" text={t('messagehub.noSessions')} />
-        : <Status testId="session-conversation-error" text={t('messagehub.historyFailed')} action={{ label: t('messagehub.retry'), onClick: state.retry }} />}
+      ) : state.status === 'loading' ? <ConversationStatus testId="session-conversation-loading" loading text={t('messagehub.loadingHistory')} />
+        : state.status === 'missing' ? <ConversationStatus testId="session-conversation-missing" text={t('messagehub.noSessions')} />
+        : <ConversationStatus testId="session-conversation-error" text={t('messagehub.historyFailed')} action={{ label: t('messagehub.retry'), onClick: state.retry }} />}
     </backend.SessionSource>
   )
+}
+
+/** The dialog and media hosts a conversation works with, unless the page already has them. */
+export function ConversationHosts({ children }: { children: ReactNode }) {
+  const dialogs = useOptionalWindowDialog()
+  const media = useMessageMediaHost()
+  const isDesktop = useMediaQuery('(min-width: 769px)')
+  let content: ReactNode = children
+  if (!media) content = <MessageMediaHost>{content}</MessageMediaHost>
+  if (!dialogs) content = <WindowDialogProvider surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}>{content}</WindowDialogProvider>
+  return content
 }
 
 /**
@@ -64,11 +76,5 @@ function Bound({ sessionId, testId = 'session-conversation', outgoing, ...surfac
  * conversation (§2.2). It brings its dialog and media hosts along unless the page already has them.
  */
 export function SessionConversation(props: SessionConversationProps) {
-  const dialogs = useOptionalWindowDialog()
-  const media = useMessageMediaHost()
-  const isDesktop = useMediaQuery('(min-width: 769px)')
-  let content: ReactNode = <Bound {...props} />
-  if (!media) content = <MessageMediaHost>{content}</MessageMediaHost>
-  if (!dialogs) content = <WindowDialogProvider surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}>{content}</WindowDialogProvider>
-  return content
+  return <ConversationHosts><Bound {...props} /></ConversationHosts>
 }

@@ -4,7 +4,7 @@
   "description": "`extensions.opendan` of a Goal: trusted configuration written by the host's seeding path only (a UI, Goal or Work caller may not set it).",
   "properties": {
     "builtin": {
-      "description": "Stable identity of a built-in Goal (`memory_maintenance`).",
+      "description": "Stable identity of a built-in Goal (`self_improve`).",
       "type": [
         "string",
         "null"

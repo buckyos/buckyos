@@ -1,5 +1,5 @@
 import type { TextKey } from './i18n'
-import type { ActivationDecision, ActivationOutcome, GoalLifecycle, GoalSchedule, GoalState, GoalStatus } from './model'
+import type { ActivationDecision, ActivationOutcome, GoalContext, GoalLifecycle, GoalSchedule, GoalState, GoalStatus, GoalUsage, SkillsState } from './model'
 
 export const STATUS_LABEL: Record<GoalStatus, TextKey> = { active: 'gsActive', paused: 'gsPaused', achieved: 'gsAchieved', archived: 'gsArchived' }
 export const STATUS_TEXT: Record<GoalStatus, string> = { active: 'text-ok', paused: 'text-warn', achieved: 'text-accent', archived: 'text-mute' }
@@ -27,6 +27,9 @@ export const OUTCOME_TONE: Record<ActivationOutcome, string> = {
   needs_input: 'waiting',
 }
 
+export const CONTEXT_LABEL: Record<GoalContext, TextKey> = { fresh: 'gateContextFresh', carry: 'gateContextCarry' }
+export const CONTEXT_HINT: Record<GoalContext, TextKey> = { fresh: 'gateContextFreshHint', carry: 'gateContextCarryHint' }
+
 export const lastSkipReason = (schedule: GoalSchedule): string | undefined => schedule.skipped?.at(-1)?.reason
 
 /** Defaults of `agent.toml [session.goal]` in the agent package (the page cannot read the agent's own). */
@@ -36,7 +39,45 @@ export const GOAL_DEFAULTS = {
   check_every_secs: 300,
   window_secs: 86_400,
   period_max_total_tokens: 2_000_000,
+  context: 'fresh' as GoalContext,
 }
+
+/** Tokens of a statistics period: the Goal Sessions, their Work and the jobs. */
+export const usageTokens = (usage?: GoalUsage) => {
+  const goal = usage?.tokens ?? 0
+  const works = usage?.work_tokens ?? 0
+  const jobs = usage?.job_tokens ?? 0
+  return { goal, works, jobs, total: goal + works + jobs }
+}
+
+export const BUILTIN_SELF_IMPROVE = 'self_improve'
+/** Its period budget as the host seeds it. */
+export const SELF_IMPROVE_DAILY_TOKENS = 1_800_000
+
+export interface Duty {
+  id: string
+  label?: TextKey
+  hint?: TextKey
+}
+
+const DUTIES: Duty[] = [
+  { id: 'memory', label: 'dutyMemory', hint: 'dutyMemoryHint' },
+  { id: 'manuals', label: 'dutyManuals', hint: 'dutyManualsHint' },
+  { id: 'tools', label: 'dutyTools', hint: 'dutyToolsHint' },
+]
+
+/** The duties of the self improvement Goal: the known ones and any other the owner's switches name. */
+export const dutiesOf = (state?: SkillsState): Duty[] => [
+  ...DUTIES,
+  ...Object.keys(state?.self_improve ?? {}).filter((id) => !DUTIES.some((d) => d.id === id)).map((id) => ({ id })),
+]
+
+/** A duty without a switch is on. */
+export const dutyOn = (state: SkillsState | undefined, id: string): boolean => state?.self_improve?.[id] !== false
+
+/** The check names the duties an Activation is for in its reason (`tools: …`). */
+export const concernsDuty = (reasons: { note?: string }[] | undefined, id: string): boolean =>
+  (reasons ?? []).some((r) => r.note?.includes(`${id}:`))
 
 export const CHECK_MIN_EVERY_SECS = 60
 /** Shortest hard guarantee (it overrides the budget); 0 turns it off. */

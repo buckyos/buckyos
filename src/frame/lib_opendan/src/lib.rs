@@ -28,6 +28,8 @@ pub mod fault;
 pub mod fsutil;
 pub mod goal;
 pub mod goal_check;
+pub mod goal_jobs;
+pub mod goal_stats;
 pub mod group_trigger;
 pub mod goal_time;
 pub mod host;

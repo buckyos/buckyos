@@ -54,7 +54,7 @@ export function useWorklog(target: WorklogTarget) {
         publish(false, true, false)
       } finally {
         busy = false
-        if (!disposed && (!page?.complete || page.next_after < page.committed)) timer = setTimeout(() => { void read() }, 2500)
+        if (!disposed && document.visibilityState === 'visible' && (!page?.complete || page.next_after < page.committed)) timer = setTimeout(() => { void read() }, 2500)
       }
     }
     commands.current = { older: () => { void read(true) }, retry: () => { void read() } }

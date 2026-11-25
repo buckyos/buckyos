@@ -108,7 +108,7 @@ agent_tool llm_understand_media --media <json | locator> [--goal <text>] [option
 
 - agent 只表达目标媒体和 goal。底层的 fork、预算、内置提示词、转换管线，**全部对 agent 不可见**。
 - `LlmUnderstandMediaTool`（`AgentTool` 实现）的 `spec()` 要求 `media`、`goal`、`max_completion_tokens`；它目前没有被任何 runtime 注册，只从 crate 导出。
-- 工具名以 `llm_` 前缀标识其"本质是一个 LLM 旁路"的语义，与同目录下 `llm_compress` / `llm_explore` / `llm_bash` / `llm_tool_carft` 一致。
+- 工具名以 `llm_` 前缀标识其"本质是一个 LLM 旁路"的语义，与同目录下 `llm_compress` / `llm_explore` / `llm_bash` 一致。
 
 ### 2.2 `media` 实参的来源约束
 

@@ -101,7 +101,7 @@ test('post sends a message after confirmation', async ({ page }) => {
 
 test('agent state page shows perception, artifacts, behaviors, identity and hints', async ({ page }) => {
   const errors = await open(page, 'agent')
-  await expect(page.getByTestId('agent-perception')).toContainText('memory maintenance goal')
+  await expect(page.getByTestId('agent-perception')).toContainText('self improvement goal')
 
   const artifacts = page.getByTestId('agent-artifacts')
   await artifacts.getByRole('button', { name: 'Versions' }).first().click()

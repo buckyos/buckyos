@@ -92,6 +92,58 @@
       ],
       "type": "object"
     },
+    "QuestionFull": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_text": {
+          "default": false,
+          "description": "Free text besides the choices (without choices it is always taken).",
+          "type": "boolean"
+        },
+        "options": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/QuestionOption"
+          },
+          "type": "array"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "QuestionInput": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/definitions/QuestionFull"
+        }
+      ],
+      "description": "A question of a Goal result: a sentence answered in free text, or one with choices."
+    },
+    "QuestionOption": {
+      "additionalProperties": false,
+      "description": "A choice of a [`GoalQuestion`].",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
     "SkillsChange": {
       "additionalProperties": false,
       "properties": {
@@ -146,10 +198,9 @@
       ]
     },
     "questions": {
-      "default": null,
       "description": "Questions for the user (replace the open ones; each reaches the user as a notification).",
       "items": {
-        "type": "string"
+        "$ref": "#/definitions/QuestionInput"
       },
       "type": [
         "array",

@@ -10,11 +10,11 @@
 //!
 //! - `every_fixture_reaches_the_model_with_what_comparison_needs` (no
 //!   model): a fixture seeds an isolated AgentRoot, and the batch the
-//!   maintenance Goal reads shows every material with its source and every
+//!   Goal reads shows every material with its source and every
 //!   known cognition with its range, basis and sources.
 //! - `replay_with_the_real_model` (ignored): the Jarvis package's
-//!   `memory_maintenance` behavior consolidates each fixture through the
-//!   local Zone's AICC, the mechanical checks of the fixture run, and the
+//!   self improvement Goal (goal skill `self_improve_memory`) consolidates
+//!   each fixture through the local Zone's AICC, the mechanical checks of the fixture run, and the
 //!   resulting list is written next to the expectation for review:
 //!
 //! ```text
@@ -239,7 +239,7 @@ impl Hosted {
             .await
             .unwrap()
             .into_iter()
-            .find(|g| g.is_builtin(BUILTIN_MEMORY_MAINTENANCE))
+            .find(|g| g.is_builtin(BUILTIN_SELF_IMPROVE))
     }
 
     /// Tick until the built-in Goal finished `n` Activations.
@@ -281,12 +281,12 @@ async fn every_fixture_reaches_the_model_with_what_comparison_needs() {
     for fx in all {
         let id = fx["id"].as_str().unwrap().to_string();
         let env = Env::new();
-        std::fs::write(env.agent_root.join("agent.toml"), "[session.goal.maintenance]\nenabled = true\nbehavior = \"\"\n").unwrap();
+        std::fs::write(env.agent_root.join("agent.toml"), "[session.goal.self_improve]\nenabled = true\n").unwrap();
         // The package's check script decides when the built-in Goal infers.
         std::fs::create_dir_all(env.agent_root.join("goal_checks")).unwrap();
         std::fs::copy(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/jarvis_agent/agent/goal_checks/memory_maintenance.ts"),
-            env.agent_root.join("goal_checks/memory_maintenance.ts"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/jarvis_agent/agent/goal_checks/self_improve.ts"),
+            env.agent_root.join("goal_checks/self_improve.ts"),
         )
         .unwrap();
         let refs = seed(&env, &fx);
@@ -389,6 +389,15 @@ fn judge(fx: &Value, refs: &BTreeMap<String, String>, env: &Env, activation: &Go
         for line in std::fs::read_to_string(meta.join("worklog.jsonl")).unwrap_or_default().lines() {
             let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
             let text = v.to_string();
+            for c in v["tool_calls"].as_array().into_iter().flatten() {
+                let args = c["args"].to_string();
+                out.push_str(&format!("- call {} ({} chars): {}\n", c["tool"].as_str().unwrap_or("?"), args.len(), args.chars().take(160).collect::<String>()));
+            }
+            if v["t"] == "action_result" {
+                let r = v["result"].as_str().map(str::to_string).unwrap_or_else(|| v["result"].to_string());
+                let tail: String = r.chars().rev().take(120).collect::<Vec<_>>().into_iter().rev().collect();
+                out.push_str(&format!("- result {} chars, ends: {tail:?}\n", r.chars().count()));
+            }
             if text.contains("\"status\":\"error\"") {
                 let result = v.pointer("/body/result").or_else(|| v.pointer("/result")).map(|r| r.to_string()).unwrap_or(text);
                 out.push_str(&format!("- refused: {}\n", result.chars().take(400).collect::<String>()));
@@ -559,7 +568,10 @@ async fn replay_with_the_real_model() {
             None => Env::new(),
         };
         install_jarvis(&env);
-        assert!(Path::new(PACKAGE).join("behaviors/memory_maintenance.toml").exists());
+        for dir in ["goal_checks", "goal_skills"] {
+            common::plan::copy_dir(&Path::new(PACKAGE).join(dir), &env.agent_root.join(dir));
+        }
+        assert!(env.agent_root.join("goal_skills/self_improve_memory/SKILL.md").exists());
         let refs = seed(&env, &fx);
         let h = hosted(
             &env,

@@ -129,10 +129,10 @@ fn reference(params: &Value) -> Result<String, OpenDanError> {
     text(params, "reference")?.ok_or_else(|| OpenDanError::InvalidArgument("param `reference` is required".into()))
 }
 
-/// The consolidation Goal and when it last settled something. A Goal's id
+/// The Goal that consolidates Memory and when it last settled something. A Goal's id
 /// is not fixed: it is found by its builtin mark.
 async fn last_consolidation(agent: &dyn AgentStateClient) -> Result<(Option<String>, Option<u64>), OpenDanError> {
-    let Some(goal) = agent.goals().list().await?.into_iter().find(|g| g.is_builtin(BUILTIN_MEMORY_MAINTENANCE)) else {
+    let Some(goal) = agent.goals().list().await?.into_iter().find(|g| g.is_builtin(BUILTIN_SELF_IMPROVE)) else {
         return Ok((None, None));
     };
     let at = agent

@@ -565,17 +565,17 @@ Goal 的结果交付都是命令，不是 Goal 结果里的字段。有哪些交
 
 需要用户决定的事不算交付，它写在 Goal 结果的问题列表里（§15.7.2 第 5 条）。
 
-交付往往是重复的：同一类结果要一次次交到用户手里。所以 **Goal 的早期运行应该为后面的重复交付准备好必要的工具**：检查脚本（§12.1.1）、交付用的 app 或页面、常用的脚本。前几次 Activation 花预算把它们建起来，之后的 Activation 只是使用，每次都便宜，结果也稳定。这是 Goal Skill 要教的范式（§10.2）。
+交付往往是重复的：同一类结果要一次次交到用户手里。所以 **Goal 的早期运行应该为后面的重复交付准备好必要的工具**：检查脚本（§12.1.1）、作业（§7.10）、交付用的 app 或页面、常用的脚本。前几次 Activation 花预算把它们建起来，之后的 Activation 只是使用，每次都便宜，结果也稳定。这是 Goal Skill 要教的范式（§10.2）。
 
 ### 7.10 同一个 Workspace：Work 开发，Goal 运维（2026-11-24）
 
-2026-11-24 owner 裁决的通用规则，尚未实施。提出它的场景是 [Agent 浏览器二期](<../../product/BuckyOS Agent浏览器 二期需求.md>)的个人重排站：首次建站是普通的 Work Session，之后由 Goal Session 定期同步数据、分析用户的浏览行为，Work 可以改写 Goal 的维护目标。owner 原话：
+2026-11-24 owner 裁决的通用规则，同日实施（[Goal Session 改进 TODO](../../notepads/opendan-goal-session-improve-todo.md)）。提出它的场景是 [Agent 浏览器二期](<../../product/BuckyOS Agent浏览器 二期需求.md>)的个人重排站：首次建站是普通的 Work Session，之后由 Goal Session 定期同步数据、分析用户的浏览行为，Work 可以改写 Goal 的维护目标。owner 原话：
 
 > 通用规则。相当于传统的worksession基于workspace 维护一个项目，但需要用户说需求改了才会触发推理。而goal session的视角里，这个worksapce是活的（不是代码目录），需要定时完成运维任务。大问题请求用户开worksession做版本升级
 
 | 维度 | Work Session | Goal Session |
 |---|---|---|
-| 怎么看 Workspace | 一个项目：源码、资料、要交付的版本 | 活的：一个正在运行的系统，有已安装的脚本、产生的数据和运行记录 |
+| 怎么看 Workspace | 一个项目：源码、资料、要交付的版本 | 活的：一个正在运行的系统，有已安装的检查脚本和作业、产生的数据和运行记录 |
 | 什么时候推理 | 用户提出或改变需求 | 定时的运维任务里出现需要判断的事（§12.1.1） |
 | 做什么 | 建立、版本升级 | 运维；周期性的工作倾向用脚本完成 |
 | 结果 | 可运行的版本，以及 Goal 的维护目标 | 系统保持在维护目标规定的状态 |
@@ -583,16 +583,27 @@ Goal 的结果交付都是命令，不是 Goal 结果里的字段。有哪些交
 
 - **Work 可以改写 Goal 的维护目标。** 这与 §7.6 的方向相反，两者并存：运维中有界的步骤仍可由 Goal 派 Work。
 
-以下几条是整理者的建议，owner 没有单独裁决：
+其余几条随 Goal Session 改进 TODO 定案：
 
-- **同一个 Goal 一直接着用。** 首次建立的 Work 完成时交出负责运维的 Goal，以后的升级 Work 改写它，不另建。
-- **与 §7.9 的关系。** “早期运行准备工具”在这个结构里前移：用户能事先验收的部分由建立它的 Work 准备好，Goal 从第一天就使用它们。只有运行起来才知道需要什么的，仍由 Goal 在早期运行中准备。
-- **改写的依据是用户的要求。** 能改写的是用户发起的 Work（和用户所在的 UI），授权写在任务书里并指明 Goal。Goal 派的 Work 不能改写，否则不能改自己定义的 Goal（§7.7、§15.7.2 第 4 条）可以借 Work 绕过去。这项授权不能复用 `origin.goal`，它表示 Work 归属于 Goal，会计入 Goal 预算、随预算和休眠暂停、随归档停止。
-- **运维与升级的分界。** 把系统恢复到维护目标规定的状态，且用户看到的东西和系统的权限、成本都不变，是运维。其余是升级。
-- **源与运行版本分开。** Workspace 是源，定时运行的是安装出去的版本，安装就是发布。升级期间运行版本不变，核对通过后再切换。Work 持有 Workspace 的写入权时，已安装的脚本不受影响。
-- **请求升级要落到用户发起的 Work。** Goal 给出问题、影响、建议和任务书草稿，用户确认后由 UI 建 Work。不能由 Goal 在得到回答后自己建，那样的 Work 归 Goal。
+- **Goal 有两条来路，由意图分析按请求判断，不固定。** 不需要先做出什么的（盯着、到点判断、提醒）直接建 Goal。要先做出东西的建一个普通的 Work，任务书写明最后一步是建立或改写 Goal；没有专门的“建 Goal 的 Work”。收尾的做法在 work skill `goal_handover`。
+- **同一个 Goal 一直接着用。** 首次建立的 Work 完成时交出负责运维的 Goal，以后的升级 Work 改写它，不另建。能并入已有 Goal 的就并入。
+- **与 §7.9 的关系。** “早期运行准备工具”在这个结构里前移：用户能事先验收的部分由建立它的 Work 准备好，Goal 从第一天就使用它们（它带着检查脚本建立，第一次运行是一次检查，不推理）。只有运行起来才知道需要什么的，仍由 Goal 在早期运行中准备。
+- **改写的依据是用户的要求。** 能建立和改写 Goal 的是用户所在的 UI，以及由 UI 会话直接创建、不属于某个 Goal 的 Work，权限等同它的父 UI。Plan 的 Todo 和 Goal 派的 Work 不行，否则不能改自己定义的 Goal（§7.7、§15.7.2 第 4 条）可以借 Work 绕过去。对端是 owner 的 UI 会话可以改写这个 Agent 的任何非内置 Goal，群会话只能改自己建的。没有加结构化授权字段；会话身份是自报的，这套规则只防误用。
+- **运维与升级的分界。** 用户看到的东西、系统的权限和成本都不变，是运维。其余是升级。
+- **源与运行版本分开。** Workspace 是源，定时运行的是安装出去的版本（检查脚本、作业都是复制一份），安装就是发布。Goal 修小故障也先改源再安装。动手前先看有没有用户的 Work 正在用这个 Workspace（`agent-session sessions` 显示每个会话的 Workspace），有就不动。
+- **小改动不开 Work。** “以后别提醒周末”这类由用户所在的 UI 会话直接 `goal revise`。
+- **请求升级走通知和对话，不加机制。** Goal 把问题、影响、建议、任务书草稿写成工作区里的 `upgrades/<日期>-<短名>.md`，发一条带 `--key` 的通知；主人在对话里答应后，由意图分析据此建 Work。不能由 Goal 在得到回答后自己建，那样的 Work 归 Goal。同一件事只通知一次。
 
-待定：§8.3 的软件维护 Goal 在具体变更确认后自己派 Work 修改代码，要不要同样改为由用户发起。
+**作业（Goal job）。** 周期性的工作倾向用脚本完成，检查脚本只能观察，不能做事，所以 Goal 另有作业：属于一个 Goal、由宿主按时间表在 Agent 的私有 runtime 里以 Agent 的身份运行、不推理的程序。
+
+- 安装就是复制：`agent-session goal job put <job_id> --dir <目录> --command "<命令>" --every <秒 ≥ 300>`（或 `--cron`）。每次安装是一个新版本，立即跑一次，之后按时间表；保留最近 5 个版本，可以回退；作业自己的 `data/` 是运行时的工作目录，升级不动它。
+- 一个作业同时只有一次运行，每个 Agent 最多两个作业同时跑，错过的槽合并成一次，单次最长 600 秒（借给它的会话令牌只保证这么久）。退出码 0 是成功，stdout 最后一行可以是 `{summary, kind, metrics}`；`kind = transient` 隔 30、120 秒重试。
+- Goal 休眠、被关掉或结束时，正在跑的作业被结束（连同它启动的进程），醒来后补跑；宿主死掉时留下的运行由下一个宿主记成 `killed` 并补跑。
+- 作业不通知、不推理。它的运行记录给检查脚本（`ctx.jobs`）和 Goal 头（`<jobs>`），由它们决定要不要叫醒 Goal 或告诉用户。
+- 作业里的模型步骤（`xllm`）计入 Goal 的周期预算和 Agent 总量；用完时作业照跑，模型调用被拒绝。
+- 没有沙箱：程序是 Agent 写的，以 Agent 的身份运行，和它平时写代码的边界相同。
+
+建立作业不另设流程：由 Work 按任务书在收尾时和 Goal 一起装上，或由 Goal 自己装。契约见 [Agent State Protocol](<protocol/Agent State Protocol.md>) §9.9。
 
 ## 8. 典型业务场景
 
@@ -650,6 +661,8 @@ Work A 的完成条件可以是“实现约定变更、通过指定测试并提�
 
 PR 的评审、合并与最终验收可以由维护 Goal 继续管理；有需要时，也可以定义专门的 PR 推进 Goal。但不是每一个 Issue 或 PR 都必须机械地生成一个新 Goal，应由责任范围和上下文规模决定粒度。
 
+维护 Goal 自己派 Work 改代码要在维护目标里写明“允许自己派 Work 修改代码”才可以，默认不写；没写时，改代码是升级，按 §7.10 请求用户开 Work（2026-11-24）。
+
 ### 8.4 从单个问题扩展到持续职责
 
 “修复这个 Bug”可以是较小的 Goal；“维护这个软件项目”可以是更大的持续维护 Goal。关键不是名称大小，而是后者要有足够明确的范围、分类方法、优先级规则、完成/健康状态判断以及资源限制。
@@ -666,7 +679,15 @@ Goal 不一定来自用户临时交代，也可以是 Agent 被配置的长期�
 
 这些是不同业务目标，不需要各自增加一个一级 Session 类型。
 
-当前只有 Memory 整理 Goal（§9.2）和操作经验结晶 Goal（§9.3，缺省关闭）作为内置 Goal 实现，由宿主按确定性的 key 播种；XLLM 结晶与 Self Correct 尚未实现。各项现状见 §15.7。
+“迁移为不同 Goal”说的是各有自己的目标和评估方法，不是各占一个 Goal。2026-11-24 起内置 Goal 只有一个 `self_improve`（先能完成任务，再降本增效），它用标准的 `goal` behavior，每项职责是一份 goal skill，只在唤醒的原因指向它时才读：
+
+| 职责 | goal skill | 产出 |
+|---|---|---|
+| 整理 Memory（§9.2） | `self_improve_memory` | 认知变更；发现的日程、待办、长期职责变成给主人的带选项的问题 |
+| 结晶手册（§9.3） | `self_improve_manuals` | 修订自己的手册；其余写草稿并通知 |
+| 做工具（§9.5） | `self_improve_tools` | `<agent_root>/tools/` 下的命令和它的手册（来源 `local`） |
+
+一份检查脚本（`goal_checks/self_improve.ts`，每 30 分钟）按职责给出唤醒原因；owner 可以在 Skills 页逐项关掉职责，全部关掉时这个 Goal 不建 Session、不跑检查。XLLM 结晶（§9.4）尚未实现。各项现状见 §15.7。
 
 ### 9.2 Memory 整理 Goal：感知转为认知
 
@@ -725,7 +746,8 @@ Work 创建时，依据任务方向选择适用的 Manuals 和 CLI。没有已�
 - 安装、删除、禁用 skill 只有 owner 能做。结晶 Goal 只能直接改写 Agent 自己的手册（来源 `local` / `imported`），旧文本留在该手册的 `revisions/`。
 - 随包安装的手册、新手册，以及涉及 `scope` / `commands` 等声明的改动，一律写成草稿（`skills_drafts/`）并通知 owner，由 owner 确认后安装。
 - “清理”只是向 owner 建议禁用，不自动停用、归档或删除。
-- 输入信号不来自 Work 在 Final Report 里留下的经验候选，而是宿主记录的手册使用情况（哪些 Work 带了哪份手册、哪些 Work 没有手册）。结晶 Goal 据此读这些 Work Session 的 worklog 与 report，判断依据是至少两个 Session 显示的同一问题，或手册里一处能直接验证的错误（例如命令不存在）。
+- 2026-11-24 放宽一处：做出一个工具时，self improve 可以用 `agent-session skill add` 新建一份来源为 `local`、`scope: work` 的手册（校验同安装），不用主人确认，做完通知一次；面向对话的手册（scope 含 `ui`）和其余新手册仍是草稿。
+- 输入信号不来自 Work 在 Final Report 里留下的经验候选，而是宿主记录的手册使用情况（哪些 Work 带了哪份手册、哪些 Work 没有手册）。结晶职责据此读这些 Work Session 的 worklog 与 report，判断依据是至少两个 Session 显示的同一问题，或手册里一处能直接验证的错误（例如命令不存在）。
 
 ### 9.4 XLLM 结晶 Goal
 
@@ -780,6 +802,8 @@ Self Correct Goal 从全局视角对这些记录进行去重、归并、价值�
 按本次讨论，Agent Infra 提供编码工具链，以 TypeScript 为默认实现方向，也可使用配置中的 GCC、Rust 等环境。本文不规定所有节点必须安装完全相同的工具链，实际能力仍需在执行节点确认。
 
 轻量补齐可以由 Goal 当轮处理；复杂工具开发应形成明确 Task，交给 Work 实现和验证，再由 Goal 判断是否纳入可用能力。
+
+2026-11-24 起这是内置 Goal `self_improve` 的一项职责（goal skill `self_improve_tools`）。信号从 Work 的 worklog 里读（命令不存在），同一个命令被两个以上的 Work 缺才算缺口；先后顺序在最前面加了两步：已有的能力写进手册就够，以及做一个快捷方式（把已有的命令和接口包成一个短的、带约定参数的入口）。旧的现场打造脚手架（`agent_tool` 的 `llm_tool_carft` 和 `__command_not_found__` 入口）已删除。
 
 #### 9.5.3 与用户意图分析的关系
 
@@ -883,7 +907,7 @@ Goal 的目标级摘要用于本目标的恢复，不自动成为共享认知。
 
 **Goal Session** 的 Context 服务于同一目标的多次努力，要保留此前的观察、策略、有效经验与反馈关联。不能每次醒来只读取一句 Goal 描述，从头探索；也不能不加筛选地保留所有历史。
 
-Goal 的压缩倾向比 UI 更重视目标相关认知的连续性，本次不规定固定比例，也不直接照搬 UI 的阈值。
+Goal 的连续性由持久状态和 Goal 头保证（§11.3），不做 Goal 专用的压缩（2026-11-24 定案）：一次 Activation 缺省从 Goal 头开始，不带更早的历史；选择带历史的 Goal 走标准压缩。
 
 ### 11.3 Goal 压缩后的恢复结构
 
@@ -905,11 +929,11 @@ Goal 的压缩倾向比 UI 更重视目标相关认知的连续性，本次不�
 当前实现用另一条路达到这个恢复结构，没有做 Goal 专用的压缩：
 
 - 上面各项不靠压缩摘要保留，而是每次 Activation 打开时由宿主从持久的 Goal 定义与 Goal State 重新装配成一条 Goal 头（`<goal_activation>`）：本次原因、定义与修订（含上次 Activation 以来改了哪些字段）、`current_skills`、上次 Activation 的结论、距离与未知项、pending、未回答的问题、未吸收与最近吸收的 Work、预算与周期用量。历史被压缩或丢弃都不影响它。
-- 历史里更早的 Goal 头折叠成一行，只保留各次 Activation 的推理与工具结果。
-- Goal Session 的历史压缩走与其他 Session 相同的通用逻辑，没有 Goal 专用的阈值、摘要结构或“目标级认知摘要”。连续的 `no_action` Activation 会让历史逐轮增长，直到通用压缩触发。
+- 一次 Activation 的上下文里有没有更早的历史，是 Goal 的 `schedule.context`：`fresh`（缺省）只有系统提示词、Goal 头和本次输入，Activation 内部的历史照常保留；`carry` 继承全部历史，更早的 Goal 头折叠成一行，走与其他 Session 相同的通用压缩。改它和改检查脚本同一条路（`set_check`），Goal 自己和 owner 都能改，不增加修订号。worklog 两种情况下都完整。
+- 缺省定为 `fresh` 的依据是 2026-11-11 DV 里连续 39 次 `no_action` 的用量：首次 2.5 万 token，每次多约 2.2 千，历史平均占六成。
 - 需要全新上下文时用 restart 开新 epoch：缺省只保留不可丢的事实（未结束与已吸收的 Work、用量），Skills 回到定义里的初始值。
 
-Goal 专用的压缩策略仍是待决事项（§17.2）。
+没有 Goal 专用的压缩策略，也不再计划做。Goal 头里的 `<last_activation>` 带上次报告的正文（截到 2000 字符），更多的要点由 Goal 写进 `pending` 或文件。
 
 ### 11.4 跨 Session 传递最小必要结果
 
@@ -1027,8 +1051,10 @@ Goal 对每一次唤醒都应重新观察必要现状。被唤醒不证明事件
 
 - **检查只观察，不自己行动。** 脚本是 TypeScript，在 Agent 的私有容器里用 Deno 运行，没有执行命令和写文件的权限。它不消耗 token，也不留 Activation 记录，所以不能让它做事。
 - **检查可以让宿主发一条通知**（2026-11-11，owner 要求 Goal 接下固定时间的提醒，见 §8.1）。到点就要说的话不需要推理：Goal 在早期的 Activation 里把它写进检查脚本，之后每次提醒都不花 token，这是“早期运行为重复交付准备工具”（§7.9）的直接用法。通知是检查结果里的一个字段，由宿主以这个 Goal 的名义发出，脚本仍然没有执行和写的权限。硬间隔和预算只拦推理，不拦通知：被拦下的检查槽照样跑检查，结果里的通知照发，要求推理的结果整个搁置，下一次检查再看。
-- **不为脚本出错另加机制。** 出错就不推理。不做写入时的试跑，也不做出错后的修复推理：Agent 写完自己测试，兜底只有硬保障。
-- **事件也可以唤醒 Goal。** 派生的 Work 结束、用户转来的消息、问题得到回答，不经过检查，但同样受硬间隔和预算保护；被拦下的事件留着，放行时合并成一次 Activation。
+- **脚本出错只有兜底。** 出错就不推理，不做写入时的试跑：Agent 写完自己测试。兜底是硬保障；2026-11-24 改了一处，检查连续出错 3 次按硬保障到点处理，唤醒一次（每一串错误一次，仍受硬间隔保护），因为靠检查发通知的 Goal 等 72 小时太久。
+- **事件也可以唤醒 Goal。** 派生的 Work 结束、问题得到回答，不经过检查，但同样受硬间隔和预算保护；被拦下的事件留着，放行时合并成一次 Activation。用户对它说的话（`feedback`）不等硬间隔，只受预算保护（2026-11-24）。
+- **定时的运行机会不堆积。** Goal Session 一时接不了（Workspace 被别的 Work 占着）时，已经投出去的那一次没被消费之前不再投第二次，放行后只打开一次 Activation，原因里带合并了几个槽（2026-11-24）。
+- **连续失败要让主人知道。** 连续 3 次 Activation 失败、预算耗尽或没有有效结果时，宿主以这个 Goal 的名义通知一次，恢复之后再连续失败才再通知；不自动休眠（2026-11-24）。
 - **预算要让 Goal 自己看得见。** 从用户的角度，预算就是“背地里一共给你这么多 token 干活”。每次 Activation 都把已用多少、被拦了几次、检查跑了几次告诉 Goal，让它能据此调整检查的时间表和条件。
 - **预算用完就停，包括已经派出去的 Work。** 正在运行的派生 Work 在下一个推理边界暂停，周期重置后恢复。Work 的用量算进预算以后，让它们接着跑就等于预算没有封顶。
 - **内置 Goal 走同一套，包里的配置只是初始状态。** Memory 整理 Goal 现在写在宿主里的“有没有待处理的感知”的判断改成检查脚本。默认 Goal 和用户建的 Goal 一样可以改自己的检查脚本和时间表，随着使用演化，所以硬保障对它同样打开。
@@ -1041,7 +1067,8 @@ Goal 对每一次唤醒都应重新观察必要现状。被唤醒不证明事件
 - 检查时间表、检查脚本、硬间隔、硬保障都在 Goal 定义的 `schedule` 里；硬保障字段为空表示取 Agent 的缺省（72 小时），0 才是关闭。Goal Session 改自己的检查脚本和时间表走单独的 `set_check`，记进 `changes.jsonl`（`kind = check`），不增加内容修订号，所以它派出的 Work 不会因此被标成 `outdated`。
 - 脚本的版本存在 Goal 目录的 `checks/<n>.ts`；脚本要的 Memory 数据由宿主经脚本的标准输入输出提供只读调用 `memory.status`（同一个方法也是 Agent State 的只读 kRPC），完整检查仍在 Rust 里。
 - 事件的拦截在 Goal Session 自己的驱动里做（决定打开 Activation 的时刻就是判断的时刻，没有竞态）；定时检查和硬保障由宿主判断后投递，Goal Session 不再拦它们。
-- 周期用量按各 Session `usage.jsonl` 的记录时间实时汇总，运行中的 Work 也算；Goal State 里的 `usage` 只是 Activation 关闭时的快照。
+- 周期用量按各 Session `usage.jsonl` 的记录时间实时汇总，运行中的 Work 和作业的模型用量也算；Goal State 里的 `usage` 只是 Activation 关闭时的快照。
+- Goal 用 `agent-session goal stats` 看自己各周期的用量、决定和检查，据此降本增效；怎么用在 goal skill `goal_upkeep`。
 
 ### 12.2 预算模型
 
@@ -1575,10 +1602,10 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | UI 中的深度工程探索 | 保持或迁入 Intent Analysis Fork，不继续扩大 UI Context。 | 已迁移：`analyze_intent` 是 UI 的 fork 子 context。 |
 | Work 长期等待 Issue、评论与确认 | 迁入相关 Goal，具体实现工作拆成独立 Work。 | 只有提示词约束（意图分析写明开放等待归 Goal）；宿主不拦截，Work 仍可以长时间跟自己发起的任务。 |
 | Self Check 扫描 Notebook 并判断提醒 | 将有明确目标的部分建立为 Goal，从相应业务对象及统一 Memory 获取线索；不为该用途保留独立 Notebook。 | 已删除（2026-11-11）：`self_check` 的会话类型、模板、behavior、Loader 开关和 Agent Notebook 都不在了；提醒类需求目前没有承接者。 |
-| 感知到认知整理 | 维护型 Memory 整理 Goal。 | 已迁移：内置 Goal `memory_maintenance`，旧 self_improve 路径已删除。 |
-| Work 经验与操作型 Skills 维护 | Manual 结晶 Goal；保留旧资产引用和格式兼容。 | 已实现为内置 Goal `skill_crystallize`，缺省关闭；范围按 §9.3 的裁决收窄。 |
+| 感知到认知整理 | 维护型 Memory 整理 Goal。 | 已迁移：内置 Goal `self_improve` 的一项职责（2026-11-24 由 `memory_maintenance` 并入）。 |
+| Work 经验与操作型 Skills 维护 | Manual 结晶 Goal；保留旧资产引用和格式兼容。 | 内置 Goal `self_improve` 的一项职责（2026-11-24 由 `skill_crystallize` 并入，缺省打开）；范围按 §9.3 的裁决。 |
 | 人工处理经验自动化 | XLLM 结晶 Goal。 | 未实现，未排期。 |
-| 调用失败现场造工具 | 记录意图，迁为离线 Self Correct Goal；复杂开发下沉 Work。 | 未实现：没有离线的工具意图记录，也没有对应 Goal。代码里只留着旧的现场打造脚手架（`agent_tool` 的 `llm_tool_carft`），当前运行时里没有找到注入它的 shell 钩子的代码。 |
+| 调用失败现场造工具 | 记录意图，迁为离线 Self Correct Goal；复杂开发下沉 Work。 | 已实现为内置 Goal `self_improve` 的一项职责（§9.5）；旧的现场打造脚手架已删除（2026-11-24）。 |
 
 不应该在没有检查用途的情况下，把所有旧 Self Improve 内容自动改名为 Goal。缺少目标边界、评估方式或授权条件的行为，需要先收敛定义。
 
@@ -1648,7 +1675,7 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 
 ### 15.7 Goal 的现有实现与设计差异（2026-11-10）
 
-本节按源码核对写成（提交 `667468998`），当时只读了代码和文档；其后 [Goal Session 继续推进 TODO](../../notepads/opendan-goal-session-next-todo.md) 的 A 组改了第 6 条差异和 Workspace 失效一行，并在本机 Zone 补了验证（该单 §7）；2026-11-11 该单的 H、B、C0、D1、D5（一半）、E4、E5、F1、F2、G1、G2 实施后按实现更新（该单 §10）。它记录现状，不改变 §7—§13 的设计目标。§15.7.2 列的是实现或后续裁决已经改掉设计原文的地方，§15.7.3 是还没有实现的部分。后续任务见 [Goal Session 继续推进 TODO](../../notepads/opendan-goal-session-next-todo.md)。
+本节按源码核对写成（提交 `667468998`），当时只读了代码和文档；其后 [Goal Session 继续推进 TODO](../../notepads/opendan-goal-session-next-todo.md) 的 A 组改了第 6 条差异和 Workspace 失效一行，并在本机 Zone 补了验证（该单 §7）；2026-11-11 该单的 H、B、C0、D1、D5（一半）、E4、E5、F1、F2、G1、G2 实施后按实现更新（该单 §10）。它记录现状，不改变 §7—§13 的设计目标。§15.7.2 列的是实现或后续裁决已经改掉设计原文的地方，§15.7.3 是还没有实现的部分。2026-11-24 [Goal Session 改进 TODO](../../notepads/opendan-goal-session-improve-todo.md) 实施后再次按实现更新。余下的任务见这两份 TODO。
 
 #### 15.7.1 已实现
 
@@ -1658,34 +1685,38 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | §7.2 基本构成 | 定义里有标题、目标、作用范围（对象、路径、Workspace）、生命周期、`achieved_when` / `healthy_state`、距离评估方法、约束、初始 Skills、owner / 创建者 / 受益者、预算、时间表、behavior、状态和修订号。当前 Skills、距离、待办、问题、关联 Work 与用量在 Goal State 里。 |
 | §7.3 两种生命周期 | `achieve` / `maintain`；状态 `active / paused / achieved / archived`。达成型可由 Goal Session 自己标记达成（须给证据，且没有未结束的 Work）；`no_action` 是合法结果，不结束 Goal。 |
 | §7.4 距离评估 | 自然语言的距离，带观察时间和“未知项”列表，没有分数。 |
-| §7.5 执行循环 | 每次 Activation 以 `report(is_end=true)` 交一份结果：`decision`（`no_action / acted / created_work / needs_info`）、`distance`、`pending`、`questions`、`skills`。宿主写回 Goal State 并追加 Activation 记录（原因、使用的修订、结论、用量、结束原因）。预算耗尽、出错或被停止只关闭本次 Activation。 |
+| §7.5 执行循环 | 每次 Activation 以 `report(is_end=true)` 交一份结果：`decision`（`no_action / acted / created_work / needs_info`）、`distance`、`pending`、`questions`（一句话，或带选项 `{text, options, allow_text}`）、`skills`。宿主写回 Goal State 并追加 Activation 记录（原因、使用的修订、结论、用量、结束原因）。预算耗尽、出错或被停止只关闭本次 Activation。 |
 | §7.6 Goal 是 Work 的上级 | Goal Session 用 `create-worksession` 建 Work，Work 带 `origin.goal`（Goal、修订、epoch、Activation）。Goal 不等 Work；Work 结束是后续 Activation 的原因，按 `goal_id` 吸收且只吸收一次，新 epoch 接管旧 epoch 的 Work。 |
 | §7.7 调整与连续性 | 内容修订要求调用方给出看到的修订号，每个修订留不可变快照，每次变化记一行（谁、经由什么、原因）。已建的 Work 保留创建时的修订号，Goal 头把落后于当前修订的 Work 标为 `outdated`。 |
 | §7.8、§12.1 不自我唤醒 | 运行机会只来自宿主：epoch 开始、检查时间表、硬保障、手动、Work 结束、UI 转交的消息、问题得到回答。错过的时间槽合并成一次。 |
 | §12.1.1 运行机会的门槛 | 硬保障、硬间隔、预算（每个 Goal 的周期预算与 Agent 后台总量）、检查脚本四道门槛，所有触发源都过（手动、宿主已放行的定时检查和硬保障、epoch 开始除外）；事件被拦下时留在队列里，放行时合并成一次 Activation。检查脚本是 Goal 自己可写的 TypeScript，在 Deno 里只读运行，可以让宿主发一条通知（固定时间的提醒不推理）；时间表是 `every_secs` 或 cron + 时区。细节见 [Agent State Protocol](<protocol/Agent State Protocol.md>) §9.4。 |
+| §7.10 作业 | 属于一个 Goal、由宿主按时间表以 Agent 身份运行、不推理的程序，见 §7.10 末尾。 |
+| §7.10 Work 建立和改写 Goal | UI 会话直接创建、不属于某个 Goal 的 Work 的权限等同父 UI，`created_by.work` 记下是哪个 Work；修订里加的 `initial_skills` 在下一次 Activation 并入当前 Skills。 |
+| §7.5 失败 | Goal State 记连续失败的 Activation 和连续不成功的 Work，Goal 头里大于 0 时显示；连续 3 次失败宿主通知主人一次。提示词写明升级顺序：同一做法失败两次就换，换过仍失败就问主人，目标本身要变就请求升级。 |
 | §12.2、§12.3 预算 | 单次 Activation 有 token、run 数和墙钟三个硬上限。周期预算按固定窗口统计这个 Goal 所有 Session 的 token（派生 Work 和它的子 Session 都算，运行中就算）、Activation 数、Work 数；用完时不推理、不建 Work，正在运行的 Work 在推理边界暂停，周期重置后恢复。另有 Agent 的后台总量（缺省 24 小时 500 万）。每次 Activation 的 Goal 头列出用量、上限、重置时刻、拦截与检查的次数。 |
 | §12.5 并发与恢复 | 运行机会和写回都带稳定的 key，崩溃后重投只消费一次；Activation 中途被杀后在同一条记录上续完。 |
 | §12.12 休眠与停止 | 见 §12.12.3。 |
 | §12.5 Workspace 失效 | Goal 的 `scope.workspace` 失效（目录没了、位置变了）时，Goal Session 以 failed 结束，不再运行。原因写进 Goal State 的 `last_error`（带 `recovery`），详情页显示；失效发生在 Activation 进行中时，这次 Activation 记为 `failed`。Goal 的状态不变，Workspace 恢复后由 owner restart（新 epoch、新 Session），新 Session 的第一次 Activation 在 Goal 头里看到这条错误，完成后清掉。 |
-| §5.4 意图分析产出 Goal | `analyze_intent` 在分析内部创建 Goal，返回 `goal_created`；属于已有 Goal 的请求用 `goal post` 转给它。 |
-| §9.2 Memory 整理 Goal | 内置 Goal `memory_maintenance`，Jarvis 缺省打开。每 30 分钟跑一次包里带的检查脚本（`goal_checks/memory_maintenance.ts`，经宿主的只读调用比 Memory 的版本向量，必要时做完整检查），有材料才推理；没有材料时只在硬保障到点（缺省 72 小时）推理一次。脚本只是初始状态，Goal 可以改，包升级不覆盖它改过的。整理只经两个宿主工具读一批、提交一批，提交后才清理感知正文，各阶段可恢复。旧 self_improve 路径已删除。 |
-| §9.3 经验结晶 Goal | 内置 Goal `skill_crystallize`，缺省关闭，owner 在 Skills 页打开（一次查看约 18 万 token）。每天跑一次检查脚本，手册使用记录里新增的 Work 够多才推理。范围见 §9.3 末尾。真实模型只跑过一次（2026-11-10，读了 6 个 Work，结论 `no_action`，没有改写手册）；修订手册和写草稿两条路径只有集成测试和 mock 覆盖。 |
-| §13 Goals 视图 | OpenDAN WebUI 的首页有 Goals 区域（活动 Goal 超过 16 个时提示），详情页显示定义与各修订（可以比较相邻修订）、Goal State、四道门槛与检查脚本、按 epoch 分组的 Activation、按天的用量、变更记录和关联 Session，可以激活、休眠、唤醒、归档、restart、reopen，owner 可以在页面上改预算、硬间隔、硬保障和检查时间表，内置 Goal 可以恢复包内的检查脚本；内置整理 Goal 另有整理回执，不能归档。MessageHub 的 Agent 面板只显示活动 Goal 的个数。 |
+| §5.4 意图分析产出 Goal | `analyze_intent` 在分析内部创建 Goal，返回 `goal_created`；要先做出东西的建 Work，由 Work 收尾时建立（§7.10）；属于已有 Goal 的请求用 `goal post` 转给它，小改动直接 `goal revise`。活动 Goal 达到 16 个时新建要说明为什么不能并入；和已有 Goal 矛盾时问主人。提醒进不进日历由 Agent 按“主人需不需要在日程里看到”判断。 |
+| §9.1 内置 Goal | 只有一个 `self_improve`，Jarvis 缺省打开，标准 `goal` behavior，预算单次 50 万、24 小时 180 万（含它派的 Work）。每 30 分钟跑一次包里带的检查脚本（`goal_checks/self_improve.ts`），按职责给出唤醒原因；脚本只是初始状态，Goal 可以改，包升级不覆盖它改过的。已有的 Zone 上由 `policy_version` 的路径把原来的整理 Goal 改写成它（重开 epoch），原来的结晶 Goal 归档。 |
+| §9.2 整理 Memory | 职责 `memory`：整理只经两个宿主工具读一批、提交一批，提交后才清理感知正文，各阶段可恢复。规则在 goal skill `self_improve_memory`。发现的日程、待办、长期职责写成带选项的问题，主人同意后由它调 `owner.cal` / `owner.todo`，长期职责并入已有 Goal；没有实现宿主的类型化候选。 |
+| §9.3、§9.5 结晶手册、做工具 | 职责 `manuals`、`tools`，范围见 §9.3、§9.5 末尾。 |
+| §13 Goals 视图 | OpenDAN WebUI 的首页有 Goals 区域（活动 Goal 超过 16 个时提示），详情页显示定义与各修订（可以比较相邻修订）、Goal State、四道门槛与检查脚本、按 epoch 分组的 Activation、按天的用量、变更记录和关联 Session，可以激活、休眠、唤醒、归档、restart、reopen，owner 可以在页面上改预算、硬间隔、硬保障、检查时间表和带不带历史，内置 Goal 可以恢复包内的检查脚本；另有各周期的统计和作业面板（运行记录、日志、立即运行、启停、回退）；内置 Goal 另有整理回执和各职责的最近结论，不能归档。Desktop 的 Agent 面板有 Goal 列表和 Goal 的对话视图（每次唤醒一组：原因、过程、结论），可以对它说话；新建目标打开默认会话走意图分析。 |
 | §3.1、§14.5 创建 Work 的就绪性检查 | 宿主做机械检查，UI 和 Goal 两个入口相同：同一个父 Session（Goal 的是同一个 Goal）下不能再建任务书相同、尚未结束的 Work；Goal 建的 Work 任务书不能就是 Goal 的 objective。 |
-| §10.2、§10.5 Goal Skill | Goal 头的 `<current_skills>` 给出每个 skill 正文可直接读的路径（已安装的 goal skill、AgentRoot 里的文件），正文按需读，不进 Goal 头；Goal 自己记下的工具（脚本、页面的 URL）restart 后保留。Jarvis 带两份 goal skill：写检查脚本、选交付方式。 |
+| §10.2、§10.5 Goal Skill | Goal 头的 `<current_skills>` 给出每个 skill 正文可直接读的路径（已安装的 goal skill、AgentRoot 里的文件），正文按需读，不进 Goal 头；Goal 自己记下的工具（脚本、页面的 URL）restart 后保留。Jarvis 带三份通用的 goal skill（写检查脚本与作业、选交付方式与请求升级、自我维护）和 self improve 的三份。 |
 
 #### 15.7.2 与设计不同的地方
 
 1. **一次 Activation 就是一个 Turn。** §2.2 没有要求一一对应，实现选择了对应：Turn 打开时冻结 Goal 修订并装配 Goal 头，Turn 关闭时写 Activation 记录。
-2. **恢复结构靠 Goal 头，不靠压缩。** 见 §11.3 末尾。没有 Goal 专用的压缩策略。
+2. **恢复结构靠 Goal 头，不靠压缩。** 见 §11.3 末尾。缺省每次 Activation 从 Goal 头开始，没有 Goal 专用的压缩策略。
 3. **休眠的语义改了。** 见 §12.12.3：休眠在下一个推理边界生效，派生的 Work 一并暂停，Session 级 stop 等于休眠。
-4. **Goal Session 对自己的 Goal 权限很窄。** 它能读、归档自己（须给理由）、标记达成、增删当前 Skills、改自己的检查脚本和检查时间表（不增加内容修订号）；不能改定义、预算、硬间隔和硬保障，也不能让自己休眠或唤醒。§7.7、§10.5 说的“在授权范围内调整策略”落在当前 Skills 和检查上，其余要在报告里提出，由 owner 或创建它的 UI Session 修订。权限只按调用方的会话类型区分。
+4. **Goal Session 对自己的 Goal 权限很窄。** 它能读、归档自己（须给理由）、标记达成、增删当前 Skills、改自己的检查脚本和检查时间表、带不带历史、自己的作业（都不增加内容修订号）；不能改定义、预算、硬间隔和硬保障，也不能让自己休眠或唤醒。§7.7、§10.5 说的“在授权范围内调整策略”落在当前 Skills 和检查上，其余要在报告里提出，由 owner 或创建它的 UI Session 修订。权限只按调用方的会话类型区分（UI、UI 直接建的 Work、Goal、其余 Work，§7.10）。
 5. **找人靠通知，不在对话里开口。** 需要人决定的事写进结果的 `questions`，每个问题发成一条可回答的通知，回答打开后续 Activation；Goal Session 里没有 `ask_user`（宿主在它的命令目录里放一个只报错的同名命令，提示改用 `questions`）。要告诉用户的事用 `agent-session notify send`，`--url` 指向为这件事准备的页面或 app；这是交付的接口，背后由对话说出来等实现以后再调（§7.9）。Goal 没有让对话里的 Agent 替它说话的通路，Goal 派出的 Work 完成时用户也看不到任何东西，除非 Goal 再发通知。
-6. **Goal 建的 Work 是 `work_simple`，靠提示词保证。** Work 类的缺省 behavior 是 `plan_simple`（一个 plan 加若干 Todo 子会话）；Goal 自己已经是跨 Activation 的规划者，2026-11-02 裁决 Goal 建的 Work 一律 `work_simple`。Goal 的提示词在 `create-worksession` 里写明 `--behavior work_simple`（2026-11-10）；提示词漏写时宿主也把类缺省的 behavior 换成 `work_simple`（2026-11-11），显式指定别的照样允许。
-7. **经验结晶不自动维护资产。** 见 §9.3 末尾的裁决。
-8. **整理 Goal 不创建 Work，也不写感知。** 它的周期 Work 上限是 0；自身的运行不产生感知，避免自我回声。没有材料时由它的检查脚本返回 false，不调用模型，不是让模型判断“无事可做”。
+6. **Goal 建的 Work 是 `work_simple`，靠提示词保证。** Work 类的缺省 behavior 是 `plan_simple`（一个 plan 加若干 Todo 子会话）；Goal 自己已经是跨 Activation 的规划者，2026-11-02 裁决 Goal 建的 Work 缺省 `work_simple`，2026-11-24 放宽成“缺省”：要先弄清楚再动手、或几件事并行时派 `--class plan_simple`（最多活 48 小时）。提示词漏写时宿主也把类缺省的 behavior 换成 `work_simple`（2026-11-11），显式指定 behavior 或 class 照样允许。
+7. **经验结晶不自动维护资产。** 见 §9.3 末尾的裁决（做工具时新建 `local` 手册除外）。
+8. **内置 Goal 不写感知。** 它整理感知，自身的运行不产生感知，避免自我回声。没有材料时由它的检查脚本返回 false，不调用模型，不是让模型判断“无事可做”。
 9. **命名与布局。** 能力资产的命名见 §10.1，Goal 的磁盘布局见 §14.4。
-10. **页面只改预算与时间表。** 创建走对话里的意图分析；目标文本等定义的修订走对话（`agent-session goal revise` 或 kRPC），页面上 owner 只能改预算、硬间隔、硬保障和检查时间表。
+10. **页面只改预算、时间表与带不带历史。** 创建走对话里的意图分析；目标文本等定义的修订走对话（`agent-session goal revise` 或 kRPC）。
 11. **定时只在 Agent 进程在线时触发。** 检查时间表是固定间隔（`every_secs`）或 cron + 时区，由 Agent 自己的 Loader 进程计槽（cron 按时区的墙上时间）。计划后端隔在一个接口后面，换成 workflow 的计划任务（继续推进 TODO 的 D3，未做）不需要改 Goal 的其它部分。
 12. **Goal 头在输入消息开头。** 一次 Activation 只有一条 User 消息：Goal 头在前，本批输入在后；历史里 Goal 头只留一行。`<works>` 只列还在跑的 Work，已结束的由它的结束事件和 `<recent_works>` 表达。
 13. **Activation 关闭就放手。** Activation 关闭时 Goal Session 不再跟它启动的后台任务，它们的结束不打开新的 Activation；Goal 只为 Work 的结束和能被回答的问题醒来。
@@ -1695,14 +1726,14 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | 设计条目 | 缺口 |
 |---|---|
 | §7.8、§12.8 关注对象、事件与业务超时 | Goal 定义里无法表达；没有“到某时再看”（follow_up），没有对象订阅驱动的运行机会。 |
-| §7.10 Work 开发、Goal 运维 | Work Session 对 Goal 只读（`state/goals.rs` 的创建、修订、检查脚本都拒绝）；UI 只能修订自己创建的 Goal；意图分析把持续的职责直接建成 Goal，没有先建 Work 再交出 Goal 的路径；问题得到回答后打开的是 Goal 的 Activation，没有落到用户发起的 Work 的通路；Goal 绑定 Workspace 时与同一 Workspace 上的 Work 互斥（单写者），长时间的升级会让 Goal 等待。 |
-| §8.1、§12.1 按日历的时间表 | cron 与时区已有（只在 Agent 进程在线时计槽），没有一次性触发，没有接入 workflow 的计划任务。意图分析遇到“到点要判断”的请求建带时间表的 Goal；到点不需要推理的固定提醒仍返回 `unsupported`，没有 timer 对象（等日历 / 待办接入）。 |
+| §7.10 Work 开发、Goal 运维 | Goal 绑定 Workspace 时与同一 Workspace 上的 Work 互斥（单写者），长时间的升级会让 Goal 等待（作业和检查照常）；身份自报的缺口没补；真实 Zone 上没跑过。 |
+| §8.1、§12.1 按日历的时间表 | cron 与时区已有（只在 Agent 进程在线时计槽），没有一次性触发，没有接入 workflow 的计划任务。到点不需要推理的固定提醒由检查脚本发通知，主人需要在日程里看到的写进日历（§8.1）。没有单独的 timer 对象。 |
 | §12.2、§12.3 预算的其余层次 | 没有子 Work 的预算预留和费用维度。 |
-| §11.2 Goal 的压缩策略 | 未设计，等 H 组做完、有一个跑了一周的 Goal 之后量数据再定（继续推进 TODO 的 F3）。 |
-| §9.2 整理中发现的目标与计划 | 候选的类型已定，发现、去重、确认和落地都没有实现；2026-11-10 决定推后到待办与日历接入之后，届时增加“给已有的 Goal 增加一项职责”这一类候选。用模型做预检的设想已取消，改用检查脚本（§12.1.1）。 |
-| §9.4、§9.5 XLLM 结晶与离线 Self Correct | 未实现。 |
-| §15.3 self_check 的迁移 | self_check 与 Agent Notebook 已于 2026-11-11 删除；提醒类需求仍没有承接者（等日历 / 待办接入）。 |
-| §13.2—§13.4 目标管理 | 页面内编辑目标、修订前后差异、Goal 数量提示、周期用量之外的成本展示都没有。 |
+| §9.2 整理中发现的目标与计划 | 用带选项的问题承载（§15.7.1），没有跨 Activation 的类型化候选、稳定 key 去重和批准版本：去重靠问题文本和先查现有日程、待办、Goal。 |
+| §9.4 XLLM 结晶 | 未实现。 |
+| §7.5 求助主人以外的人、HomeStation 上求助 | 推后（Goal Session 改进 TODO §10）。 |
+| §15.3 self_check 的迁移 | self_check 与 Agent Notebook 已于 2026-11-11 删除；提醒由 Goal 的检查脚本和日历承接（§8.1）。 |
+| §13.2—§13.4 目标管理 | 页面内编辑目标文本、周期用量之外的费用展示都没有。 |
 | §12.4 跨节点与多 Session 协作 | 未实现；一个 Agent 的所有 Goal Session 由同一个 Loader 进程托管。 |
 
 真实 Zone 上的验证（2026-11-10，本机 Zone，证据在 `notepads/evidence/goal-session-next/2026-11-10/`）：整理 Goal 的容器形态和由定时触发的真实整理、WebUI 经网关登录后的状态操作、休眠语义、Goal 建出的 Work 是 `work_simple`、经验结晶 Goal 的一次运行。没有验的：手机宽度与真机、Workspace 失效、结晶 Goal 修订手册与写草稿。验证中看到的问题（Work 的 `needs_input` 也打开 Activation、Work 的任务事件出现在 Goal 的原因里、跟长命令的成本）记在继续推进 TODO 的 §7.3。
@@ -1710,11 +1741,11 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 实现核对入口：
 
 - 协议类型与布局：[protocol/goal.rs](../../src/frame/lib_opendan/src/protocol/goal.rs)；存储与权限：[state/goals.rs](../../src/frame/lib_opendan/src/state/goals.rs)；字段说明见 [Agent State Protocol](<protocol/Agent State Protocol.md>) §9。
-- 宿主（补建、epoch、运行机会、准入、休眠级联）：[host/goals.rs](../../src/frame/lib_opendan/src/host/goals.rs)；内置 Goal 的播种与 gate：[host/maintenance.rs](../../src/frame/lib_opendan/src/host/maintenance.rs)。
+- 宿主（补建、epoch、运行机会、准入、休眠级联）：[host/goals.rs](../../src/frame/lib_opendan/src/host/goals.rs)；内置 Goal 的播种：[host/maintenance.rs](../../src/frame/lib_opendan/src/host/maintenance.rs)；作业：[goal_jobs.rs](../../src/frame/lib_opendan/src/goal_jobs.rs)；统计：[goal_stats.rs](../../src/frame/lib_opendan/src/goal_stats.rs)。
 - Runner（Goal 头、Activation 的打开与关闭、吸收、问题）：[runner/goal.rs](../../src/frame/lib_opendan/src/runner/goal.rs)；整理工具与回执：[runner/consolidation.rs](../../src/frame/lib_opendan/src/runner/consolidation.rs)。
-- Jarvis：[agent.toml](../../src/apps/jarvis_agent/agent/agent.toml) 的 `[session.goal]`，[goal.toml](../../src/apps/jarvis_agent/agent/behaviors/goal.toml)、[memory_maintenance.toml](../../src/apps/jarvis_agent/agent/behaviors/memory_maintenance.toml)、[skill_crystallize.toml](../../src/apps/jarvis_agent/agent/behaviors/skill_crystallize.toml)。
+- Jarvis：[agent.toml](../../src/apps/jarvis_agent/agent/agent.toml) 的 `[session.goal]`，[goal.toml](../../src/apps/jarvis_agent/agent/behaviors/goal.toml)、[goal_skills/](../../src/apps/jarvis_agent/agent/goal_skills)、[goal_checks/self_improve.ts](../../src/apps/jarvis_agent/agent/goal_checks/self_improve.ts)、work skill [goal_handover](../../src/apps/jarvis_agent/agent/cmd_skills/goal_handover/SKILL.md)。
 - 页面：[Goals.tsx](../../src/frame/opendan/web/src/pages/Goals.tsx)、[GoalDetail.tsx](../../src/frame/opendan/web/src/pages/GoalDetail.tsx)。
-- 用例：[goal_session.rs](../../src/frame/lib_opendan/tests/goal_session.rs)、[memory_maintenance.rs](../../src/frame/lib_opendan/tests/memory_maintenance.rs)、页面的 `tests/e2e/goals.spec.ts`。
+- 用例：[goal_session.rs](../../src/frame/lib_opendan/tests/goal_session.rs)、[goal_jobs.rs](../../src/frame/lib_opendan/tests/goal_jobs.rs)、[memory_maintenance.rs](../../src/frame/lib_opendan/tests/memory_maintenance.rs)、真实模型样例 [goal_replay.rs](../../src/frame/lib_opendan/tests/goal_replay.rs)、页面的 `tests/e2e/goals.spec.ts`。
 
 ## 16. 验收场景与观测指标
 
@@ -1807,7 +1838,7 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | 意图分析接口名称 | **已采用**（§5.6）：`try_analyze_user_intent(request)`，由 behavior `analyze_intent` 的 `[tool]` 声明；旧 `task_route` 已删除；返回 `{status, behavior, submission: {report, result}}`，`result.outcome` 六种；创建在分析内部完成，不拆分创建调用 | `result` 字段目前只由引导文字约定，宿主不校验。 |
 | 自动创建与二次确认 | **已采用**：条件齐备时在分析内自动创建；需要用户拍板的单个选择作为 `ask_user` 问题问完仍自动创建；无法用一个问题问清的整体方案返回 `needs_confirmation`，UI 讲清后再调一次 | 哪些权限条件必须二次确认（目前只靠引导文字约束，按“先能力后安全”记为已知风险）。 |
 | Goal 与 Goal Session 的绑定 | 倾向同一 Goal 保持主要逻辑 Context 连续。**当前实现（2026-10-11，Goal Session TODO 第一段）**：同一时刻一个 Goal 一个 Goal Session，按 `(goal_id, epoch)` 确定性派生；reopen / restart 开新 epoch（旧 Session 结束、Goal State 存档），Work 按 `goal_id` 归属、跨 epoch 由新 Session 接管 | 多 Session 协作、跨节点所有权。 |
-| Goal 压缩策略 | 比 UI 更重视目标历史与当前 Skills。**当前实现**：恢复所需的内容每次由 Goal 头从持久状态重建，历史走通用压缩，没有 Goal 专用策略（§11.3 末尾） | 阈值、摘要结构和恢复算法；有了 Goal 头之后历史里还需要保留什么。 |
+| Goal 压缩策略 | **已定案（2026-11-24）**：不做 Goal 专用的压缩；缺省 `fresh`，选 `carry` 的走标准压缩（§11.3） | 无。 |
 | Work 时限与资源 | 相对短期且有界 | 不同任务类别的超时、轮次和失败判定。 |
 | Goal 预算 | 至少限制轮次或 Token 等成本。**当前实现**：单次 Activation 的 token 与 run 数为硬约束；按固定窗口统计周期 token / Activation / Work 数，到上限时拒绝定时运行机会与新 Work，吸收结果不受限。**2026-11-10 裁决，2026-11-11 实施**：周期预算缺省 24 小时 200 万 token，含派生 Work 且运行中计入，对所有触发生效，只有硬保障能越过；Agent 一天的后台总量缺省 500 万；预算用完时正在运行的派生 Work 暂停；Activation 墙钟缺省 1800 秒（§12.1.1、§12.2） | 子 Work 的预算预留与分配、费用维度。 |
 | 目标变更与运行中 Work | 保留初始任务依据；同目标修改写为 Task 修订，经 Task 对象半订阅在每次推理前必达，不经过 Memory；结束后按修订编号把未处理修订交给新 Work | Task 修订的数据结构与授权模型、承载格式；超出边界时继续、取消、重建的决策。 |
@@ -1820,10 +1851,10 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | 输出与报告交付 | 稳定身份、先持久登记再发送，区分接收与结果吸收 | 多接收方进度、外部通道幂等保证、长期失败与补偿策略。 |
 | Skills / Manuals 兼容 | 区分方法论与操作规范。**当前实现**：三类 skill（work / plan / goal），纯文本，只有 owner 能安装、删除、禁用；外来手册经导入生成草稿（§10.1、§9.3） | Goal Skill 的运行时读取与选择、版本管理、候选晋级与删除策略。 |
 | XLLM 发布 | 一次推理工具，不是 Session | 候选验证、路由准入、更新与回退机制。 |
-| Self Check 的剩余职责 | 有明确目标的工作迁为 Goal。**当前实现**：`self_check` 已删除（2026-11-11，§15.3）；提醒等日历 / 待办接入后再定承接方式，届时按“Goal 是珍贵的资源”先看能否作为已有 Goal 的一项职责（§12.1.1） | 是否保留统一发现/分发，哪些行为仍需其他模型；timer 对象放在哪。 |
-| Goal 数量提示 | 16 是候选提醒阈值。**当前实现**：没有提示 | 实际默认值及其与预算、运行频率的联动。 |
+| Self Check 的剩余职责 | 有明确目标的工作迁为 Goal。**当前实现**：`self_check` 已删除（2026-11-11，§15.3）；提醒由 Goal 的检查脚本和日历承接（§8.1） | 是否保留统一发现/分发，哪些行为仍需其他模型。 |
+| Goal 数量提示 | 16 是提醒阈值。**当前实现**：页面超过 16 个活动 Goal 时提示；意图分析在达到 16 个时新建前要说明为什么不能并入；没有硬上限 | 与预算、运行频率的联动。 |
 | 分布式与共享状态 | 不同 Goal 可运行在不同节点 | 同一目标写入协调、结果去重及 Workspace 并发控制。 |
-| Goal 权限与自我升级 | 在现有授权内调整方法。**当前实现**：Goal Session 只能增删自己的当前 Skills、归档自己或标记达成；权限只按调用方的会话类型区分（§15.7.2 第 4 条） | 哪些资产与操作允许自动修改，哪些必须确认；Goal 无人值守创建 Work 的授权边界。 |
+| Goal 权限与自我升级 | 在现有授权内调整方法。**当前实现**：见 §15.7.2 第 4 条与 §7.10 | 身份自报的缺口；哪些资产与操作允许自动修改，哪些必须确认；Goal 无人值守创建 Work 的授权边界。 |
 
 ### 17.3 架构收敛
 

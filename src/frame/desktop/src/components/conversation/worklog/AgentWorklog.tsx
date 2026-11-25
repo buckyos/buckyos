@@ -12,7 +12,7 @@ import { taskWorklogTarget, worklogRows, type WorklogDestination, type WorklogRo
 import { readWorkSession } from './source'
 import { useWorklog } from './useWorklog'
 
-type Destination = { taskId: string; details?: boolean } | WorklogDestination
+export type Destination = { taskId: string; details?: boolean } | WorklogDestination
 
 /**
  * The work log of a message's Turn task; `initial` opens a session's log on
@@ -61,7 +61,7 @@ function LogValue({ label, value }: { label: string; value: string }) {
   </div>
 }
 
-function TimelineRow({ row, target, navigate, complete }: { row: WorklogRow; target: WorklogTarget; navigate: (next: Destination) => void; complete: boolean }) {
+export function TimelineRow({ row, target, navigate, complete }: { row: WorklogRow; target: WorklogTarget; navigate: (next: Destination) => void; complete: boolean }) {
   const { t, locale } = useI18n()
   const label = row.kind === 'tool' && row.label !== 'result' ? row.label : t(`messagehub.worklog.${row.label}`, row.label)
   const status = row.status === 'pending' && complete ? 'unresolved' : row.status

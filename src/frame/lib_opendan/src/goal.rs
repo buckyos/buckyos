@@ -14,7 +14,7 @@ use crate::channel::InputChannelFactory;
 use crate::error::{OpenDanError, Result};
 use crate::protocol::*;
 use crate::session::SessionDir;
-use crate::state::AgentStateClient;
+use crate::state::{AgentStateClient, SessionRegistry};
 use crate::template::{GoalDefaults, SessionTemplate};
 
 pub use crate::template::AgentBudget;
@@ -25,15 +25,27 @@ pub const GOAL_CLASS: &str = "goal";
 /// `[session.<class>]` defaults of a Goal (built-in when the class has
 /// none).
 pub fn defaults(agent_root: Option<&Path>, class: &str) -> GoalDefaults {
-    let mut d = SessionTemplate::load(class, agent_root)
+    SessionTemplate::load(class, agent_root)
         .ok()
         .and_then(|t| t.goal)
-        .unwrap_or_default();
-    // The owner's switch of the crystallization Goal (Skills page) wins.
-    if let Some(on) = agent_root.and_then(|r| crate::skills::load_state(r).ok()).and_then(|s| s.crystallize) {
-        d.crystallize.enabled = on;
+        .unwrap_or_default()
+}
+
+/// Whether `sid` belongs to the built-in Goal `builtin`: its Goal Session, or
+/// a Work it sent.
+pub async fn session_of_builtin(agent: &dyn AgentStateClient, sid: &str, builtin: &str) -> Result<bool> {
+    let Some(e) = agent.sessions().lookup(sid).await? else {
+        return Ok(false);
+    };
+    let goal_id = match e.kind {
+        SessionKind::Goal => e.goal_id,
+        SessionKind::Work => e.origin.and_then(|o| o.goal).map(|g| g.goal_id),
+        SessionKind::Ui => None,
+    };
+    match goal_id {
+        Some(id) => Ok(agent.goals().get(&id).await?.is_some_and(|g| g.is_builtin(builtin))),
+        None => Ok(false),
     }
-    d
 }
 
 /// The Goal's own budget over the defaults.
@@ -74,52 +86,78 @@ pub fn current_usage(state: Option<&GoalState>, now_ms: u64, window_secs: u64) -
     u
 }
 
-/// Tokens of the rounds a session ran since `since_ms` (`usage.jsonl`).
-fn session_tokens_since(e: &RegistryEntry, since_ms: u64) -> u64 {
+/// Rounds a session ran since `since_ms` (`usage.jsonl`).
+fn session_usage_since(e: &RegistryEntry, since_ms: u64) -> Vec<UsageRecord> {
     if e.status.run_state == RunState::Finished && e.status.updated_at_ms < since_ms {
-        return 0;
+        return Vec::new();
     }
     let Ok(dir) = SessionDir::open(&e.location) else {
-        return 0;
+        return Vec::new();
     };
-    dir.usage()
-        .map(|u| u.iter().filter(|r| r.at_ms >= since_ms).map(|r| r.total_tokens).sum())
-        .unwrap_or(0)
+    let mut usage = dir.usage().unwrap_or_default();
+    usage.retain(|r| r.at_ms >= since_ms);
+    usage
 }
 
-/// Tokens a Goal used since `since_ms`: its Goal Sessions (every epoch) and
-/// its Work with every sub session below it, finished or running.
-pub async fn goal_tokens_since(agent: &dyn AgentStateClient, goal_id: &str, since_ms: u64) -> Result<(u64, u64)> {
-    let entries = agent
-        .sessions()
+/// The rounds a Goal paid for since `since_ms`: those of its Goal Sessions
+/// (`true`, every epoch) and of its Work with every sub session below it,
+/// finished or running.
+pub async fn goal_usage(sessions: &dyn SessionRegistry, goal_id: &str, since_ms: u64) -> Result<Vec<(bool, UsageRecord)>> {
+    let entries = sessions
         .query(&RegistryQuery {
             goal_id: Some(goal_id.to_string()),
             ..Default::default()
         })
         .await?;
-    let (mut own, mut work) = (0, 0);
+    let mut out = Vec::new();
     let mut below: Vec<String> = Vec::new();
     for e in &entries {
-        let t = session_tokens_since(e, since_ms);
-        if e.kind == SessionKind::Goal {
-            own += t;
-        } else {
-            work += t;
+        let own = e.kind == SessionKind::Goal;
+        out.extend(session_usage_since(e, since_ms).into_iter().map(|r| (own, r)));
+        if !own {
             below.push(e.session_id.clone());
         }
     }
     let mut seen: std::collections::BTreeSet<String> = entries.iter().map(|e| e.session_id.clone()).collect();
     while !below.is_empty() {
-        let children = agent.sessions().children_of(&below).await?;
+        let children = sessions.children_of(&below).await?;
         below.clear();
         for c in children {
             if seen.insert(c.session_id.clone()) {
-                work += session_tokens_since(&c, since_ms);
+                out.extend(session_usage_since(&c, since_ms).into_iter().map(|r| (false, r)));
                 below.push(c.session_id.clone());
             }
         }
     }
-    Ok((own, work))
+    Ok(out)
+}
+
+/// Tokens a Goal used.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GoalTokens {
+    pub own: u64,
+    pub works: u64,
+    pub jobs: u64,
+}
+
+impl GoalTokens {
+    pub fn total(&self) -> u64 {
+        self.own + self.works + self.jobs
+    }
+}
+
+/// Tokens a Goal used since `since_ms`: its own, its Work's, its jobs'.
+pub async fn goal_tokens_since(agent: &dyn AgentStateClient, goal_id: &str, since_ms: u64) -> Result<GoalTokens> {
+    let mut t = GoalTokens::default();
+    for (mine, r) in goal_usage(agent.sessions(), goal_id, since_ms).await? {
+        if mine {
+            t.own += r.total_tokens;
+        } else {
+            t.works += r.total_tokens;
+        }
+    }
+    t.jobs = agent.goals().job_usage(goal_id, since_ms).await?.iter().map(|r| r.total_tokens).sum();
+    Ok(t)
 }
 
 /// Usage of the Goal's current window: the counters of its Goal State, the
@@ -132,9 +170,10 @@ pub async fn period_usage(
     window_secs: u64,
 ) -> Result<GoalUsage> {
     let mut u = current_usage(state, now_ms, window_secs);
-    let (own, work) = goal_tokens_since(agent, goal_id, u.period_start_ms).await?;
-    u.tokens = own;
-    u.work_tokens = work;
+    let t = goal_tokens_since(agent, goal_id, u.period_start_ms).await?;
+    u.tokens = t.own;
+    u.work_tokens = t.works;
+    u.job_tokens = t.jobs;
     Ok(u)
 }
 
@@ -154,16 +193,15 @@ impl AgentUsage {
     }
 }
 
-/// Tokens every Goal of the agent (and their Work) used in the agent's
-/// current window.
+/// Tokens every Goal of the agent (its Work and jobs included) used in the
+/// agent's current window.
 pub async fn agent_usage(agent: &dyn AgentStateClient, d: &GoalDefaults, now_ms: u64) -> Result<AgentUsage> {
     let window = d.agent_budget.window_secs.max(1);
     let start = period_start(now_ms, window);
     let mut used = 0;
     if d.agent_budget.max_total_tokens.is_some() {
         for g in agent.goals().list().await? {
-            let (own, work) = goal_tokens_since(agent, &g.goal_id, start).await?;
-            used += own + work;
+            used += goal_tokens_since(agent, &g.goal_id, start).await?.total();
         }
     }
     Ok(AgentUsage {
@@ -214,6 +252,11 @@ pub fn check_every_secs(goal: &GoalDefinition, d: &GoalDefaults) -> Option<u64> 
         .or_else(|| goal.schedule.check.as_ref().map(|_| d.check_every_secs))
 }
 
+/// What an Activation of the Goal reads of the earlier ones.
+pub fn context_of(goal: &GoalDefinition, d: &GoalDefaults) -> GoalContext {
+    goal.schedule.context.unwrap_or(d.context)
+}
+
 /// When the Goal inferred last (the end of its last Activation).
 pub fn last_inference_ms(state: Option<&GoalState>) -> Option<u64> {
     state.and_then(|s| s.last_activation.as_ref()).map(|l| l.at_ms)
@@ -249,6 +292,8 @@ pub struct GateInput<'a> {
     pub usage: &'a GoalUsage,
     pub agent: &'a AgentUsage,
     pub now_ms: u64,
+    /// The user spoke to the Goal: the hard interval does not hold it.
+    pub spoken: bool,
 }
 
 /// Steps 1–4 of the gate: dormant, hard interval, hard guarantee, budgets.
@@ -257,7 +302,7 @@ pub fn gate(i: &GateInput<'_>) -> GateVerdict {
     if i.goal.status != GoalStatus::Active {
         return GateVerdict::Dormant;
     }
-    if let Some(last) = last_inference_ms(i.state) {
+    if let Some(last) = last_inference_ms(i.state).filter(|_| !i.spoken) {
         let min = min_interval_secs(i.goal, i.defaults) * 1000;
         if i.now_ms.saturating_sub(last) < min {
             return GateVerdict::Held {
@@ -291,6 +336,21 @@ pub fn gate(i: &GateInput<'_>) -> GateVerdict {
     GateVerdict::Pass { guarantee: false }
 }
 
+/// Check errors in a row that wake the Goal once like the hard guarantee.
+pub const CHECK_ERRORS_WAKE: u32 = 3;
+
+/// Failed Activations in a row the user is told about.
+pub const FAILING_NOTIFY: u32 = 3;
+
+/// The check failed often enough to wake the Goal before the hard guarantee
+/// (once per row of errors, never closer than the hard interval to the last
+/// inference): a script that is broken says nothing and sends nothing.
+pub fn errors_due(goal: &GoalDefinition, state: Option<&GoalState>, schedule: &GoalSchedule, d: &GoalDefaults, now_ms: u64) -> bool {
+    schedule.check_errors >= CHECK_ERRORS_WAKE
+        && !schedule.guarantee_posted_for_errors
+        && last_inference_ms(state).is_none_or(|last| now_ms.saturating_sub(last) >= min_interval_secs(goal, d) * 1000)
+}
+
 /// The hard guarantee is due: too long without an inference.
 pub fn guarantee_due(goal: &GoalDefinition, state: Option<&GoalState>, d: &GoalDefaults, now_ms: u64) -> bool {
     guarantee_secs(goal, d).is_some_and(|g| now_ms.saturating_sub(guarantee_since_ms(goal, state)) >= g * 1000)
@@ -304,6 +364,19 @@ pub async fn gate_now(
     d: &GoalDefaults,
     now_ms: u64,
 ) -> Result<(GateVerdict, GoalUsage, AgentUsage)> {
+    gate_for(agent, goal, state, d, now_ms, false).await
+}
+
+/// [`gate_now`] for inputs that do (`spoken`) or do not carry the user's
+/// words.
+pub async fn gate_for(
+    agent: &dyn AgentStateClient,
+    goal: &GoalDefinition,
+    state: Option<&GoalState>,
+    d: &GoalDefaults,
+    now_ms: u64,
+    spoken: bool,
+) -> Result<(GateVerdict, GoalUsage, AgentUsage)> {
     let budget = effective_budget(goal, d);
     let usage = period_usage(agent, &goal.goal_id, state, now_ms, window_secs(&budget)).await?;
     let agent_use = agent_usage(agent, d, now_ms).await?;
@@ -315,6 +388,7 @@ pub async fn gate_now(
         usage: &usage,
         agent: &agent_use,
         now_ms,
+        spoken,
     });
     Ok((v, usage, agent_use))
 }
@@ -338,6 +412,11 @@ pub fn activate_key(goal_id: &str, request_id: &str) -> String {
 /// stretch: an inference moves `since_ms`).
 pub fn guarantee_key(goal_id: &str, since_ms: u64) -> String {
     format!("goal:{goal_id}:guarantee:{since_ms}")
+}
+
+/// … posted for a row of check errors.
+pub fn errors_key(goal_id: &str, at_ms: u64) -> String {
+    format!("goal:{goal_id}:guarantee:errors:{at_ms}")
 }
 
 /// `event` name of a run opportunity of the runtime.

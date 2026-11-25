@@ -5,10 +5,13 @@ import type {
   GoalActivation,
   GoalChange,
   GoalDefinition,
+  GoalPeriod,
   GoalSchedule,
   GoalState,
   HostedStatus,
   InstallPlan,
+  JobRun,
+  JobView,
   KnownRuntime,
   KnownWorkspace,
   MemoryEntry,
@@ -39,23 +42,29 @@ const WORK_RUNNING = 'work-b41d09e2'
 const WORK_PENDING = 'work-5c8e17aa'
 const WORK_FAILED = 'work-e02b66f4'
 const CHECK = 'work-20261101-4'
-const GOAL_BUILTIN = 'goal-memory-maintenance'
+const GOAL_SELF = 'goal-self-improve'
 const GOAL_TIDY = 'goal-downloads-tidy'
 const GOAL_ARCHIVED = 'goal-photo-backlog'
+const GOAL_SITES = 'goal-site-status'
 const SLOT_SECS = 1800
 const slotNow = Math.floor(now / 1000 / SLOT_SECS)
 // The goals' statistics period (fixed windows of a day, as the host counts them).
-const PERIOD_START = Math.floor(now / 86_400_000) * 86_400_000
-const MEMORY_CHECK = 'goal_checks/memory_maintenance.ts'
-const MEMORY_CHECK_V1 = `// Check of the built-in Memory maintenance goal (its initial version).
+const DAY_MS = 86_400_000
+const PERIOD_START = Math.floor(now / DAY_MS) * DAY_MS
+const SELF_CHECK = 'goal_checks/self_improve.ts'
+const SELF_CHECK_V1 = `// Check of the built-in self improvement goal (its initial version).
 export default async function check(ctx, state) {
-  const status = await ctx.host.call('memory.status', { full: true })
-  const pending = status.pending ?? {}
-  const run = (pending.new ?? 0) + (pending.due ?? 0) + (status.due_reviews ?? 0) > 0
-  return { run, reason: run ? 'memory holds material' : undefined, state }
+  const s = state ?? {}
+  const reasons = []
+  const memory = await ctx.host.call('memory.status', { full: true })
+  const pending = memory.pending ?? {}
+  if ((pending.new ?? 0) + (pending.due ?? 0) + (memory.due_reviews ?? 0) > 0) reasons.push('memory: ' + pending.new + ' new, ' + pending.due + ' due')
+  // Every 6 hours: manuals (work frozen with a manual since the last look), tools (commands work did not find).
+  return { run: reasons.length > 0, reason: reasons.join('\\n'), state: { ...s, memory: { digest: memory.digest, full_check_at: ctx.now_ms } } }
 }
 `
-const MEMORY_CHECK_V2 = MEMORY_CHECK_V1.replace("{ full: true }", "{ full: !state?.digest }").replace('(its initial version)', '(rewritten by the goal: the full check only when the digest moved)')
+const MEMORY_NOTE = 'scheduled check: memory: 14 new, 2 due, 3 waiting, 0 cognitions due for review'
+const SELF_CHECK_V2 = SELF_CHECK_V1.replace('{ full: true }', '{ full: !s.memory?.digest }').replace('(its initial version)', '(rewritten by the goal: the full check only when the digest moved)')
 const iso = (seconds: number) => new Date(now + seconds * 1000).toISOString()
 
 const entry = (
@@ -342,7 +351,30 @@ interface GoalFixture {
   revisions?: Record<number, GoalDefinition>
   /** Check script source by version. */
   scripts?: Record<number, string>
+  /** What the statistics say of the periods besides the activations, newest first. */
+  periods?: Partial<GoalPeriod>[]
+  jobs?: JobFixture[]
 }
+
+interface JobFixture {
+  view: JobView
+  /** Oldest first. */
+  runs: JobRun[]
+  logs: Record<string, string>
+}
+
+const jobRun = (run_id: string, started: number, took: number, extra: Partial<JobRun> = {}): JobRun => ({
+  run_id, version: 1, at_ms: started, ended_at_ms: started + took * 1000, status: 'ok', summary: '', trigger: 'schedule', exit_code: 0, attempts: 1, tokens: 0, ...extra,
+})
+
+const jobFixture = (goal_id: string, job_id: string, title: string, runs: JobRun[], extra: Partial<JobView>, logs: Record<string, string> = {}): JobFixture => ({
+  view: {
+    schema: 'opendan.goal_job/1', goal_id, job_id, title, version: 1, command: ['./run.ts'], timeout_secs: 300, enabled: true,
+    updated_at_ms: ago(86400), updated_by: `work_session:${WORK_PENDING}`, failures: 0, versions: [1], last_run: runs.at(-1), ...extra,
+  },
+  runs,
+  logs,
+})
 
 const noStats = (): GoalSchedule['stats'] => ({
   period_start_ms: PERIOD_START, skipped_min_interval: 0, skipped_budget: 0, checks_true: 0, checks_false: 0, checks_error: 0, guarantees: 0, notified: 0,
@@ -392,40 +424,44 @@ const change = (seq: number, at_ms: number, kind: string, who: string, via: stri
 
 const buildGoalFixtures = (): GoalFixture[] => {
   const builtin: GoalFixture = {
-    def: goalDef(GOAL_BUILTIN, 'Memory maintenance', 'Consolidate what the agent perceived into cognition, review what is due and route what was discovered.', {
-      healthy_state: 'Perceptions that reached their processing condition are disposed reliably; cognition is traceable and reviewed on time; discovered items have a destination.',
-      constraints: ['Never record perceptions of its own', 'Small batches: about 20 materials, at most 3 per activation'],
+    def: goalDef(GOAL_SELF, 'Self improvement', 'Make this agent better at its work by its own record: first that it can do what it is asked, then that it needs fewer rounds and tokens for it.', {
+      healthy_state: 'Perceptions that reached their processing condition are reliably disposed of; manuals say what the recent work that used them actually had to do; no command is missing that two pieces of work needed.',
+      constraints: ['A duty that is off is not yours', 'The goal records no perceptions of its own', 'A judgement about a manual or a missing tool rests on at least two work sessions actually read'],
+      initial_skills: ['self_improve_memory', 'self_improve_manuals', 'self_improve_tools', 'goal_upkeep'].map((name) => ({ name, ref: `goal_skills/${name}/SKILL.md` })),
       created_by: { principal: AGENT, via: 'opendan' },
-      budget: { activation: { max_total_tokens: 32000, max_runs: 4 }, period: { window_secs: 86400, max_total_tokens: 200000, max_activations: 48 } },
+      budget: { activation: { max_total_tokens: 500000, max_runs: 6 }, period: { window_secs: 86400, max_total_tokens: 1800000, max_activations: 48 } },
       schedule: {
         every_secs: SLOT_SECS,
-        check: { version: 2, sha256: 'b7e1c0a4', source: `goal_session:${GOAL_BUILTIN}-e1`, package: MEMORY_CHECK, updated_at_ms: ago(86400) },
+        check: { version: 2, sha256: 'b7e1c0a4', source: `goal_session:${GOAL_SELF}-e1`, package: SELF_CHECK, updated_at_ms: ago(86400) },
       },
-      behavior: 'memory_maintenance',
+      behavior: 'goal',
       status_by: AGENT,
-      idempotency_key: 'builtin:memory_maintenance',
+      idempotency_key: 'builtin:self_improve',
       updated_at_ms: ago(5400),
-      extensions: { opendan: { builtin: 'memory_maintenance', policy_version: 1, capabilities: ['memory_consolidation'], records_perception: false } },
+      extensions: { opendan: { builtin: 'self_improve', policy_version: 1, capabilities: ['memory_consolidation'], records_perception: false } },
     }),
     state: {
       schema: 'opendan.goal_state/1',
-      goal_id: GOAL_BUILTIN,
+      goal_id: GOAL_SELF,
       rev: 23,
       epoch: 1,
       goal_revision_seen: 1,
       last_activation: {
         epoch: 1, seq: 7, at_ms: ago(5400),
-        reasons: [{ kind: 'scheduled', key: `sched:${GOAL_BUILTIN}:1:7` }],
+        reasons: [{ kind: 'scheduled', key: `sched:${GOAL_SELF}:1:7`, note: MEMORY_NOTE }],
         outcome: 'completed', decision: 'acted',
-        summary: 'Consolidated 2 batches (14 materials); 1 candidate needs confirmation.',
+        summary: 'Consolidated 2 batches (14 materials); asked about the weekly release report.',
       },
       distance: { text: '3 materials wait for their processing condition; nothing is due for review.', observed_at_ms: ago(5400), unknowns: [] },
       questions: [{
-        text: 'You mentioned a weekly release report three times. Should I keep a schedule for it (Fridays 16:00)?',
+        text: 'You mentioned a weekly release report three times (Fridays 16:00, America/Los_Angeles). Should it be in the calendar?',
         at_ms: ago(5400), epoch: 1, activation: 7, notify_id: 'ntf-7c2e', status: 'open', candidate_id: 'cand-weekly-report',
+        options: [{ id: 'add', label: 'Add it to the calendar' }, { id: 'no', label: 'No' }],
       }],
       usage: { period_start_ms: PERIOD_START, tokens: 41200, activations: 5, works: 0, work_tokens: 0 },
       consecutive_no_action: 0,
+      activations_failed_in_a_row: 0,
+      works_failed_in_a_row: 0,
       holds: { period_start_ms: PERIOD_START, min_interval: 2, budget: 0 },
       maintenance: {
         receipts: [
@@ -447,7 +483,7 @@ const buildGoalFixtures = (): GoalFixture[] => {
     },
     schedule: {
       schema: 'opendan.goal_schedule/1',
-      goal_id: GOAL_BUILTIN,
+      goal_id: GOAL_SELF,
       backend: 'local',
       timetable: `every:${SLOT_SECS}`,
       last_slot: slotNow,
@@ -460,19 +496,37 @@ const buildGoalFixtures = (): GoalFixture[] => {
       last_check: { at_ms: ago(60), outcome: 'false', script_version: 2, elapsed_ms: 140, held: 'min_interval' },
       check_errors: 0,
       last_check_error: 'memory.status timed out after 10s',
-      check_state: { digest: 'sha256:1f9c2b7e', full_check_at: ago(7200), next_deadline: iso(4 * 3600) },
+      check_state: {
+        memory: { digest: 'sha256:1f9c2b7e', full_check_at: ago(7200), next_deadline: iso(4 * 3600), next_review_at: null, backlog: false },
+        gathered_at: ago(3 * 3600),
+        manuals: { seen_total: 41, looked_at: ago(86400) },
+        tools: { since_ms: ago(7200), missing: { xlsx2csv: [WORK_FAILED, WORK_PENDING] }, told: ['xlsx2csv'] },
+      },
       stats: { period_start_ms: PERIOD_START, skipped_min_interval: 1, skipped_budget: 0, checks_true: 3, checks_false: 14, checks_error: 1, guarantees: 0, notified: 0 },
       guarantee_posted_for_ms: 0,
       switched_off: false,
       updated_at_ms: ago(60),
     },
-    activations: [5, 6, 7].map((seq) =>
-      activation(GOAL_BUILTIN, 1, seq, ago(5400 + (7 - seq) * 7200), seq === 7
-        ? { decision: 'acted', summary: 'Consolidated 2 batches (14 materials); 1 candidate needs confirmation.', cost: { runs: 2, total_tokens: 18700 } }
-        : { summary: 'Checked: nothing reached its processing condition.' }),
-    ),
-    changes: [change(1, ago(86400 * 3), 'created', AGENT, 'opendan', { revision: 1, epoch: 1, reason: 'seeded builtin:memory_maintenance' })],
-    scripts: { 1: MEMORY_CHECK_V1, 2: MEMORY_CHECK_V2 },
+    activations: [
+      activation(GOAL_SELF, 1, 4, ago(86400 * 2), {
+        reasons: [{ kind: 'scheduled', key: `sched:${GOAL_SELF}:1:4`, note: `scheduled check: tools: \`xlsx2csv\` not found by 2 work sessions (${WORK_FAILED}, ${WORK_PENDING})` }],
+        decision: 'acted', summary: 'Made xlsx2csv and its manual; told the owner.', cost: { runs: 3, total_tokens: 148000 },
+      }),
+      activation(GOAL_SELF, 1, 5, ago(86400), {
+        reasons: [{ kind: 'scheduled', key: `sched:${GOAL_SELF}:1:5`, note: 'scheduled check: manuals: 4 new work session(s) since the last look (usage record .meta/skills_state.json)' }],
+        decision: 'acted', summary: 'Rewrote the steps of aigc_audio that two sessions had to work around.', cost: { runs: 2, total_tokens: 121000 },
+      }),
+      activation(GOAL_SELF, 1, 6, ago(5400 + 7200), {
+        reasons: [{ kind: 'scheduled', key: `sched:${GOAL_SELF}:1:6`, note: MEMORY_NOTE }],
+        summary: 'Checked: nothing reached its processing condition.',
+      }),
+      activation(GOAL_SELF, 1, 7, ago(5400), {
+        reasons: [{ kind: 'scheduled', key: `sched:${GOAL_SELF}:1:7`, note: MEMORY_NOTE }],
+        decision: 'acted', summary: 'Consolidated 2 batches (14 materials); asked about the weekly release report.', cost: { runs: 2, total_tokens: 18700 },
+      }),
+    ],
+    changes: [change(1, ago(86400 * 3), 'created', AGENT, 'opendan', { revision: 1, epoch: 1, reason: 'seeded builtin:self_improve' })],
+    scripts: { 1: SELF_CHECK_V1, 2: SELF_CHECK_V2 },
   }
 
   const tidy: GoalFixture = {
@@ -513,6 +567,8 @@ const buildGoalFixtures = (): GoalFixture[] => {
       recent_works: [{ sid: 'work-tidy-01', outcome: 'succeeded', one_line_status: 'Moved 12 archives into the workspace', absorbed_in: [1, 2] }],
       usage: { period_start_ms: PERIOD_START, tokens: 12800, activations: 1, works: 0, work_tokens: 0 },
       consecutive_no_action: 0,
+      activations_failed_in_a_row: 0,
+      works_failed_in_a_row: 0,
       holding: { reason: 'min_interval', since_ms: ago(600), until_ms: now + 300_000, checked_at_ms: ago(600) },
       holds: { period_start_ms: PERIOD_START, min_interval: 1, budget: 0 },
       updated_at_ms: ago(43200),
@@ -575,6 +631,8 @@ const buildGoalFixtures = (): GoalFixture[] => {
       recent_works: [{ sid: WORK_PENDING, outcome: 'succeeded', one_line_status: 'Renamed 212 photos, 3 skipped', absorbed_in: [1, 1] }],
       usage: { period_start_ms: ago(86400 * 2), tokens: 2600, activations: 1, works: 1, work_tokens: 9800 },
       consecutive_no_action: 0,
+      activations_failed_in_a_row: 0,
+      works_failed_in_a_row: 0,
       holds: { period_start_ms: ago(86400 * 2), min_interval: 0, budget: 0 },
       last_error: { kind: 'llm', message: 'provider returned 529 (overloaded) after 3 attempts', at_ms: ago(86400 * 4) },
       updated_at_ms: ago(86400 * 2),
@@ -589,7 +647,104 @@ const buildGoalFixtures = (): GoalFixture[] => {
     ],
   }
 
-  return [builtin, tidy, archived]
+  const checkRuns = [
+    jobRun('run-check-1', ago(86400 * 2), 2, { trigger: 'install', version: 1, summary: '4 sites up', metrics: { sites: 4, down: 0 } }),
+    jobRun('run-check-2', ago(7500), 34, { version: 3, trigger: 'install', attempts: 2, summary: '4 sites up', metrics: { sites: 4, down: 0 } }),
+    jobRun('run-check-3', ago(3000), 2, { version: 3, summary: '3 sites up, blog.example.org answered 502', metrics: { sites: 4, down: 1 } }),
+  ]
+  const reportRuns = [1, 2, 3].map((i) =>
+    jobRun(`run-report-${i}`, ago(86400 * (4 - i)), 41, {
+      version: 2, status: 'failed', kind: i === 3 ? 'auth' : 'program', exit_code: i === 3 ? 77 : 1, tokens: i === 3 ? 3100 : 0,
+      summary: i === 3 ? 'the status account was signed out' : 'report.ts: cannot read data/sites.json',
+    }),
+  )
+  const sites: GoalFixture = {
+    def: goalDef(GOAL_SITES, 'Keep the site status page', 'Know within the hour when one of my sites is down, keep the status page right and repair what broke it.', {
+      healthy_state: 'The status page agrees with the last check; no check is older than two hours.',
+      budget: { activation: { max_total_tokens: 80000, max_runs: 4 }, period: { window_secs: 86400, max_total_tokens: 400000 } },
+      schedule: { every_secs: 3600, context: 'carry' },
+      created_by: { principal: OWNER, via: `ui_session:${UI}`, work: WORK_PENDING },
+      change_seq: 4,
+      updated_at_ms: ago(7200),
+    }),
+    state: {
+      schema: 'opendan.goal_state/1',
+      goal_id: GOAL_SITES,
+      rev: 14,
+      epoch: 1,
+      goal_revision_seen: 1,
+      last_activation: {
+        epoch: 1, seq: 3, at_ms: ago(7200), reasons: [{ kind: 'scheduled', key: `sched:${GOAL_SITES}:1:3` }],
+        outcome: 'failed', decision: 'unknown', summary: 'The repair Work did not finish.',
+      },
+      distance: { text: 'blog.example.org has been down for 40 minutes; the daily report has not gone out for 3 days.', observed_at_ms: ago(7200) },
+      questions: [
+        {
+          text: 'The status account was signed out. How should the report go on?',
+          at_ms: ago(7200), epoch: 1, activation: 3, notify_id: 'ntf-91d0', status: 'open',
+          options: [{ id: 'signin', label: 'I will sign in again' }, { id: 'mail', label: 'Send it by mail instead' }, { id: 'stop', label: 'Stop the report' }],
+          allow_text: true,
+        },
+        {
+          text: 'Should a site that answers slowly count as down?',
+          at_ms: ago(86400 * 2), epoch: 1, activation: 1, notify_id: 'ntf-77aa', status: 'answered', answer: 'Only above 10 seconds',
+          options: [{ id: 'yes', label: 'Yes' }, { id: 'no', label: 'No' }, { id: 'slow', label: 'Only above 10 seconds' }],
+        },
+      ],
+      recent_works: [{ sid: WORK_FAILED, outcome: 'failed', one_line_status: 'Could not repair the report', absorbed_in: [1, 3] }],
+      usage: { period_start_ms: PERIOD_START, tokens: 18200, activations: 2, works: 1, work_tokens: 9400, job_tokens: 3100 },
+      consecutive_no_action: 0,
+      activations_failed_in_a_row: 2,
+      works_failed_in_a_row: 3,
+      holds: { period_start_ms: PERIOD_START, min_interval: 0, budget: 0 },
+      updated_at_ms: ago(7200),
+    },
+    schedule: {
+      schema: 'opendan.goal_schedule/1',
+      goal_id: GOAL_SITES,
+      backend: 'local',
+      timetable: 'every:3600',
+      last_slot: Math.floor(now / 3_600_000),
+      last_fire_at_ms: ago(7200),
+      start_posted_epoch: 1,
+      skipped: [{ slot: Math.floor(now / 3_600_000), at_ms: ago(600), reason: 'waiting' }],
+      last_check: { at_ms: ago(600), outcome: 'true', reason: 'blog.example.org is down', script_version: 1, elapsed_ms: 90, held: 'waiting' },
+      ...gateState,
+      stats: { ...noStats(), checks_true: 2, checks_false: 17 },
+      updated_at_ms: ago(600),
+    },
+    activations: [
+      activation(GOAL_SITES, 1, 1, ago(86400 * 2), { reasons: [{ kind: 'scheduled', key: `sched:${GOAL_SITES}:1:1` }], decision: 'needs_info', summary: 'Asked what counts as down.', cost: { runs: 1, total_tokens: 7100 } }),
+      activation(GOAL_SITES, 1, 2, ago(86400), { reasons: [{ kind: 'scheduled', key: `sched:${GOAL_SITES}:1:2` }], outcome: 'budget_exhausted', decision: 'unknown', summary: 'Ran out of budget while reading the logs.', cost: { runs: 4, total_tokens: 80000 } }),
+      activation(GOAL_SITES, 1, 3, ago(7200), { reasons: [{ kind: 'scheduled', key: `sched:${GOAL_SITES}:1:3` }], outcome: 'failed', decision: 'unknown', summary: 'The repair Work did not finish.', works_created: [WORK_FAILED], cost: { runs: 2, total_tokens: 18200 } }),
+    ],
+    changes: [
+      change(1, ago(86400 * 3), 'created', OWNER, `work_session:${WORK_PENDING}`, { revision: 1, epoch: 1 }),
+      change(2, ago(86400 * 3), 'job', OWNER, `work_session:${WORK_PENDING}`, { epoch: 1, detail: { job_id: 'check_sites', what: 'put', version: 1 } }),
+      change(3, ago(7600), 'job', OWNER, `goal_session:${GOAL_SITES}-e1`, { epoch: 1, detail: { job_id: 'check_sites', what: 'put', version: 3 } }),
+      change(4, ago(7200), 'check', OWNER, `goal_session:${GOAL_SITES}-e1`, { epoch: 1, reason: 'the repair needs what the last activation read', detail: { every_secs: 3600, cron: null, timezone: null, context: 'carry', script: null } }),
+    ],
+    periods: [
+      { activations: 1, decisions: { unknown: 1 }, tokens_by_goal: 18200, tokens_by_works: 9400, tokens_by_jobs: 3100, tokens_per_activation: 18200, checks_true: 2, checks_false: 17, job_runs_ok: 19, job_runs_failed: 1, works_created: 1 },
+      { activations: 1, decisions: { unknown: 1 }, tokens_by_goal: 80000, tokens_per_activation: 80000, tokens_by_works: 2100, checks_true: 1, checks_false: 22, checks_error: 1, job_runs_ok: 23, job_runs_failed: 1 },
+      { activations: 2, decisions: { no_action: 1, needs_info: 1 }, tokens_by_goal: 7100, tokens_per_activation: 3550, checks_true: 1, checks_false: 23, job_runs_ok: 24, job_runs_failed: 1 },
+    ],
+    jobs: [
+      jobFixture(GOAL_SITES, 'check_sites', 'Check the sites', checkRuns, { version: 3, versions: [1, 2, 3], every_secs: 3600, next_at_ms: now + 600_000, updated_by: `goal_session:${GOAL_SITES}-e1` }, {
+        'run-check-3': 'GET https://www.example.org 200 (180 ms)\nGET https://shop.example.org 200 (240 ms)\nGET https://blog.example.org 502 (95 ms)\n{"summary":"3 sites up, blog.example.org answered 502","metrics":{"sites":4,"down":1}}\n',
+        'run-check-2': 'blog.example.org: connection reset\n\n[tried again after 30s]\n{"summary":"4 sites up","metrics":{"sites":4,"down":0}}\n',
+      }),
+      jobFixture(GOAL_SITES, 'daily_report', 'Send the daily report', reportRuns, { version: 2, versions: [1, 2], cron: '0 8 * * *', timezone: 'America/Los_Angeles', next_at_ms: now + 9 * 3_600_000, failures: 3 }, {
+        'run-report-3': 'POST /login 401\n{"kind":"auth","summary":"the status account was signed out"}\n',
+      }),
+      jobFixture(GOAL_SITES, 'render_page', 'Render the status page', [jobRun('run-render-1', ago(1800), 6, { summary: 'page written' })], {
+        every_secs: 900, next_at_ms: now + 300_000, running: { run_id: 'run-render-2', version: 1, at_ms: ago(8), trigger: 'schedule', pid: 4242 },
+      }),
+      jobFixture(GOAL_SITES, 'trim_history', 'Trim the history', [jobRun('run-trim-1', ago(86400), 3, { status: 'killed', exit_code: undefined, summary: 'ended by the host' })], { cron: '30 3 * * 0', timezone: 'UTC', enabled: false }),
+    ],
+  }
+
+  return [builtin, tidy, archived, sites]
 }
 
 const delay = () => new Promise((resolve) => window.setTimeout(resolve, 60))
@@ -629,7 +784,7 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
         def: goalDef(id, `Chore ${i}`, `Keep chore ${i} done.`, { updated_at_ms: ago(86400 * 4 + i) }),
         state: {
           schema: 'opendan.goal_state/1', goal_id: id, rev: 1, epoch: 1,
-          usage: { period_start_ms: PERIOD_START }, consecutive_no_action: 0, holds: { period_start_ms: PERIOD_START, min_interval: 0, budget: 0 },
+          usage: { period_start_ms: PERIOD_START }, consecutive_no_action: 0, activations_failed_in_a_row: 0, works_failed_in_a_row: 0, holds: { period_start_ms: PERIOD_START, min_interval: 0, budget: 0 },
         },
         schedule: { schema: 'opendan.goal_schedule/1', goal_id: id, backend: 'local', start_posted_epoch: 1, ...gateState, stats: noStats() },
         activations: [],
@@ -651,6 +806,31 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
     const found = goals.find((g) => g.def.goal_id === goalId)
     if (!found) throw new OpenDanError('not_found', `goal ${goalId} is not registered`)
     return found
+  }
+  const findJob = (goalId: string, jobId: string): JobFixture => {
+    const found = findGoal(goalId).jobs?.find((j) => j.view.job_id === jobId)
+    if (!found) throw new OpenDanError('not_found', `job ${jobId} of goal ${goalId}`)
+    return found
+  }
+  const endJob = (job: JobFixture, extra: Partial<JobRun>) => {
+    const running = job.view.running
+    if (!running) return
+    delete job.view.running
+    const run: JobRun = {
+      run_id: running.run_id, version: running.version, at_ms: running.at_ms, ended_at_ms: Date.now(), status: 'ok', summary: 'done', trigger: running.trigger, attempts: 1, tokens: 0, ...extra,
+    }
+    job.runs.push(run)
+    job.logs[run.run_id] = `${run.summary}\n`
+    job.view.last_run = run
+    if (run.status === 'ok') job.view.failures = 0
+  }
+  const startJob = (job: JobFixture, trigger: string) => {
+    job.view.running = { run_id: `run-${job.view.job_id}-${job.runs.length + 1}`, version: job.view.version, at_ms: Date.now(), trigger }
+    window.setTimeout(() => endJob(job, {}), 3000)
+  }
+  const jobChange = (goalId: string, job: JobFixture, what: string) => {
+    const g = findGoal(goalId)
+    goalChange(g, 'job', { epoch: g.def.session.epoch, detail: { job_id: job.view.job_id, what, version: job.view.version } })
   }
   const goalChange = (g: GoalFixture, kind: string, extra: Partial<GoalChange>) => {
     g.def.change_seq = (g.def.change_seq ?? 0) + 1
@@ -916,7 +1096,8 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
   const skillAudit: SkillAudit[] = [
     { at_ms: ago(86400 * 9), by: OWNER, action: 'disable', skill: 'work:old_invoice_flow', note: 'the accounting tool changed' },
     { at_ms: ago(86400 * 3), by: OWNER, action: 'install', skill: 'work:yt_fetch', note: 'media-skills 0.2.0' },
-    { at_ms: ago(7200), by: 'goal:skill_crystallize', action: 'revise', skill: 'work:old_invoice_flow', note: 'body rewritten from 3 sessions; previous text in revisions/' },
+    { at_ms: ago(86400 * 2), by: `session:${GOAL_SELF}-e1`, action: 'add', skill: 'work:xlsx2csv', note: 'work-e02b66f4 and work-5c8e17aa lacked it' },
+    { at_ms: ago(86400), by: WHO, action: 'revise', skill: 'work:old_invoice_flow', note: 'body rewritten from 3 sessions; previous text in revisions/' },
   ]
   const audit = (action: string, skillKey?: string, note?: string) => {
     skillAudit.push({ at_ms: Date.now(), by: OWNER, action, ...(skillKey ? { skill: skillKey } : {}), ...(note ? { note } : {}) })
@@ -927,7 +1108,7 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
     return found
   }
   let uiNames: string[] | null = null
-  let crystallize: boolean | undefined
+  const selfImprove: Record<string, boolean> = {}
   const uiCandidates = () => skills.filter((s) => s.kind === 'work' && s.enabled && s.scope?.split(',').includes('ui')).map((s) => s.name)
   const uiSkills = (): UiSkills => {
     const names = uiNames ?? ['ui_core']
@@ -1054,7 +1235,7 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
           { name: 'agent_state_service', enabled: true, running: true, note: 'port 4060' },
           { name: 'webui', enabled: true, running: true },
           { name: 'ui', enabled: true, running: true, note: '1 inbox' },
-          { name: 'memory_maintenance', enabled: true, running: true, note: 'built-in goal seeded by the goals module; its check script decides when it infers' },
+          { name: 'self_improve', enabled: true, running: true, note: 'built-in goal seeded by the goals module; its check script decides when it infers' },
         ],
         hosted: structuredClone(fx.hostedList),
         ui: {
@@ -1332,7 +1513,7 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
 
     memoryOverview: async () => {
       await delay()
-      const maintenance = memoryScene === 'empty' ? undefined : goals.find((g) => g.def.goal_id === GOAL_BUILTIN)
+      const maintenance = memoryScene === 'empty' ? undefined : goals.find((g) => g.def.goal_id === GOAL_SELF)
       return structuredClone({
         cognitions: { current: cognitions.length },
         perceptions: { total: perceptions.length, pending: perceptions.filter((p) => p.state === 'pending' || p.state === 'deferred').length },
@@ -1577,8 +1758,8 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
       }
       const next = structuredClone(g.def)
       if (request.budget) next.budget = structuredClone(request.budget)
-      // The check script changes through set_check only.
-      if (request.schedule) next.schedule = { ...structuredClone(request.schedule), check: g.def.schedule?.check }
+      // The check script and the context change through set_check only.
+      if (request.schedule) next.schedule = { ...structuredClone(request.schedule), check: g.def.schedule?.check, context: g.def.schedule?.context }
       if (next.schedule?.every_secs != null && next.schedule.every_secs < 60) throw new OpenDanError('invalid_argument', 'schedule: every_secs is at least 60')
       if (JSON.stringify(next) === JSON.stringify(g.def)) return structuredClone(g.def)
       ;(g.revisions ??= {})[g.def.revision] = structuredClone(g.def)
@@ -1604,16 +1785,17 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
         delete schedule.every_secs
       }
       if (request.timezone != null) schedule.timezone = request.timezone.trim() || undefined
+      if (request.context) schedule.context = request.context
       if (request.clear_script) delete schedule.check
       if (request.restore_package) {
         const pkg = schedule.check?.package
         if (!pkg) throw new OpenDanError('invalid_argument', `goal ${goalId} has no package check script to restore`)
         const version = Math.max(0, ...Object.keys(g.scripts ?? {}).map(Number)) + 1
-        ;(g.scripts ??= {})[version] = MEMORY_CHECK_V1
+        ;(g.scripts ??= {})[version] = SELF_CHECK_V1
         schedule.check = { version, sha256: 'a51f9d02', source: `package:${pkg}`, package: pkg, updated_at_ms: Date.now() }
       }
       g.schedule.timetable = schedule.cron ? `cron:${schedule.cron}@${schedule.timezone ?? 'UTC'}` : schedule.every_secs ? `every:${schedule.every_secs}` : schedule.check ? 'every:300' : undefined
-      goalChange(g, 'check', { reason: request.reason, epoch: g.def.session.epoch, detail: { every_secs: schedule.every_secs, cron: schedule.cron, timezone: schedule.timezone, script: schedule.check } })
+      goalChange(g, 'check', { reason: request.reason, epoch: g.def.session.epoch, detail: { every_secs: schedule.every_secs, cron: schedule.cron, timezone: schedule.timezone, context: schedule.context, script: schedule.check } })
       return structuredClone(g.def)
     },
 
@@ -1622,6 +1804,91 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
       const g = findGoal(goalId)
       const v = version ?? g.def.schedule?.check?.version
       return v != null ? g.scripts?.[v] ?? null : null
+    },
+
+    goalStats: async (goalId, periods) => {
+      await delay()
+      const g = findGoal(goalId)
+      const windowMs = (g.def.budget?.period?.window_secs ?? 86400) * 1000
+      const current = Math.floor(Date.now() / windowMs) * windowMs
+      const tally = (names: string[]) => names.reduce<Record<string, number>>((sum, name) => ({ ...sum, [name]: (sum[name] ?? 0) + 1 }), {})
+      return structuredClone({
+        goal_id: goalId,
+        period_secs: windowMs / 1000,
+        periods: Array.from({ length: periods }, (_, i): GoalPeriod => {
+          const back = periods - 1 - i
+          const start = current - back * windowMs
+          const own = g.activations.filter((a) => a.ended_at_ms >= start && a.ended_at_ms < start + windowMs)
+          const spent = own.reduce((sum, a) => sum + (a.cost?.total_tokens ?? 0), 0)
+          return {
+            start_ms: start, end_ms: start + windowMs, start: new Date(start).toISOString(), activations: own.length,
+            decisions: tally(own.map((a) => a.decision)), outcomes: tally(own.map((a) => a.outcome)), reasons: tally(own.flatMap((a) => (a.reasons ?? []).map((r) => r.kind))),
+            works_created: 0, tokens_by_goal: spent, tokens_by_works: 0, tokens_by_jobs: 0, job_runs_ok: 0, job_runs_failed: 0,
+            tokens_per_activation: own.length ? Math.round(spent / own.length) : 0,
+            checks_true: 0, checks_false: 0, checks_error: 0, notifications_by_checks: 0, skipped_by_interval: 0, skipped_by_budget: 0, hard_guarantees: 0,
+            ...g.periods?.[back],
+          }
+        }),
+        no_action_in_a_row: g.state.consecutive_no_action,
+        activations_failed_in_a_row: g.state.activations_failed_in_a_row,
+        works_failed_in_a_row: g.state.works_failed_in_a_row,
+        check_errors_in_a_row: g.schedule.check_errors,
+      })
+    },
+
+    goalJobs: async (goalId) => {
+      await delay()
+      return structuredClone((findGoal(goalId).jobs ?? []).map((j) => j.view))
+    },
+
+    goalJobRuns: async (goalId, jobId, limit) => {
+      await delay()
+      return structuredClone(findJob(goalId, jobId).runs.slice(-limit))
+    },
+
+    goalJobLog: async (goalId, jobId, runId) => {
+      await delay()
+      return findJob(goalId, jobId).logs[runId] ?? null
+    },
+
+    runGoalJob: async (goalId, jobId) => {
+      await delay()
+      const g = findGoal(goalId)
+      const job = findJob(goalId, jobId)
+      if (g.def.status !== 'active') throw new OpenDanError('goal_conflict', `goal ${goalId} is ${g.def.status}: its jobs do not run`)
+      if (!job.view.enabled) throw new OpenDanError('invalid_argument', `job ${jobId} is switched off (\`goal job enable ${jobId}\`)`)
+      startJob(job, 'manual')
+      return { request_id: `req-${jobId}`, by: 'owner', at_ms: Date.now() }
+    },
+
+    setGoalJobEnabled: async (goalId, jobId, enabled) => {
+      await delay()
+      const job = findJob(goalId, jobId)
+      job.view.enabled = enabled
+      if (enabled) job.view.next_at_ms = Date.now() + 600_000
+      else delete job.view.next_at_ms
+      if (!enabled && job.view.running) endJob(job, { status: 'killed', summary: 'ended by the host' })
+      jobChange(goalId, job, enabled ? 'enable' : 'disable')
+      return structuredClone(job.view)
+    },
+
+    rollbackGoalJob: async (goalId, jobId, to) => {
+      await delay()
+      const job = findJob(goalId, jobId)
+      if (!job.view.versions.includes(to)) throw new OpenDanError('invalid_argument', `job ${jobId} has no version ${to} (kept: [${job.view.versions.join(', ')}])`)
+      job.view.version = to
+      jobChange(goalId, job, 'rollback')
+      if (job.view.enabled) startJob(job, 'install')
+      return structuredClone(job.view)
+    },
+
+    deleteGoalJob: async (goalId, jobId) => {
+      await delay()
+      const g = findGoal(goalId)
+      const job = findJob(goalId, jobId)
+      g.jobs!.splice(g.jobs!.indexOf(job), 1)
+      jobChange(goalId, job, 'delete')
+      return null
     },
 
     skills: async () => {
@@ -1636,7 +1903,7 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
         ...(uiNames ? { ui_cmd_skills: [...uiNames] } : {}),
         usage: { ...Object.fromEntries(skills.filter((s) => s.usage).map((s) => [`${s.kind}:${s.name}`, s.usage!])), none: { frozen: 4, last_ms: ago(5400), recent_sessions: [WORK_FAILED] } },
         audit: structuredClone(skillAudit),
-        ...(crystallize != null ? { crystallize } : {}),
+        ...(Object.keys(selfImprove).length ? { self_improve: { ...selfImprove } } : {}),
       }
     },
 
@@ -1775,11 +2042,14 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
       return {}
     },
 
-    setCrystallize: async (enabled) => {
+    setSelfImprove: async (duty, enabled) => {
       await delay()
-      crystallize = enabled
-      audit(enabled ? 'crystallize_on' : 'crystallize_off')
-      return { crystallize }
+      const duties = ['memory', 'manuals', 'tools']
+      if (!duties.includes(duty)) throw new OpenDanError('invalid_argument', `unknown duty \`${duty}\` (${duties.join(' | ')})`)
+      selfImprove[duty] = enabled
+      audit(`${duty}_${enabled ? 'on' : 'off'}`)
+      findGoal(GOAL_SELF).schedule.switched_off = duties.every((d) => selfImprove[d] === false)
+      return { self_improve: { ...selfImprove } }
     },
   }
 }

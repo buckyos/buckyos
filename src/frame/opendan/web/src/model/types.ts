@@ -655,7 +655,12 @@ export interface GoalScheduleSpec {
   /** Absent: the agent's default; 0: off. */
   guarantee_secs?: number
   start_on_create?: boolean
+  /** Absent: the agent's default. Changed through `goals.set_check` only. */
+  context?: GoalContext
 }
+
+/** What an Activation starts with besides its header: nothing, or the history of the Goal Session. */
+export type GoalContext = 'fresh' | 'carry'
 
 export interface GoalRevise {
   expected_revision: number
@@ -664,7 +669,7 @@ export interface GoalRevise {
   schedule?: GoalScheduleSpec
 }
 
-/** A change of the check script and timetable (not a content revision). */
+/** A change of the check script, the timetable or the context (not a content revision). */
 export interface GoalCheckChange {
   script?: string
   restore_package?: boolean
@@ -672,6 +677,7 @@ export interface GoalCheckChange {
   every_secs?: number
   cron?: string
   timezone?: string
+  context?: GoalContext
   reason?: string
 }
 
@@ -702,7 +708,8 @@ export interface GoalDefinition {
   constraints?: string[]
   initial_skills?: GoalSkill[]
   owner: string
-  created_by: { principal: string; via: string }
+  /** `work`: the Work that created it. */
+  created_by: { principal: string; via: string; work?: string }
   beneficiaries?: string[]
   budget?: GoalBudget
   schedule?: GoalScheduleSpec
@@ -791,6 +798,10 @@ export interface GoalQuestion {
   status?: GoalQuestionStatus
   answer?: string
   candidate_id?: string
+  /** Absent: free text only. */
+  options?: { id: string; label: string }[]
+  /** Free text is taken besides the options. */
+  allow_text?: boolean
 }
 
 export interface GoalWork {
@@ -815,6 +826,7 @@ export interface GoalUsage {
   activations?: number
   works?: number
   work_tokens?: number
+  job_tokens?: number
 }
 
 export interface ConsolidationReceipt {
@@ -913,6 +925,10 @@ export interface GoalState {
   usage: GoalUsage
   /** Activations in a row that ended `no_action`. */
   consecutive_no_action: number
+  /** Activations in a row that failed, ran out of budget or left no valid result. */
+  activations_failed_in_a_row: number
+  /** Work taken in that did not succeed, in a row. */
+  works_failed_in_a_row: number
   holding?: GoalHold
   holds: GoalHolds
   last_error?: unknown
@@ -937,7 +953,7 @@ export interface CheckRecord {
   elapsed_ms: number
   /** Title of the notification the check had the host send. */
   notified?: string
-  /** It ran while the gate held the goal's inferences (`min_interval | period_budget | agent_budget | guarantee`): a `true` was set aside. */
+  /** It ran while the gate held the goal's inferences (`min_interval | period_budget | agent_budget | guarantee | waiting`): a `true` was set aside. */
   held?: string
 }
 
@@ -957,7 +973,7 @@ export interface GateStats {
 export interface SkippedFire {
   slot: number
   at_ms: number
-  /** `paused | not_active | min_interval | period_budget | agent_budget | check_false | check_error | guarantee`. */
+  /** `paused | not_active | min_interval | period_budget | agent_budget | guarantee | waiting | check_false | check_error`. */
   reason: string
 }
 
@@ -981,9 +997,109 @@ export interface GoalSchedule {
   check_state?: unknown
   stats: GateStats
   guarantee_posted_for_ms: number
-  /** A built-in Goal switched off in `agent.toml`: no session, no checks. */
+  /** A built-in Goal switched off in `agent.toml`, or every duty of it by the owner: no session, no checks, no jobs. */
   switched_off: boolean
   updated_at_ms?: number
+}
+
+/** One statistics period (`goals.stats`; the current one is not over yet). */
+export interface GoalPeriod {
+  start_ms: number
+  end_ms: number
+  start: string
+  activations: number
+  decisions: Record<string, number>
+  outcomes: Record<string, number>
+  reasons: Record<string, number>
+  works_created: number
+  tokens_by_goal: number
+  tokens_by_works: number
+  tokens_by_jobs: number
+  job_runs_ok: number
+  job_runs_failed: number
+  tokens_per_activation: number
+  checks_true: number
+  checks_false: number
+  checks_error: number
+  notifications_by_checks: number
+  skipped_by_interval: number
+  skipped_by_budget: number
+  hard_guarantees: number
+}
+
+export interface GoalStats {
+  goal_id: string
+  period_secs: number
+  /** Oldest first; the last one is the current period. */
+  periods: GoalPeriod[]
+  no_action_in_a_row: number
+  activations_failed_in_a_row: number
+  works_failed_in_a_row: number
+  check_errors_in_a_row: number
+}
+
+// Goal jobs (`state/goals/<goal_id>/jobs/<job_id>/`), mirroring lib_opendan/src/goal_jobs.rs.
+export type JobRunStatus = 'ok' | 'failed' | 'timeout' | 'killed'
+
+export interface GoalJob {
+  schema: string
+  goal_id: string
+  job_id: string
+  title: string
+  /** The installed program. */
+  version: number
+  command: string[]
+  every_secs?: number
+  cron?: string
+  timezone?: string
+  timeout_secs: number
+  enabled: boolean
+  updated_at_ms: number
+  /** `owner | ui_session:<sid> | work_session:<sid> | goal_session:<sid>`. */
+  updated_by: string
+}
+
+export interface JobRun {
+  run_id: string
+  version: number
+  at_ms: number
+  ended_at_ms: number
+  status: JobRunStatus
+  /** Why it failed: `transient | auth | program | budget`. */
+  kind?: string
+  summary: string
+  metrics?: unknown
+  /** `schedule | install | manual`. */
+  trigger: string
+  exit_code?: number
+  attempts: number
+  /** Model tokens it used. */
+  tokens: number
+  request_id?: string
+}
+
+export interface JobRunning {
+  run_id: string
+  version: number
+  at_ms: number
+  trigger: string
+  pid?: number
+}
+
+export interface JobView extends GoalJob {
+  running?: JobRunning
+  last_run?: JobRun
+  /** Runs in a row that failed. */
+  failures: number
+  next_at_ms?: number
+  /** Versions kept, oldest first (the installed one included). */
+  versions: number[]
+}
+
+export interface JobRequest {
+  request_id: string
+  by: string
+  at_ms: number
 }
 
 /** Skills (`libopendan::skills`, `protocol::SkillMeta`). */
@@ -1054,8 +1170,8 @@ export interface SkillsState {
   usage?: Record<string, SkillUsage>
   install?: Record<string, SkillInstallState>
   audit?: SkillAudit[]
-  /** The owner's switch of the skill crystallization Goal; absent: the agent package's default. */
-  crystallize?: boolean
+  /** The owner's switches of the self improvement Goal's duties; a duty that is not there is on. */
+  self_improve?: Record<string, boolean>
 }
 
 /** The manuals every new conversation takes. */

@@ -50,6 +50,8 @@ export interface ConversationSurfaceProps extends ConversationHostActions {
   banner?: ReactNode
   /** Beside the history and the composer (MessageHub's session list). */
   leadingPane?: ReactNode
+  /** The icon of a host-defined session panel. */
+  panelIcon?: ReactNode
   /** Extra content of the session panel, shown when it is expanded. */
   panelDetails?: ReactNode
   /** Rows to show instead of the source's history (a host-side filter); the source's stay behind search and media. */
@@ -81,6 +83,7 @@ export function ConversationSurface({
   header,
   banner,
   leadingPane = null,
+  panelIcon = <Ticket size={15} />,
   panelDetails,
   historyReader: filteredReader,
   composer = true,
@@ -232,7 +235,7 @@ export function ConversationSurface({
         <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col">
           <div className="relative flex flex-1 min-h-0 flex-col" style={{ minHeight: MIN_HISTORY_PANE_HEIGHT }} {...swipe}>
             {source.panel ? (
-              <SessionPanel key={`custom:${sessionId}`} icon={<Ticket size={15} />} title={source.panel.title} text={source.panel.text} fields={source.panel.fields} onCollapsedHeight={setPanelInset} testId="session-panel">{panelDetails}</SessionPanel>
+              <SessionPanel key={`custom:${sessionId}`} icon={panelIcon} title={source.panel.title} text={source.panel.text} fields={source.panel.fields} onCollapsedHeight={setPanelInset} testId="session-panel">{panelDetails}</SessionPanel>
             ) : pinned && sessionId ? (
               <SessionPanel key={`pin:${pinned.id}`} icon={<Pin size={15} />} title={t('messagehub.panel.pinnedBy', undefined, { name: displayName(pinned.senderDid) })} text={pinned.text} dismissLabel={t('messagehub.message.unpin')} onDismiss={source.canAct && setPinned ? () => { void setPinned(null).catch(() => undefined) } : undefined} onCollapsedHeight={setPanelInset} testId="session-panel">{panelDetails}</SessionPanel>
             ) : null}

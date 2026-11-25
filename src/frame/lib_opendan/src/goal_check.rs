@@ -402,6 +402,7 @@ pub fn check_ctx(
     goal: &GoalDefinition,
     state: Option<&GoalState>,
     schedule: Option<&GoalSchedule>,
+    jobs: &[crate::goal_jobs::JobView],
     agent_root: Option<&Path>,
     when: &CheckWhen,
     now_ms: u64,
@@ -416,12 +417,18 @@ pub fn check_ctx(
         "trigger": when.trigger,
         "held": when.held,
         "now_ms": now_ms,
+        "slot_ms": when.slot_ms.unwrap_or(now_ms),
+        "missed": when.missed,
         "timezone": goal.schedule.timezone,
         "last_inference_at_ms": crate::goal::last_inference_ms(state),
         "last_check_at_ms": schedule.and_then(|s| s.last_check.as_ref()).map(|c| c.at_ms),
         "last_check": schedule.and_then(|s| s.last_check.clone()),
         "pending": state.map(|s| s.pending.clone()).unwrap_or_default(),
         "active_works": state.map(|s| s.active_works.iter().map(|w| w.sid.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+        "jobs": jobs.iter().map(|j| json!({
+            "job_id": j.job.job_id, "version": j.job.version, "enabled": j.job.enabled, "running": j.running,
+            "last_run": j.last_run, "failures": j.failures, "next_at_ms": j.next_at_ms,
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -431,17 +438,17 @@ pub struct CheckWhen {
     /// `start` | `scheduled` | `test` (a dry run).
     pub trigger: String,
     /// Why the Goal may not infer now (`min_interval`, `period_budget`,
-    /// `agent_budget`, `guarantee`): a `run: true` is set aside.
+    /// `agent_budget`, `guarantee`, `waiting`): a `run: true` is set aside.
     pub held: Option<String>,
+    /// The time of the slot it runs for (`None`: now).
+    pub slot_ms: Option<u64>,
+    /// Slots before it that had no check of their own (the host was late).
+    pub missed: u64,
 }
 
 impl CheckWhen {
     pub fn new(trigger: &str) -> Self {
-        Self { trigger: trigger.into(), held: None }
-    }
-
-    pub fn held(trigger: &str, why: &str) -> Self {
-        Self { trigger: trigger.into(), held: Some(why.into()) }
+        Self { trigger: trigger.into(), ..Default::default() }
     }
 }
 
@@ -460,7 +467,8 @@ pub async fn run_for(
     let goals = agent.goals();
     let state = goals.state(&goal.goal_id).await?;
     let schedule = goals.schedule(&goal.goal_id).await?;
-    let ctx = check_ctx(goal, state.as_ref(), schedule.as_ref(), agent.agent_root(), when, now_ms);
+    let jobs = goals.jobs(&goal.goal_id).await?;
+    let ctx = check_ctx(goal, state.as_ref(), schedule.as_ref(), &jobs, agent.agent_root(), when, now_ms);
     let stored = schedule.as_ref().and_then(|s| s.check_state.clone()).unwrap_or(Value::Null);
     let path = match script {
         Some(p) => p.to_path_buf(),

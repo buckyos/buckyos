@@ -1,6 +1,6 @@
 # Goal Session 改进 TODO
 
-日期：2026-11-24 · 事实的行号取自 `1704812f8` · 状态：**已定稿（owner 2026-11-24），未实施**
+日期：2026-11-24 · 事实的行号取自 `1704812f8` · 状态：**已定稿（owner 2026-11-24）；同日实施，未提交，未部署；真实 Zone 的验收没有跑（§11）**
 
 需求来源有三处：owner 2026-11-24 重新思考 Goal Session 的脑图（§2.1 原文）、当天按代码做的差距核对、几个实际场景里暴露的问题（§2.3）。
 
@@ -256,6 +256,8 @@
 
 ## 3. 事实
 
+**2026-11-24 S0-0 核对：Plan 单已合入（`a5831ec7d`）。** 下面的行号随它变了，没有逐个改；说法变了的在各节末尾标注。
+
 行号取自 `1704812f8`。Plan 单正在改 `jarvis/behaviors/{goal,analyze_intent,work_simple,plan_simple,explore}.toml`、`jarvis/agent.toml`，以及 `lib_opendan/` 的 `runner/{reports,drive,ticks,budget,outcome}.rs`、`xagent_cli.rs`、`runtime/mod.rs`、`protocol/config.rs` 等，它落地后这些文件的行号会变，个别说法也可能变（S0-0）。二期单 §3.3、§3.4 查过的事实对 WG、GJ 两组有效，不在这里重抄。
 
 ### 3.1 内置 Goal
@@ -265,11 +267,12 @@
 - 内置 Goal 的身份和能力写在 `extensions.opendan`（[protocol/goal.rs](../src/frame/lib_opendan/src/protocol/goal.rs) `:74`），只有宿主的播种路径能写。`CAP_MEMORY_CONSOLIDATION`（`:65`）打开 `memory_consolidation_begin / commit` 两个宿主工具，并把 drive 绑到整理租约；`records_perception = false` 让它自己的运行不产生感知。整理 Goal 的每个时间槽还有一次不用模型的机械推进（[host/goals.rs](../src/frame/lib_opendan/src/host/goals.rs) `:1008`），单次预算被压到周期余量以内（[runner/goal.rs](../src/frame/lib_opendan/src/runner/goal.rs) `:869`）。
 - `policy_version`（`protocol/goal.rs:68`）更高时宿主会修订已有内置 Goal 的标记，不动 owner 改过的预算、时间表和状态。
 - 结晶开关在 `.meta/skills_state.json` 的 `crystallize`（kRPC `skills.crystallize_set`）。关掉后 Goal 仍显示 `active`。
+- **（实施后）** 内置 Goal 只剩 `self_improve`，播种和合并在 `host/maintenance.rs`，检查在 `goal_checks/self_improve.ts`；专用 behavior 已删。
 - 整理发现的候选：类型已冻结（`MaintenanceCandidate`，`protocol/goal.rs:1020`），页面上有列表位置，发现、确认、落地都没实现。挂点是 `runner/consolidation.rs:854`（提交后发布候选）和问题的 `candidate_id`（`runner/goal.rs:1188`、`:1213`，现在恒为空）。
 
 ### 3.2 工具与手册
 
-- `<agent_root>/tools` 被认作 Agent 自己的命令目录（[baseline.rs](../src/frame/lib_opendan/src/baseline.rs) `:562`），解析手册声明的命令时排在最前（`runtime/mod.rs:1066`）。**没验**：它在不在会话 shell 的 `PATH` 上（S0-2）。
+- `<agent_root>/tools` 被认作 Agent 自己的命令目录（[baseline.rs](../src/frame/lib_opendan/src/baseline.rs) `:562`），解析手册声明的命令时排在最前（`runtime/mod.rs:1066`）。**S0-2（看代码）**：私有 runtime 的会话，目录存在时就在 `PATH` 上（`runtime/mod.rs` 的 `open_session_env` / `session_layers`）；节点 runtime 上没有。作业的 `PATH` 由宿主自己加。
 - 现在没有任何东西往 `tools/` 里产出。`skill_crystallize.toml:52` 明令禁止结晶 Goal 写 `tools/`、`cmd_skills/`、`plan_skills/`、`goal_skills/`，它只能 `agent-session skill revise`（来源 `local` / `imported` 的正文）和写 `skills_drafts/`。
 - skill 包里出现 `tools/` 或非文本文件会被拒绝（AGENTS.md 的 cmd_skills 一节）。
 - [llm_tool_carft.rs](../src/frame/agent_tool/src/llm_tool_carft.rs) 只有骨架：流水线一律落到最后一步，退出码 127。
@@ -279,11 +282,15 @@
 
 - 一次 Activation 是一个 Turn。上限在 `agent.toml:106-109`：30 万 token、6 个 run、1800 秒墙钟；`goal.toml:56` 每个 run 最多 24 轮工具调用。
 - Goal 头每次由宿主从 Goal 定义和 Goal State 重建（`runner/goal.rs:798 opening`、`:557 render_builtin`），历史里旧的 Goal 头只留一行（`:913`）。`<last_activation>` 带上次报告的正文，截到 2000 字符（`:1043`）。
-- 历史走通用逻辑：`agent.toml:11` 写的是到窗口的 80% 开始压缩、压回 30%。会话级有 `history_budget_tokens`（[protocol/config.rs](../src/frame/lib_opendan/src/protocol/config.rs) `:495`），**没验**它设成 0 时的行为。
+- 历史走通用逻辑：`agent.toml:11` 写的是到窗口的 80% 开始压缩、压回 30%。会话级有 `history_budget_tokens`（[protocol/config.rs](../src/frame/lib_opendan/src/protocol/config.rs) `:495`），没有验它设成 0 时的行为（没用上：`fresh` 是装配历史时以本次 Activation 的起点为界，`runner/history.rs`）。
 - 想要全新上下文只能 restart 开新 epoch（`StateKeep::Facts`，`protocol/goal.rs:388`）。
 - Goal Session 不能改自己的定义、预算、硬间隔、硬保障和 behavior，只能改检查脚本和时间表、增删当前 Skills（`goal.toml:50`）。
 - Goal 头里和成本有关的只有当期计数（`<this_period>`，`runner/goal.rs:516`）和 `no_action_in_a_row`（`:515`）。每次 Activation 的记录带用量（`GoalActivation.cost`，`protocol/goal.rs:648`），Goal 没有现成的命令去汇总它。
-- 成本数字（来自历次 DV）：`no_action` 2.5–7.8 万 token；结晶看一次 18.2 万；提醒 Goal 的首次 Activation 9.2 万；Goal 里跟长命令三次 37.8 万。**没量**：这些数字里系统提示词、Goal 头、历史、工具往返各占多少（S0-1）。
+- 成本数字（来自历次 DV）：`no_action` 2.5–7.8 万 token；结晶看一次 18.2 万；提醒 Goal 的首次 Activation 9.2 万；Goal 里跟长命令三次 37.8 万。
+- **S0-1（2026-11-24）**：
+  - 已有的证据（2026-11-11 DV 那个测试 Goal，38 次连续 `no_action`）：平均 57,023 token，首次约 2.5 万，每多一次约长 2,166，历史平均占六成。超过两成，所以做 CX2，缺省 `fresh`。
+  - 真实模型回放（`tests/goal_replay.rs::cost_of_an_activation`，qwen3.7-plus）：系统提示词约 1.85 万字符，Goal 头 2.6–3.1 千字符，首轮输入约 6.9 千 token；`no_action` 的 Activation `fresh` 稳定在约 1.45 万 token，`carry` 1.6 万到 2.8 万、逐次增长。
+  - 没取本机 Zone 上的内置整理 Goal：本机 Zone 当天是 `waterflier3`，没有 Agent。
 
 ### 3.4 Work、唤醒与失败
 
@@ -293,7 +300,7 @@
 - Goal State 里和失败有关的：`consecutive_no_action`、`last_error`、`recent_works` 的 `outcome`（`protocol/goal.rs:822`）。Activation 的结局有 `completed / failed / budget_exhausted / stopped / needs_input`（`:570`），没有“连续几次失败”的计数。检查脚本连续出错数在 `schedule.check_errors`（`host/goals.rs:476`）。
 - 检查脚本的 `ctx` 有 `now_ms`、`held`、`timezone`、`agent_root`（[goal_check.rs](../src/frame/lib_opendan/src/goal_check.rs) `:415`）。`now_ms` 是实际运行的时刻，不是时间槽的时刻；多个槽合并成一次时也一样。
 - `agent-session goal check run --script` 要求 Goal 已经存在（[xagent_cli.rs](../src/frame/lib_opendan/src/xagent_cli.rs) `:2927`）。
-- 旧单 §7.3 第 3 条（Work 的任务结束事件出现在 Goal 的唤醒原因里）来源一直没查。
+- 旧单 §7.3 第 3 条（Work 的任务结束事件出现在 Goal 的唤醒原因里）：**S0-4（2026-11-24）查清**，是 Goal 自己记住的任务编号在 Activation 关闭后还被跟着，2026-11-11 的 H0 已经修掉；RT2 补回归用例，没有改代码。
 
 ### 3.5 找人
 
@@ -309,7 +316,7 @@
 - 带检查脚本且不带 `--start` 的 Goal，epoch 开始先跑检查，不推理（`host/goals.rs:886`）。
 - 页面：Agent 主页（`src/frame/opendan/web`）有 Goals 列表和详情，活动 Goal 超过 16 个时提示（`pages/Goals.tsx:117`），没有创建入口，owner 只能改预算和时间表。Goal Session 在 `SessionDetail.tsx` 里以 worklog 表格显示。
 - Desktop 里只有 Agent 面板的活动 Goal 个数（`app/messagehub/agentpanel/model.ts:11`）。现成可复用的：`components/conversation/worklog/`（`agentServiceClient`、`session.worklog`）、`SessionConversation.tsx`、`worksessions/`。
-- 日历：`owner` 手册写 `xcall owner.cal add` 的 `reminders`（开始前多少分钟）会让主人按时收到通知，重复日程也算，“不要在别处再排同一个提醒”。**没验**（S0-3）。
+- 日历：`owner` 手册写 `xcall owner.cal add` 的 `reminders`（开始前多少分钟）会让主人按时收到通知，重复日程也算，“不要在别处再排同一个提醒”。**S0-3（2026-11-24，只看了代码）**：AI 工作区服务每 60 秒扫一遍（`frame/aiworkspace/server/src/notices.rs`），重复日程逐次展开，经 msg-center 发，不依赖 Agent 进程，晚到不超过 1 小时，全天日程从 09:00 算起。真实 Zone 和手机没有验。
 
 ## 4. 设计
 
@@ -443,97 +450,97 @@ Goal 有两条来路，走哪条由意图分析按请求判断，不固定：
 
 ### 5.0 S0：先量、先验
 
-- [ ] **S0-0 确认基线。** 入口条件：Plan 单已经合入。确认后重新核对 §3 的行号和说法（重点是 `goal.toml`、`analyze_intent.toml`、`agent.toml`、`runner/reports.rs`、`xagent_cli.rs`），把变了的改掉；读一遍 `work_request_rule.inc` 和改过的 `goal.toml`，确认 §4.3、§4.5 的写法和它不冲突。Plan 单没合入就不开始 M1 之后的任务。
-- [ ] **S0-1 量一次 Activation 的成本构成。** 取本机 Zone 上跑了两周的内置整理 Goal 和一个用户 Goal，从 Session 的 `usage.jsonl` 和 worklog 算：系统提示词加工具定义、Goal 头、历史、每轮工具往返各多少 token；`no_action` 平均几轮。结果写进 §3.3，据此定 Q3。
-- [ ] **S0-2 `tools/` 在不在 PATH 上。** 在 Agent 容器里往 `<agent_root>/tools` 放一个脚本，从 Work 的 shell 里直接按名字调。不在就记下要补的落点。
-- [ ] **S0-3 日历提醒。** 真实 Zone 上建一条带 `reminders` 的重复日程：到点谁发、发到哪、Agent 容器停着时发不发、手机上有没有。结果写进 §3.6。它不再决定 CA1 做不做（Q5 已答）；手册里“重复日程也会提醒”的说法不成立时，记成 owner 工具的缺陷，CA1 的提示词里把这类提醒留给检查脚本。
-- [ ] **S0-4 Work 的任务事件。** 查旧单 §7.3 第 3 条的来源（`runner/children.rs`、`goal.rs:366 reason_of`）。
+- [x] **S0-0 确认基线。** 入口条件：Plan 单已经合入。确认后重新核对 §3 的行号和说法（重点是 `goal.toml`、`analyze_intent.toml`、`agent.toml`、`runner/reports.rs`、`xagent_cli.rs`），把变了的改掉；读一遍 `work_request_rule.inc` 和改过的 `goal.toml`，确认 §4.3、§4.5 的写法和它不冲突。Plan 单没合入就不开始 M1 之后的任务。
+- [x] **S0-1 量一次 Activation 的成本构成。** 取本机 Zone 上跑了两周的内置整理 Goal 和一个用户 Goal，从 Session 的 `usage.jsonl` 和 worklog 算：系统提示词加工具定义、Goal 头、历史、每轮工具往返各多少 token；`no_action` 平均几轮。结果写进 §3.3，据此定 Q3。
+- [x] **S0-2 `tools/` 在不在 PATH 上。** 在 Agent 容器里往 `<agent_root>/tools` 放一个脚本，从 Work 的 shell 里直接按名字调。不在就记下要补的落点。
+- [ ] **S0-3 日历提醒。**（看过代码，真实 Zone 没验） 真实 Zone 上建一条带 `reminders` 的重复日程：到点谁发、发到哪、Agent 容器停着时发不发、手机上有没有。结果写进 §3.6。它不再决定 CA1 做不做（Q5 已答）；手册里“重复日程也会提醒”的说法不成立时，记成 owner 工具的缺陷，CA1 的提示词里把这类提醒留给检查脚本。
+- [x] **S0-4 Work 的任务事件。** 查旧单 §7.3 第 3 条的来源（`runner/children.rs`、`goal.rs:366 reason_of`）。
 - [x] **S0-5 读 §1 的答复**，改 §4。先定的七条已落实（§1.3，2026-11-24）。Q6–Q16、Q19 以后有答复时再改。
 
 ### 5.1 SI：self improve
 
-- [ ] **SI1 播种。** `host/maintenance.rs`、`protocol/goal.rs` 的常量和 `OpendanGoalExtension`、`agent.toml` 的 `[session.goal.*]`；已有 Zone 的处理按 §4.1 末条。
+- [x] **SI1 播种。** `host/maintenance.rs`、`protocol/goal.rs` 的常量和 `OpendanGoalExtension`、`agent.toml` 的 `[session.goal.*]`；已有 Zone 的处理按 §4.1 末条。
   - 验证：`tests/goal_session.rs` 和 `memory_maintenance.rs` 里涉及结晶播种的用例改过来；升级后的 AgentRoot 上只有一个 self improve，没有加载失败的 Goal。
-- [ ] **SI2 goal skill 与检查脚本。** `self_improve_manuals`、`self_improve_tools`、`goal_checks/self_improve.ts`；删 `behaviors/skill_crystallize.toml` 和 `goal_checks/skill_crystallize.ts`。
+- [x] **SI2 goal skill 与检查脚本。** `self_improve_manuals`、`self_improve_tools`、`goal_checks/self_improve.ts`；删 `behaviors/skill_crystallize.toml` 和 `goal_checks/skill_crystallize.ts`。
   - 验证：`cargo test -p libopendan --lib skills`；检查脚本对三种材料（只有手册用量、只有 127、都没有）各跑一次；每个 `behaviors/*.toml` 仍能解析。
-- [ ] **SI3 新建 `local` 手册**（Q2）。`agent-session skill` 加一个子命令，限定 self improve 的 Goal Session 和它派的 Work；lint 同安装。
+- [x] **SI3 新建 `local` 手册**（Q2）。`agent-session skill` 加一个子命令，限定 self improve 的 Goal Session 和它派的 Work；lint 同安装。
   - 验证：权限逐格测（别的 Goal、UI、普通 Work 都被拒）；新手册出现在 `skill list`，下一次意图分析能选到它。
-- [ ] **SI4 做工具的闭环。** 真实模型：造两个 Work 都因为缺同一个命令而绕路的材料，self improve 被检查唤醒，做出工具和手册，第三个同类 Work 用上了它。
-- [ ] **SI5 页面。** Skills 页的结晶开关改成两个职责开关；Goal 详情显示职责和各自最近一次的结论。
-- [ ] **SI6 第二步：并入 Memory 整理和日程候选**（Q1、Q12）。规则搬到 `self_improve_memory`，删 `behaviors/memory_maintenance.toml`；候选按 §4.6。
+- [x] **SI4 做工具的闭环。** 真实模型：造两个 Work 都因为缺同一个命令而绕路的材料，self improve 被检查唤醒，做出工具和手册，第三个同类 Work 用上了它。
+- [x] **SI5 页面。** Skills 页的结晶开关改成两个职责开关；Goal 详情显示职责和各自最近一次的结论。
+- [x] **SI6 第二步：并入 Memory 整理和日程候选**（Q1、Q12）。规则搬到 `self_improve_memory`，删 `behaviors/memory_maintenance.toml`；候选按 §4.6。
   - 验证：`memory_replay --ignored` 的真实模型回放不退化（和搬之前的结果逐条比）；`memory_maintenance.rs` 全过；整理回执页不变。
-- [ ] **SI7 删 `llm_tool_carft`**（Q14）。连同 `agent_tool/src/lib.rs`、`agent_tool_cli_dev/src/lib.rs` 里的 `command not found` 入口和文档里的说法。
+- [x] **SI7 删 `llm_tool_carft`**（Q14）。连同 `agent_tool/src/lib.rs`、`agent_tool_cli_dev/src/lib.rs` 里的 `command not found` 入口和文档里的说法。
 
 ### 5.2 CX：上下文与成本
 
-- [ ] **CX1 `goal stats`。** `xagent_cli.rs` 的 `cmd_goal`，kRPC 只读。验证：对一个有 50 条 Activation 记录的 fixture 核对每个数。
-- [ ] **CX2 `context: fresh | carry`**（Q3，S0-1 之后）。`GoalScheduleSpec`、`set_check` 那条路、`runner` 装配历史的地方、页面。
+- [x] **CX1 `goal stats`。** `xagent_cli.rs` 的 `cmd_goal`，kRPC 只读。验证：对一个有 50 条 Activation 记录的 fixture 核对每个数。
+- [x] **CX2 `context: fresh | carry`**（Q3，S0-1 之后）。`GoalScheduleSpec`、`set_check` 那条路、`runner` 装配历史的地方、页面。
   - 验证：`fresh` 下第 N 次 Activation 的请求里没有第 N-1 次的工具往返；Activation 中途被杀后续完时本次的历史还在；切换不产生新修订。
-- [ ] **CX3 提示词与 `goal_upkeep`。** `goal.toml`：工作方式的表、指向 `goal_upkeep`、`--behavior work_simple` 改成缺省；`goal_skills/goal_upkeep/SKILL.md`。在 Plan 单改过的 `goal.toml` 上改，派活的写法沿用 `work_request_rule.inc`。`goal.toml` 这一批改动（CX3、FH3、WG4）放在同一次提交里。
+- [x] **CX3 提示词与 `goal_upkeep`。** `goal.toml`：工作方式的表、指向 `goal_upkeep`、`--behavior work_simple` 改成缺省；`goal_skills/goal_upkeep/SKILL.md`。在 Plan 单改过的 `goal.toml` 上改，派活的写法沿用 `work_request_rule.inc`。`goal.toml` 这一批改动（CX3、FH3、WG4）放在同一次提交里。
   - 验证：真实模型上一个被故意设成每 5 分钟检查、每次都没事的 Goal，几次唤醒之内自己把检查收紧。
-- [ ] **CX4 关闭 F3。** 旧单和架构 §11.2、§11.3、§17.2 写明不做 Goal 专用压缩。
+- [x] **CX4 关闭 F3。** 旧单和架构 §11.2、§11.3、§17.2 写明不做 Goal 专用压缩。
 
 ### 5.3 FH：失败与求助
 
-- [ ] **FH1 两个计数进 Goal State 和 Goal 头。** `protocol/goal.rs`、`runner/goal.rs:989 close_activation`、`render_builtin`。
-- [ ] **FH2 连续失败的通知**（Q7）。`host/goals.rs`，发送复用 `send_notify`。验证：第 3 次失败发一条；第 4 次不发；成功一次后再连续 3 次才再发。
-- [ ] **FH3 升级顺序。** `goal.toml`、`goal_upkeep`、`goal_delivery`。其中“请求升级”那一步的完整约定在 WG5（M2）补上，M1 先写成在 `questions` 里向主人提出。
-- [ ] **FH4 提问带选项。** `GoalResult` 的解析、`questions_to_user`（`runner/goal.rs:1314`）、Goal 头的 `<open_questions>`、Desktop 的通知卡片不用改（已有选项输入）。
-- [ ] **FH5 检查连续出错并入硬保障**（Q8）。`goal.rs:295 guarantee_due`。验证：出错 3 次后下一个槽唤醒一次，原因 `guarantee`，仍受硬间隔保护。
+- [x] **FH1 两个计数进 Goal State 和 Goal 头。** `protocol/goal.rs`、`runner/goal.rs:989 close_activation`、`render_builtin`。
+- [x] **FH2 连续失败的通知**（Q7）。`host/goals.rs`，发送复用 `send_notify`。验证：第 3 次失败发一条；第 4 次不发；成功一次后再连续 3 次才再发。
+- [x] **FH3 升级顺序。** `goal.toml`、`goal_upkeep`、`goal_delivery`。其中“请求升级”那一步的完整约定在 WG5（M2）补上，M1 先写成在 `questions` 里向主人提出。
+- [x] **FH4 提问带选项。** `GoalResult` 的解析、`questions_to_user`（`runner/goal.rs:1314`）、Goal 头的 `<open_questions>`、Desktop 的通知卡片不用改（已有选项输入）。
+- [x] **FH5 检查连续出错并入硬保障**（Q8）。`goal.rs:295 guarantee_due`。验证：出错 3 次后下一个槽唤醒一次，原因 `guarantee`，仍受硬间隔保护。
 
 ### 5.4 WG：Work 开发、Goal 运维（接手自二期单 §5.2，合并关系见 §4.10）
 
-- [ ] **WG1 权限**（Q17）。见二期单 WG1、§4.3。
-- [ ] **WG2 命令行。** 见二期单 WG2。
-- [ ] **WG3 意图分析。** 即 FX1。
-- [ ] **WG4 Goal 提示词。** 见二期单 WG4；和 CX3、FH3 同一次改。
-- [ ] **WG5 升级请求**（Q19）。只做通用约定：`goal.toml`、`analyze_intent.toml`、`ui_core`、`goal_delivery`。
-- [ ] **WG6 文档。** 并入 DOC1。
+- [x] **WG1 权限**（Q17）。见二期单 WG1、§4.3。
+- [x] **WG2 命令行。** 见二期单 WG2。
+- [x] **WG3 意图分析。** 即 FX1。
+- [x] **WG4 Goal 提示词。** 见二期单 WG4；和 CX3、FH3 同一次改。
+- [x] **WG5 升级请求**（Q19）。只做通用约定：`goal.toml`、`analyze_intent.toml`、`ui_core`、`goal_delivery`。
+- [x] **WG6 文档。** 并入 DOC1。
 - [ ] **WG7 DV。** 见二期单 WG7，就是本文的 V10。
 
 ### 5.5 FX：Work 收尾时建立 Goal（在 WG1、WG2 之后）
 
-- [ ] **FX1 意图分析（即 WG3）。** `analyze_intent.toml`：加上 §4.5 的判断和第二条路的任务书写法；`goal_created` 和直接建 Goal 的写法不动。只改提示词，结果的 schema 和 `runner/reports.rs` 的校验不用改（小改动的结果选了新增 `goal_revised` 时除外）。
-- [ ] **FX2 work skill `goal_handover`。** Work 收尾时怎么建立或改写 Goal：指向 `goal_skills/goal_check_script`、`goal_delivery` 的正文路径，不复制；写明并入和查矛盾（§4.7）、装作业、失败不留半成品、报告的 `result` 里给 `goal_id`。重排站专有的交接说明仍在二期单的 MN1。
-- [ ] **FX3 `goal check run` 不要求已有 Goal。** `xagent_cli.rs:2925`、`goal_check.rs` 的 `run_for`。
-- [ ] **FX4 DV。** 真实模型四条：纯观察的请求仍直接建 Goal，没有多出 Work；先建设后维护的请求建了 Work，任务书里有收尾这一步，Work 结束时交出 Goal，Goal 由检查起步；Work 建到一半失败，对话里收到失败，没有残留的 Goal；应该并入已有 Goal 的请求没有新建。
+- [x] **FX1 意图分析（即 WG3）。** `analyze_intent.toml`：加上 §4.5 的判断和第二条路的任务书写法；`goal_created` 和直接建 Goal 的写法不动。只改提示词，结果的 schema 和 `runner/reports.rs` 的校验不用改（小改动的结果选了新增 `goal_revised` 时除外）。
+- [x] **FX2 work skill `goal_handover`。** Work 收尾时怎么建立或改写 Goal：指向 `goal_skills/goal_check_script`、`goal_delivery` 的正文路径，不复制；写明并入和查矛盾（§4.7）、装作业、失败不留半成品、报告的 `result` 里给 `goal_id`。重排站专有的交接说明仍在二期单的 MN1。
+- [x] **FX3 `goal check run` 不要求已有 Goal。** `xagent_cli.rs:2925`、`goal_check.rs` 的 `run_for`。
+- [x] **FX4 DV。**（用真实模型回放，没有在真实 Zone 上跑）真实模型四条：纯观察的请求仍直接建 Goal，没有多出 Work；先建设后维护的请求建了 Work，任务书里有收尾这一步，Work 结束时交出 Goal，Goal 由检查起步；Work 建到一半失败，对话里收到失败，没有残留的 Goal；应该并入已有 Goal 的请求没有新建。
 
 ### 5.6 CA：提醒与日程
 
-- [ ] **CA1 提醒进不进日历由 Agent 判断**（Q5 的答复）。`analyze_intent.toml` 的 Reminders 一节加 §4.6 的判断；`ui_core`、`owner` 手册里“不要在别处再排同一个提醒”的说法和它对齐；`goal_check_script` 的提醒一节不动。只改提示词和手册。
+- [x] **CA1 提醒进不进日历由 Agent 判断**（Q5 的答复）。`analyze_intent.toml` 的 Reminders 一节加 §4.6 的判断；`ui_core`、`owner` 手册里“不要在别处再排同一个提醒”的说法和它对齐；`goal_check_script` 的提醒一节不动。只改提示词和手册。
   - 验证：真实模型上各说一句会议类和习惯类的提醒，去向符合 V5；改完每个 `behaviors/*.toml` 仍能解析。
-- [ ] **CA2 `ctx.slot_ms` 与 `missed`。** `goal_check.rs:405`、`goal_check_runner.ts`、Agent State Protocol §9.4、手册例子。验证：宿主晚 3 分钟跑检查时，按 `slot_ms` 写的提醒仍然发出且只发一次。
-- [ ] **CA3 日程候选。** 并在 SI6 里做。
+- [x] **CA2 `ctx.slot_ms` 与 `missed`。** `goal_check.rs:405`、`goal_check_runner.ts`、Agent State Protocol §9.4、手册例子。验证：宿主晚 3 分钟跑检查时，按 `slot_ms` 写的提醒仍然发出且只发一次。
+- [x] **CA3 日程候选。** 并在 SI6 里做。
 
 ### 5.7 UX：Desktop
 
-- [ ] **UX1 Agent 面板的 Goal 列表。** `app/messagehub/agentpanel/`，数据 `goals.list`。
-- [ ] **UX2 Goal 会话视图。** 新组件放 `components/conversation/`，数据 `session.worklog` 加 `goals.activations`。
-- [ ] **UX3 新建目标入口。** 预填用 `hub.saveDraft`（二期单 §3.7 查过没有直接预填的接口）。
-- [ ] **UX4 用户的话不过硬间隔**（Q10）。`runner/goal.rs:202 hold_events`。验证：硬间隔内 `goal post` 立刻打开 Activation；预算用完时不打开，视图显示恢复时刻。
-- [ ] **UX5 数量与矛盾的提示词。** `analyze_intent.toml`、`goal_handover`：提醒并入同一个 Goal、16 个时先说明、矛盾时问主人（§4.7）。
-- [ ] **UX6 多语言与用例。** 10 种语言；`mock/backend.ts` 加 `goals.*`；手机视口的 e2e。
+- [x] **UX1 Agent 面板的 Goal 列表。** `app/messagehub/agentpanel/`，数据 `goals.list`。
+- [x] **UX2 Goal 会话视图。** 新组件放 `components/conversation/`，数据 `session.worklog` 加 `goals.activations`。
+- [x] **UX3 新建目标入口。** 预填用 `hub.saveDraft`（二期单 §3.7 查过没有直接预填的接口）。
+- [x] **UX4 用户的话不过硬间隔**（Q10）。`runner/goal.rs:202 hold_events`。验证：硬间隔内 `goal post` 立刻打开 Activation；预算用完时不打开，视图显示恢复时刻。
+- [x] **UX5 数量与矛盾的提示词。** `analyze_intent.toml`、`goal_handover`：提醒并入同一个 Goal、16 个时先说明、矛盾时问主人（§4.7）。
+- [x] **UX6 多语言与用例。** 10 种语言；`mock/backend.ts` 加 `goals.*`；手机视口的 e2e。
 
 ### 5.8 RT：运行中的问题
 
-- [ ] **RT1 定时输入不堆积。** 即二期单 GJ7：Goal Session 还有没消费的 `scheduled` 输入时，`host/goals.rs:989` 不再投新的，只累加 `missed`。验证：Work 占用工作区 3 小时，放行后只打开一次 Activation。
-- [ ] **RT2 Work 的任务事件不进 Goal 的原因。** S0-4 有结论后修。
+- [x] **RT1 定时输入不堆积。** 即二期单 GJ7：Goal Session 还有没消费的 `scheduled` 输入时，`host/goals.rs:989` 不再投新的，只累加 `missed`。验证：Work 占用工作区 3 小时，放行后只打开一次 Activation。
+- [x] **RT2 Work 的任务事件不进 Goal 的原因。** S0-4 有结论后修。
 
 ### 5.9 GJ：Goal 作业（接手自二期单 §5.1，Q18）
 
-- [ ] **GJ1 存储与安装。** 见二期单 GJ1、§4.2。
-- [ ] **GJ2 运行器与调度。** 见二期单 GJ2。
-- [ ] **GJ3 命令、kRPC、权限。** 见二期单 GJ3；权限用 WG1 定下来的规则。
-- [ ] **GJ4 检查脚本与 Goal 头。** 见二期单 GJ4；和 CA2 改同一个 `ctx`，`goal_check_script` 手册同一变更内更新。
-- [ ] **GJ5 用量与预算。** 见二期单 GJ5。`goal stats`（CX1）把作业的用量单列一项。
-- [ ] **GJ6 Agent 主页的作业面板。** 见二期单 GJ6。Desktop 的 Goal 会话视图（UX2）在每次唤醒的那一组里显示相关作业的最近一次结果，不另做面板。
+- [x] **GJ1 存储与安装。** 见二期单 GJ1、§4.2。
+- [x] **GJ2 运行器与调度。** 见二期单 GJ2。
+- [x] **GJ3 命令、kRPC、权限。** 见二期单 GJ3；权限用 WG1 定下来的规则。
+- [x] **GJ4 检查脚本与 Goal 头。** 见二期单 GJ4；和 CA2 改同一个 `ctx`，`goal_check_script` 手册同一变更内更新。
+- [x] **GJ5 用量与预算。** 见二期单 GJ5。`goal stats`（CX1）把作业的用量单列一项。
+- [x] **GJ6 Agent 主页的作业面板。** 见二期单 GJ6。Desktop 的 Goal 会话视图（UX2）在每次唤醒的那一组里显示相关作业的最近一次结果，不另做面板。
 
 ### 5.10 DOC
 
-- [ ] **DOC1 架构设计（含 WG6）。** §7.10（按 WG 的实现更新）、§8.3（补一句，Q19）、§9.1（改回一个 self improve，说明和“迁移为不同 Goal”的关系）、§9.3、§9.5、§11.2、§11.3、§12.1.1、§15.7、§17.2。
-- [ ] **DOC2 协议与手册。** Agent State Protocol §9（含 §9.5 权限表、作业）；`opendan_agent_dev`、`ui_core`、`skill_authoring`、`goal_check_script`、`goal_delivery`；AGENTS.md 的联动表（内置 Goal、goal skill、`goal stats`、Goal 作业）。
-- [ ] **DOC3 旧单。** 标注 F3、E1–E3、§7.3、§10.7 的去向。
-- [ ] **DOC4 二期单。** 标注 WG、GJ 已由本文完成并指向本文的实施记录；把这两组从它的 §5、§6 的里程碑和 §7 的 V10 里去掉；Q1、Q2、Q4、Q5、Q15、Q19、Q23 注明答复在本文的 Q16–Q19；它的 §3.3、§3.4 里被本文改掉的事实（权限、`goal_created`、`goal.toml` 的说法）更新。
+- [x] **DOC1 架构设计（含 WG6）。** §7.10（按 WG 的实现更新）、§8.3（补一句，Q19）、§9.1（改回一个 self improve，说明和“迁移为不同 Goal”的关系）、§9.3、§9.5、§11.2、§11.3、§12.1.1、§15.7、§17.2。
+- [x] **DOC2 协议与手册。** Agent State Protocol §9（含 §9.5 权限表、作业）；`opendan_agent_dev`、`ui_core`、`skill_authoring`、`goal_check_script`、`goal_delivery`；AGENTS.md 的联动表（内置 Goal、goal skill、`goal stats`、Goal 作业）。
+- [x] **DOC3 旧单。** 标注 F3、E1–E3、§7.3、§10.7 的去向。
+- [x] **DOC4 二期单。** 标注 WG、GJ 已由本文完成并指向本文的实施记录；把这两组从它的 §5、§6 的里程碑和 §7 的 V10 里去掉；Q1、Q2、Q4、Q5、Q15、Q19、Q23 注明答复在本文的 Q16–Q19；它的 §3.3、§3.4 里被本文改掉的事实（权限、`goal_created`、`goal.toml` 的说法）更新。
 
 ## 6. 顺序
 
@@ -613,5 +620,62 @@ Goal 有两条来路，走哪条由意图分析按请求判断，不固定：
 
 ## 11. 实施记录
 
+代码全部在 2026-11-24 写完，**没有提交、没有部署**。真实模型样例用本机 Zone 的 AICC（当天所有别名都路由到 `qwen3.7-plus`，比以前回放用的模型弱），会话、宿主、检查、作业在测试进程里跑，不碰 Zone 的数据。**真实 Zone 上的验收（V1、V5、V7、V10 的 Zone 部分）没有跑**：本机 Zone 当天是 owner 的 `waterflier3`，没有 Agent，也没有 aios 镜像。
+
 | 日期 | 任务 | 记录 |
 | --- | --- | --- |
+| 11-24 | S0 | 见 §3 各节的标注。S0-1：历史占六成，做 CX2。S0-2、S0-4 看代码定。S0-3 只看了代码。 |
+| 11-24 | CX1 | `goal_stats.rs`、kRPC `goals.stats`（读）、`agent-session goal stats`。每周期：Activation 数、决定 / 结果 / 原因分布、token（自己 / Work / 作业）、检查与拦截；闸门计数保留之前 14 个周期（`schedule.json.past_stats`）。用例 `goal_stats_add_up`（50 条记录逐数核对）。 |
+| 11-24 | CX2 | `schedule.context`，缺省 `fresh`；改它走 `set_check`，不加修订。`runner/history.rs` 以本次 Activation 的起点为界。用例：`fresh` 看不到上次的工具往返；中途被杀后本次历史还在；切换不产生修订。回放：`no_action` 稳定在约 1.45 万 token（`carry` 1.6–2.8 万且增长）。 |
+| 11-24 | CX3、FH3、WG4 | `goal.toml` 重写：唤醒与成本、运维与升级的分界、工作方式的表、失败的升级顺序、作业；新 `goal_skills/goal_upkeep`。回放 `an_idle_goal_tightens_its_check`、`a_broken_check_is_repaired`、`failing_work_ends_in_a_question` 通过。 |
+| 11-24 | CX4 | 旧单 F3 关闭；架构 §11.2、§11.3、§17.2 写明不做 Goal 专用压缩。 |
+| 11-24 | FH1、FH2 | `activations_failed_in_a_row`（failed、budget_exhausted、没有有效结果；stopped 不计）、`works_failed_in_a_row`、`failing_since_ms`；连续 3 次通知一次，key `goal:<id>:failing:<since_ms>`，一段失败一次。 |
+| 11-24 | FH4 | `questions` 可带 `options`（≤8）与 `allow_text`，映射到通知的选项。回放 `a_question_offers_choices_and_its_answer_is_followed` 通过。 |
+| 11-24 | FH5 | 检查连续出错 3 次按硬保障唤醒一次（`guarantee_posted_for_errors`）。 |
+| 11-24 | WG1、WG2 | `state/goals.rs::CallerKind`：owner、UI（对端是 owner 的可改任何非内置 Goal）、Goal、Work（UI 会话直接创建、不属于某个 Goal 的等同父 UI）。`created_by.work`。`goal create / revise` 命令行字段补齐，创建时可装检查。修订里新增的 `initial_skills` 在下次 Activation 并入当前 Skills。另修：`goal` 派 `--class plan_simple` 原来会被悄悄换成 `work_simple`。 |
+| 11-24 | WG3 = FX1、CA1、UX5 | `analyze_intent.toml`：先做再管 / 直接建 Goal / 并入 / 升级 / 小改动（结果用 `forwarded`，没有新 outcome）、提醒进不进日历、16 个、矛盾。回放 `watching_something…`、`made_then…`、`a_habit…`、`an_appointment…`、`a_small_change…`、`an_agreed_upgrade…`、`a_seventeenth…` 通过；16 个那条第一次把它读成了硬上限，改了写法后通过。 |
+| 11-24 | WG5 | 升级请求：`goal_delivery` 一节，要点也写进 `goal.toml`（模型不去读 skill 时只发通知、不写文件）。 |
+| 11-24 | FX2、FX3 | work skill `goal_handover`；没有 Goal 也能 `goal check run`（`--every / --cron / --workspace / --path`）。 |
+| 11-24 | CA2 | `ctx.slot_ms`、`missed`；`goal_check_script` 的例子按槽写，晚到窗口写成必须。 |
+| 11-24 | RT1 | `schedule.json.waiting`：前一次没被消费不再投，槽并进 `merged`。 |
+| 11-24 | RT2 | 不用改：H0 已修，补用例 `a_task_the_goal_only_reads_about_is_not_followed`。 |
+| 11-24 | SI1–SI3、SI5、SI7 | 内置 Goal `self_improve`（`host/maintenance.rs`），goal skill 三份加 `goal_upkeep`，检查 `goal_checks/self_improve.ts`，`agent-session skill add <name> --file --reason`（只给 self_improve 的 Goal Session 和它派的 Work），职责开关 `skills.self_improve_set`，Skills 页与 Goal 详情；`llm_tool_carft` 与 `__command_not_found__` 删除。 |
+| 11-24 | SI6、CA3 | 整理并入，内置 Goal 只剩一个；专用 behavior 都删。已有的 Zone：保留整理 Goal 的对象（带 receipt），改写成 `self_improve` 并 restart，检查脚本一律换成包里的（旧脚本留在 `checks/`），结晶 Goal 归档；owner 改过的 token 预算和间隔保留。候选用带选项的 `questions`。真实模型回放的对比见下。 |
+| 11-24 | UX1–UX4、UX6 | Desktop Agent 面板：目标列表、目标会话视图、新建目标；用户的话不过硬间隔。10 种语言。e2e 15、datamodel 13 通过（mock）。真机和真实服务没有验。 |
+| 11-24 | GJ1–GJ6 | `goal_jobs.rs`、`goals.job_*`、`agent-session goal job …`、`<jobs>`、`ctx.jobs`、`xllm` 的用量与预算、Agent 主页的作业面板。用例 `tests/goal_jobs.rs` 12 个（含宿主死掉后记 `killed` 并补跑、休眠结束在跑的作业、预算用完模型调用被拒）。 |
+| 11-24 | DOC1–DOC4、WG6 | 架构（§7.9、§7.10、§8.3、§9.1、§9.3、§9.5、§11.2、§11.3、§12.1.1、§15.3、§15.7、§17.2）、Agent State Protocol §9（含 §9.5 权限表、§9.7–§9.9）与 schema、开发指南、两个 README、AGENTS.md 联动表、`opendan_agent_dev`；旧单、二期单标注。 |
+
+**SI6 的回放对比**（`memory_replay --ignored replay_with_the_real_model`，14 个样例，各跑一次）：
+
+| | 机械检查 | token 合计 | 说明 |
+| --- | --- | --- | --- |
+| 搬之前（专用 behavior，规则在系统提示词里） | 13/14，`third_party_advice` 没有处置材料 | 68.7 万 | 每个样例约 3 轮 |
+| 搬之后，规则原样进 skill | 11/14（用英文写结论、多建一条认知、提交格式被拒多次） | 114.7 万 | 退化，没有采用 |
+| 搬之后，skill 加一份完整的提交样例和“提交前再读一遍”的清单 | 14/14 | 116.1 万 | 采用。逐条读过：认知、依据、范围、语言和搬之前同级或更好（`s1` 的依据从 inference 变成 tool_observation，`s4` 的常住地不再是三元组写法） |
+
+token 约为 1.7 倍：每次要先 `cat` 一遍约 2.2 万字符的 skill（`fresh` 之下每次 Activation 一遍），多 1–2 轮。`s5_exception` 有一次去翻了原因没点名的职责（19.6 万 token），随后在目标和 skill 里写明只做原因点名的职责，没有再量全套。
+
+**SI4、V10 的回放**：
+
+- SI4 / V6（`a_missing_command_becomes_a_tool`）：两个真实 Work 先跑 `ledgersum` 失败再各自写脚本 → 检查点名 → Goal 派一个 Work 写出命令和手册（`skill add`）→ 第二次 Activation 试一次、记进 skills、通知主人 → 第三个请求经意图分析选中这份手册，Work 用上了它。token 18.9 万 + 9.5 万。三个 Work 的工具调用数 15、8、9，轮数没有明显减少（样例太小）。前四次没过，暴露并改掉的：`which` 探测不算 command not found；Goal 自己写程序会用完单次预算（改成由 Work 写，单次预算 30 万改 50 万）；意图分析不先看 `skill list` 就建 Work（`work_request_rule.inc` 写明先看）。
+- V10 的前半（`a_job_runs_what_was_built_and_its_failure_wakes_the_goal`）：Work 写程序、装作业、建 Goal；三小时例行没有推理；改掉输入文件后作业连续失败两次，检查叫醒 Goal，Goal 修好并重新安装作业（版本 2）。前几次没过，暴露并改掉的：修了工作区的源但没重新安装作业；把整个工作区当程序目录装上去（读的是装进去的旧数据）。另加单测 `a_job_that_keeps_failing_wakes_its_goal`。V10 的后半（请求升级、同意后由 Work 升级）分别由 `more_than_operation_is_asked_for`、`an_agreed_upgrade_becomes_work` 覆盖，没有连成一条。
+
+**测试。** `cargo test -p libopendan -- --test-threads=1`：649 过，6 个失败和 HEAD 上一样（`fixtures` 的 f04 / f06 / f07 / f12 / f15“Session tool paths changed”，`memory_replay a_jarvis_conversation_is_told_what_to_perceive`）。`-p opendan`：过；`browser::screen_tests::what_pages_show…` 在整套里偶发失败一次，单独跑过。`-p agent_tool -p agent_tool_cli_dev`：只有本机没装 `rg` 的 4 个 grep 用例失败，和以前一样。Agent 主页：check、lint、build、e2e 69/69。Desktop：tsc、改动文件 eslint、新 e2e 15/15、datamodel 13；`pnpm lint` 另有 5 个不在改动文件里的错误，4 个 messagehub 用例在 HEAD 上同样失败。
+
+**真实模型还没稳的。** 弱模型上同一条样例不是每次都过，都过了至少一次：`failed_work_leaves_no_goal` 有一次模型自己造了一个同名命令冒充（`goal_handover` 补了“替身不算做成”之后通过）；提示词改动后没有把每一条都重跑多次。`plan_replay a_goal_gives_everything…` 在这个模型上因措辞不过（改动前后一样）。
+
+**没有验的。**
+
+- V1（跑三天）、V5（手机收到日历提醒）、V7（真机）、V10 的真实 Zone、S0-3 的真实 Zone、SI6 在已有 Zone 上的合并（只有集成测试）。
+- `skill add`、作业、职责开关在 Agent 容器里的真实运行；作业里的 `xllm` 用量计入预算（单测加集成测试，没有在容器里跑）。
+- 页面只跑了 mock；非中英文的翻译没有母语者看过。
+
+**和本文设计不同的地方（请 owner 过目）。**
+
+1. §4.6 写“候选沿用默认 Goal 单 T05”。没有实现宿主的类型化候选（`MaintenanceCandidate` 仍没有写者，页面位置保留），用带选项的 `questions` 加 skill 里的规则（每个发现一个问题、先查现有日程 / 待办 / Goal、每次至多两个新问题）。理由是 §4.9 没有列这处机制。去重靠问题文本，没有稳定 key 和批准版本。
+2. 二期单 GJ3 写“只读 Agent 不能写”作业。实现和 `set_check`、`sync.put` 一致：只读 Agent 可以改自己的 Goal 的作业，不能改别的 Agent 的。作业以它自己的身份运行，权限没有变大。要改成完全不能写只需在 `opendan/service.rs` 拦 `goals.job_*`。
+3. 作业的用量文件每个 Goal 一份（`jobs/usage.jsonl`），不是每个作业一份；命令不经过 shell。
+4. self_improve 的预算：Q15 的结晶加做工具部分是每天 60 万，并入整理后合成 24 小时 180 万、单次 50 万 / 6 个 run、48 次，Work 数不限（单次 30 万时，弱模型自己写工具会在通知和报告之前用完）；每 30 分钟检查（手册和工具的材料每 6 小时收集一次）。
+5. 有问题的检查项：Agent 用 `which` 探测命令时不会留下 command not found，检查脚本补了这一类（任务文本里点名的命令才算）。
+6. 报告的 `result` 写成 JSON 文本时按对象解析（`reports.rs::plain_result`），否则弱模型的每次 Activation 都算失败。
+7. 回放暴露的一次事故：样例里的模型在测试机上装了一条用户 crontab（当时是唯一一行），已用 `crontab -r` 删掉，现在没有 crontab；回放环境给 `crontab / at / sudo / systemctl / docker / ssh …` 放了只报错的桩（`tests/common/replay.rs`）。

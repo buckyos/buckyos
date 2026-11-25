@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import type { DID } from 'buckyos'
 import type { ConversationMemoryMode } from 'buckyos/app-frame'
+import type { MessageObject } from './model/msgobj'
 import type { OutgoingPayload } from './model/outgoing'
 import type { ConversationSource } from './source'
 
@@ -63,4 +64,6 @@ export interface ConversationBackend {
   /** Entries of the viewer's own UI state of a session (`ui_session.list_state`). */
   listUiState(sessionId: string): Promise<Array<{ key: string; value: unknown }>>
   updateUiState(sessionId: string, key: string, value: string): Promise<void>
+  /** The latest notifications a Goal of the Agent sent the viewer, as messages (their cards), oldest first. */
+  goalNotices(agentDid: DID, goalId: string): Promise<MessageObject[]>
 }

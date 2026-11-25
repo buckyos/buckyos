@@ -24,7 +24,6 @@ use agent_tool::agent_memory::{
     ObjectAliasInput, OccasionAddInput, ReinforceObjectWeightOp, SetStatusOp, SourceRef,
     UpsertObjectOp, UpsertRelationOp,
 };
-use agent_tool::llm_tool_carft::{self, CommandNotFoundRequest};
 use agent_tool::{
     cli_error_result, cli_exit_code_for_error, cli_result_from_tool_result, cli_success_result,
     normalize_abs_path, render_cli_output, session_record_path, AgentToolError,
@@ -62,7 +61,6 @@ const TOOL_NAMES: [&str; 14] = [
 const AGENT_MEMORY_ROOT_ENV: &str = "AGENT_MEMORY_ROOT";
 const AGENT_MEMORY_DIR_NAME: &str = "memory";
 const EXIT_SUCCESS: i32 = agent_tool::CLI_EXIT_SUCCESS;
-const COMMAND_NOT_FOUND_PROXY: &str = agent_tool::CLI_COMMAND_NOT_FOUND_SUBCOMMAND;
 const MAIN_BINARY_NAME: &str = "agent_tool";
 const DEFAULT_AGENT_NAME: &str = "did:opendan:cli";
 const DEFAULT_WAKEUP_ID: &str = "cli-wakeup";
@@ -147,10 +145,6 @@ fn resolve_runtime_agent_name(runtime_context: &RuntimeContext) -> Result<String
 /// `finish_task`) stay as variants because they don't live in the tool registry.
 #[derive(Clone, Debug)]
 enum ParsedCommand {
-    CommandNotFound {
-        command: Option<String>,
-        argv: Vec<String>,
-    },
     Help {
         tool_name: Option<String>,
     },
@@ -414,29 +408,6 @@ async fn execute(
         Err(err) => return Err(err),
     };
     match parsed {
-        ParsedCommand::CommandNotFound { command, argv } => {
-            // Delegate to `llm_tool_carft` — the intent-engine-bypass scaffold.
-            // Today the scaffold's step 1 always skips (no behavior cfg toggle
-            // wired yet), so the visible behavior matches the old placeholder:
-            // exit 127 + a one-liner explaining why. Once behavior cfg can flip
-            // the bypass on, the same dispatch will start exercising step 2-4
-            // without further changes here.
-            let req = CommandNotFoundRequest {
-                command,
-                argv,
-                current_dir: env.current_dir.clone(),
-                agent_env_root: env.has_agent_env.then(|| env.agent_env_root.clone()),
-            };
-            let (result, exit_code) = llm_tool_carft::run_subcommand(req).await;
-            if should_suppress_command_not_found_stdout(&result, exit_code) {
-                return Ok(CliRunOutput {
-                    exit_code,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                });
-            }
-            Ok(render_cli_output(&result, exit_code))
-        }
         ParsedCommand::Help { tool_name } => Ok(render_cli_output(
             &build_help_result(&env, tool_name.as_deref()).await,
             EXIT_SUCCESS,
@@ -565,16 +536,6 @@ async fn execute(
             ))
         }
     }
-}
-
-fn should_suppress_command_not_found_stdout(result: &AgentToolResult, exit_code: i32) -> bool {
-    exit_code == agent_tool::CLI_EXIT_COMMAND_NOT_FOUND
-        && result.tool.as_deref() == Some("llm_tool_carft")
-        && result
-            .details
-            .get("outcome")
-            .and_then(|value| value.as_str())
-            == Some("skipped")
 }
 
 /// Routes a CliInvocation through `exec` (bash form) or `call` (json
@@ -734,22 +695,6 @@ fn parse_command(args: &[OsString], current_dir: &Path) -> Result<ParsedCommand,
 
     if is_tool_name(argv0) {
         return parse_tool_command(argv0.to_string(), &rest, current_dir);
-    }
-
-    if rest.first().map(|value| value.as_str()) == Some(COMMAND_NOT_FOUND_PROXY) {
-        let Some(tool_name) = rest.get(1) else {
-            return Ok(ParsedCommand::CommandNotFound {
-                command: None,
-                argv: vec![],
-            });
-        };
-        if !is_tool_name(tool_name) {
-            return Ok(ParsedCommand::CommandNotFound {
-                command: Some(tool_name.clone()),
-                argv: rest[1..].to_vec(),
-            });
-        }
-        return parse_tool_command(tool_name.to_string(), &rest[2..], current_dir);
     }
 
     if rest.is_empty() || matches!(rest[0].as_str(), "--help" | "-h" | "help") {
@@ -2112,13 +2057,13 @@ async fn dispatch_agent_memory(
 
     let root = resolve_agent_memory_root(env, root_override);
 
-    // Cognitions change only through the memory_maintenance Goal's
+    // Cognitions change only through the self improvement Goal's
     // consolidation (its host tools, under the consolidation lease). The CLI
     // writes are administrative: refused inside a Session shell.
     if agent_memory_verb_writes(&verb) && !env.allow_dev_overrides() {
         return agent_memory_error_output(
             AgentMemoryError::ReadOnly(
-                "agent-memory writes are administrative and refused inside a session: cognitions change only through the memory_maintenance goal's consolidation (perceive with `agent-session ctl perceive`)".to_string(),
+                "agent-memory writes are administrative and refused inside a session: cognitions change only through the self improvement goal's consolidation (perceive with `agent-session ctl perceive`)".to_string(),
             ),
             quiet,
         );
@@ -3385,7 +3330,7 @@ methods = ["x_call"]
             "free hints are materialized as canonical item JSON files"
         );
         // Inside a session shell the same write is refused: cognitions change
-        // only through the consolidation of the memory_maintenance goal.
+        // only through the consolidation of the self improvement goal.
         let refused = execute(
             vec![
                 OsString::from("/tmp/agent-memory"),
@@ -3946,29 +3891,5 @@ methods = ["x_call"]
         assert_eq!(output.exit_code, EXIT_SUCCESS);
         assert_eq!(output.stdout, "free\n");
         assert!(output.stderr.is_empty());
-    }
-
-    #[tokio::test]
-    async fn command_not_found_proxy_returns_127_for_unknown_command() {
-        let temp = tempdir().expect("create tempdir");
-        let root = temp.path().join("agent");
-
-        let output = execute(
-            vec![
-                OsString::from(MAIN_BINARY_NAME),
-                OsString::from(COMMAND_NOT_FOUND_PROXY),
-                OsString::from("missing_tool"),
-            ],
-            test_env(root.clone(), root),
-            None,
-        )
-        .await
-        .expect("run command_not_found proxy");
-
-        // Skipped craft attempts stay silent so bash can emit the canonical
-        // error without protocol JSON polluting stdout.
-        assert_eq!(output.exit_code, agent_tool::CLI_EXIT_COMMAND_NOT_FOUND);
-        assert!(output.stderr.is_empty());
-        assert!(output.stdout.is_empty());
     }
 }

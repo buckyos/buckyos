@@ -25,7 +25,7 @@
           "type": "integer"
         },
         "held": {
-          "description": "The gate held the Goal's inferences while it ran (`min_interval`, `period_budget`, `agent_budget`, `guarantee`): a `true` was set aside.",
+          "description": "The gate held the Goal's inferences while it ran (`min_interval`, `period_budget`, `agent_budget`, `guarantee`, `waiting`): a `true` was set aside.",
           "type": [
             "string",
             "null"
@@ -151,7 +151,7 @@
           "type": "integer"
         },
         "reason": {
-          "description": "`paused | not_active | min_interval | period_budget | agent_budget | check_false | check_error`.",
+          "description": "`paused | not_active | min_interval | period_budget | agent_budget | guarantee | waiting | check_false | check_error`.",
           "type": "string"
         },
         "slot": {
@@ -164,6 +164,31 @@
         "at_ms",
         "reason",
         "slot"
+      ],
+      "type": "object"
+    },
+    "WaitingFire": {
+      "description": "The scheduled run opportunity the Goal Session has not taken in yet: no second one is posted meanwhile.",
+      "properties": {
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "missed": {
+          "description": "Slots that passed since the last fire, those that came while it waits included.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "epoch",
+        "key",
+        "missed"
       ],
       "type": "object"
     }
@@ -184,8 +209,20 @@
     "check_state": {
       "description": "The `state` the script returned last, given back to the next check."
     },
+    "failing_notified_for_ms": {
+      "default": 0,
+      "description": "The row of failed Activations (its start) the user was told about.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "goal_id": {
       "type": "string"
+    },
+    "guarantee_posted_for_errors": {
+      "default": false,
+      "description": "The hard guarantee was posted for the current row of check errors: one per row.",
+      "type": "boolean"
     },
     "guarantee_posted_for_ms": {
       "default": 0,
@@ -235,6 +272,13 @@
         "integer",
         "null"
       ]
+    },
+    "past_stats": {
+      "description": "The periods before (oldest first).",
+      "items": {
+        "$ref": "#/definitions/GateStats"
+      },
+      "type": "array"
     },
     "pending": {
       "anyOf": [
@@ -296,6 +340,16 @@
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "waiting": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WaitingFire"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

@@ -122,6 +122,32 @@ impl Cron {
         None
     }
 
+    /// The first matching wall-clock minute after `now_ms`, as a slot. Looks
+    /// ahead at most 400 days.
+    pub fn slot_after(&self, tz: Tz, now_ms: u64) -> Option<u64> {
+        let now = Utc.timestamp_millis_opt(now_ms as i64).single()?;
+        let local_now = now.with_timezone(&tz).naive_local();
+        for ahead in 0..=400i64 {
+            let day = local_now.date() + Duration::days(ahead);
+            if !self.day_matches(day) {
+                continue;
+            }
+            for h in &self.hour {
+                for m in &self.minute {
+                    let t = NaiveDateTime::new(day, NaiveTime::from_hms_opt(*h, *m, 0)?);
+                    let Some(at) = tz.from_local_datetime(&t).earliest() else {
+                        continue;
+                    };
+                    let ms = at.with_timezone(&Utc).timestamp_millis();
+                    if ms > now_ms as i64 {
+                        return Some(ms as u64 / 60_000);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Matching minutes after slot `after` up to slot `upto` (both slots),
     /// counted up to `cap`.
     pub fn slots_between(&self, tz: Tz, after: u64, upto: u64, cap: u64) -> u64 {
@@ -178,15 +204,30 @@ pub enum Timetable {
 impl Timetable {
     /// The Goal's timetable (`None`: no scheduled checks).
     pub fn of(goal: &crate::protocol::GoalDefinition, d: &crate::template::GoalDefaults) -> Option<Self> {
-        if let Some(expr) = &goal.schedule.cron {
-            let cron = Cron::parse(expr).ok()?;
-            return Some(Timetable::Cron {
-                expr: expr.clone(),
-                tz: goal_tz(goal.schedule.timezone.as_deref()),
-                cron,
-            });
+        if goal.schedule.cron.is_some() {
+            return Self::new(None, goal.schedule.cron.as_deref(), goal.schedule.timezone.as_deref());
         }
         crate::goal::check_every_secs(goal, d).map(Timetable::Every)
+    }
+
+    /// A timetable from its parts (`None`: none, or no valid one).
+    pub fn new(every_secs: Option<u64>, cron: Option<&str>, timezone: Option<&str>) -> Option<Self> {
+        match cron {
+            Some(expr) => Some(Timetable::Cron {
+                expr: expr.to_string(),
+                tz: goal_tz(timezone),
+                cron: Cron::parse(expr).ok()?,
+            }),
+            None => every_secs.filter(|e| *e > 0).map(Timetable::Every),
+        }
+    }
+
+    /// When the next slot after `now_ms` comes.
+    pub fn next_ms(&self, now_ms: u64) -> Option<u64> {
+        match self {
+            Timetable::Every(_) => self.slot(now_ms).map(|s| self.slot_ms(s + 1)),
+            Timetable::Cron { tz, cron, .. } => cron.slot_after(*tz, now_ms).map(|s| self.slot_ms(s)),
+        }
     }
 
     /// What `schedule.json` records (a change starts counting again).
@@ -213,6 +254,14 @@ impl Timetable {
         match self {
             Timetable::Every(e) => Some(now_ms / 1000 / (*e).max(1)),
             Timetable::Cron { tz, cron, .. } => cron.slot_at_or_before(*tz, now_ms),
+        }
+    }
+
+    /// The time slot `slot` stands for.
+    pub fn slot_ms(&self, slot: u64) -> u64 {
+        match self {
+            Timetable::Every(e) => slot.saturating_mul((*e).max(1)).saturating_mul(1000),
+            Timetable::Cron { .. } => slot.saturating_mul(60_000),
         }
     }
 

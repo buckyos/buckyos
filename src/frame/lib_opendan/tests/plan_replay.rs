@@ -14,97 +14,23 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use buckyos_api::AiResponse;
 use common::plan::*;
+use common::replay::*;
 use common::*;
-use libopendan::host::HostDeps;
 use libopendan::notify::{notify_event, LocalNotify, NotifyHost, NotifyKind, NotifyLevel, NotifyStatus};
 use libopendan::protocol::*;
-use libopendan::runner::{drive, DriveResult, RunnerDeps, StopSignal, StopWhen};
+use libopendan::runner::{drive, DriveResult, RunnerDeps, StopWhen};
 use libopendan::state::AgentStateClient;
 use libopendan::todos::{TodoMode, TodoStatus};
 use libopendan::{SessionDir, SessionTemplate};
-use llm_context::deps::{LlmClient, LlmInferenceRequest};
-use llm_context::error::LLMComputeError;
+use llm_context::deps::LlmInferenceRequest;
 use serde_json::{json, Value};
-
-const OWNER: &str = "did:bns:alice";
-const ASK_TASK: &str = "t-0000000000000000000000000000ask1";
-
-type Script = dyn Fn(&LlmInferenceRequest) -> Option<AiResponse> + Send + Sync;
-
-/// The real model, unless the script answers the request.
-struct Mixed {
-    real: agent_tool::xllm::AiccLlmClient,
-    script: Box<Script>,
-    real_calls: AtomicUsize,
-}
-
-#[async_trait]
-impl LlmClient for Mixed {
-    async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
-        match (self.script)(&req) {
-            Some(r) => Ok(r),
-            None => {
-                self.real_calls.fetch_add(1, Ordering::SeqCst);
-                self.real.infer(req).await
-            }
-        }
-    }
-}
-
-async fn mixed(script: impl Fn(&LlmInferenceRequest) -> Option<AiResponse> + Send + Sync + 'static) -> Arc<Mixed> {
-    agent_tool::xllm::ensure_buckyos_runtime().await.expect("the local Zone");
-    Arc::new(Mixed {
-        real: agent_tool::xllm::AiccLlmClient::new(),
-        script: Box::new(script),
-        real_calls: AtomicUsize::new(0),
-    })
-}
-
-fn setup() -> Env {
-    let env = match std::env::var("PLAN_REPLAY_KEEP") {
-        Ok(dir) => Env::at(&PathBuf::from(dir).join(format!("{}", libopendan::now_ms()))),
-        Err(_) => Env::new(),
-    };
-    install_jarvis(&env);
-    copy_dir(&Path::new(PACKAGE).join("plan_skills"), &env.agent_root.join("plan_skills"));
-    tool_env(&env);
-    // `ask_user` of the cases: what a Zone would print, and no Zone asked.
-    let tools = env.agent_root.join("tools");
-    std::fs::create_dir_all(&tools).unwrap();
-    let envelope = json!({ "agent_tool_protocol": "1", "status": "pending", "task_id": ASK_TASK,
-        "pending_reason": "user_input", "summary": "asked the user", "detail": {} });
-    std::fs::write(
-        tools.join("ask_user"),
-        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$OPENDAN_AGENT_ROOT/asked.txt\"\ncat <<'EOT'\n{envelope}\nEOT\n"),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    std::fs::set_permissions(tools.join("ask_user"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    env
-}
-
-fn real_context() -> Value {
-    json!({ "model": "llm.chat", "max_tokens": 8192, "provider": { "type": "buckyos" }, "tools": { "enabled": true } })
-}
-
-/// The deps the host drives `sd` with.
-async fn deps(env: &Env, sd: &SessionDir, llm: &Arc<Mixed>) -> RunnerDeps {
-    host_of(env, llm.clone()).runner_deps(sd, StopSignal::default()).await.unwrap()
-}
-
-fn host_of(env: &Env, llm: Arc<Mixed>) -> HostDeps {
-    let mut h = host(env, llm);
-    h.options.max_wait = Duration::from_secs(1200);
-    h
-}
 
 async fn plan(env: &Env, objective: &str, workspace: Option<&Path>) -> SessionDir {
     let mut spec = plan_spec(env, objective);
@@ -127,69 +53,8 @@ async fn look_with(deps: &RunnerDeps, sd: &SessionDir) -> DriveResult {
     Box::pin(drive(sd, deps, StopWhen::Idle)).await
 }
 
-/// Drive a session and its sub sessions to its end.
-async fn finish(env: &Env, sd: &SessionDir, llm: &Arc<Mixed>) -> DriveResult {
-    Box::pin(libopendan::host::run_session(
-        &host_of(env, llm.clone()),
-        sd,
-        StopWhen::Finished,
-        StopSignal::default(),
-        false,
-    ))
-    .await
-    .result
-}
-
-/// The shell commands of a session, in order.
-fn commands(sd: &SessionDir) -> Vec<String> {
-    read_worklog(sd)
-        .iter()
-        .filter_map(|e| match &e.body {
-            WorklogBody::AssistantMessage { tool_calls, .. } => Some(tool_calls.clone()),
-            _ => None,
-        })
-        .flatten()
-        .filter_map(|c| c.args.get("command").and_then(Value::as_str).map(str::to_string))
-        .collect()
-}
-
-/// What a session was given and said, as text.
-fn transcript(sd: &SessionDir) -> String {
-    let mut out = format!("## session {}\n\n", sd.sid());
-    for e in read_worklog(sd) {
-        match e.body {
-            WorklogBody::UserMessage { content, .. } => out.push_str(&format!("### input\n\n```\n{content}\n```\n\n")),
-            WorklogBody::AssistantMessage { assistant, tool_calls, .. } => {
-                if !assistant.trim().is_empty() {
-                    out.push_str(&format!("### reply\n\n{assistant}\n\n"));
-                }
-                for c in tool_calls {
-                    out.push_str(&format!(
-                        "### call `{}`{}\n\n```\n{}\n```\n\n",
-                        c.tool,
-                        c.intent.map(|i| format!(" — {i}")).unwrap_or_default(),
-                        c.args.get("command").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| serde_json::to_string_pretty(&c.args).unwrap())
-                    ));
-                }
-            }
-            WorklogBody::ActionResult { result, .. } => {
-                let text: String = result.to_string().chars().take(1500).collect();
-                out.push_str(&format!("### result\n\n```\n{text}\n```\n\n"));
-            }
-            WorklogBody::ControlApplied { command, detail, .. } if command == "perceive" => {
-                out.push_str(&format!("### perceived\n\n```\n{detail}\n```\n\n"));
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
 fn write(case: &str, text: String) {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/plan-replay");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join(format!("{case}.md")), &text).unwrap();
-    println!("{text}");
+    write_to("plan-replay", case, text);
 }
 
 fn todo_table(sd: &SessionDir) -> String {
@@ -651,15 +516,6 @@ async fn plan_child(env: &Env, ui: &SessionDir, title: &str) -> SessionDir {
     .unwrap()
 }
 
-async fn say(env: &Env, sd: &SessionDir, llm: &Arc<Mixed>, words: &str) {
-    libopendan::post_input(env.agent().as_ref(), sd.sid(), &msg(words)).await.unwrap();
-    let mut d = deps(env, sd, llm).await;
-    d.notify = Some(Arc::new(LocalNotify::enable(&env.agent_root, AGENT).unwrap()));
-    for _ in 0..2 {
-        Box::pin(drive(sd, &d, StopWhen::Idle)).await;
-    }
-}
-
 /// A running plan asked something. What the user types answers the question
 /// once (`notify answer`, not posted as well); a change of the work is posted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -836,17 +692,6 @@ fn assert_complete(text: &str) {
     assert!(text.contains("198.51.100.0/24") && text.contains("9100"), "inputs: {text}");
     assert!(text.contains("JSON") && text.contains("IP"), "what the report has to contain: {text}");
     assert!(["设置", "配置", "setting"].iter().any(|w| text.contains(w)), "what it may not change: {text}");
-}
-
-async fn works_of(env: &Env, parent: Option<&str>) -> Vec<SessionDir> {
-    let mut out = Vec::new();
-    for e in env.agent().sessions().query(&RegistryQuery::default()).await.unwrap() {
-        let mine = parent.is_none_or(|p| e.origin.as_ref().and_then(|o| o.parent_session.as_deref()) == Some(p));
-        if e.kind == SessionKind::Work && mine {
-            out.push(SessionDir::open(&e.location).unwrap());
-        }
-    }
-    out
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

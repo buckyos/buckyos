@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "JobRunning": {
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "pid": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "trigger": {
+          "type": "string"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "at_ms",
+        "run_id",
+        "trigger",
+        "version"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "`schedule.json` of a job.",
+  "properties": {
+    "failures": {
+      "default": 0,
+      "description": "Runs in a row that did not succeed.",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "last_slot": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "running": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/JobRunning"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "timetable": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version_run": {
+      "default": 0,
+      "description": "The version that ran (or began to): a newer one runs at once.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "title": "JobSchedule",
+  "type": "object"
+}

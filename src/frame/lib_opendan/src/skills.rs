@@ -78,8 +78,8 @@ fn save_record(root: &Path, record: &SkillsRecord) -> Result<()> {
 pub struct SkillAudit {
     pub at_ms: u64,
     pub by: String,
-    /// `install | remove | enable | disable | ui_set | revise | draft | draft_discard | install_cmd |
-    /// crystallize_on | crystallize_off`.
+    /// `install | remove | enable | disable | ui_set | revise | add | draft | draft_discard | install_cmd |
+    /// <duty>_on | <duty>_off` (a duty of the self improvement Goal).
     pub action: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub skill: String,
@@ -103,17 +103,28 @@ pub struct SkillsState {
     pub install: BTreeMap<String, SkillInstallState>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audit: Vec<SkillAudit>,
-    /// The owner's switch of the skill crystallization Goal; absent:
-    /// `agent.toml [session.goal.crystallize] enabled`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub crystallize: Option<bool>,
+    /// The owner's switches of the self improvement Goal's duties (absent: on).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub self_improve: BTreeMap<String, bool>,
 }
 
-/// Switch the skill crystallization Goal on or off (the owner's).
-pub fn set_crystallize(root: &Path, enabled: bool, who: &str) -> Result<SkillsState> {
+/// Duties of the self improvement Goal the owner may switch off: consolidating Memory, revising and drafting manuals,
+/// making tools.
+pub const SELF_IMPROVE_DUTIES: [&str; 3] = ["memory", "manuals", "tools"];
+
+/// Whether the self improvement Goal has `duty`.
+pub fn duty_on(root: &Path, duty: &str) -> bool {
+    load_state(root).ok().and_then(|s| s.self_improve.get(duty).copied()).unwrap_or(true)
+}
+
+/// Switch a duty of the self improvement Goal on or off (the owner's).
+pub fn set_duty(root: &Path, duty: &str, enabled: bool, who: &str) -> Result<SkillsState> {
+    if !SELF_IMPROVE_DUTIES.contains(&duty) {
+        return Err(OpenDanError::InvalidArgument(format!("unknown duty `{duty}` ({})", SELF_IMPROVE_DUTIES.join(" | "))));
+    }
     update_state(root, |state| {
-        audit(state, who, if enabled { "crystallize_on" } else { "crystallize_off" }, "", "");
-        state.crystallize = Some(enabled);
+        audit(state, who, &format!("{duty}_{}", if enabled { "on" } else { "off" }), "", "");
+        state.self_improve.insert(duty.to_string(), enabled);
         Ok(state.clone())
     })
 }
@@ -388,6 +399,36 @@ pub fn revise(root: &Path, kind: SkillKind, name: &str, text: &str, reason: &str
     crate::fsutil::atomic_replace(&path, text.as_bytes())?;
     update_state(root, |state| {
         audit(state, who, "revise", &key(kind, name), &format!("{reason} (previous text: {}/{name}/{REVISIONS_DIR}/{now}.md)", kind.dir()));
+        Ok(())
+    })?;
+    find(root, kind, name)
+}
+
+/// Add a work manual of the agent's own (origin `local`): the self improvement Goal's way to make a tool it built
+/// known to work. It passes what an installed package has to pass; a manual conversations may take (`scope` with `ui`)
+/// and every other kind stay the owner's to install, from a draft.
+pub fn add_local(root: &Path, name: &str, text: &str, reason: &str, who: &str) -> Result<SkillMeta> {
+    let kind = SkillKind::Work;
+    crate::ids::validate_session_id(name).map_err(|_| OpenDanError::InvalidArgument(format!("bad skill name `{name}`")))?;
+    if list(root, None)?.iter().any(|m| m.name == name) {
+        return Err(OpenDanError::InvalidArgument(format!("there is a skill `{name}` already: revise it, or write a draft under {DRAFTS_DIR}/")));
+    }
+    let files = [(format!("{}/{name}/{SKILL_MANUAL}", kind.dir()), SkillFile::of(text.as_bytes()))].into_iter().collect();
+    let pkg = SkillPackage { package: format!("local:{name}"), version: "0".into(), files, ..Default::default() };
+    let errors: Vec<String> = lint_package(&pkg).into_iter().filter(|f| f.level == "error").map(|f| f.note).collect();
+    if !errors.is_empty() {
+        return Err(OpenDanError::InvalidArgument(errors.join("; ")));
+    }
+    let meta = skill_meta(kind, name, text);
+    if meta.description.trim().is_empty() || split_front_matter(text).1.trim().is_empty() {
+        return Err(OpenDanError::InvalidArgument("a manual needs a `description` (work is given it by that line) and a body".into()));
+    }
+    if meta.scope.ui() {
+        return Err(OpenDanError::InvalidArgument(format!("a manual for conversations (`scope` with ui) is the owner's to install: write a draft under {DRAFTS_DIR}/")));
+    }
+    crate::fsutil::atomic_replace(&root.join(kind.manual(name)), text.as_bytes())?;
+    update_state(root, |state| {
+        audit(state, who, "add", &key(kind, name), reason);
         Ok(())
     })?;
     find(root, kind, name)
@@ -1451,6 +1492,27 @@ mod tests {
         assert_eq!(body, "# X\nbody");
         assert_eq!(split_front_matter("plain\n").1, "plain");
         assert_eq!(split_front_matter("---\nno end").1, "---\nno end");
+    }
+
+    #[test]
+    fn a_manual_of_the_agents_own_is_added_like_a_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let manual = |name: &str, scope: &str, body: &str| format!("---\nname: {name}\ndescription: Turn a workbook into CSV files.\nrequires: the private runtime\ncommands: xlsx2csv\nscope: {scope}\n---\n{body}\n");
+        let body = "Run `xlsx2csv <file>`; one CSV per sheet is written beside it.";
+        let m = add_local(root, "xlsx2csv_tool", &manual("xlsx2csv_tool", "work", body), "work-1 and work-3 lacked it", "session:goal-1").unwrap();
+        assert_eq!((m.origin.as_str(), m.enabled, m.scope.work(), m.scope.ui()), ("local", true, true, false));
+        assert!(list(root, Some(SkillKind::Work)).unwrap().iter().any(|s| s.name == "xlsx2csv_tool"));
+        let audit = load_state(root).unwrap().audit;
+        assert_eq!((audit[0].action.as_str(), audit[0].skill.as_str()), ("add", "work:xlsx2csv_tool"));
+        // Not a second time, not for conversations, not what an install refuses.
+        assert!(add_local(root, "xlsx2csv_tool", &manual("xlsx2csv_tool", "work", body), "again", "x").is_err());
+        let ui = add_local(root, "for_chat", &manual("for_chat", "ui, work", body), "x", "x").unwrap_err().to_string();
+        assert!(ui.contains("draft"), "{ui}");
+        assert!(add_local(root, "other", &manual("xlsx2csv_tool", "work", body), "x", "x").is_err(), "another name");
+        assert!(add_local(root, "../x", &manual("x", "work", body), "x", "x").is_err());
+        assert!(add_local(root, "no_body", "---\nname: no_body\n---\n", "x", "x").is_err());
+        assert!(!root.join("cmd_skills/for_chat").exists());
     }
 
     #[test]

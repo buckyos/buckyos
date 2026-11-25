@@ -1,7 +1,7 @@
 ---
 name: goal_check_script
-description: Write the check script that decides when this goal is worth an activation — a cheap TypeScript look at files, the network or Memory that returns true only when something you care about changed — and that sends reminders at their times without any activation. Read it before the first `goal check set`, when the goal has to tell the user something at known times, and whenever checks keep passing with nothing to do or keep failing.
-requires: the goal's own commands (`agent-session goal check show|run|set`)
+description: Write the check script that decides when this goal is worth an activation — a cheap TypeScript look at files, the network, the goal's jobs or Memory that returns true only when something you care about changed — and that sends reminders at their times without any activation; and write the jobs that do the routine work. Read it before the first `goal check set` or `goal job put`, when the goal has to tell the user something at known times, and whenever checks keep passing with nothing to do or keep failing.
+requires: the goal's own commands (`agent-session goal check show|run|set`, `goal job …`)
 ---
 # Writing a goal's check script
 
@@ -12,8 +12,12 @@ A goal is woken by its check, not by the clock: the host runs the check on a tim
 ```ts
 export default async function check(ctx, state) {
   // ctx: goal_id, title, objective, scope {paths, objects, workspace}, agent_root,
-  //      now_ms, timezone (the goal's IANA zone or null), trigger, held,
+  //      now_ms (when it runs), slot_ms (the time it stands for: its slot of the timetable),
+  //      missed (slots before this one that had no check of their own),
+  //      timezone (the goal's IANA zone or null), trigger, held,
   //      last_inference_at_ms, last_check_at_ms, last_check, pending, active_works,
+  //      jobs: [{job_id, version, enabled, running, failures, next_at_ms,
+  //              last_run: {run_id, version, status, kind, summary, metrics, at_ms, ended_at_ms}}],
   //      host.call(method, params) — read-only calls of the host (memory.status {full?})
   // state: what this function returned as `state` last time (null the first time)
   return { run: false, state };            // nothing to do: no activation
@@ -26,8 +30,8 @@ export default async function check(ctx, state) {
 - Keep what you saw last in `state` (a size, a modification time, a list of ids, an ETag): the check compares against it and needs no write access. Return the new `state` with every answer; `null` keeps the old one. At most 64 KiB.
 - `reason` is read by the next activation instead of looking again: say what changed, concretely (names, counts, links), not "something changed".
 - `notify: {title, message?, url?, level?}` is a notification the host sends the user at once, as this goal (`level`: `quiet | normal | timely | urgent`; `url`: `https://…` or a Zone path `/…` where opening it lands). It needs no activation, so return it with `run: false`. One per check; a notification that cannot be sent makes the check an error and its `state` is not kept, so the next check decides again.
-- The check runs even while the hard interval or the budget keeps you from being woken: `ctx.held` then says why (`min_interval`, `period_budget`, `agent_budget`, `guarantee`), otherwise it is `null`. A `run: false` result counts as usual, notification included; a `run: true` result is set aside whole (no notification, the old `state` stays), so return a notification that must not wait with `run: false`.
-- Throwing, taking more than 30 seconds or returning anything else is an error: no activation. After errors the hard guarantee still wakes you once in a long while and `<check_errors>` in the goal header says why — fix the script then.
+- The check runs even while the hard interval or the budget keeps you from being woken: `ctx.held` then says why (`min_interval`, `period_budget`, `agent_budget`, `guarantee`, `waiting`: your last scheduled activation has not started yet), otherwise it is `null`. A `run: false` result counts as usual, notification included; a `run: true` result is set aside whole (no notification, the old `state` stays), so return a notification that must not wait with `run: false`.
+- Throwing, taking more than 30 seconds or returning anything else is an error: no activation, no notification. After three errors in a row you are woken once, and `<check_errors>` in the goal header says why — fix the script then.
 
 ## How to write one
 
@@ -39,13 +43,13 @@ export default async function check(ctx, state) {
 
 ## Reminders at known times
 
-The goal's first activation turns the reminders in its objective into a check script; after that no reminder needs an activation. Give the timetable a `--cron` that comes at every reminder time (more often is fine), in the user's zone, and let the script find the reminder that is due and not sent yet: a check that comes late still sends it, one that comes twice does not send it twice.
+The goal's first activation turns the reminders in its objective into a check script; after that no reminder needs an activation. Give the timetable a `--cron` that comes at every reminder time (more often is fine), in the user's zone, and let the script find the reminder that is due and not sent yet. The host may run a check late (it was busy or restarting): decide by `ctx.slot_ms`, never by `ctx.now_ms`, and always give every reminder a late window in which it is still sent — a script that only fires in the exact minute loses reminders silently. Keep what was sent in `state`, so one that comes twice is sent once.
 
 ```ts
 // Weekdays in the user's zone at 15:00, 15:50, 16:40 and 17:30: stand up for 10 minutes.
 const TIMES = ["15:00", "15:50", "16:40", "17:30"];
 const DAYS = [1, 2, 3, 4, 5]; // Monday … Friday
-const LATE_MIN = 15; // a check this late still sends it; later, the reminder is dropped
+const LATE_MIN = 15; // required: a slot this long after the time still sends it; later, the reminder is dropped
 
 function local(ms: number, tz: string) {
   const p = Object.fromEntries(
@@ -62,13 +66,13 @@ function local(ms: number, tz: string) {
 }
 
 export default function check(ctx, state) {
-  const now = local(ctx.now_ms, ctx.timezone ?? "UTC");
-  if (!DAYS.includes(now.day)) return { run: false };
+  const slot = local(ctx.slot_ms, ctx.timezone ?? "UTC");
+  if (!DAYS.includes(slot.day)) return { run: false };
   const due = TIMES.find((t) => {
     const [h, m] = t.split(":").map(Number);
-    return now.minute >= h * 60 + m && now.minute < h * 60 + m + LATE_MIN;
+    return slot.minute >= h * 60 + m && slot.minute < h * 60 + m + LATE_MIN;
   });
-  const key = `${now.date} ${due}`;
+  const key = `${slot.date} ${due}`;
   if (!due || state?.sent === key) return { run: false };
   return {
     run: false,
@@ -84,9 +88,31 @@ Install it with `agent-session goal check set --script check.ts --cron "*/10 15-
 - A single reminder ("at 9 tomorrow"): send it with `run: false` and keep `{sent: true}`; at the next check return `run: true` with a `reason` such as "the reminder was sent at 09:00", and mark the goal achieved in that activation.
 - Something that needs judgement on the day (the user is on leave, asked to skip today) is not the script's: keep what you learned in the script's constants or let the check return `run: true` when a file or message it can read says so.
 
+## Jobs: routine that does something
+
+A check only looks. What has to be done every hour without judgement — fetch a source, rebuild a page, take a backup, clean up — is a job: a program the host runs on a timetable in this agent's private runtime, as the agent, with no inference.
+
+1. Write the program in a directory of its own, with nothing but the program in it (in the workspace: that is the source; what `put` installs is a copy). Data it reads or writes elsewhere it names by absolute path: next to the installed copy there is only the copy, and a data file installed with it stays as it was that day. Deno, Python or a shell script; one command line starts it.
+2. Try it there by hand, twice: it must be safe to run again, and after being cut off in the middle.
+3. Install it: `agent-session goal job put <job_id> --dir <directory> --command "deno run -A {dir}/main.ts" --every 3600 --title "<what it does>"` (`--cron "<m h dom mon dow>" [--timezone <iana>]` for wall-clock times; at least 300 seconds apart; `--timeout` up to 600 seconds, 300 by default). `{dir}` is the installed directory; a program in it goes by its name. It runs at once, then on its timetable. Watch it: `goal job run <job_id> --wait`, `goal job log <job_id>`, `goal job show <job_id>`.
+4. Let the check read it, so that only a job that does not work wakes you:
+
+```ts
+const j = ctx.jobs.find((x) => x.job_id === "sync");
+if (j && j.failures >= 3 && state?.told !== j.last_run.run_id) {
+  return { run: true, reason: `job sync failed ${j.failures} times in a row: ${j.last_run.kind} ${j.last_run.summary}`, state: { ...state, told: j.last_run.run_id } };
+}
+```
+
+- Where it runs: the working directory is the job's own `data/`, kept across versions: its state, its caches. Nothing else is remembered. `OPENDAN_AGENT_ROOT`, `OPENDAN_GOAL_ID`, `OPENDAN_JOB_ID`, `OPENDAN_JOB_DIR` (the installed version) and the agent's session token are in the environment; it is not a session, so `agent-session` commands of a session do not work in it.
+- How it ends: exit 0 is ok. The last line of stdout may be `{"summary": "<one line>", "kind": "transient | auth | program | budget", "metrics": {…}}`: say in `summary` what changed, or what broke. `transient` is tried again after 30 and 120 seconds. Anything that ran past its timeout is ended with everything it started.
+- A model step (`xllm …`) is paid from the goal's budget: `OPENDAN_MODEL_BUDGET` is what is left of it, `0` refuses the call; do the rest of the work without it and end with `"kind": "budget"`.
+- It tells nobody anything: what the user has to know the check sends (`notify`), or you do.
+- Every `put` is a new version; `goal job rollback <job_id>` goes back, `disable` stops it. Repair the source in the workspace first, then `put` again.
+
 ## Patterns
 
 - Folder watch: list names and sizes, keep them in `state`, `run` when a new name appears or a size changes; the `reason` lists them.
 - Web page or API: keep an ETag or a hash of the part you care about; `run` when it differs.
-- Deadline: keep nothing; `run` when `now_ms` passes a date you put in `state` or in `pending`.
+- Deadline: keep nothing; `run` when `slot_ms` passes a date you put in `state` or in `pending`.
 - Combine: one check may cover several of the goal's duties; give each its own part of `state` and say in `reason` which one fired.

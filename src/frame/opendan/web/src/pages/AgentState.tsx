@@ -4,13 +4,13 @@ import { useQuery } from '../lib'
 import { dataModel, type MemoryQueryResult } from '../model'
 import { Badge, Empty, ErrorBox, Fields, Mono, Panel, Pre, Sid, Time } from '../ui'
 
-// The perception backlog is consolidated by the built-in memory maintenance
-// Goal (see the Goals section of the home page); `perception.last_seq` is the
-// only perception read left and it is per session.
+// The perception backlog is consolidated by the built-in self improvement Goal
+// (see the Goals section of the home page); `perception.last_seq` is the only
+// perception read left and it is per session.
 function Perception() {
   return (
     <Panel title={t('observePerception')} testId="agent-perception">
-      <Empty>{t('observePerceptionsAreConsolidatedByTheMemoryMaintenanceGoal')}</Empty>
+      <Empty>{t('observePerceptionsConsolidated')}</Empty>
     </Panel>
   )
 }

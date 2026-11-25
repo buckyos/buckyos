@@ -6004,14 +6004,83 @@ impl TimeoutLlmClient {
     }
 }
 
+/// Who started this process keeps the model tokens it uses in this file, one
+/// JSON record per call (a job of an OpenDAN Goal).
+pub const ENV_USAGE_LOG: &str = "OPENDAN_USAGE_LOG";
+/// Model tokens it may still use (`0`: none). With [`ENV_USAGE_LOG`] the
+/// records of its own run (`OPENDAN_JOB_RUN_ID`) count against it.
+pub const ENV_MODEL_BUDGET: &str = "OPENDAN_MODEL_BUDGET";
+const ENV_JOB_RUN_ID: &str = "OPENDAN_JOB_RUN_ID";
+
+/// The model budget this process was given is used up.
+fn model_budget_spent() -> Option<String> {
+    let log = std::env::var_os(ENV_USAGE_LOG).and_then(|p| std::fs::read_to_string(p).ok());
+    budget_spent(
+        &std::env::var(ENV_MODEL_BUDGET).ok()?,
+        std::env::var(ENV_JOB_RUN_ID).ok().as_deref(),
+        &log.unwrap_or_default(),
+    )
+}
+
+/// `log`: the usage records; those of `run` count.
+fn budget_spent(budget: &str, run: Option<&str>, log: &str) -> Option<String> {
+    let budget: u64 = budget.trim().parse().ok()?;
+    let used: u64 = log
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|r| run.is_some() && r["run_id"].as_str() == run)
+        .filter_map(|r| r["total_tokens"].as_u64())
+        .sum();
+    (used >= budget).then(|| format!("model budget: {used} of {budget} tokens used (the period's budget of this goal)"))
+}
+
+/// The record of one call (none: it reports no tokens).
+fn usage_record(alias: &str, response: &AiResponse, run: Option<&str>) -> Option<Value> {
+    let usage = response.usage.as_ref()?;
+    let input = usage.input_tokens.unwrap_or(0);
+    let output = usage.output_tokens.unwrap_or(0);
+    let total = usage.total_tokens.unwrap_or(input + output);
+    if total == 0 {
+        return None;
+    }
+    let model = response.extra.as_ref().and_then(|e| e["model"].as_str()).filter(|m| !m.is_empty()).unwrap_or(alias);
+    Some(serde_json::json!({
+        "at_ms": now_ms(), "model": model, "run_id": run,
+        "input_tokens": input, "output_tokens": output, "total_tokens": total,
+    }))
+}
+
+fn record_usage(alias: &str, response: &AiResponse) {
+    let Some(path) = std::env::var_os(ENV_USAGE_LOG) else {
+        return;
+    };
+    let Some(line) = usage_record(alias, response, std::env::var(ENV_JOB_RUN_ID).ok().as_deref()) else {
+        return;
+    };
+    use std::io::Write;
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| f.write_all(format!("{line}\n").as_bytes()));
+    if let Err(e) = written {
+        log::warn!("usage log {}: {e}", Path::new(&path).display());
+    }
+}
+
 #[async_trait]
 impl LlmClient for TimeoutLlmClient {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
+        if let Some(why) = model_budget_spent() {
+            return Err(LLMComputeError::provider(llm_context::error::ProviderFailure::Refused { code: "model_budget".into() }, why));
+        }
         self.calls.fetch_add(1, Ordering::SeqCst);
+        let alias = req.model_alias.clone();
         let result = tokio::time::timeout(self.timeout, self.inner.infer(req))
             .await
             .map_err(|_| LLMComputeError::Timeout)?;
         if let Ok(resp) = &result {
+            record_usage(&alias, resp);
             let model = resp
                 .extra
                 .as_ref()
@@ -9953,6 +10022,38 @@ mod behavior_protocol_tests {
             build_runtime_protocol_for(&HostProtocolFlavor::OneShot, LoopModel::Behavior, &tools, false);
         assert!(one_shot.contains("yields: this context stops"), "{one_shot}");
         assert!(!one_shot.contains("Yielding is how you wait"), "{one_shot}");
+    }
+}
+
+#[cfg(test)]
+mod job_usage_tests {
+    use super::*;
+    use buckyos_api::AiUsage;
+
+    fn answer(usage: Option<AiUsage>, extra: Option<Value>) -> AiResponse {
+        AiResponse { usage, extra, ..Default::default() }
+    }
+
+    #[test]
+    fn a_call_is_recorded_with_its_run_and_the_model_that_answered() {
+        let usage = AiUsage { input_tokens: Some(30), output_tokens: Some(12), ..Default::default() };
+        let r = usage_record("llm.chat", &answer(Some(usage.clone()), Some(json!({ "model": "m-1" }))), Some("run-1")).unwrap();
+        assert_eq!((r["model"].as_str(), r["run_id"].as_str()), (Some("m-1"), Some("run-1")));
+        assert_eq!((r["input_tokens"].as_u64(), r["output_tokens"].as_u64(), r["total_tokens"].as_u64()), (Some(30), Some(12), Some(42)));
+        let r = usage_record("llm.chat", &answer(Some(usage), None), None).unwrap();
+        assert_eq!((r["model"].as_str(), r["run_id"].is_null()), (Some("llm.chat"), true));
+        assert!(usage_record("llm.chat", &answer(None, None), None).is_none());
+        assert!(usage_record("llm.chat", &answer(Some(AiUsage::default()), None), None).is_none());
+    }
+
+    #[test]
+    fn the_budget_counts_the_records_of_the_own_run() {
+        let log = "{\"run_id\":\"a\",\"total_tokens\":60}\nnot json\n{\"run_id\":\"b\",\"total_tokens\":900}\n{\"run_id\":\"a\",\"total_tokens\":39}\n";
+        assert_eq!(budget_spent("100", Some("a"), log), None);
+        assert!(budget_spent("99", Some("a"), log).unwrap().contains("99 of 99"));
+        assert!(budget_spent("0", None, "").is_some(), "0: none at all");
+        assert_eq!(budget_spent("", Some("a"), log), None, "no budget given");
+        assert_eq!(budget_spent("5", None, log), None);
     }
 }
 

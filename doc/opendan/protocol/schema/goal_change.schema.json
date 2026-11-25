@@ -40,7 +40,7 @@
       "type": "integer"
     },
     "via": {
-      "description": "`owner | ui_session:<sid> | goal_session:<sid> | opendan`.",
+      "description": "`owner | ui_session:<sid> | work_session:<sid> | goal_session:<sid> | opendan`.",
       "type": "string"
     },
     "who": {

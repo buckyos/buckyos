@@ -4,6 +4,8 @@
 
 状态：A 组 2026-11-10 实施并在本机 Zone 补验（§7）。**2026-11-11 实施了 H、B、C0、D1、D5 的一半、E4、E5、F1、F2、G1、G2（记录在 §10，未提交）。** 剩下的：D3（workflow 计划后端，依赖 workflow 的修复）、F3（等一个跑了一周的 Goal 的数据，DV 先量到一组见 §10.6）与按裁决推后的 D4、E1、E2、E3（等日历 / 待办接入）。DV 之后 owner 定了硬保障下限 1 小时（§10.6，已实施）。D5 的固定提醒那一半按 owner 11-11 的要求改由 Goal 承担（§10.7，已实施未提交）。裁决原文在 §8、§9。
 
+**2026-11-24：[Goal Session 改进 TODO](opendan-goal-session-improve-todo.md)（下称“改进单”）接替了这里没做完的 F3、E1–E3、D4 里和提醒有关的部分，以及 §7.3、§10.7 的遗留，各条的去向标在原处。本单只剩 D3（workflow 计划后端）。**
+
 本单是 Goal 剩余工作的总入口：排顺序，标明依赖和裁决状态，并补上此前没有任何 TODO 承接的项。已有详细方案的不在这里重写，只给指针，实施时按原文的方案做：
 
 - [Goal Session 对齐全异步模型 TODO](opendan-goal-session-async-todo.md)（下称“异步单”）：Q-G*、Q-U*、Q-S* 的选项与建议，§8 的实施清单。
@@ -159,11 +161,11 @@ owner 2026-11-10（§9 第 1 条）：通知用户这件事，把命令行定下
 
 ### E. 内置 Goal
 
-- **E1 整理 Goal 的 P1（候选发现与确认）：整体推后**（2026-11-10 裁决），和 E2 一起等日历 / 待办接入。
+- **E1 整理 Goal 的 P1（候选发现与确认）：整体推后**（2026-11-10 裁决），和 E2 一起等日历 / 待办接入。**2026-11-24 去向：改进单 CA3（已实施）。** 候选用带选项的 `questions` 承载，规则在 `goal_skills/self_improve_memory`，没有实现宿主的类型化候选；`consolidation.rs` 的挂点和 `candidate_id` 仍空着。
   - 原因：它发现的候选里，日程现在落不了地；“建一个 Goal”又和“不强迫用户分成多个 Goal”有张力。届时候选里加一类“给已有的 Goal 增加一项职责”。
   - 留着的挂点：`lib_opendan/runner/consolidation.rs:854`（提交后发布候选）、`runner/goal.rs:921`（问题与候选的关联，`candidate_id` 今天恒为空）；类型已冻结，页面已有候选列表的位置。方案在默认 Goal 单 T05，验收 V06、V10–V13。
-- **E2 整理 Goal 的 P2：落地，等日历 / 待办接入**（§9 第 2 条）。默认 Goal 单 T05 的后两条（依赖 D3、D4），验收 V16 和 V12、V13 的其余断言。T06（用模型做预检，验收 V14、V15）已取消（N13，2026-11-10）：H 组改用不花 token 的检查脚本，`[session.goal.maintenance] decision` 配置项（`lib_opendan/template.rs:76`）随 H6 删除。
-- **E3 日程管家：等日历 / 待办接入**（§9 第 2 条）。它要管的是用户当天的 timer，依赖 D4。届时按“Goal 是珍贵的资源”的原则（§8 第 10 条）先看它是独立的 Goal 还是默认 Goal 的一项职责；Q-S6、S8、S9、S10 那时再定。方案在异步单 §5.2 与 §8 D6。
+- **E2 整理 Goal 的 P2：落地，等日历 / 待办接入**（§9 第 2 条）。**2026-11-24 去向：改进单 CA3（已实施），落地就是主人同意后调 `owner.cal` / `owner.todo`。**默认 Goal 单 T05 的后两条（依赖 D3、D4），验收 V16 和 V12、V13 的其余断言。T06（用模型做预检，验收 V14、V15）已取消（N13，2026-11-10）：H 组改用不花 token 的检查脚本，`[session.goal.maintenance] decision` 配置项（`lib_opendan/template.rs:76`）随 H6 删除。
+- **E3 日程管家：等日历 / 待办接入**（§9 第 2 条）。**2026-11-24 去向：不另建 Goal（改进单 Q12）。进不进日历由意图分析判断（CA1），日历自己会按 `reminders` 提醒；其余提醒并入提醒 Goal 的检查脚本。**它要管的是用户当天的 timer，依赖 D4。届时按“Goal 是珍贵的资源”的原则（§8 第 10 条）先看它是独立的 Goal 还是默认 Goal 的一项职责；Q-S6、S8、S9、S10 那时再定。方案在异步单 §5.2 与 §8 D6。
 - [x] **E4 self_check 退役**（N1）。它今天不运行（`[loader.self_check]` 打开只会报“本版本不可用”），但类型、模板、behavior 都在，也没有独立的 TODO。
   - 删除：`SessionKind::SelfCheck`、内建模板 `self_check` 与 `_self_check_timer`（`lib_opendan/template.rs:213`）、sid 前缀 `sc-`、`[loader.self_check]`（`src/frame/opendan/src/config.rs:71`、`loader.rs:420`、`jarvis/agent.toml:41`）、`jarvis/behaviors/self_check.toml`、WebUI 的 `SessionKind`（`src/frame/opendan/web/src/model/types.ts:1`）。
   - Notebook 一并退役（Memory 需求 TD-09）：`agent_tool/src/agent_notebook.rs`、`lib_opendan/state/` 里的 `notebook_append`、`xagent_cli.rs` 与 `agent_tool_cli_dev` 的入口、`opendan/src/service.rs`。唯一的 behavior 调用方是 `self_check.toml`。
@@ -179,7 +181,7 @@ owner 2026-11-10（§9 第 1 条）：通知用户这件事，把命令行定下
   - 两份都按 owner 给的范式写（§9 第 5 条）：**Goal 的早期运行应该为后面的重复交付准备好必要的工具**。前几次 Activation 花预算把检查脚本、交付用的 app 或页面、常用的脚本建起来，后面的 Activation 只是用它们，每次都很便宜。`goal.toml` 的“Every activation”一节也要加上这一条，否则没读 skill 的 Goal 不会这么做。
   - 实施建议：Goal 给自己准备了哪些工具，要在每次 Activation 的 Goal 头里看得到。检查脚本已经在 H5 列的信息里；app 的 URL、脚本的路径建议记进 `current_skills`（`name=ref`，和 F1 一起做），restart 开新上下文时这部分要保留，今天 restart 会把 Skills 重置回定义里的初始值。
   - 软件项目维护与 Issue 跟踪那一份放到第二批。写法按 `doc/sdk/skill-dev-quickstart.md`；回归 `cargo test -p libopendan --lib skills`。
-- [ ] **F3 Goal 的压缩策略**（N3）。今天恢复所需的内容都在每次重建的 Goal 头里，历史走通用压缩；连续的 `no_action` Activation 让历史逐轮增长，直到通用压缩触发（第一段 DV 量到每轮约 1k token，那之后历史重建改过，数字要重新量）。先量一个跑了一周的 Goal 的历史构成，再定方案。
+- [x] **F3 Goal 的压缩策略**（N3）。**2026-11-24 关闭：不做 Goal 专用的压缩（改进单 CX4）。** 缺省 `context = fresh`，一次 Activation 从 Goal 头开始；选 `carry` 的走标准压缩（架构 §11.3）。以下是当时的说法：今天恢复所需的内容都在每次重建的 Goal 头里，历史走通用压缩；连续的 `no_action` Activation 让历史逐轮增长，直到通用压缩触发（第一段 DV 量到每轮约 1k token，那之后历史重建改过，数字要重新量）。先量一个跑了一周的 Goal 的历史构成，再定方案。
 
 ### G. 治理与管理面
 
@@ -322,9 +324,9 @@ DV 用本机 Zone：只验宿主侧逻辑用 `./debug_jarvis.sh devtest --agent 
 发现的问题，都没有处理：
 
 1. 被停掉的 Activation 留下的任务结束时，唤醒后打开新的 Activation。就是 B6，真实 Zone 上确认了。
-2. Work 的 `needs_input`（`work_simple` 的 Work 在等自己的后台任务时关闭 Turn）也给 Goal 一次运行机会，Goal 为此读一遍没有新内容的报告。没有 TODO 承接，建议并入 B6 或 B5 一起看：Goal 只该为 Work 的结束和真正要人回答的问题醒来。
-3. Work 自己的任务结束事件（`task:local:shell:…:terminal`）出现在 Goal 的 Activation 原因里。来源没有查。
-4. 成本：Goal 里每跟一条长命令就带着整段上下文推理一次，测试 Goal 三次 Activation 用了 37.8 万 token；结晶 Goal 一次 `no_action` 用了 18.2 万 token。前者和 B1 有关，后者和 E5 有关（打开开关之前要让 owner 知道一次的量级）。
+2. Work 的 `needs_input`（`work_simple` 的 Work 在等自己的后台任务时关闭 Turn）也给 Goal 一次运行机会，Goal 为此读一遍没有新内容的报告。没有 TODO 承接，建议并入 B6 或 B5 一起看：Goal 只该为 Work 的结束和真正要人回答的问题醒来。（2026-11-11 已处理：B5、B6。）
+3. Work 自己的任务结束事件（`task:local:shell:…:terminal`）出现在 Goal 的 Activation 原因里。来源没有查。（2026-11-24 查清：是 Goal 自己记住的任务编号，Activation 关闭后还在跟；H0（2026-11-11）已经修掉，改进单 RT2 补了回归用例。）
+4. 成本：Goal 里每跟一条长命令就带着整段上下文推理一次，测试 Goal 三次 Activation 用了 37.8 万 token；结晶 Goal 一次 `no_action` 用了 18.2 万 token。前者和 B1 有关，后者和 E5 有关（打开开关之前要让 owner 知道一次的量级）。（2026-11-24 改进单：`goal stats`、`fresh`、goal skill `goal_upkeep`，结晶并入 `self_improve`。）
 5. 结晶 Goal 的开关关掉以后，Goal 仍显示为 `active`（gate 是 `disabled`），Session 留着。和 E5（N8）一起定页面上怎么显示。
 
 没有验的：手机宽度与真机；结晶 Goal 的“修订手册”和“写草稿”路径（这次材料不够，没有触发）。
@@ -479,6 +481,6 @@ F3 的数据：同一个 Goal 连续 `no_action` 时每次 Activation 从 2.5 �
 - **页面**：门槛面板的本周期计数加“检查发出的通知”，最近检查显示被拦下与已发通知。
 - **用例**：`goal_session.rs` 新增 `a_check_sends_reminders_without_inference_even_while_held`（硬间隔内照发、被拦下的 `true` 整个搁置、放行后随 Activation 发出、没有通知服务时算出错且 `state` 不变）；`checks_run_on_deno_with_read_and_network_only` 加真实 Deno 下 `notify` 的往返与三种不合约定。goal_session 38、memory_maintenance 13、fixtures 19 通过；WebUI check、lint、e2e 56 通过。`cargo test -p libopendan -p opendan` 并行跑时 `plan_simple_async` 5 个、`runtimes`、`session_runtime`、库内 `concurrent_reservations…`、`loader` 各 1 个失败，单线程（`--test-threads=1`）重跑都通过；`plan_simple_async` 在去掉这次改动的 HEAD 上并行跑同样失败，是用例之间的隔离问题，与本项无关。`xagent_cli` 的 2 个仍是 `src/tools/bin` 不存在。
 - **DV（2026-11-11，owner 部署后自己发的提醒请求）**：意图分析建了 Goal `g-k0b915a12dc76c2022c6052cf`（maintain，`--cron "*/10 12-17 * * 1-5"`，America/Los_Angeles，提醒时刻 12:00 起每 50 分钟到 17:00）。创建时的一次 Activation 用了 92,412 token：按 `goal_check_script` 写脚本、模拟 10,080 分钟、宿主试跑两次、`goal check set` 安装。之后每 10 分钟跑一次检查，每次约 18 ms：13:50、14:00 两个槽在硬间隔内（`held=min_interval`）照跑；14:30:00.84 PST 检查返回 `notify`，宿主发出 `nt-738aa9a3c34c459587222bc1938bf960`。到 14:40 共检查 6 次，发通知 1 次，出错 0 次，创建后没有再推理。
-  - DV 发现的问题：Agent 写的脚本只在整分钟命中时发，注释写着“never backfill”，没有照手册例子留 15 分钟的晚到窗口。`ctx.now_ms` 是检查实际运行的时刻，不是槽的时刻；宿主多个槽合并成一次触发（`missed > 1`）时同样如此。所以宿主在提醒那一分钟重启或延迟时，这次提醒会静默丢掉。可选的修法：`ctx` 带上槽的时刻，或在手册里把晚到窗口写成必须。待 owner 定。
-- 没有做 / 没有验：通知的呈现仍是系统通知（default chat session 的口吻转述是 C 组后半，未做）；检查脚本写坏时提醒会静默停到硬保障（缺省 72 小时）才被 Goal 发现，对提醒类 Goal 偏长，是否要“连续出错 N 次就唤醒一次”待 owner 定（§8 第 5 条原先说不加机制）。
+  - DV 发现的问题：Agent 写的脚本只在整分钟命中时发，注释写着“never backfill”，没有照手册例子留 15 分钟的晚到窗口。`ctx.now_ms` 是检查实际运行的时刻，不是槽的时刻；宿主多个槽合并成一次触发（`missed > 1`）时同样如此。所以宿主在提醒那一分钟重启或延迟时，这次提醒会静默丢掉。可选的修法：`ctx` 带上槽的时刻，或在手册里把晚到窗口写成必须。待 owner 定。（2026-11-24 改进单 CA2：`ctx.slot_ms` 与 `missed`，手册例子按槽写。）
+- 没有做 / 没有验：通知的呈现仍是系统通知（default chat session 的口吻转述是 C 组后半，未做）；检查脚本写坏时提醒会静默停到硬保障（缺省 72 小时）才被 Goal 发现，对提醒类 Goal 偏长，是否要“连续出错 N 次就唤醒一次”待 owner 定（§8 第 5 条原先说不加机制）。（2026-11-24 改进单 Q8、FH5：连续出错 3 次按硬保障唤醒一次。）
 

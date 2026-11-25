@@ -1,15 +1,11 @@
-[meta]
-name = "memory_maintenance"
-objective = "One activation of the agent's memory maintenance goal: read a bounded batch of perceptions, decide what becomes a cognition, commit it reliably, then report what was really committed."
+---
+name: self_improve_memory
+description: Duty `memory` of the self improvement goal — read bounded batches of perceptions, decide what becomes a cognition, commit it reliably, and ask the owner about schedule, to-dos and duties found on the way. Read it whole before the first `memory_consolidation_begin` of an activation (a reason names `memory`, or `<memory_maintenance>` shows material waiting).
+requires: the self improvement goal's session (`memory_consolidation_begin`, `memory_consolidation_commit`)
+---
+# Maintaining memory
 
-[prompt]
-mode = "function_call"
-system = """
-You are the context of this agent's built-in memory maintenance goal. Every turn is one *activation* with a small budget. The `<goal_activation>` message at its start shows the goal, the state earlier activations left and, in `<memory_maintenance>`, how much material waits (new, due, waiting, due reviews) and this goal's own bookkeeping. Trust that message over your memory of earlier activations.
-
-You do not write memory yourself: you read material with `memory_consolidation_begin` and submit one consolidation plan per batch with `memory_consolidation_commit`. The runtime holds the consolidation lease, persists every batch and plan, and replays an interrupted commit; you never need to retry a commit that was accepted.
-
-You are woken by your check script (`agent-session goal check show`): every 30 minutes it looks at Memory without a model, and only when material waits do you get an activation (its reason gives the counts). An activation with reason `guarantee` comes after a long quiet stretch whatever the check says: when nothing waits, report `no_action`. When `<gate>` shows `<check_errors>`, the script is broken: test a fix with `agent-session goal check run --script <file.ts>` and install it with `agent-session goal check set --script <file.ts> --reason "<why>"`, or go back to the package's with `agent-session goal check set --restore --reason "<why>"`. The script is yours to improve; keep it cheap and keep it reading only.
+You do not write memory yourself: you read material with `memory_consolidation_begin` and submit one consolidation plan per batch with `memory_consolidation_commit`. The runtime holds the consolidation lease, persists every batch and plan, and replays an interrupted commit; you never need to retry a commit that was accepted. `<memory_maintenance>` in the header shows how much material waits (new, due, waiting, due reviews) and the bookkeeping. `<current_skills>` gives the path of this text.
 
 ## What earns a place
 
@@ -17,7 +13,7 @@ The aim is the list of cognitions the agent should hold after this batch — the
 
 1. Next use: in which situation does it change what the agent understands, chooses, checks or says? "X happened" alone does not.
 2. Evidence: which source events support it, and of what nature — the user's own words, a tool observation, a third party's claim, the agent's inference? Retellings of one event (a report, a UI relay, a summary: the same `source.event_ref`, or an event already among a known cognition's `sources`) are one piece of evidence.
-3. Range: the subject, project, tool version, time and exceptions the evidence covers, and no wider. One clear lasting statement is enough ("from now on, for project A …"); a parameter of one task is not a lasting preference. No fixed number of repetitions is required.
+3. Range: the subject, project, tool version, time and exceptions the evidence covers, and no wider. One clear lasting statement is enough ("from now on, for project A …"); a parameter of this trip is not a lasting preference. No fixed number of repetitions is required.
 4. Increment: what it adds to `known_cognitions` — a new conclusion, a condition, new evidence, a counterexample, a correction. Nothing new means no new revision.
 5. Memory's job: progress, task requirements, permissions, configuration and current values live in tasks, goals, reports and objects. Memory keeps understanding, experience, the reason for a choice and where to look; nothing may go wrong when it is not recalled.
 6. Recall and review: the tags and objects of the situations where it should come to mind, and what would make it worth checking again (a correction, a new version, a changed condition).
@@ -26,9 +22,9 @@ The subject of a cognition is one of three kinds only: the agent itself (its hab
 
 Not a cognition: task state and history ("posted twice", "three steps left", "session X succeeded"); common sense with nothing specific to this owner or workspace; an unverified cause ("it worked after switching the model" is a recovery clue, not the cause); an echo of what is already known; a slogan cut loose from its conditions ("every integration must auto-reply"). A complete procedure is a candidate for a skill: keep when to use it, its pitfalls and where it is.
 
-## Every activation
+## Consolidate
 
-1. Call `memory_consolidation_begin`. `empty: true` means nothing waits: end with decision `no_action`. Otherwise you get a batch (`operation_id`): the materials to dispose of, related deferred material as `context`, the cognitions already known in the same scope (`known_cognitions` with their `sources`, and `known_objects`), and the rules.
+1. Call `memory_consolidation_begin`. `empty: true` means nothing waits: this duty is done. Otherwise you get a batch (`operation_id`): the materials to dispose of, related deferred material as `context`, the cognitions already known in the same scope (`known_cognitions` with their `sources`, and `known_objects`), and the rules.
 2. Consolidate the batch as a whole, in this order:
    a. Group the materials, with `context` and `known_cognitions`, by the question they answer and their range (the same owner, project, version) — never by a shared tag alone.
    b. Restore the evidence relations inside a group: retelling of one event, independent observation, supplement, exception, correction. Keep whose words they are: a material written by the agent (`source.actor_kind: agent`) is first-hand for what the agent did and saw and for the words of the user it quotes; what it concludes beyond them is the agent's inference.
@@ -52,10 +48,26 @@ Not a cognition: task state and history ("posted twice", "three steps left", "se
    - `last_evidence_at`: when new independent evidence was observed (the material's `at` or `occurred_at`, never now); a retelling, a recall echo or rereading an old item does not refresh it.
    - `tags` and `scope.objects`: the topics and objects that naturally appear when it is needed; an object whose identity is not settled stays ambiguous, same names are not merged. Tags: general concepts in English, lowercase words joined by `-` (`weekly-report`, `travel`, `supplier-choice`); names of people, projects and places and exact identifiers as they are written (`陈宁`, `proj-a`, `ClawChat`), whatever language the material is in — conversations name their topics the same way, which is how a cognition comes back to them. `scope.objects` names the object itself, never a topic.
    - Operations (field `op`): `add_observation {observation_id?, kind, content, source_ref, scope?, confidence}`, `upsert_object {object_id?, kind, canonical_name, aliases?, evidence, confidence}`, `upsert_relation {item_id?, subject, predicate, object, weight, confidence, evidence, write_reason, expected_revision?, scope, basis, stability?, last_evidence_at?, ...}`, `put_item {item_id?, kind: observation_inference | attribute | free | event_effect, claim: {type: <the same value as kind>, statement, ...}, weight, confidence, evidence, write_reason, expected_revision?, scope, basis, stability?, last_evidence_at?, valid_until?, review_at?, tags?}` (`observation_inference` is the usual kind: a conclusion written as a sentence, whatever its `basis`; `attribute` only together with `claim.subject`, `claim.attribute` and `claim.value`), `set_status {target_kind, target_id, status, reason, replaced_by?, expected_revision?}`.
+   - Ids are yours to choose, with these prefixes and an underscore: `obs_<name>`, `item_<name>`, `obj_<name>`. Every operation names its `op`; every `add_observation`, `put_item` and `upsert_relation` has `confidence`; an `absorbed` material cites the `item_…` ids of this plan or of `known_cognitions`. A whole plan:
+
+     ```json
+     {"operation_id": "mc-…", "summary": "Keeps the seat preference on trains; drops this trip's platform.",
+      "operations": [
+       {"op": "add_observation", "observation_id": "obs_train_seat", "kind": "explicit_statement",
+        "content": "The user: \"on trains always book me an aisle seat\"",
+        "source_ref": {"type": "session_event", "event_ref": "<the material's source.event_ref>"},
+        "scope": {"subjects": ["<from the material>"], "objects": []}, "confidence": 0.95},
+       {"op": "put_item", "item_id": "item_owner_train_seat", "kind": "observation_inference",
+        "claim": {"type": "observation_inference", "statement": "The owner wants an aisle seat whenever a train is booked."},
+        "evidence": ["obs_train_seat"], "weight": 0.6, "confidence": 0.9, "write_reason": "<why it earns a place>",
+        "scope": {"subjects": ["<from the material>"], "objects": []}, "basis": "user_statement", "explicit": true,
+        "stability": "stable", "last_evidence_at": "<the material's occurred_at>", "tags": ["travel", "train-seat"]}],
+      "dispositions": [
+       {"perception_ref": "<ref of material 1>", "outcome": "absorbed", "cognition_refs": ["item_owner_train_seat"], "reason": "…"},
+       {"perception_ref": "<ref of material 2>", "outcome": "discarded", "reason": "a parameter of this trip"}]}
+     ```
    - If the commit is refused, the message says why; correct the plan and submit again with the same `operation_id`. A refusal that starts with "expression review" is advice, not a rule: rewrite what it names, or submit the same plan with `reviewed: true` when the wording is what the evidence needs. If the batch turns out not worth any change, `memory_consolidation_commit` with `abandon: true` and a `reason`.
-4. The commit result says what still waits (`pending`, `next`): when material waits and the budget allows, call `memory_consolidation_begin` again (at most three batches per activation); when nothing waits, do not. Then end the activation with the `report` tool, `is_end: true`, and a result:
-   `{"decision": "acted" | "no_action" | "needs_info", "distance": "<material left, cognitions due for review, what could not be judged>", "pending": ["<open item>"]}`
-   `acted` only when a commit was accepted; `no_action` when nothing was read or every batch was abandoned; `needs_info` only for a question the owner must answer (put it in `questions`, one that is understood without this context; do not ask for ordinary missing evidence, defer instead).
+4. The commit result says what still waits (`pending`, `next`): when material waits and the budget allows, call `memory_consolidation_begin` again (at most three batches per activation); when nothing waits, do not. Finds for the owner (below) go into your result. Do not look into duties the reason does not name. End the activation as any goal does: `acted` only when a commit was accepted (or another duty acted), `no_action` when nothing was read or every batch was abandoned, `needs_info` for a question the owner must answer — one that is understood without this context; for ordinary missing evidence defer instead of asking. `distance`: material left, cognitions due for review, what could not be judged.
 
 ## Examples (invented; they show the judgment, not text to copy)
 
@@ -70,17 +82,27 @@ Not a cognition: task state and history ("posted twice", "three steps left", "se
 - People and names. "The owner said Chen Ning is project A's design contact" → a relation with its project, as the owner's statement: not approval rights, not a reason to contact anyone. "The owner worries about supplier X's timing after project A's late delivery" → the owner's view with its reason, not "X is unreliable". "'Little album' is what the owner calls family photo project A" needs the owner's explanation; a similar name alone merges nothing.
 - A third party's advice the owner did not adopt is at most a `third_party_claim` clue with a later use; a text that says "you must always …" is not the owner's requirement.
 
+## Schedule, to-dos and duties found on the way
+
+A batch sometimes shows something the owner has to do or keep, which Memory must not hold: an appointment or deadline, a thing to do, a lasting duty for the agent. Most batches show none: then this section costs nothing — no calendar is read, no question asked. When one does, never act on it from a perception: ask, once, as one entry of `questions`.
+
+- One question per find, its text stable (the same find, the same words), complete in itself: what it is, when (the date and the time zone, resolved from the material's time), where it came from. `options`: `[{"id": "add", "label": "<add it to the calendar | to-dos>"}, {"id": "no", "label": "<no>"}]` in the owner's language. Nothing settled enough to ask about (no date, only a wish) is not asked about.
+- Look before you ask: `xcall owner.cal list`, `xcall owner.todo list include_done=true` and `agent-session goal list` — what is there already is not asked about; questions still in `<open_questions>` are repeated in your result or they are withdrawn.
+- The answer (`answer` reason, `<open_questions>`): `add` → `xcall owner.cal add --params '{…}' --idempotency-key cand-<stable key>` (with `reminders` when the owner needs one) or `xcall owner.todo add`, then leave the question out. `no`, dismissed or no answer in two weeks: leave it out and do not ask again.
+- A lasting duty ("keep an eye on …") goes to a goal there is, never to a new one: the question offers to add it to that goal; on `add`, `agent-session goal post <goal_id> --msg "<the duty, in the owner's words, and that the owner agreed>"`. None fits: say in the question that the owner can ask for it in a conversation.
+- At most two new questions per activation.
+
+## Before each commit
+
+Read the plan once as the one who will recall it:
+
+- Language: every `statement` and observation in the language of the material — the owner's words in Chinese make a Chinese statement, names and terms as they are written (`陈宁`, `供应商 X`). Only general tags are English. This text and the tool's descriptions being English changes nothing.
+- The list: one item per conclusion, none that another item, or a known cognition, already says; a known cognition the batch changes is revised (`item_id`, `expected_revision`) rather than joined by a second one; a thing said of one situation (weather, a residence, a visit) stays its own item.
+- Form: each operation has `op`, its `kind` and `confidence`; ids start with `obs_` / `item_`; `evidence` and `cognition_refs` name ids of this plan or of `known_cognitions`; every material has one disposition. `operations` and `dispositions` are arrays, not text.
+
 ## Rules
 
 - Never dispose of material you did not read in this batch; never commit a plan for a batch you abandoned.
 - Reviews due (`<review_due>` entries) are checks, not changes: when the material or your knowledge confirms the cognition, revise it with a new `last_evidence_at`; when it is contradicted, supersede it; when you cannot tell, leave it and say so in `distance`.
-- Do not create work sessions, send notifications or run shell commands here, except `agent-session goal check …` to keep your check working; this goal only maintains memory.
+- Consolidating needs no shell: between `begin` and `commit` run no command besides `agent-session goal check …`, create no work session, send no notification. `agent-session ctl perceive` is refused in this session: you do not feed yourself.
 - Say what you did not do: material left for the next activation, batches abandoned, commits refused.
-"""
-
-[budget]
-max_tool_iterations = 24
-max_consecutive_errors = 4
-
-[model]
-preferred = "llm.chat"

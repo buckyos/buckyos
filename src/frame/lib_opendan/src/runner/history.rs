@@ -748,6 +748,36 @@ pub fn read_window(
     })
 }
 
+/// Where the history of a Goal Session with a fresh context starts: the
+/// committed worklog before the open Activation is not read (none open: none
+/// of it). `None`: the whole history.
+fn activation_floor(session: &Session) -> Option<u64> {
+    if session.config.session.kind != SessionKind::Goal {
+        return None;
+    }
+    let g = session.state.goal.as_ref()?;
+    match &g.activation {
+        Some(a) => (a.context == GoalContext::Fresh).then_some(a.worklog_offset),
+        None => (g.context == GoalContext::Fresh).then_some(session.state.worklog.committed_bytes),
+    }
+}
+
+/// The compression the history starts from. With a fresh context one made
+/// before the open Activation is not part of it.
+fn current_summary(session: &Session) -> Result<SessionSummary> {
+    let mut sm = session.summary()?;
+    if let Some(floor) = activation_floor(session) {
+        if sm.start_offset <= floor {
+            sm.history_summary.clear();
+            sm.keep_exact.clear();
+            sm.head_end_offset = 0;
+            sm.head_end_seq = 0;
+            sm.start_offset = floor;
+        }
+    }
+    Ok(sm)
+}
+
 /// The whole history: head + summary block + raw records.
 struct Assembled {
     messages: Vec<AiMessage>,
@@ -763,13 +793,14 @@ fn assemble(
     shape: HistoryShape,
     budget: Option<u64>,
 ) -> Result<Assembled> {
+    let floor = activation_floor(session);
     let mut messages = Vec::new();
     let mut positions = Vec::new();
-    if sm.head_end_offset > 0 {
+    if sm.head_end_offset > floor.unwrap_or(0) {
         let entries: Vec<(u64, WorklogEntry)> = session
             .dir
             .worklog()
-            .read_range(0, sm.head_end_offset)?
+            .read_range(floor.unwrap_or(0), sm.head_end_offset)?
             .into_iter()
             .filter(|(_, e)| !dropped(session, &e.body))
             .collect();
@@ -981,7 +1012,7 @@ async fn build(
     line: Option<&LimitLine>,
 ) -> Result<(Vec<AiMessage>, Option<CompressReport>)> {
     let budget = lines.trigger;
-    let sm = session.summary()?;
+    let sm = current_summary(session)?;
     let window = assemble(session, &sm, shape, Some(u64::from(budget)))?;
     let mut event = json!({
         "session_id": session.sid(),
@@ -1108,7 +1139,7 @@ pub async fn maybe_compact(
         log::warn!("opendan.context.compaction.unavailable {}", event);
         return Ok(false);
     };
-    let sm = session.summary()?;
+    let sm = current_summary(session)?;
     let window = assemble(session, &sm, HistoryShape::Native, Some(u64::from(line.trigger)))?;
     event["history_tokens"] = json!(window.tokens);
     event["history_tokens_lower_bound"] = json!(!window.complete);

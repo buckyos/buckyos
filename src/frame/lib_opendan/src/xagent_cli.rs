@@ -68,11 +68,22 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
                        [--check <script.ts>] [--min-interval <secs>] [--guarantee <secs ≥ 3600, 0 = off>]
                        [--start] [--behavior <b>] [--budget <json|@file>] [--key <idem>] [--json <request|@file>]
   xagent goal   list | show [<id>] [--state] [--activations <n>] [--changes <n>] [--revisions] [--epochs] [--schedule]
-  xagent goal   revise <id> --expected-revision <n> [--objective ..] [--title ..] [--every ..|--cron ..] [--timezone ..]
+  xagent goal   revise <id> --expected-revision <n> [--objective ..] [--title ..] [--lifecycle ..] [--achieved-when ..]
+                       [--healthy-state ..] [--distance ..] [--constraint <t>]... (the new list) [--skill <name>[=<ref>]]... (added)
+                       [--workspace <id>|none] [--path <p>]... [--object <o>]... [--every ..|--cron ..] [--timezone ..]
                        [--min-interval <secs>] [--guarantee <secs>] [--budget <json>] [--json <patch|@file>] [--reason <t>]
   xagent goal   check show [<id>] [--version <n>] | run [<id>] [--script <file.ts>]
-                | set [<id>] [--script <file.ts> | --restore | --clear] [--every <secs> | --cron <expr>] [--timezone <iana>] [--reason <t>]
-                       (the check script and its timetable; a goal session changes its own)
+                | run --script <file.ts> [--every <secs> | --cron <expr>] [--timezone <iana>] [--workspace <id>] [--path <p>]...
+                       (a script tried out before its goal exists)
+                | set [<id>] [--script <file.ts> | --restore | --clear] [--every <secs> | --cron <expr>] [--timezone <iana>]
+                       [--context fresh|carry] [--reason <t>]   (the check script, its timetable, what an activation reads of
+                       the earlier ones; a goal session changes its own)
+  xagent goal   stats [<id>] [--periods <n, default 7>]   (what it did and spent, period by period)
+  xagent goal   job put <job_id> --dir <program dir> --command '<program> <args>' (--every <secs ≥ 300> | --cron <expr> [--timezone <iana>])
+                       [--timeout <secs ≤ 600, default 300>] [--title <t>]
+                | list | show <job_id> [--runs <n>] | run <job_id> [--wait [<secs>]] | log <job_id> [--run <run_id>]
+                | enable <job_id> | disable <job_id> | rollback <job_id> [--to <version>] | rm <job_id>      [--goal <id>]
+                       (programs the host runs on a timetable for the goal, as the agent, without an inference)
   xagent goal   pause|resume|archive [<id>] [--reason <t>] | achieved [<id>] --evidence <t>
   xagent goal   reopen <id> --reason <t> [--fresh-state] | restart <id> --reason <t> [--carry-state]
   xagent goal   activate <id> [--reason <t>] | post <id> --msg <t>
@@ -95,6 +106,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
          session inherits its parent work's, a conversation's or a goal's are not inherited; its end comes back as input)
   skill list [--kind work|plan|goal] [--scope ui|work] [--all] [--stats] [--json]   (installing, removing, disabling: the owner's — Skills page or `buckyos skill`)
   skill revise <name> --file <new SKILL.md> --reason <why> [--kind work|plan|goal]   rewrite the text of a manual that is not a package's; the old text is kept
+  skill add <name> --file <SKILL.md> --reason <why>   a new work manual of the agent's own (the self improvement goal and the work it sends)
   skill status [--runtime <id>] [--json]   the commands each manual relies on, on that runtime, and the extension package that would bring what is missing
   sync list | get <task_id> | enable|disable|delete <task_id>
   sync put <task_id> --title <t> --program <file.ts> --every <secs ≥ 900> [--hosts <h1,h2>] [--inputs <json|@file>] [--secret <NAME>]...
@@ -130,14 +142,27 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
         its end comes back to the session as input on its own — nothing waits for it; exit 0 running/finished, 1 failed, 2 unknown)
   runtime list [--available] [--json] | get <id> | check <id> | baseline [--level standard|extended] [--json] | workspace ...
         (workspace list, runtime list and sessions: readable text by default; --json for structured output)
-  goal ... (ui sessions: create / show / post / pause / resume / archive / reopen / restart / activate;
-            goal sessions: show / skills add|remove / check show|run|set / achieved --evidence / archive --reason)
+  goal ... (ui sessions, and the work a ui session started itself: create / revise / check set / show / post / pause / resume /
+            archive / reopen / restart / activate; the owner's own conversations revise any goal that is not built in;
+            goal sessions: show / stats / skills add|remove / check show|run|set / achieved --evidence / archive --reason)
+  goal job put <job_id> --dir <dir> --command '<program> <args>' (--every <secs ≥ 300> | --cron <expr> [--timezone <iana>])
+        [--timeout <secs ≤ 600>] [--title <t>] [--goal <id>]   install a program the host runs for a goal, with no inference: the
+        directory is copied, every put is a new version, a new version runs at once. In the command `{dir}` is the installed
+        directory (a program in it goes by its name); the working directory is the job's own `data`, which upgrades leave alone.
+        Exit 0 is ok; the last line of stdout may be JSON {summary, kind: transient|auth|program|budget, metrics}.
+  goal job list | show <job_id> | run <job_id> [--wait [<secs>]] | log <job_id> [--run <run_id>] | enable | disable <job_id>
+        | rollback <job_id> [--to <n>] | rm <job_id>   [--goal <id>; default: the calling goal session's]
+  goal stats [--periods <n>]   per statistics period: activations and their decisions, tokens (yours, your work's, per
+        activation), checks true / false / error, what the gate skipped
   goal check run [--script <file.ts>]   run the check script (or a draft) the way the host does: same Deno, read and
         network only, same ctx and state; nothing is recorded. Test a script with it before `goal check set`.
-  goal check set [--script <file.ts> | --restore | --clear] [--every <secs ≥ 60> | --cron <expr>] [--timezone <iana>] --reason <t>
+        Without a goal (a work that will create one): --script with --every | --cron, --timezone, --workspace, --path.
+  goal check set [--script <file.ts> | --restore | --clear] [--every <secs ≥ 60> | --cron <expr>] [--timezone <iana>]
+        [--context fresh|carry] --reason <t>
         the script each scheduled check runs (`export default async function check(ctx, state)` returning
         {run, reason?, state?, notify?: {title, message?, url?, level?}}; the host sends `notify` without an
-        inference) and how often; `--restore` goes back to the package's script of a built-in goal
+        inference) and how often; `--restore` goes back to the package's script of a built-in goal;
+        `--context`: whether your next activations start with their header alone (fresh) or with the history of the earlier ones (carry)
   notify send --title <t> [--message <text>] [--url <link>] [--level quiet|normal|timely|urgent] [--expires-in <dur>] [--key <k>]
          (tell the user something; the system picks the channel. --url: where opening it lands, e.g. a page or
           app made for this; something the user must answer goes in a goal's `questions`, not here)
@@ -1311,6 +1336,9 @@ fn brief(e: &RegistryEntry) -> Value {
         "pending_decision": e.status.pending_decision,
         "parent": e.origin.as_ref().and_then(|o| o.parent_session.clone()),
     });
+    if let Some(w) = &e.workspace {
+        v["workspace"] = json!(w.workspace_id);
+    }
     if e.status.run_state == RunState::Finished {
         v["ended_at_ms"] = json!(e.status.updated_at_ms);
     }
@@ -1384,6 +1412,9 @@ async fn cmd_sessions(a: Args) -> R<i32> {
             }
             if e.status.pending_decision.is_some() {
                 println!("  Decision needed: agent-session read-session {}", e.session_id);
+            }
+            if let Some(workspace) = &e.workspace {
+                println!("  Workspace: {}", workspace.workspace_id);
             }
             if let Some(parent) = e.origin.as_ref().and_then(|o| o.parent_session.as_deref()) {
                 println!("  Parent: {parent}");
@@ -1590,7 +1621,7 @@ fn skill_kind(a: &Args) -> R<Option<SkillKind>> {
 }
 
 /// `skill list [--kind work|plan|goal] [--scope ui|work] [--all] [--stats] [--json]` / `skill status` /
-/// `skill revise`: the agent's skills. Installing, removing, disabling and the UI set are the owner's (the Skills page,
+/// `skill revise` / `skill add`: the agent's skills. Installing, removing, disabling and the UI set are the owner's (the Skills page,
 /// `buckyos skill …`). A new session takes the manuals as they are when it is created; running sessions keep theirs.
 async fn cmd_skill_status(c: &Ctx, a: &Args) -> R<i32> {
     let report = c.agent.behaviors().skills_status(a.get("runtime").as_deref()).await?;
@@ -1625,7 +1656,7 @@ async fn cmd_skill_status(c: &Ctx, a: &Args) -> R<i32> {
 }
 
 async fn cmd_skill(mut a: Args) -> R<i32> {
-    let sub = a.next("list | status | revise")?;
+    let sub = a.next("list | status | revise | add")?;
     let c = ctx(&a, None, false).await?;
     match sub.as_str() {
         "status" => return cmd_skill_status(&c, &a).await,
@@ -1671,11 +1702,28 @@ async fn cmd_skill(mut a: Args) -> R<i32> {
             print(&json!({ "revised": m }));
             Ok(0)
         }
+        "add" => {
+            let name = a.next("<name>")?;
+            let path = a.get("file").ok_or_else(|| bad("skill add <name> --file <SKILL.md> --reason <why>"))?;
+            let reason = a.get("reason").filter(|r| !r.trim().is_empty()).ok_or_else(|| bad("--reason says which work lacked it"))?;
+            let sid = env_sid().ok_or_else(|| bad("skill add runs inside the self improvement goal's session, or work it sent"))?;
+            if !crate::goal::session_of_builtin(c.agent.as_ref(), &sid, BUILTIN_SELF_IMPROVE).await? {
+                return Err(OpenDanError::Forbidden(format!(
+                    "session {sid} may not add a manual: only the self improvement goal does; write a draft under skills_drafts/ for the owner"
+                ))
+                .into());
+            }
+            let root = c.agent.agent_root().ok_or_else(|| bad("skill add needs the AgentRoot"))?;
+            let text = std::fs::read_to_string(&path).map_err(|e| bad(format!("{path}: {e}")))?;
+            let m = crate::skills::add_local(root, &name, &text, &reason, &format!("session:{sid}"))?;
+            print(&json!({ "added": m }));
+            Ok(0)
+        }
         "install" | "remove" | "disable" | "enable" | "ui" | "ui-add" | "ui-remove" => Err(bad(format!(
             "skill {sub} is the owner's: tell the user to open the agent's Skills page, or to run `buckyos skill {} … --agent <agent id>`",
             if sub == "ui" { "ui-add" } else { sub.as_str() }
         ))),
-        other => Err(bad(format!("unknown skill command `{other}` (list | status | revise)"))),
+        other => Err(bad(format!("unknown skill command `{other}` (list | status | revise | add)"))),
     }
 }
 
@@ -2652,6 +2700,37 @@ fn skills_arg(a: &Args) -> Vec<GoalSkill> {
         .collect()
 }
 
+fn lifecycle_arg(s: &str) -> R<GoalLifecycle> {
+    match s {
+        "achieve" => Ok(GoalLifecycle::Achieve),
+        "maintain" => Ok(GoalLifecycle::Maintain),
+        other => Err(bad(format!("bad --lifecycle {other} (achieve | maintain)"))),
+    }
+}
+
+/// `goal check run` before there is a goal: what its check would be run
+/// with, from the arguments.
+async fn draft_goal(c: &Ctx, a: &Args) -> R<GoalDefinition> {
+    let schedule = GoalScheduleSpec {
+        every_secs: a.num::<u64>("every")?,
+        cron: a.get("cron"),
+        timezone: match a.get("timezone") {
+            Some(t) => Some(t),
+            None => session_timezone(c).await,
+        },
+        ..Default::default()
+    };
+    crate::goal_time::validate_timetable(schedule.every_secs, schedule.cron.as_deref(), schedule.timezone.as_deref()).map_err(bad)?;
+    let now = crate::now_ms();
+    Ok(serde_json::from_value(json!({
+        "schema": GOAL_SCHEMA, "goal_id": "g-draft", "revision": 0,
+        "title": a.get("title").unwrap_or_default(), "objective": a.get("objective").unwrap_or_default(),
+        "scope": GoalScope { workspace: a.get("workspace"), paths: a.all("path"), objects: a.all("object") },
+        "schedule": schedule, "owner": c.who, "created_by": { "principal": c.who, "via": "draft" },
+        "status": GoalStatus::Active, "session": { "epoch": 0, "sid": "" }, "created_at_ms": now,
+    }))?)
+}
+
 async fn goal_show(c: &Ctx, a: &Args, id: &str) -> R<Value> {
     let goals = c.agent.goals();
     let goal = goals
@@ -2731,11 +2810,8 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
                 req.title = Some(t);
             }
             req.key = a.get("key").or(req.key);
-            match a.get("lifecycle").as_deref() {
-                None => {}
-                Some("achieve") => req.lifecycle = GoalLifecycle::Achieve,
-                Some("maintain") => req.lifecycle = GoalLifecycle::Maintain,
-                Some(s) => return Err(bad(format!("bad --lifecycle {s} (achieve | maintain)"))),
+            if let Some(l) = a.get("lifecycle") {
+                req.lifecycle = lifecycle_arg(&l)?;
             }
             if let Some(t) = a.get("achieved-when") {
                 req.achieved_when = Some(t);
@@ -2827,13 +2903,50 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
             if let Some(t) = a.get("distance") {
                 req.distance_evaluation = Some(t);
             }
+            if let Some(l) = a.get("lifecycle") {
+                req.lifecycle = Some(lifecycle_arg(&l)?);
+            }
+            if let Some(t) = a.get("achieved-when") {
+                req.achieved_when = Some(t);
+            }
+            if let Some(t) = a.get("healthy-state") {
+                req.healthy_state = Some(t);
+            }
+            let constraints = a.all("constraint");
+            if !constraints.is_empty() {
+                req.constraints = Some(constraints);
+            }
+            let current = goals.get(&id).await?.ok_or_else(|| bad(format!("goal {id} does not exist")))?;
+            let mut skills = current.initial_skills.clone();
+            for mut k in skills_arg(&a) {
+                if k.reference.is_none() {
+                    k.reference = crate::goal::goal_skill_ref(c.agent.as_ref(), &k.name).await;
+                }
+                match skills.iter_mut().find(|x| x.name == k.name) {
+                    Some(x) => *x = k,
+                    None => skills.push(k),
+                }
+            }
+            if skills != current.initial_skills {
+                req.initial_skills = Some(skills);
+            }
+            let (paths, objects) = (a.all("path"), a.all("object"));
+            if a.get("workspace").is_some() || !paths.is_empty() || !objects.is_empty() {
+                let mut scope = current.scope.clone();
+                if let Some(w) = a.get("workspace") {
+                    scope.workspace = Some(w).filter(|w| w != "none");
+                }
+                if !paths.is_empty() {
+                    scope.paths = paths;
+                }
+                if !objects.is_empty() {
+                    scope.objects = objects;
+                }
+                req.scope = Some(scope);
+            }
             let touches_schedule = ["every", "cron", "timezone", "min-interval", "guarantee"].iter().any(|k| a.get(k).is_some());
             if touches_schedule {
-                let mut s = goals
-                    .get(&id)
-                    .await?
-                    .ok_or_else(|| bad(format!("goal {id} does not exist")))?
-                    .schedule;
+                let mut s = current.schedule.clone();
                 if let Some(n) = a.num::<u64>("every")? {
                     s.every_secs = Some(n);
                     s.cron = None;
@@ -2929,13 +3042,24 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
                 print(&json!({ "posted": index, "key": key, "session_id": goal.session.sid }));
             }
         }
+        "stats" => {
+            let id = goal_id_arg(&c, &mut a).await?;
+            let periods = a.num::<usize>("periods")?.unwrap_or(crate::goal_stats::STATS_PERIODS);
+            print(&goals.stats(&id, periods).await?);
+        }
         "check" => {
             let op = a.next("show | run | set")?;
-            let id = goal_id_arg(&c, &mut a).await?;
-            let goal = goals
-                .get(&id)
-                .await?
-                .ok_or_else(|| bad(format!("goal {id} does not exist")))?;
+            let id = match goal_id_arg(&c, &mut a).await {
+                Ok(id) => Some(id),
+                // A script tried out before its goal exists.
+                Err(_) if op == "run" && a.get("script").is_some() => None,
+                Err(e) => return Err(e),
+            };
+            let goal = match &id {
+                Some(id) => goals.get(id).await?.ok_or_else(|| bad(format!("goal {id} does not exist")))?,
+                None => draft_goal(&c, &a).await?,
+            };
+            let id = goal.goal_id.clone();
             match op.as_str() {
                 "show" => {
                     let version = a.num::<u64>("version")?;
@@ -2946,6 +3070,7 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
                         "script": goal.schedule.check,
                         "source": goals.check_script(&id, version).await?,
                         "schedule": goals.schedule(&id).await?,
+                        "context": crate::goal::context_of(&goal, &d),
                         "hard_interval_secs": crate::goal::min_interval_secs(&goal, &d),
                         "hard_guarantee_secs": crate::goal::guarantee_secs(&goal, &d),
                     }));
@@ -2996,6 +3121,10 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
                         every_secs: a.num::<u64>("every")?,
                         cron: a.get("cron"),
                         timezone: a.get("timezone"),
+                        context: a
+                            .get("context")
+                            .map(|c| GoalContext::parse(&c).ok_or_else(|| bad(format!("bad --context {c} (fresh | carry)"))))
+                            .transpose()?,
                         reason: a.get("reason"),
                         ..Default::default()
                     };
@@ -3007,6 +3136,7 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
                 other => return Err(bad(format!("goal check {other}: show | run | set"))),
             }
         }
+        "job" => return cmd_goal_job(&c, a, &caller).await,
         "skills" => {
             // A change of the Goal State: applied by the session's driver.
             let sid = env_sid().ok_or_else(|| bad("goal skills runs inside a goal session ($OPENDAN_SESSION_ID)"))?;
@@ -3045,6 +3175,104 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
         other => return Err(bad(format!("unknown goal command `{other}`"))),
     }
     Ok(0)
+}
+
+/// `goal job put | list | show | run | log | enable | disable | rollback |
+/// rm`: the programs the host runs for a goal (`--goal <id>`, or the calling
+/// goal session's).
+async fn cmd_goal_job(c: &Ctx, mut a: Args, caller: &GoalCaller) -> R<i32> {
+    use crate::goal_jobs::{read_program_dir, split_command, JobPut};
+    let op = a.next("put | list | show | run | log | enable | disable | rollback | rm")?;
+    let job_id = if op == "list" { String::new() } else { a.next("<job_id>")? };
+    let goal_id = match a.get("goal") {
+        Some(g) => g,
+        None => goal_id_arg(c, &mut a).await.map_err(|_| bad("missing --goal <goal_id>"))?,
+    };
+    let goals = c.agent.goals();
+    if goals.get(&goal_id).await?.is_none() {
+        return Err(bad(format!("goal {goal_id} does not exist")));
+    }
+    let view = |jobs: Vec<crate::goal_jobs::JobView>| {
+        jobs.into_iter()
+            .find(|j| j.job.job_id == job_id)
+            .ok_or_else(|| Fail::from(OpenDanError::NotFound(format!("job {job_id} of goal {goal_id}"))))
+    };
+    match op.as_str() {
+        "list" => print(&goals.jobs(&goal_id).await?),
+        "show" => {
+            let v = view(goals.jobs(&goal_id).await?)?;
+            let runs = goals.job_runs(&goal_id, &job_id, a.num::<usize>("runs")?.unwrap_or(10)).await?;
+            print(&json!({ "job": v, "runs": runs }));
+        }
+        "put" => {
+            let dir = PathBuf::from(a.get("dir").ok_or_else(|| bad("missing --dir <program directory>"))?);
+            if !dir.is_dir() {
+                return Err(bad(format!("--dir {}: no such directory", dir.display())));
+            }
+            let (files, executable) = read_program_dir(&dir)?;
+            let command = split_command(&a.get("command").ok_or_else(|| bad("missing --command \"<program> <args>\" ({dir}: the installed directory)"))?)?;
+            let cron = a.get("cron");
+            let req = JobPut {
+                job_id: job_id.clone(),
+                title: a.get("title"),
+                command,
+                every_secs: a.num("every")?,
+                timezone: match a.get("timezone") {
+                    Some(t) => Some(t),
+                    None if cron.is_some() => session_timezone(c).await,
+                    None => None,
+                },
+                cron,
+                timeout_secs: a.num("timeout")?,
+                files,
+                executable,
+            };
+            print(&goals.job_put(&goal_id, &req, caller).await?);
+        }
+        "run" => {
+            let req = goals.job_run(&goal_id, &job_id, caller).await?;
+            let Some(wait) = a.num::<u64>("wait")? else {
+                if !a.has("wait") {
+                    print(&json!({ "requested": req.request_id, "note": "the host starts it within a few seconds; `goal job show` has the run" }));
+                    return Ok(0);
+                }
+                return wait_job(c, &goal_id, &job_id, &req.request_id, 600).await;
+            };
+            return wait_job(c, &goal_id, &job_id, &req.request_id, wait).await;
+        }
+        "log" => {
+            let run = a.get("run");
+            match goals.job_log(&goal_id, &job_id, run.as_deref()).await? {
+                Some(text) => print!("{text}"),
+                None => return Err(bad("no such run is kept")),
+            }
+        }
+        "enable" | "disable" => print(&goals.job_set_enabled(&goal_id, &job_id, op == "enable", caller).await?),
+        "rollback" => print(&goals.job_rollback(&goal_id, &job_id, a.num("to")?, caller).await?),
+        "rm" => {
+            goals.job_delete(&goal_id, &job_id, caller).await?;
+            print(&json!({ "deleted": job_id }));
+        }
+        other => return Err(bad(format!("goal job {other}: put | list | show | run | log | enable | disable | rollback | rm"))),
+    }
+    Ok(0)
+}
+
+/// Wait for the run a request asked for (exit 0 ok, 1 not, 3 still running).
+async fn wait_job(c: &Ctx, goal_id: &str, job_id: &str, request_id: &str, secs: u64) -> R<i32> {
+    let end = std::time::Instant::now() + Duration::from_secs(secs);
+    loop {
+        let runs = c.agent.goals().job_runs(goal_id, job_id, 20).await?;
+        if let Some(run) = runs.iter().find(|r| r.request_id.as_deref() == Some(request_id)) {
+            print(run);
+            return Ok(if run.status == crate::goal_jobs::JobRunStatus::Ok { 0 } else { 1 });
+        }
+        if std::time::Instant::now() >= end {
+            print(&json!({ "requested": request_id, "note": "not finished yet" }));
+            return Ok(3);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 /// Host the agent's goals (and every session this identity drives) until

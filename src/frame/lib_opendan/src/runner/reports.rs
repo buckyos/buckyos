@@ -460,12 +460,25 @@ fn same_args(old: &ReportSubmission, args: &ReportArgs) -> bool {
             .eq(args.artifacts.iter())
 }
 
+/// `result` has no type of its own in the tool's schema: some models send
+/// the object they mean as its JSON text.
+fn plain_result(result: Option<Value>) -> Option<Value> {
+    match result {
+        Some(Value::String(text)) => Some(match serde_json::from_str::<Value>(&text) {
+            Ok(v) if v.is_object() || v.is_array() => v,
+            _ => Value::String(text),
+        }),
+        other => other,
+    }
+}
+
 pub(super) async fn submit(
     sh: &Shared,
     run: &RunHandle,
     source: ReportSource,
-    args: ReportArgs,
+    mut args: ReportArgs,
 ) -> Result<ReportSubmission> {
+    args.result = plain_result(args.result);
     let id = crate::ids::h(&[
         run.run_id(),
         &serde_json::to_string(&source).map_err(|e| invalid(e.to_string()))?,

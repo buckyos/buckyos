@@ -193,6 +193,14 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     reviseGoal: (goalId, request) => call('goals.revise', { goal_id: goalId, request }),
     setGoalCheck: (goalId, request) => call('goals.set_check', { goal_id: goalId, request }),
     goalCheckScript: (goalId, version) => call('goals.check_script', { goal_id: goalId, ...(version != null ? { version } : {}) }),
+    goalStats: (goalId, periods) => call('goals.stats', { goal_id: goalId, periods }),
+    goalJobs: (goalId) => call('goals.jobs', { goal_id: goalId }),
+    goalJobRuns: (goalId, jobId, limit) => call('goals.job_runs', { goal_id: goalId, job_id: jobId, limit }),
+    goalJobLog: (goalId, jobId, runId) => call('goals.job_log', { goal_id: goalId, job_id: jobId, run_id: runId }),
+    runGoalJob: (goalId, jobId) => call('goals.job_run', { goal_id: goalId, job_id: jobId }),
+    setGoalJobEnabled: (goalId, jobId, enabled) => call('goals.job_set_enabled', { goal_id: goalId, job_id: jobId, enabled }),
+    rollbackGoalJob: (goalId, jobId, to) => call('goals.job_rollback', { goal_id: goalId, job_id: jobId, to }),
+    deleteGoalJob: (goalId, jobId) => call('goals.job_delete', { goal_id: goalId, job_id: jobId }),
     skills: () => call('skills.list'),
     skillsState: () => call('skills.state'),
     uiSkills: () => call('skills.ui_get'),
@@ -207,6 +215,6 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     setUiSkills: (names) => call('skills.ui_set', { names }),
     importSkill: (request) => call('skills.import', { ...request }),
     discardSkillDraft: (slug) => call('skills.draft_discard', { slug }),
-    setCrystallize: (enabled) => call('skills.crystallize_set', { enabled }),
+    setSelfImprove: (duty, enabled) => call('skills.self_improve_set', { duty, enabled }),
   }
 }

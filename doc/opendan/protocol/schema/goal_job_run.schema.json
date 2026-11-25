@@ -1,0 +1,102 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "JobRunStatus": {
+      "oneOf": [
+        {
+          "enum": [
+            "ok",
+            "failed",
+            "timeout"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The host ended it (its Goal went dormant or ended, the job was switched off, the host stopped or died).",
+          "enum": [
+            "killed"
+          ],
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "description": "One line of `runs.jsonl`.",
+  "properties": {
+    "at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "attempts": {
+      "default": 1,
+      "description": "Attempts it took (a passing failure is tried again).",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "ended_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "exit_code": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "kind": {
+      "description": "Why it failed: `transient | auth | program | budget`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "metrics": true,
+    "request_id": {
+      "description": "The request that asked for it (`manual`).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/definitions/JobRunStatus"
+    },
+    "summary": {
+      "default": "",
+      "type": "string"
+    },
+    "tokens": {
+      "default": 0,
+      "description": "Model tokens it used.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "trigger": {
+      "description": "`schedule | install | manual`.",
+      "type": "string"
+    },
+    "version": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "at_ms",
+    "ended_at_ms",
+    "run_id",
+    "status",
+    "trigger",
+    "version"
+  ],
+  "title": "JobRun",
+  "type": "object"
+}

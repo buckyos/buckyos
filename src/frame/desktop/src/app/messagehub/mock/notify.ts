@@ -309,7 +309,7 @@ export class MockNotifyBackend implements NotifyBackend {
 
   async list(query: NotifyListQuery) {
     const views = Object.values(this.load()).map(notify => this.viewOf(notify))
-      .filter(view => !query.status || query.status.includes(view.status))
+      .filter(view => (!query.status || query.status.includes(view.status)) && (!query.agent_did || view.source.agent_did === query.agent_did) && (!query.goal_id || view.source.goal_id === query.goal_id))
       .sort((a, b) => b.created_at_ms - a.created_at_ms)
     return views.slice(0, query.limit ?? 50)
   }

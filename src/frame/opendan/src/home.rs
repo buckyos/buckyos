@@ -522,11 +522,12 @@ impl Home {
                 let reason = text_param(params, "reason")?;
                 out(json!(skills::set_enabled(&root, kind, &name, enabled, reason.as_deref(), who)?))
             }
-            "skills.crystallize_set" => {
+            "skills.self_improve_set" => {
+                let duty = required(params, "duty")?;
                 let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| OpenDanError::InvalidArgument("param `enabled` is true | false".into()))?;
-                let state = skills::set_crystallize(&root, enabled, who)?;
-                log::info!("skills: crystallization goal switched {} by {who}", if enabled { "on" } else { "off" });
-                out(json!({ "crystallize": state.crystallize }))
+                let state = skills::set_duty(&root, &duty, enabled, who)?;
+                log::info!("skills: self improvement duty {duty} switched {} by {who}", if enabled { "on" } else { "off" });
+                out(json!({ "self_improve": state.self_improve }))
             }
             "skills.drafts" => out(json!(skills::list_drafts(&root)?)),
             "skills.draft_file" => {

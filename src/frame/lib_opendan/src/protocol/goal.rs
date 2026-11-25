@@ -53,26 +53,22 @@ pub const MAINTENANCE_BATCHES_PER_ACTIVATION: usize = 3;
 
 /// `GoalDefinition.extensions` key of the host's trusted marks.
 pub const OPENDAN_EXTENSION: &str = "opendan";
-/// `extensions.opendan.builtin` of the agent's default consolidation Goal.
-pub const BUILTIN_MEMORY_MAINTENANCE: &str = "memory_maintenance";
+/// `extensions.opendan.builtin` of the agent's built-in Goal.
+pub const BUILTIN_SELF_IMPROVE: &str = "self_improve";
 /// `GoalCreate.key` the host seeds it with (unique per Agent directory).
-pub const BUILTIN_MEMORY_MAINTENANCE_KEY: &str = "builtin:memory_maintenance";
-/// `extensions.opendan.builtin` of the agent's skill crystallization Goal (off unless the owner switches it on).
-pub const BUILTIN_SKILL_CRYSTALLIZE: &str = "skill_crystallize";
-pub const BUILTIN_SKILL_CRYSTALLIZE_KEY: &str = "builtin:skill_crystallize";
+pub const BUILTIN_SELF_IMPROVE_KEY: &str = "builtin:self_improve";
+/// Policy version of the seeded definition (a higher one revises an existing
+/// Goal's definition and marks; never the owner's budget, schedule or status).
+pub const SELF_IMPROVE_POLICY_VERSION: u64 = 1;
 /// Capability that opens the `memory_consolidation_begin/commit` host tools
 /// and binds the drive to the consolidation lease.
 pub const CAP_MEMORY_CONSOLIDATION: &str = "memory_consolidation";
-/// Policy version of the seeded definition (a higher one revises the marks
-/// of an existing Goal; never the owner's budget, schedule or status).
-pub const MEMORY_MAINTENANCE_POLICY_VERSION: u64 = 1;
-
 /// `extensions.opendan` of a Goal: trusted configuration written by the
 /// host's seeding path only (a UI, Goal or Work caller may not set it).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OpendanGoalExtension {
-    /// Stable identity of a built-in Goal (`memory_maintenance`).
+    /// Stable identity of a built-in Goal (`self_improve`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builtin: Option<String>,
     #[serde(default)]
@@ -91,21 +87,18 @@ fn default_true() -> bool {
 }
 
 impl OpendanGoalExtension {
-    pub fn memory_maintenance() -> Self {
-        Self {
-            builtin: Some(BUILTIN_MEMORY_MAINTENANCE.to_string()),
-            policy_version: MEMORY_MAINTENANCE_POLICY_VERSION,
-            capabilities: vec![CAP_MEMORY_CONSOLIDATION.to_string()],
-            records_perception: false,
-        }
-    }
-
     pub fn has_capability(&self, cap: &str) -> bool {
         self.capabilities.iter().any(|c| c == cap)
     }
 
-    pub fn skill_crystallize() -> Self {
-        Self { builtin: Some(BUILTIN_SKILL_CRYSTALLIZE.to_string()), policy_version: 1, capabilities: Vec::new(), records_perception: true }
+    pub fn self_improve() -> Self {
+        Self {
+            builtin: Some(BUILTIN_SELF_IMPROVE.to_string()),
+            policy_version: SELF_IMPROVE_POLICY_VERSION,
+            capabilities: vec![CAP_MEMORY_CONSOLIDATION.to_string()],
+            // It consolidates perceptions: it must not feed itself.
+            records_perception: false,
+        }
     }
 
     pub fn is_builtin(&self, name: &str) -> bool {
@@ -324,6 +317,39 @@ pub struct GoalScheduleSpec {
     /// The first Activation starts when the Goal Session is created.
     #[serde(default)]
     pub start_on_create: bool,
+    /// What an Activation reads of the earlier ones (`None`: `[session.goal]
+    /// context`). Changed through `set_check` only, never by a revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<GoalContext>,
+}
+
+/// What the context of an Activation starts with besides the system prompt,
+/// the Goal header and the inputs of this Activation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalContext {
+    /// Nothing: what the earlier Activations left is in the header.
+    #[default]
+    Fresh,
+    /// The history of the Goal Session (compressed like any session's).
+    Carry,
+}
+
+impl GoalContext {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GoalContext::Fresh => "fresh",
+            GoalContext::Carry => "carry",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "fresh" => Some(GoalContext::Fresh),
+            "carry" => Some(GoalContext::Carry),
+            _ => None,
+        }
+    }
 }
 
 impl GoalScheduleSpec {
@@ -355,8 +381,12 @@ pub struct GoalCheckScript {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GoalCreatedBy {
     pub principal: String,
-    /// `owner | ui_session:<sid> | opendan`.
+    /// `owner | ui_session:<sid> | opendan` (a Work's: the conversation that
+    /// started it).
     pub via: String,
+    /// The Work that created it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -506,7 +536,8 @@ pub struct GoalChange {
     /// `created | revised | status | reopened | restarted | epoch_ended`.
     pub kind: String,
     pub who: String,
-    /// `owner | ui_session:<sid> | goal_session:<sid> | opendan`.
+    /// `owner | ui_session:<sid> | work_session:<sid> | goal_session:<sid> |
+    /// opendan`.
     pub via: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -695,6 +726,24 @@ pub struct GoalQuestion {
     /// The maintenance candidate this question confirms (§5.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_id: Option<String>,
+    /// Choices it offers (none: free text only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<QuestionOption>,
+    /// Free text is taken besides the choices.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub allow_text: bool,
+}
+
+/// A choice of a [`GoalQuestion`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionOption {
+    pub id: String,
+    pub label: String,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -760,11 +809,14 @@ pub struct GoalUsage {
     /// Tokens of the Goal's Work in the period, finished or running.
     #[serde(default)]
     pub work_tokens: u64,
+    /// Model tokens of its jobs in the period.
+    #[serde(default)]
+    pub job_tokens: u64,
 }
 
 impl GoalUsage {
     pub fn total_tokens(&self) -> u64 {
-        self.tokens + self.work_tokens
+        self.tokens + self.work_tokens + self.job_tokens
     }
 }
 
@@ -852,6 +904,16 @@ pub struct GoalState {
     /// Activations in a row that ended `no_action`.
     #[serde(default)]
     pub consecutive_no_action: u32,
+    /// Activations in a row that failed, ran out of budget or left no valid
+    /// result (a stopped one changes nothing).
+    #[serde(default)]
+    pub activations_failed_in_a_row: u32,
+    /// When that row began (names it: the host tells the user once per row).
+    #[serde(default)]
+    pub failing_since_ms: u64,
+    /// Work taken in that did not succeed, in a row.
+    #[serde(default)]
+    pub works_failed_in_a_row: u32,
     /// Events waiting for the gate right now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holding: Option<GoalHold>,
@@ -888,6 +950,9 @@ impl GoalState {
                 ..Default::default()
             },
             consecutive_no_action: 0,
+            activations_failed_in_a_row: 0,
+            failing_since_ms: 0,
+            works_failed_in_a_row: 0,
             holding: None,
             holds: GoalHolds::default(),
             last_error: None,
@@ -916,6 +981,9 @@ impl GoalState {
                 s.usage = self.usage.clone();
                 s.holds = self.holds.clone();
                 s.consecutive_no_action = self.consecutive_no_action;
+                s.activations_failed_in_a_row = self.activations_failed_in_a_row;
+                s.failing_since_ms = self.failing_since_ms;
+                s.works_failed_in_a_row = self.works_failed_in_a_row;
                 s.goal_revision_seen = self.goal_revision_seen;
                 s.maintenance = self.maintenance.clone();
                 s
@@ -925,6 +993,25 @@ impl GoalState {
         next.rev = self.rev + 1;
         next.updated_at_ms = now_ms;
         next
+    }
+
+    /// An Activation closed at `now_ms`: what it adds to the row of failed
+    /// ones.
+    pub fn note_activation_end(&mut self, outcome: ActivationOutcome, decision: ActivationDecision, now_ms: u64) {
+        let failed = match outcome {
+            ActivationOutcome::Stopped => return,
+            ActivationOutcome::Failed | ActivationOutcome::BudgetExhausted => true,
+            ActivationOutcome::Completed => decision == ActivationDecision::Unknown,
+            ActivationOutcome::NeedsInput => false,
+        };
+        if !failed {
+            self.activations_failed_in_a_row = 0;
+            return;
+        }
+        if self.activations_failed_in_a_row == 0 {
+            self.failing_since_ms = now_ms;
+        }
+        self.activations_failed_in_a_row = self.activations_failed_in_a_row.saturating_add(1);
     }
 
     pub fn is_absorbed(&self, sid: &str) -> bool {
@@ -1127,6 +1214,17 @@ pub struct PendingFire {
     pub missed: u64,
 }
 
+/// The scheduled run opportunity the Goal Session has not taken in yet: no
+/// second one is posted meanwhile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WaitingFire {
+    pub key: String,
+    pub epoch: u64,
+    /// Slots that passed since the last fire, those that came while it
+    /// waits included.
+    pub missed: u64,
+}
+
 /// Summary of Memory's pending work (the `memory.status` call of a check).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MaintenancePending {
@@ -1170,7 +1268,7 @@ pub struct SkippedFire {
     pub slot: u64,
     pub at_ms: u64,
     /// `paused | not_active | min_interval | period_budget | agent_budget |
-    /// check_false | check_error`.
+    /// guarantee | waiting | check_false | check_error`.
     pub reason: String,
 }
 
@@ -1210,11 +1308,14 @@ pub struct CheckRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notified: Option<String>,
     /// The gate held the Goal's inferences while it ran (`min_interval`,
-    /// `period_budget`, `agent_budget`, `guarantee`): a `true` was set
-    /// aside.
+    /// `period_budget`, `agent_budget`, `guarantee`, `waiting`): a `true` was
+    /// set aside.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
 }
+
+/// Periods before the current one whose [`GateStats`] are kept.
+pub const GATE_STATS_KEEP: usize = 14;
 
 /// What the gate did in the current period (host side; held events are in
 /// the Goal State's `holds`).
@@ -1258,6 +1359,8 @@ pub struct GoalSchedule {
     pub pending: Option<PendingFire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_posted_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<WaitingFire>,
     #[serde(default)]
     pub last_fire_at_ms: u64,
     /// Epoch whose start event (`created / reopened / restarted`) was
@@ -1280,10 +1383,20 @@ pub struct GoalSchedule {
     pub check_state: Option<Value>,
     #[serde(default)]
     pub stats: GateStats,
+    /// The periods before (oldest first).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub past_stats: Vec<GateStats>,
     /// The quiet stretch (its start) the last hard guarantee was posted
     /// for: one per stretch.
     #[serde(default)]
     pub guarantee_posted_for_ms: u64,
+    /// The hard guarantee was posted for the current row of check errors:
+    /// one per row.
+    #[serde(default)]
+    pub guarantee_posted_for_errors: bool,
+    /// The row of failed Activations (its start) the user was told about.
+    #[serde(default)]
+    pub failing_notified_for_ms: u64,
     /// A built-in Goal switched off in `agent.toml`: no session, no checks.
     #[serde(default)]
     pub switched_off: bool,
@@ -1301,6 +1414,7 @@ impl GoalSchedule {
             last_slot: None,
             pending: None,
             last_posted_key: None,
+            waiting: None,
             last_fire_at_ms: 0,
             start_posted_epoch: 0,
             skipped: Vec::new(),
@@ -1310,7 +1424,10 @@ impl GoalSchedule {
             last_check_error: None,
             check_state: None,
             stats: GateStats::default(),
+            past_stats: Vec::new(),
             guarantee_posted_for_ms: 0,
+            guarantee_posted_for_errors: false,
+            failing_notified_for_ms: 0,
             switched_off: false,
             updated_at_ms: 0,
         }
@@ -1319,10 +1436,18 @@ impl GoalSchedule {
     /// Statistics of the period that `now_ms` falls in.
     pub fn stats_mut(&mut self, period_start_ms: u64) -> &mut GateStats {
         if self.stats.period_start_ms != period_start_ms {
-            self.stats = GateStats {
-                period_start_ms,
-                ..Default::default()
-            };
+            let ended = std::mem::replace(
+                &mut self.stats,
+                GateStats {
+                    period_start_ms,
+                    ..Default::default()
+                },
+            );
+            if ended.period_start_ms > 0 {
+                self.past_stats.push(ended);
+                let extra = self.past_stats.len().saturating_sub(GATE_STATS_KEEP);
+                self.past_stats.drain(..extra);
+            }
         }
         &mut self.stats
     }
@@ -1377,20 +1502,89 @@ pub struct GoalResult {
     /// Questions for the user (replace the open ones; each reaches the
     /// user as a notification).
     #[serde(default)]
-    pub questions: Option<Vec<String>>,
+    pub questions: Option<Vec<QuestionInput>>,
     #[serde(default)]
     pub skills: Option<SkillsChange>,
+}
+
+/// A question of a Goal result: a sentence answered in free text, or one
+/// with choices.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum QuestionInput {
+    Text(String),
+    Full(QuestionFull),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionFull {
+    pub text: String,
+    #[serde(default)]
+    pub options: Vec<QuestionOption>,
+    /// Free text besides the choices (without choices it is always taken).
+    #[serde(default)]
+    pub allow_text: bool,
+}
+
+/// Choices one question may offer.
+pub const QUESTION_OPTIONS_MAX: usize = 8;
+
+impl QuestionInput {
+    pub fn text(&self) -> &str {
+        match self {
+            QuestionInput::Text(t) => t,
+            QuestionInput::Full(q) => &q.text,
+        }
+    }
+
+    pub fn options(&self) -> &[QuestionOption] {
+        match self {
+            QuestionInput::Text(_) => &[],
+            QuestionInput::Full(q) => &q.options,
+        }
+    }
+
+    pub fn allow_text(&self) -> bool {
+        match self {
+            QuestionInput::Text(_) => false,
+            QuestionInput::Full(q) => q.allow_text,
+        }
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if self.text().trim().is_empty() {
+            return Err("a question has a text".into());
+        }
+        let options = self.options();
+        if options.len() > QUESTION_OPTIONS_MAX {
+            return Err(format!("a question offers at most {QUESTION_OPTIONS_MAX} options"));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for o in options {
+            if o.id.trim().is_empty() || o.label.trim().is_empty() {
+                return Err("an option of a question has an id and a label".into());
+            }
+            if !ids.insert(o.id.as_str()) {
+                return Err(format!("the options of a question have different ids, `{}` comes twice", o.id));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl GoalResult {
     pub fn parse(v: &Value) -> Result<Self, String> {
         let r: GoalResult = serde_json::from_value(v.clone()).map_err(|e| {
             format!(
-                "the result of a Goal Activation is {{decision: no_action | acted | created_work | needs_info, distance?, pending?, questions?, skills?: {{add?, remove?}}}}: {e}"
+                "the result of a Goal Activation is {{decision: no_action | acted | created_work | needs_info, distance?, pending?, questions?: [\"text\" | {{text, options?: [{{id, label}}], allow_text?}}], skills?: {{add?, remove?}}}}: {e}"
             )
         })?;
         if r.decision == ActivationDecision::Unknown {
             return Err("decision `unknown` is recorded by the runtime; report what you decided".into());
+        }
+        for q in r.questions.iter().flatten() {
+            q.check()?;
         }
         Ok(r)
     }
@@ -1408,6 +1602,14 @@ pub struct OpenActivation {
     /// the records after it.
     #[serde(default)]
     pub usage_offset: u64,
+    /// What it reads of the earlier Activations, decided when it opened.
+    /// (An Activation opened before this was recorded carried the history.)
+    #[serde(default = "carried")]
+    pub context: GoalContext,
+    /// Length of the committed worklog when it opened: its history with a
+    /// fresh context is what comes after.
+    #[serde(default)]
+    pub worklog_offset: u64,
     /// Effective limits, frozen when it opened. Its tokens and runs are
     /// those of the `usage.jsonl` records after `usage_offset`.
     #[serde(default)]
@@ -1415,6 +1617,10 @@ pub struct OpenActivation {
     /// Work whose end it consumed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub absorbed: Vec<String>,
+}
+
+fn carried() -> GoalContext {
+    GoalContext::Carry
 }
 
 /// How the Goal Session ends (decided by its Goal).
@@ -1442,6 +1648,10 @@ pub struct GoalSessionState {
     pub published_rev: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unwritten: Vec<GoalActivation>,
+    /// What the Activation opened last reads of the earlier ones (how the
+    /// history is read between two Activations).
+    #[serde(default)]
+    pub context: GoalContext,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation: Option<OpenActivation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -584,6 +584,25 @@
       ],
       "type": "object"
     },
+    "GoalContext": {
+      "description": "What the context of an Activation starts with besides the system prompt, the Goal header and the inputs of this Activation.",
+      "oneOf": [
+        {
+          "description": "Nothing: what the earlier Activations left is in the header.",
+          "enum": [
+            "fresh"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The history of the Goal Session (compressed like any session's).",
+          "enum": [
+            "carry"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "GoalDistance": {
       "properties": {
         "evidence_refs": {
@@ -704,6 +723,10 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "allow_text": {
+          "description": "Free text is taken besides the choices.",
+          "type": "boolean"
+        },
         "answer": {
           "type": [
             "string",
@@ -733,6 +756,13 @@
             "string",
             "null"
           ]
+        },
+        "options": {
+          "description": "Choices it offers (none: free text only).",
+          "items": {
+            "$ref": "#/definitions/QuestionOption"
+          },
+          "type": "array"
         },
         "status": {
           "anyOf": [
@@ -778,6 +808,15 @@
               "type": "null"
             }
           ]
+        },
+        "context": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/GoalContext"
+            }
+          ],
+          "default": "fresh",
+          "description": "What the Activation opened last reads of the earlier ones (how the history is read between two Activations)."
         },
         "ending": {
           "anyOf": [
@@ -862,6 +901,13 @@
           },
           "type": "array"
         },
+        "activations_failed_in_a_row": {
+          "default": 0,
+          "description": "Activations in a row that failed, ran out of budget or left no valid result (a stopped one changes nothing).",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "active_works": {
           "items": {
             "$ref": "#/definitions/GoalWork"
@@ -892,6 +938,13 @@
           ]
         },
         "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "failing_since_ms": {
+          "default": 0,
+          "description": "When that row began (names it: the host tells the user once per row).",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -993,11 +1046,19 @@
           ],
           "default": {
             "activations": 0,
+            "job_tokens": 0,
             "period_start_ms": 0,
             "tokens": 0,
             "work_tokens": 0,
             "works": 0
           }
+        },
+        "works_failed_in_a_row": {
+          "default": 0,
+          "description": "Work taken in that did not succeed, in a row.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
         }
       },
       "required": [
@@ -1013,6 +1074,13 @@
       "properties": {
         "activations": {
           "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "job_tokens": {
+          "default": 0,
+          "description": "Model tokens of its jobs in the period.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -1502,6 +1570,15 @@
           "default": {},
           "description": "Effective limits, frozen when it opened. Its tokens and runs are those of the `usage.jsonl` records after `usage_offset`."
         },
+        "context": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/GoalContext"
+            }
+          ],
+          "default": "carry",
+          "description": "What it reads of the earlier Activations, decided when it opened. (An Activation opened before this was recorded carried the history.)"
+        },
         "goal_revision": {
           "format": "uint64",
           "minimum": 0.0,
@@ -1527,6 +1604,13 @@
         "usage_offset": {
           "default": 0,
           "description": "Length of the session's `usage.jsonl` when it opened: its tokens are the records after it.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "worklog_offset": {
+          "default": 0,
+          "description": "Length of the committed worklog when it opened: its history with a fresh context is what comes after.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -1961,6 +2045,23 @@
         "entry",
         "role",
         "run_id"
+      ],
+      "type": "object"
+    },
+    "QuestionOption": {
+      "additionalProperties": false,
+      "description": "A choice of a [`GoalQuestion`].",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
       ],
       "type": "object"
     },

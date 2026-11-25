@@ -1017,11 +1017,116 @@ fn goals_from_the_command_line() {
     assert_eq!(code, 5, "{err}");
     let (code, v, _) = cli.run(&["goal", "revise", &goal_id, "--expected-revision", "1", "--objective", "keep notes.md short"]);
     assert_eq!((code, v["revision"].as_u64()), (0, Some(1)), "no change is no revision");
+    // The whole definition is reachable without --json.
+    let (code, v, err) = cli.run(&[
+        "goal", "revise", &goal_id, "--expected-revision", "1", "--healthy-state", "notes.md has at most 50 lines",
+        "--constraint", "never delete a heading", "--constraint", "ask before merging", "--lifecycle", "maintain", "--path", "notes.md",
+        "--skill", "notes_ops=docs/ops.md", "--reason", "handed over",
+    ]);
+    assert_eq!((code, v["revision"].as_u64()), (0, Some(2)), "{v} {err}");
+    assert_eq!(v["healthy_state"], "notes.md has at most 50 lines");
+    assert_eq!(v["constraints"], json!(["never delete a heading", "ask before merging"]));
+    assert_eq!((&v["scope"]["paths"], &v["initial_skills"][0]["name"]), (&json!(["notes.md"]), &json!("notes_ops")));
+    let (code, v, err) = cli.run(&["goal", "check", "set", &goal_id, "--context", "carry", "--reason", "a long thread"]);
+    assert_eq!((code, v["schedule"]["context"].as_str(), v["revision"].as_u64()), (0, Some("carry"), Some(2)), "{err}");
+    let (code, v, err) = cli.run(&["goal", "stats", &goal_id, "--periods", "2"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(v["periods"][1]["activations"], 2, "{v}");
+    assert!(v["periods"][1]["tokens_by_goal"].as_u64().unwrap() > 0, "{v}");
     let (code, v, err) = cli.run(&["goal", "pause", &goal_id, "--reason", "holiday"]);
     assert_eq!((code, v["status"].as_str()), (0, Some("paused")), "{err}");
     let _ = serve.kill();
     let _ = serve.wait();
     assert!(llm.count() >= 2);
+}
+
+/// SI3: only the self improvement Goal (and work it sent) adds a manual.
+#[test]
+fn only_self_improvement_adds_a_manual() {
+    let cli = Cli::new();
+    let file = cli.root.join("SKILL.md");
+    std::fs::write(&file, "---\nname: xlsx2csv_tool\ndescription: Turn a workbook into CSV files.\nrequires: the private runtime\ncommands: xlsx2csv\nscope: work\n---\nRun `xlsx2csv <file>`.\n").unwrap();
+    let file = file.display().to_string();
+    let add = ["skill", "add", "xlsx2csv_tool", "--file", &file, "--reason", "work-1 and work-3 lacked it"];
+    let registry = cli.root.join("agent_root/state/sessions");
+    std::fs::create_dir_all(&registry).unwrap();
+    let session = |sid: &str, kind: &str, goal: Option<&str>, origin: Value| {
+        let mut e = json!({ "session_id": sid, "kind": kind, "class": kind, "created_by": { "principal": WHO, "via": "x" },
+            "driver": { "principal": WHO }, "location": cli.root.join("sessions").join(sid).display().to_string(),
+            "objective": "x", "status": { "rev": 1, "run_state": "running", "one_line_status": "", "updated_at_ms": 1 } });
+        if let Some(g) = goal {
+            e["goal_id"] = json!(g);
+        }
+        if !origin.is_null() {
+            e["origin"] = origin;
+        }
+        std::fs::write(registry.join(format!("{sid}.json")), e.to_string()).unwrap();
+    };
+    let goal = |objective: &str, builtin: Option<&str>| -> String {
+        let mut req = json!({ "objective": objective });
+        if let Some(b) = builtin {
+            req["extensions"] = json!({ "opendan": { "builtin": b, "policy_version": 1, "capabilities": [], "records_perception": true } });
+        }
+        let (code, v, err) = cli.run(&["goal", "create", "--json", &req.to_string(), "--objective", objective]);
+        assert_eq!(code, 0, "{v} {err}");
+        v["goal_id"].as_str().unwrap().to_string()
+    };
+    let own = goal("self improvement", Some("self_improve"));
+    let other = goal("another goal", None);
+    session("goal-1", "goal", Some(&own), Value::Null);
+    session("goal-2", "goal", Some(&other), Value::Null);
+    session("ui-1", "ui", None, Value::Null);
+    let sent = |g: &str| json!({ "parent_session": "goal-1", "goal": { "goal_id": g, "revision": 1, "epoch": 1, "activation_seq": 1, "at_ms": 1 } });
+    session("work-1", "work", Some(&own), sent(&own));
+    session("work-2", "work", Some(&other), sent(&other));
+    session("work-3", "work", None, json!({ "parent_session": "ui-1" }));
+    let run = |sid: Option<&str>| {
+        let mut c = cli.command(&add);
+        if let Some(sid) = sid {
+            c.env("OPENDAN_SESSION_ID", sid);
+        }
+        parse(c.output().unwrap())
+    };
+    assert_eq!(run(None).0, 2, "nobody's session");
+    for sid in ["goal-2", "ui-1", "work-2", "work-3"] {
+        let (code, v, err) = run(Some(sid));
+        assert_eq!(code, 6, "{sid}: {v} {err}");
+    }
+    let (code, v, err) = run(Some("work-1"));
+    assert_eq!((code, v["added"]["origin"].as_str()), (0, Some("local")), "{v} {err}");
+    let listed = cli.text(&["skill", "list", "--kind", "work", "--scope", "work"]);
+    assert!(listed.contains("xlsx2csv_tool"), "{listed}");
+    let (code, _, _) = run(Some("goal-1"));
+    assert_eq!(code, 2, "it is there already");
+}
+
+/// FX3: a check script is tried out before its goal exists, with the
+/// timetable, the zone and the scope the goal will have. (Skipped without a
+/// Deno.)
+#[test]
+fn a_check_script_runs_before_its_goal_exists() {
+    let cli = Cli::new();
+    let script = cli.root.join("check.ts");
+    std::fs::write(
+        &script,
+        "export default (ctx, state) => ({ run: false, reason: `${ctx.timezone} ${ctx.scope.paths.join()} ${state === null} ${typeof ctx.slot_ms} ${ctx.missed}` });\n",
+    )
+    .unwrap();
+    let path = script.display().to_string();
+    let (code, v, err) = cli.run(&["goal", "check", "run", "--script", &path, "--cron", "0 9 * * 1-5", "--timezone", "Asia/Shanghai", "--path", "sites.json"]);
+    if v["error"].as_str().is_some_and(|e| e.contains("no Deno")) {
+        eprintln!("no Deno: skipped");
+        return;
+    }
+    assert_eq!(code, 0, "{v} {err}");
+    assert_eq!(v["outcome"], "false");
+    assert_eq!(v["reason"], "Asia/Shanghai sites.json true number 0");
+    let (code, _, err) = cli.run(&["goal", "check", "run", "--script", &path, "--every", "10"]);
+    assert_eq!(code, 2, "{err}");
+    let (code, _, err) = cli.run(&["goal", "check", "run"]);
+    assert_eq!(code, 2, "{err}");
+    let (_, list, _) = cli.run(&["goal", "list"]);
+    assert!(list.as_array().unwrap().is_empty(), "nothing was created");
 }
 
 /// `ask-user` prints the pending result the `shell` tool forwards; it only

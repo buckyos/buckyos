@@ -89,5 +89,8 @@ pub fn json_schemas() -> Vec<(&'static str, serde_json::Value)> {
         ("goal_schedule", s::<goal::GoalSchedule>()),
         ("goal_result", s::<goal::GoalResult>()),
         ("goal_opendan_extension", s::<goal::OpendanGoalExtension>()),
+        ("goal_job", s::<crate::goal_jobs::GoalJob>()),
+        ("goal_job_run", s::<crate::goal_jobs::JobRun>()),
+        ("goal_job_schedule", s::<crate::goal_jobs::JobSchedule>()),
     ]
 }

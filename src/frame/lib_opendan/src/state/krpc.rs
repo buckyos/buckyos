@@ -22,6 +22,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::error::{OpenDanError, Result};
+use crate::goal_jobs::{GoalJob, JobPut, JobRequest, JobRun, JobView};
 use crate::lock::{Acquire, Lease};
 use crate::protocol::*;
 
@@ -136,6 +137,11 @@ pub fn is_write(method: &str) -> bool {
             | "goals.reopen"
             | "goals.restart"
             | "goals.set_check"
+            | "goals.job_put"
+            | "goals.job_run"
+            | "goals.job_set_enabled"
+            | "goals.job_rollback"
+            | "goals.job_delete"
             | "notify.send"
             | "notify.cancel"
             | "notify.answer"
@@ -490,6 +496,47 @@ pub async fn serve_call(
             Ok(id) => agent.goals().schedule(&id).await.and_then(out),
             Err(e) => Err(e),
         },
+        "goals.stats" => match (arg::<String>(params, "goal_id"), arg::<Option<usize>>(params, "periods")) {
+            (Ok(id), Ok(n)) => agent
+                .goals()
+                .stats(&id, n.unwrap_or(crate::goal_stats::STATS_PERIODS))
+                .await
+                .and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "goals.jobs" => match arg::<String>(params, "goal_id") {
+            Ok(id) => agent.goals().jobs(&id).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "goals.job_runs" => match (arg::<String>(params, "goal_id"), arg::<String>(params, "job_id"), arg::<Option<usize>>(params, "limit")) {
+            (Ok(id), Ok(job), Ok(limit)) => agent.goals().job_runs(&id, &job, limit.unwrap_or(20)).await.and_then(out),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+        },
+        "goals.job_log" => match (arg::<String>(params, "goal_id"), arg::<String>(params, "job_id"), arg::<Option<String>>(params, "run_id")) {
+            (Ok(id), Ok(job), Ok(run)) => agent.goals().job_log(&id, &job, run.as_deref()).await.and_then(out),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+        },
+        "goals.job_put" => match (arg::<String>(params, "goal_id"), arg::<JobPut>(params, "request"), goal_caller(who, params)) {
+            (Ok(id), Ok(req), Ok(c)) => agent.goals().job_put(&id, &req, &c).await.and_then(out),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+        },
+        m @ ("goals.job_run" | "goals.job_set_enabled" | "goals.job_rollback" | "goals.job_delete") => {
+            match (arg::<String>(params, "goal_id"), arg::<String>(params, "job_id"), goal_caller(who, params)) {
+                (Ok(id), Ok(job), Ok(c)) => match m {
+                    "goals.job_run" => agent.goals().job_run(&id, &job, &c).await.and_then(out),
+                    "goals.job_set_enabled" => match arg::<bool>(params, "enabled") {
+                        Ok(on) => agent.goals().job_set_enabled(&id, &job, on, &c).await.and_then(out),
+                        Err(e) => Err(e),
+                    },
+                    "goals.job_rollback" => match arg::<Option<u64>>(params, "to") {
+                        Ok(to) => agent.goals().job_rollback(&id, &job, to, &c).await.and_then(out),
+                        Err(e) => Err(e),
+                    },
+                    _ => agent.goals().job_delete(&id, &job, &c).await.and_then(out),
+                },
+                (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+            }
+        }
         m if GOAL_DRIVER_ONLY.contains(&m) => Err(driver_only(m)),
         m if m.starts_with("notify.") => serve_notify(agent, m, params).await,
         _ => return None,
@@ -944,6 +991,41 @@ impl GoalStore for KrpcAgentStateClient {
     }
     async fn schedule(&self, goal_id: &str) -> Result<Option<GoalSchedule>> {
         self.call("goals.schedule", json!({ "goal_id": goal_id })).await
+    }
+    async fn stats(&self, goal_id: &str, periods: usize) -> Result<crate::goal_stats::GoalStats> {
+        self.call("goals.stats", json!({ "goal_id": goal_id, "periods": periods })).await
+    }
+    async fn jobs(&self, goal_id: &str) -> Result<Vec<JobView>> {
+        self.call("goals.jobs", json!({ "goal_id": goal_id })).await
+    }
+    async fn job_runs(&self, goal_id: &str, job_id: &str, limit: usize) -> Result<Vec<JobRun>> {
+        self.call("goals.job_runs", json!({ "goal_id": goal_id, "job_id": job_id, "limit": limit })).await
+    }
+    async fn job_log(&self, goal_id: &str, job_id: &str, run_id: Option<&str>) -> Result<Option<String>> {
+        self.call("goals.job_log", json!({ "goal_id": goal_id, "job_id": job_id, "run_id": run_id })).await
+    }
+    async fn job_usage(&self, _goal_id: &str, _since_ms: u64) -> Result<Vec<UsageRecord>> {
+        // Like the sessions' usage: read where the AgentRoot is.
+        Ok(Vec::new())
+    }
+    async fn job_put(&self, goal_id: &str, req: &JobPut, caller: &GoalCaller) -> Result<GoalJob> {
+        self.call("goals.job_put", json!({ "goal_id": goal_id, "request": req, "session": caller.session })).await
+    }
+    async fn job_run(&self, goal_id: &str, job_id: &str, caller: &GoalCaller) -> Result<JobRequest> {
+        self.call("goals.job_run", json!({ "goal_id": goal_id, "job_id": job_id, "session": caller.session })).await
+    }
+    async fn job_set_enabled(&self, goal_id: &str, job_id: &str, enabled: bool, caller: &GoalCaller) -> Result<GoalJob> {
+        self.call(
+            "goals.job_set_enabled",
+            json!({ "goal_id": goal_id, "job_id": job_id, "enabled": enabled, "session": caller.session }),
+        )
+        .await
+    }
+    async fn job_rollback(&self, goal_id: &str, job_id: &str, to: Option<u64>, caller: &GoalCaller) -> Result<GoalJob> {
+        self.call("goals.job_rollback", json!({ "goal_id": goal_id, "job_id": job_id, "to": to, "session": caller.session })).await
+    }
+    async fn job_delete(&self, goal_id: &str, job_id: &str, caller: &GoalCaller) -> Result<()> {
+        self.call("goals.job_delete", json!({ "goal_id": goal_id, "job_id": job_id, "session": caller.session })).await
     }
     async fn write_state(&self, _lease: &Lease, _state: &GoalState) -> Result<()> {
         Err(driver_only("goals.write_state"))

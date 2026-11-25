@@ -489,7 +489,7 @@ impl StateService {
             "skills.remove" => self.home.skills_remove(self.agent.as_ref(), params, who).await,
             "skills.import" => self.import_skills(who, params).await,
             "skills.state" | "skills.ui_get" | "skills.ui_set" | "skills.set_enabled" | "skills.drafts" | "skills.draft_file"
-            | "skills.draft_discard" | "skills.crystallize_set" => {
+            | "skills.draft_discard" | "skills.self_improve_set" => {
                 self.home.skills_call(self.agent.as_ref(), method, params, who).await
             }
             "runtimes.settings" => self.home.runtime_settings(self.agent.as_ref()).await,
@@ -637,7 +637,7 @@ fn is_owner_only(method: &str) -> bool {
             | "skills.ui_set"
             | "skills.import"
             | "skills.draft_discard"
-            | "skills.crystallize_set"
+            | "skills.self_improve_set"
             | "memory.forget"
             | "browser.take_over"
             | "browser.hand_back"
@@ -696,6 +696,10 @@ fn is_read(method: &str) -> bool {
             | "goals.epoch_state"
             | "goals.activations"
             | "goals.schedule"
+            | "goals.stats"
+            | "goals.jobs"
+            | "goals.job_runs"
+            | "goals.job_log"
             | "goals.check_script"
             | "memory.status"
             | "notify.state"
@@ -745,7 +749,7 @@ fn is_operation(method: &str) -> bool {
             | "skills.ui_set"
             | "skills.import"
             | "skills.draft_discard"
-            | "skills.crystallize_set"
+            | "skills.self_improve_set"
             | "goals.activate"
             | "goals.post"
             | "memory.forget"
@@ -928,7 +932,7 @@ mod permission_tests {
             "behaviors.identity", "behaviors.get", "behaviors.list", "behaviors.revision",
             "behaviors.cmd_skill", "skills.list", "skills.install_plan", "skills.state", "skills.ui_get", "skills.drafts", "skills.draft_file", "runtimes.ext_tools", "goals.list", "goals.get", "goals.revision",
             "goals.changes", "goals.state", "goals.epoch_state", "goals.activations",
-            "goals.schedule", "goals.check_script", "memory.status", "notify.state", "notify.list", "session.read", "session.worklog", "session.work_cards",
+            "goals.schedule", "goals.stats", "goals.jobs", "goals.job_runs", "goals.job_log", "goals.check_script", "memory.status", "notify.state", "notify.list", "session.read", "session.worklog", "session.work_cards",
             "session.work_tree", "ui.conversation",
             "home.summary", "memory.overview", "memory.list", "memory.read", "deliveries.recent",
             "agent.profile", "usage.models", "ui.bindings", "home.workspaces", "loader.status", "runtimes.settings", "runtimes.impact",
@@ -949,6 +953,7 @@ mod permission_tests {
             "workspaces.archive", "workspaces.unregister", "workspaces.set_runtime_available",
             "runtimes.register", "runtimes.update", "runtimes.check", "runtimes.unregister", "runtimes.note_usage",
             "goals.create", "goals.revise", "goals.set_status", "goals.reopen", "goals.restart", "goals.set_check",
+            "goals.job_put", "goals.job_run", "goals.job_set_enabled", "goals.job_rollback", "goals.job_delete",
             "notify.send", "notify.cancel", "notify.answer", "skills.note_frozen", "skills.revise", "skills.status", "runtimes.ext_tools_check",
             "session.stop", "session.pause", "session.resume", "ui.rotate", "sessions.delete",
             "session.decide", "session.post", "goals.activate", "goals.post",
@@ -971,7 +976,7 @@ mod permission_tests {
     fn no_agent_changes_which_skills_an_agent_has() {
         for method in [
             "skills.install", "skills.remove", "skills.set_enabled", "skills.ui_set", "skills.import",
-            "skills.draft_discard", "skills.crystallize_set", "memory.forget",
+            "skills.draft_discard", "skills.self_improve_set", "memory.forget",
             // The user's side of the browser: an Agent neither takes its browser over nor hands it to itself.
             "browser.take_over", "browser.hand_back", "browser.hand_to_agent", "browser.bind_default", "browser.upload",
             "browser.download_export", "browser.clear_profile", "browser.reflow_action", "browser.screen",

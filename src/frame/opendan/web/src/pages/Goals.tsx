@@ -25,6 +25,10 @@ export function NextOpportunity({ schedule }: { schedule: GoalSchedule }) {
   )
 }
 
+export function SkipReason({ reason }: { reason: string }) {
+  return reason === 'waiting' ? <>{t('goalSkipWaiting')}</> : <span className="font-mono">{reason}</span>
+}
+
 /** Which built-in goals are switched off (only they can be). */
 const useSwitchedOff = (goals: GoalDefinition[]): Set<string> => {
   const ids = goals.filter((g) => goalExtension(g)?.builtin).map((g) => g.goal_id)
@@ -77,7 +81,7 @@ function GoalRow({ goal, off }: { goal: GoalDefinition; off: boolean }) {
           )}
           {skip && (
             <span className="block truncate" data-testid="goal-skip">
-              {t('goalLastSkip')}: <span className="font-mono">{skip}</span>
+              {t('goalLastSkip')}: <SkipReason reason={skip} />
             </span>
           )}
           {candidates > 0 && (

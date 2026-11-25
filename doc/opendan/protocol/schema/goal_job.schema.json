@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "`job.json`.",
+  "properties": {
+    "command": {
+      "description": "The program and its arguments; `{dir}` is the directory of the installed version.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "cron": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "every_secs": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "goal_id": {
+      "type": "string"
+    },
+    "job_id": {
+      "type": "string"
+    },
+    "schema": {
+      "type": "string"
+    },
+    "timeout_secs": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "timezone": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "updated_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "updated_by": {
+      "description": "`owner | ui_session:<sid> | work_session:<sid> | goal_session:<sid>`.",
+      "type": "string"
+    },
+    "version": {
+      "description": "The installed program (`versions/<version>/`).",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "command",
+    "enabled",
+    "goal_id",
+    "job_id",
+    "schema",
+    "timeout_secs",
+    "title",
+    "updated_at_ms",
+    "updated_by",
+    "version"
+  ],
+  "title": "GoalJob",
+  "type": "object"
+}

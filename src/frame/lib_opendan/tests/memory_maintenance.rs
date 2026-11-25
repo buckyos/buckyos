@@ -1,6 +1,6 @@
-//! The agent's default Memory maintenance Goal (Jarvis default Goal TODO
+//! The memory duty of the agent's self improvement Goal (Jarvis default Goal TODO
 //! §9 V01, V04, V07, V08, V09, V17): seeding, its check script (the package's
-//! `goal_checks/memory_maintenance.ts` on Deno), the consolidation host
+//! `goal_checks/self_improve.ts` on Deno), the consolidation host
 //! tools, the lease, anti echo, the report check and crash recovery of a
 //! receipt.
 
@@ -62,7 +62,7 @@ fn host_deps(env: &Env, llm: Arc<ScriptedLlm>) -> HostDeps {
 }
 
 /// The package's check script of the built-in Goal.
-const PACKAGE_CHECK: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/jarvis_agent/agent/goal_checks/memory_maintenance.ts");
+const PACKAGE_CHECK: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/jarvis_agent/agent/goal_checks/self_improve.ts");
 
 /// `agent.toml` that switches the built-in Goal on (no behavior: the plain
 /// function-call prompt with the host tools), and the package's check script
@@ -70,12 +70,12 @@ const PACKAGE_CHECK: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/jar
 fn enable_maintenance(env: &Env) {
     std::fs::write(
         env.agent_root.join("agent.toml"),
-        "[session.goal.maintenance]\nenabled = true\nbehavior = \"\"\n",
+        "[session.goal.self_improve]\nenabled = true\n",
     )
     .unwrap();
     let dir = env.agent_root.join("goal_checks");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::copy(PACKAGE_CHECK, dir.join("memory_maintenance.ts")).unwrap();
+    std::fs::copy(PACKAGE_CHECK, dir.join("self_improve.ts")).unwrap();
 }
 
 fn hosted(env: &Env, llm: Arc<ScriptedLlm>) -> Hosted {
@@ -121,7 +121,7 @@ impl Hosted {
         let goals = self.goals();
         let found: Vec<&GoalDefinition> = goals
             .iter()
-            .filter(|g| g.is_builtin(BUILTIN_MEMORY_MAINTENANCE))
+            .filter(|g| g.is_builtin(BUILTIN_SELF_IMPROVE))
             .collect();
         assert_eq!(found.len(), 1, "exactly one built-in goal: {goals:?}");
         found[0].clone()
@@ -338,25 +338,25 @@ async fn the_builtin_goal_is_seeded_once_and_costs_no_model_without_material() {
     h.tick().await;
     h.tick().await;
     let g = h.builtin();
-    assert_eq!(g.idempotency_key.as_deref(), Some(BUILTIN_MEMORY_MAINTENANCE_KEY));
+    assert_eq!(g.idempotency_key.as_deref(), Some(BUILTIN_SELF_IMPROVE_KEY));
     assert_eq!(g.lifecycle, GoalLifecycle::Maintain);
     assert_eq!(g.owner, AGENT);
     assert_eq!(g.created_by.via, "owner");
     assert_eq!(g.schedule.every_secs, Some(1800));
-    assert_eq!(g.budget.activation.max_total_tokens, Some(120_000));
+    assert_eq!((g.budget.activation.max_total_tokens, g.budget.period.max_total_tokens), (Some(500_000), Some(1_800_000)));
     let ext = g.opendan().unwrap();
     assert!(ext.has_capability(CAP_MEMORY_CONSOLIDATION) && !ext.records_perception);
-    assert_eq!(ext.policy_version, MEMORY_MAINTENANCE_POLICY_VERSION);
+    assert_eq!(ext.policy_version, SELF_IMPROVE_POLICY_VERSION);
     // It runs the package's check script; its session exists; the start
     // was a check: nothing to consolidate, no model.
     let check = g.schedule.check.clone().expect("the package check script");
-    assert_eq!(check.source, "package:goal_checks/memory_maintenance.ts");
-    assert_eq!(check.package.as_deref(), Some("goal_checks/memory_maintenance.ts"));
+    assert_eq!(check.source, "package:goal_checks/self_improve.ts");
+    assert_eq!(check.package.as_deref(), Some("goal_checks/self_improve.ts"));
     assert!(h.agent.sessions().lookup(&g.session.sid).await.unwrap().is_some());
     let last = h.last_check(&g.goal_id);
     assert_eq!(last.outcome, CheckOutcome::False, "{last:?} {:?}", h.schedule(&g.goal_id));
     let st = h.schedule(&g.goal_id).check_state.expect("the script keeps its state");
-    assert!(st["digest"].is_string() && st["full_check_at"].is_number(), "{st}");
+    assert!(st["memory"]["digest"].is_string() && st["memory"]["full_check_at"].is_number(), "{st}");
     assert!(h.activations(&g.goal_id).is_empty());
     h.shutdown().await;
     // Two more hosts (restarts): the same Goal, one `created` change.
@@ -383,7 +383,7 @@ async fn the_builtin_goal_is_seeded_once_and_costs_no_model_without_material() {
     }
     assert!(h.activations(&g.goal_id).is_empty());
     // A package upgrade replaces a script the Goal never changed …
-    std::fs::write(env.agent_root.join("goal_checks/memory_maintenance.ts"), format!("{}\n// upgraded\n", std::fs::read_to_string(PACKAGE_CHECK).unwrap())).unwrap();
+    std::fs::write(env.agent_root.join("goal_checks/self_improve.ts"), format!("{}\n// upgraded\n", std::fs::read_to_string(PACKAGE_CHECK).unwrap())).unwrap();
     h.shutdown().await;
     let h = hosted(&env, silent_llm());
     h.tick().await;
@@ -408,8 +408,8 @@ async fn the_builtin_goal_is_seeded_once_and_costs_no_model_without_material() {
         .check
         .unwrap();
     assert_eq!(own.source, "owner");
-    assert_eq!(own.package.as_deref(), Some("goal_checks/memory_maintenance.ts"), "it still knows where it came from");
-    std::fs::write(env.agent_root.join("goal_checks/memory_maintenance.ts"), "// newer package\nexport default () => true;\n").unwrap();
+    assert_eq!(own.package.as_deref(), Some("goal_checks/self_improve.ts"), "it still knows where it came from");
+    std::fs::write(env.agent_root.join("goal_checks/self_improve.ts"), "// newer package\nexport default () => true;\n").unwrap();
     h.shutdown().await;
     let h = hosted(&env, silent_llm());
     h.tick().await;
@@ -428,7 +428,7 @@ async fn the_builtin_goal_is_seeded_once_and_costs_no_model_without_material() {
         .schedule
         .check
         .unwrap();
-    assert_eq!(restored.source, "package:goal_checks/memory_maintenance.ts");
+    assert_eq!(restored.source, "package:goal_checks/self_improve.ts");
     assert!(h.agent.goals().check_script(&g.goal_id, None).await.unwrap().unwrap().contains("newer package"));
     // Another agent's root gets its own Goal (isolation by directory).
     let env2 = Env::new();
@@ -461,7 +461,7 @@ async fn material_is_consolidated_through_the_host_tools() {
     let a = &h.activations(&g.goal_id)[0];
     assert_eq!(a.decision, ActivationDecision::Acted, "{a:?}");
     assert_eq!(a.reasons[0].kind, ActivationReasonKind::Created);
-    assert!(a.reasons[0].note.as_deref().unwrap_or("").contains("memory maintenance"));
+    assert!(a.reasons[0].note.as_deref().unwrap_or("").contains("memory: "));
     assert!(llm.count() >= 3, "begin, commit, report");
     let st = h.state(&g.goal_id).unwrap();
     let m = st.maintenance.expect("maintenance state");

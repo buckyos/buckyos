@@ -2,7 +2,7 @@
  * `agentSessions` and the embedded conversation page. Loaded on demand from `components/conversation/backend.ts`;
  * everything here works as the signed-in viewer looking at their own messages. */
 
-import { ndn, type DID } from 'buckyos'
+import { ndn, NOTIFY_INTENT, type DID, type NotifyMessageData } from 'buckyos'
 import { fetchCurrentAccount } from '../../api/account'
 import { fetchAgentList } from '../../api/user_mgr'
 import type { ConversationBackend, ConversationSessionInfo } from '../../components/conversation/backendTypes'
@@ -11,8 +11,11 @@ import { agentDisplayName } from '../agent-setup/model'
 import { SessionSource } from './conversationSessions'
 import { findSession } from './conversationSource'
 import { listUiSessionState, updateUiSessionState } from './datamodel/sessionApi'
+import { getNotifyWatch } from './notify'
 import { getMessageHubStore, isMessageHubMock } from './store'
 import type { Session } from './types'
+
+const GOAL_NOTICES = 50
 
 const info = (session: Session): ConversationSessionInfo => ({
   id: session.id,
@@ -93,5 +96,13 @@ export function createConversationBackend(): ConversationBackend {
       return (await listUiSessionState(sessionId, context().ownerDid)).map(entry => ({ key: entry.key, value: entry.value }))
     },
     updateUiState: async (sessionId, key, value) => { await updateUiSessionState(sessionId, key, value, context().ownerDid as DID) },
+    async goalNotices(agentDid, goalId) {
+      await ensureReady()
+      const views = await getNotifyWatch().list({ agent_did: agentDid, goal_id: goalId, limit: GOAL_NOTICES })
+      return views.map((view): MessageObject => {
+        const data: NotifyMessageData = { version: 1, notify_id: view.notify_id, kind: view.kind, category: view.category, level: view.level, home: false, source: view.source, prompt: view.prompt, url: view.url, ...(view.task_id ? { task_id: view.task_id } : {}), ...(view.expires_at_ms ? { expires_at_ms: view.expires_at_ms } : {}) }
+        return { from: agentDid, to: [context().ownerDid], kind: 'notify', created_at_ms: view.created_at_ms, content: { format: 'text/plain', content: [view.prompt.title, view.prompt.message].filter(Boolean).join('\n'), machine: { intent: NOTIFY_INTENT, data: data as unknown as Record<string, ndn.CanonValue> } }, ui_message_id: `notify:${view.notify_id}` }
+      }).sort((a, b) => a.created_at_ms - b.created_at_ms)
+    },
   }
 }

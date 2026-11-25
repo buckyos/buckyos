@@ -267,7 +267,6 @@ CLI 前端在 `src/frame/agent_tool_cli_dev/src/lib.rs`：
 - 主二进制名是 `agent_tool`
 - `TOOL_NAMES` 是 CLI 可识别的命令清单
 - `parse_command()` 先检查 `argv[0]` 是否是工具名，也支持 `agent_tool <tool_name> <args...>`
-- `__command_not_found__` 是 command-not-found proxy 的占位入口，未知命令返回 `127`
 
 当前 `TOOL_NAMES`：
 

@@ -14,6 +14,8 @@ export interface WorklogEntry {
   run_id?: string
   at_ms?: number
   content?: string
+  /** A `user_message` the runtime wrote (the header of a Goal's Activation), in one line. */
+  brief?: string
   assistant?: string
   tool_calls?: WorklogAction[]
   actions?: WorklogAction[]

@@ -1164,9 +1164,10 @@ pub async fn create_sub_session(
     spec.policy.max_session_depth = policy.max_session_depth;
     if let Some(b) = sub.behavior.clone() {
         spec.prompt.behavior = Some(b);
-    } else if pcfg.session.kind == SessionKind::Goal && spec.prompt.behavior.is_some() {
+    } else if pcfg.session.kind == SessionKind::Goal && sub.class.is_none() && spec.prompt.behavior.is_some() {
         // A Goal plans across its Activations: its Work is one bounded task
-        // (TODO B4), not the class default (a plan with Todos).
+        // (TODO B4), not the class default (a plan with Todos), unless it
+        // asks for a class.
         spec.prompt.behavior = Some(crate::todos::WORK_BEHAVIOR.to_string());
     }
     spec.require_cmd_skills = sub.cmd_skills.is_some();

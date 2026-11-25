@@ -9,10 +9,15 @@ import type {
   GoalChange,
   GoalCheckChange,
   GoalDefinition,
+  GoalJob,
   GoalRevise,
   GoalSchedule,
   GoalState,
+  GoalStats,
   GoalStatus,
+  JobRequest,
+  JobRun,
+  JobView,
   MemoryDetail,
   MemoryLayer,
   MemoryOverview,
@@ -127,10 +132,22 @@ export interface OpenDanDataModel {
   restartGoal(goalId: string, reason: string, carryState?: boolean): Promise<GoalDefinition>
   /** Fails with kind `goal_conflict` when the Goal is no longer at `expected_revision`. A `schedule` keeps its `check`. */
   reviseGoal(goalId: string, request: GoalRevise): Promise<GoalDefinition>
-  /** The check script and timetable; not a content revision. */
+  /** The check script, the timetable and the context; not a content revision. */
   setGoalCheck(goalId: string, request: GoalCheckChange): Promise<GoalDefinition>
   /** Source of a version of the check script (default: the current one); `null`: none. */
   goalCheckScript(goalId: string, version?: number): Promise<string | null>
+  /** The last `periods` statistics periods, oldest first. */
+  goalStats(goalId: string, periods: number): Promise<GoalStats>
+  goalJobs(goalId: string): Promise<JobView[]>
+  /** The newest `limit` runs of a job, oldest first. */
+  goalJobRuns(goalId: string, jobId: string, limit: number): Promise<JobRun[]>
+  /** The end of what a run printed; `null`: none is kept. */
+  goalJobLog(goalId: string, jobId: string, runId: string): Promise<string | null>
+  /** Asks the host for a run; fails for a job that is switched off and a Goal that is not active. */
+  runGoalJob(goalId: string, jobId: string): Promise<JobRequest>
+  setGoalJobEnabled(goalId: string, jobId: string, enabled: boolean): Promise<GoalJob>
+  rollbackGoalJob(goalId: string, jobId: string, to: number): Promise<GoalJob>
+  deleteGoalJob(goalId: string, jobId: string): Promise<unknown>
 
   skills(): Promise<SkillMeta[]>
   skillsState(): Promise<SkillsState>
@@ -150,8 +167,8 @@ export interface OpenDanDataModel {
   /** The agent writes a draft from the text; it appears in `skillDrafts` when the session is done. */
   importSkill(request: SkillImportRequest): Promise<{ session_id: string; inbox?: unknown }>
   discardSkillDraft(slug: string): Promise<unknown>
-  /** The skill crystallization Goal on or off. */
-  setCrystallize(enabled: boolean): Promise<{ crystallize?: boolean }>
+  /** A duty of the self improvement Goal on or off. */
+  setSelfImprove(duty: string, enabled: boolean): Promise<{ self_improve?: Record<string, boolean> }>
 }
 
 export class OpenDanError extends Error {
