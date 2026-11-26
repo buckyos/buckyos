@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { AppFrameHost } from 'buckyos/app-frame'
+import { AppFrameHost, TRANSFER_CAPABILITY } from 'buckyos/app-frame'
 import { buckyos } from 'buckyos'
 import { useI18n } from '../../i18n/provider'
 import { useAppText } from '../../presentation/appText'
@@ -8,6 +8,7 @@ import type { AppContentLoaderProps } from '../types'
 import { desktopCatalogIdForLogicalApp } from '../backend-apps'
 import { useAppLaunch } from '../web-frame/launch'
 import { AppLaunchStatus } from '../web-frame/AppLaunchStatus'
+import { frameTransfer } from '../web-frame/transfer'
 import { useZoneAccent, zoneAccent } from '../../desktop/appearance/accent'
 
 function resolveZoneHost() {
@@ -67,15 +68,19 @@ export function SystestAppPanel({ app, windowId, themeMode }: AppContentLoaderPr
 
   useEffect(() => {
     if (!base || !isSystest) return
+    // Content to and from other Apps through the Shell (transfer.v1), as for any framed App.
+    const transfer = windowId ? frameTransfer({ windowId, app: app.appInstanceId ?? app.id, frame: () => iframe.current }) : undefined
     const frame = new AppFrameHost({
       target: () => iframe.current?.contentWindow ?? null,
       origin: new URL(base).origin,
       init: { nonce, windowId: windowId ?? app.id, locale: initialLocale, theme: { mode: 'light', accent: zoneAccent() },
-        formFactor: matchMedia('(max-width: 900px)').matches ? 'mobile' : 'desktop', shellCapabilities: [] },
+        formFactor: matchMedia('(max-width: 900px)').matches ? 'mobile' : 'desktop', shellCapabilities: transfer ? [TRANSFER_CAPABILITY] : [] },
+      ...transfer?.callbacks,
     })
+    transfer?.bind(frame)
     host.current = frame
-    return () => { frame.dispose(); host.current = null }
-  }, [app.id, base, initialLocale, isSystest, nonce, windowId])
+    return () => { frame.dispose(); transfer?.dispose(); host.current = null }
+  }, [app.id, app.appInstanceId, base, initialLocale, isSystest, nonce, windowId])
   useEffect(() => {
     host.current?.update({ locale, theme: { mode: themeMode, accent } })
     host.current?.send('frame.localeChanged', { locale })

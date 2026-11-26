@@ -10,6 +10,7 @@ import { useI18n } from '../i18n/provider'
 import { useAppText } from '../presentation/appText'
 import type { AppDefinition, LayoutState, ThemeMode } from '../models/ui'
 import { useMobileNavState } from './windows/MobileNavContext'
+import { useFrontWindowTransferCommands } from '../transfer/names'
 import { UserAvatar } from './TaskbarParts'
 import type { CurrentUser } from './taskbarHooks'
 import {
@@ -115,6 +116,7 @@ export function StatusBar({
   const appText = useAppText()
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
   const mobileNav = useMobileNavState()
+  const transferCommands = useFrontWindowTransferCommands()
   const activeMode = activeApp ? mobileStatusBarMode(activeApp) : null
   const barHeight = mobileStatusBarHeight(activeApp)
   const totalHeight = safeAreaTop + deadZone.top + barHeight
@@ -276,6 +278,18 @@ export function StatusBar({
         >
           {t('shell.systemInfo', 'System info')}
         </MenuItem>
+        {transferCommands.map((command) => (
+          <MenuItem
+            key={command.key}
+            onClick={() => {
+              const from = menuAnchor
+              setMenuAnchor(null)
+              command.run(from)
+            }}
+          >
+            {t(command.labelKey)}
+          </MenuItem>
+        ))}
         {onMinimizeWindow ? (
           <MenuItem
             onClick={() => {

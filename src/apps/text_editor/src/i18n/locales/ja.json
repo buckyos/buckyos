@@ -165,5 +165,7 @@
   "cm.replaced $ matches": "$ 件の一致を置換しました",
   "cm.replaced match on line $": "$ 行目の一致を置換しました",
   "conflictCopy": "競合コピー",
-  "untitledFile": "無題.txt"
+  "untitledFile": "無題.txt",
+  "transferInsert": "カーソル位置に挿入",
+  "transferOpen": "テキストエディターで開く"
 }

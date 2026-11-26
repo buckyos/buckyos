@@ -152,5 +152,16 @@
   "cases.ndm_proxy writes, registers and reads back its own object": "ndm_proxy записывает, регистрирует и читает собственный объект",
   "cases.ndm_proxy denies reading an object this app does not hold": "ndm_proxy запрещает чтение объекта, которым приложение не владеет",
   "cases.ndm_proxy rejects restricted outboxCount for apps": "ndm_proxy запрещает приложениям ограниченный вызов outboxCount",
-  "cases.bash → xllm preserves AppService identity with inherited OOD environment (#640)": "bash → xllm сохраняет идентичность AppService в унаследованной среде OOD (#640)"
+  "cases.bash → xllm preserves AppService identity with inherited OOD environment (#640)": "bash → xllm сохраняет идентичность AppService в унаследованной среде OOD (#640)",
+  "transfer.title": "Содержимое между приложениями",
+  "transfer.intro": "Предложите этот текст другим приложениям, затем используйте «Перетащить в другое приложение» в заголовке окна. Содержимое, переданное сюда другими приложениями, показано ниже.",
+  "transfer.text": "Текст для передачи",
+  "transfer.defaultText": "Привет от sys_test",
+  "transfer.offer": "Предложить другим приложениям",
+  "transfer.offered": "Предложено. Перетащите из заголовка окна.",
+  "transfer.refused": "Не предложено: {{code}}",
+  "transfer.available": "Готово к обмену содержимым",
+  "transfer.unavailable": "Откройте приложение на рабочем столе, чтобы обмениваться содержимым",
+  "transfer.received": "Получено",
+  "transfer.action": "Добавить в список полученного sys_test"
 }

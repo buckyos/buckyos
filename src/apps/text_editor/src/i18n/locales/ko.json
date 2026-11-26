@@ -165,5 +165,7 @@
   "cm.replaced $ matches": "일치 항목 $개 바꿈",
   "cm.replaced match on line $": "$행의 일치 항목을 바꿨습니다",
   "conflictCopy": "충돌 복사본",
-  "untitledFile": "제목 없음.txt"
+  "untitledFile": "제목 없음.txt",
+  "transferInsert": "커서 위치에 삽입",
+  "transferOpen": "텍스트 편집기에서 열기"
 }

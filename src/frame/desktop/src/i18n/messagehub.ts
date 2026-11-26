@@ -1,5 +1,13 @@
 export const messageHubEn: Record<string, string> = {
   "messagehub.composer.emptyFolders": "The folder picker omits empty subfolders. Drop a folder to include them.",
+  "messagehub.drop.addToDraft": "Add to attachment draft",
+  "messagehub.zoneAttach.reading": "Adding {{count}} item(s) from your Zone…",
+  "messagehub.zoneAttach.failed": "Could not add {{name}}: {{reason}}",
+  "messagehub.zoneAttach.denied": "you do not have access to it",
+  "messagehub.zoneAttach.notFound": "it no longer exists",
+  "messagehub.zoneAttach.tooLarge": "it is larger than {{limit}}",
+  "messagehub.zoneAttach.emptyFolder": "the folder has no files",
+  "messagehub.zoneAttach.folderObject": "a shared folder cannot be attached directly yet; save it to your files first",
   "messagehub.worklog.inputLabel": "IN",
   "messagehub.worklog.outputLabel": "OUT",
   "messagehub.worklog.tab.worklog": "Work log",
@@ -878,6 +886,14 @@ export const messageHubEn: Record<string, string> = {
 
 export const messageHubZh: Record<string, string> = {
   "messagehub.composer.emptyFolders": "文件夹选择器会跳过空的子文件夹。拖入文件夹即可将它们一并添加。",
+  "messagehub.drop.addToDraft": "添加到附件草稿",
+  "messagehub.zoneAttach.reading": "正在从 Zone 添加 {{count}} 项…",
+  "messagehub.zoneAttach.failed": "无法添加 {{name}}：{{reason}}",
+  "messagehub.zoneAttach.denied": "你没有读取它的权限",
+  "messagehub.zoneAttach.notFound": "它已不存在",
+  "messagehub.zoneAttach.tooLarge": "它超过了 {{limit}}",
+  "messagehub.zoneAttach.emptyFolder": "文件夹里没有文件",
+  "messagehub.zoneAttach.folderObject": "这类共享文件夹暂时不能直接添加，请先保存到我的文件",
   "messagehub.worklog.inputLabel": "输入",
   "messagehub.worklog.outputLabel": "输出",
   "messagehub.groupError.agent-group-disabled": "该 Agent 尚未允许加入群聊，请先在 Users and Agents 中打开“允许此 Agent 加入群聊”。",

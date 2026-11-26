@@ -165,5 +165,7 @@
   "cm.replaced $ matches": "Заменено совпадений: $",
   "cm.replaced match on line $": "Заменено совпадение в строке $",
   "conflictCopy": "конфликтующая копия",
-  "untitledFile": "без имени.txt"
+  "untitledFile": "без имени.txt",
+  "transferInsert": "Вставить в позицию курсора",
+  "transferOpen": "Открыть в текстовом редакторе"
 }

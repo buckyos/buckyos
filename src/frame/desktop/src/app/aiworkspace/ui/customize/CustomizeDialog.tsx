@@ -174,7 +174,7 @@ function ZoneSection({ zone, value, readOnly, touch, label, itemLabel, itemIcon,
             const icon = itemIcon(item)
             return (
               <li key={item.key} className={`aiws-customize-item${dragging === item.key ? ' is-dragging' : ''}`} data-testid="aiws-customize-item" data-key={item.key} data-hidden={item.hidden ? 'true' : undefined}
-                draggable={!readOnly && !touch} onDragStart={(event) => { setDragging(item.key); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', item.key) }}
+                draggable={!readOnly && !touch} onDragStart={(event) => { setDragging(item.key); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/vnd.buckyos-aiws.toolbar-item+json', JSON.stringify(item.key)) }}
                 onDragEnd={() => setDragging(null)} onDragOver={(event) => { if (dragging) event.preventDefault() }} onDrop={(event) => { event.stopPropagation(); drop(event, item.key) }}>
                 {!touch && <GripVertical size={14} className="aiws-customize-grip" aria-hidden="true" />}
                 <label className="aiws-customize-item-label">

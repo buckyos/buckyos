@@ -10,7 +10,8 @@
 import { useMediaQuery } from '@mui/material'
 import clsx from 'clsx'
 import { ArrowLeft, ChevronRight, Copy, FileArchive, FolderDown, KeyRound, Lock, MoreHorizontal, SquareArrowOutUpRight, X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ComponentType, type DragEvent } from 'react'
+import { contentRefsRepresentations } from 'buckyos/transfer'
 import { useI18n } from '../../i18n/provider'
 import './files.css'
 import { useMobileBackHandler } from '../../desktop/windows/MobileNavContext'
@@ -37,6 +38,8 @@ import {
   type ArchiveTarget,
 } from './archive'
 import type { ContentRef, PreviewErrorState, PreviewHostAction } from './types'
+import { zoneContentOfPreviewSource } from './transferSource'
+import { writeTransferEvent } from '../../transfer'
 
 interface FolderPage {
   url: string
@@ -308,6 +311,21 @@ function ArchiveFolder({
     else onOpenFile(item)
   }, [onOpenFolder, onOpenFile])
 
+  // A member dragged out of the list (to Files, a conversation, another App): its own address — `obj://<archive>/archive/…`
+  // for an archive object, the `cyfs://…/@/archive/…` path for an archive file — as a Zone reference.
+  const dragMembers = useCallback((event: DragEvent) => {
+    const key = (event.target as HTMLElement).closest<HTMLElement>('[data-item-key]')?.dataset.itemKey
+    const item = key ? list.loadedItemByKey(key) : undefined
+    if (!item) return
+    const items = (selected.has(item.key) ? [...selected].map((k) => list.loadedItemByKey(k)).filter((i): i is FileItem => !!i) : [item]).flatMap(({ entry }) => {
+      const ref = zoneContentOfPreviewSource(archiveSourceOf(entry.path), { name: entry.name, size: entry.sizeBytes }, entry.kind === 'folder' ? 'folder' : 'file')
+      return ref ? [ref] : []
+    })
+    if (!items.length) return
+    writeTransferEvent(event.dataTransfer, contentRefsRepresentations(items))
+    event.dataTransfer.effectAllowed = 'copy'
+  }, [list, selected])
+
   const forget = useCallback(() => {
     setMenu(false)
     void forgetArchivePassword(page.url).then(() => onNotice(t('archive.forgotten', 'The password was forgotten')), () => undefined)
@@ -370,7 +388,7 @@ function ArchiveFolder({
           {t('archive.hidden', '{{count}} item(s) in this archive cannot be shown (unsafe or duplicate names, or links).', { count: summary.hidden_entries })}
         </p>
       ) : null}
-      <div className="min-h-0 flex-1">
+      <div className="min-h-0 flex-1" onDragStart={dragMembers}>
         {list.status === 'error' && errorCode !== 'STALE' ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 p-10 text-center text-[14px] text-[color:var(--cp-muted)]" data-testid="archive-error" data-code={errorCode}>
             <FileArchive size={32} strokeWidth={1.5} />

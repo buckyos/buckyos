@@ -152,5 +152,16 @@
   "cases.ndm_proxy writes, registers and reads back its own object": "ndm_proxy 寫入、登錄並讀回自己的物件",
   "cases.ndm_proxy denies reading an object this app does not hold": "ndm_proxy 拒絕讀取應用程式未持有的物件",
   "cases.ndm_proxy rejects restricted outboxCount for apps": "ndm_proxy 拒絕應用程式執行受限的 outboxCount 呼叫",
-  "cases.bash → xllm preserves AppService identity with inherited OOD environment (#640)": "bash → xllm 在繼承的 OOD 環境中保留 AppService 身分（#640）"
+  "cases.bash → xllm preserves AppService identity with inherited OOD environment (#640)": "bash → xllm 在繼承的 OOD 環境中保留 AppService 身分（#640）",
+  "transfer.title": "應用間傳遞內容",
+  "transfer.intro": "把這段文字提供給其他應用，然後使用本視窗標題列的「拖到其他應用」。其他應用交付到這裡的內容列在下方。",
+  "transfer.text": "要提供的文字",
+  "transfer.defaultText": "來自 sys_test 的問候",
+  "transfer.offer": "提供給其他應用",
+  "transfer.offered": "已提供，可從視窗標題列拖出。",
+  "transfer.refused": "未能提供：{{code}}",
+  "transfer.available": "可以交換內容",
+  "transfer.unavailable": "在桌面中開啟本應用才能交換內容",
+  "transfer.received": "已收到",
+  "transfer.action": "加入 sys_test 的已收到清單"
 }

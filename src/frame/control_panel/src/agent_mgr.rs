@@ -26,9 +26,9 @@ use buckyos_api::{
     AgentProfile, AgentRuntimeInfo, AgentServiceBinding, AgentSettings, AgentSpec, GroupChatSettings,
     AgentTemplateConfig, AgentTemplateRecord, AgentTemplateSource, AgentTunnelState,
     AppDataDisposition, AppDoc, AppId, AppInstallTaskData, AppInstanceId, AppRegistry,
-    AppServiceSpec, AppType, AppUpdateTaskData, InstallError, InstallErrorCode, InstallInspection,
+    AppServiceSpec, AppType, AppUpdateTaskData, DeploymentError, InstallError, InstallErrorCode, InstallInspection,
     InstallSource, InstallSourceIdentity, InstallStage, PermissionItem, PikgStagingPurpose,
-    PreInstallPlanSeed, SystemConfigClient, SystemConfigError, SystemInstallSettings, TaskOutcome,
+    PreInstallPlanSeed, ServiceInstanceReportInfo, SystemConfigClient, SystemConfigError, SystemInstallSettings, TaskOutcome,
     TaskPhase, UserPrivateProfile, UserType, AGENT_SPEC_SCHEMA_VERSION, APP_INSTALL_TASK_SCHEMA_ID,
     APP_PERMISSION_USER_HOME, APP_REGISTRY_KEY, APP_UNINSTALL_TASK_SCHEMA_ID,
     APP_UPDATE_TASK_SCHEMA_ID, CONTROL_PANEL_AGENT_TEMPLATES_BUCKET, MSG_CENTER_SERVICE_NAME,
@@ -1782,20 +1782,57 @@ async fn step_start(
             return Ok(true);
         }
         if ops.now() >= record.updated_at.saturating_add(ops.start_timeout_secs()) {
-            let failure = AgentFailure::new(
-                "start_timeout",
-                format!(
-                    "the Agent runtime did not report the Agent loaded within {} seconds",
-                    ops.start_timeout_secs()
-                ),
-                true,
+            let mut message = format!(
+                "the Agent runtime did not report the Agent loaded within {} seconds",
+                ops.start_timeout_secs()
             );
+            if let Some(reported) =
+                runtime_start_failure(ops.kv(), &record.target_app_instance_id, record.updated_at)
+                    .await
+            {
+                message.push_str("; ");
+                message.push_str(&reported);
+            }
+            let failure = AgentFailure::new("start_timeout", message, true);
             return fail_step(ops, owner, record, version, AgentCreateStep::Start, failure).await;
         }
         if !still_current(ops, owner, &record.agent_id, version).await? {
             return Ok(true);
         }
     }
+}
+
+/// Why a node last said the Agent's runtime did not start since `since`, so a
+/// start timeout carries the cause rather than only the wait (#763).
+async fn runtime_start_failure(
+    kv: &dyn AgentKv,
+    runtime: &AppInstanceId,
+    since: u64,
+) -> Option<String> {
+    let root = format!("services/{runtime}/instances");
+    let mut latest: Option<(ServiceInstanceReportInfo, DeploymentError)> = None;
+    for node in kv.list(&root).await.ok()? {
+        let Some(mut report) =
+            get_value::<ServiceInstanceReportInfo>(kv, &format!("{root}/{node}")).await
+        else {
+            continue;
+        };
+        let Some(error) = report.deployment_error.take() else {
+            continue;
+        };
+        if report.observed_at >= since
+            && latest
+                .as_ref()
+                .is_none_or(|(newest, _)| report.observed_at > newest.observed_at)
+        {
+            latest = Some((report, error));
+        }
+    }
+    let (report, error) = latest?;
+    Some(format!(
+        "node {} reported {}: {}",
+        report.node_id, error.code, error.message
+    ))
 }
 
 async fn step_runtime_update(
@@ -4707,6 +4744,60 @@ pub(crate) mod tests {
         ops.drive(&agent_id).await;
         assert_eq!(ops.record(&agent_id).state, AgentInstallState::Ready);
         assert_eq!(ops.calls(), vec!["refresh_rbac", "reload_msg_center"]);
+    }
+
+    #[tokio::test]
+    async fn start_timeout_carries_what_the_node_reported() {
+        let mut ops = FakeOps::new();
+        ops.start_timeout = 0;
+        let agent_id = reserve(&ops, "xiaobai", None).await;
+        ops.submits
+            .lock()
+            .unwrap()
+            .push_back(Ok(RuntimeSubmit::Satisfied(built("0.7.0"))));
+        install_runtime(&ops, &agent_id);
+        assert!(drive_agent_step(&ops, OWNER, &agent_id).await.unwrap());
+        assert!(drive_agent_step(&ops, OWNER, &agent_id).await.unwrap());
+        let record = ops.record(&agent_id);
+        assert_eq!(record.step, AgentCreateStep::Start);
+        let root = format!("services/{}/instances", record.target_app_instance_id);
+        let report = |node: &str, observed_at: u64, error: Option<&str>| {
+            ops.kv.put(
+                &format!("{root}/{node}"),
+                &ServiceInstanceReportInfo {
+                    node_id: node.to_string(),
+                    node_did: DID::from_str("did:web:test.buckyos.io").unwrap(),
+                    state: buckyos_api::ServiceInstanceState::Exited,
+                    service_ports: HashMap::new(),
+                    last_update_time: observed_at,
+                    start_time: 0,
+                    pid: 0,
+                    deployment: None,
+                    instance_epoch: String::new(),
+                    node_session_id: String::new(),
+                    observed_at,
+                    expires_at: observed_at + 90,
+                    health: buckyos_api::DeploymentHealth::Unhealthy,
+                    deployment_error: error.map(|message| DeploymentError {
+                        code: "start_failed".to_string(),
+                        message: message.to_string(),
+                        detail: None,
+                    }),
+                },
+            );
+        };
+        // An earlier attempt's failure, a node that is fine, and this one's.
+        report("ood0", record.updated_at - 1, Some("stale"));
+        report("ood1", record.updated_at + 2, None);
+        report("ood2", record.updated_at, Some("invalid volume specification"));
+
+        ops.drive(&agent_id).await;
+        let error = ops.record(&agent_id).last_error.unwrap();
+        assert_eq!((error.step, error.code.as_str()), (AgentCreateStep::Start, "start_timeout"));
+        assert!(error.message.starts_with("the Agent runtime did not report the Agent loaded"));
+        assert!(error
+            .message
+            .ends_with("; node ood2 reported start_failed: invalid volume specification"));
     }
 
     #[tokio::test]

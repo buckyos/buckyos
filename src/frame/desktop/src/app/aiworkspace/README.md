@@ -121,7 +121,7 @@ ui/
                           WASM normalize_value, commits of ≤ 20 000 rows / 6 MiB, the original file kept),
                           tabularFiles.ts + tableReader.worker.ts (CSV here; xlsx and SQLite — sqlite-wasm
                           `sqlite3_deserialize` — in a Worker), clipboardTable.ts (is a paste a table), copyTable.ts
-                          ("copy as table": TSV + HTML with data-aiws-table / data-aiws-value)
+                          ("copy as table": the BuckyOS typed table, TSV + HTML with data-buckyos-table / data-buckyos-value)
   canvas/render/          RenderHost (world layer + camera transform, three-level culling with hysteresis, LOD
                           placeholders, mount budget, overlay, gestures that commit once; painting and hit testing
                           share one order, BlockTree pre-order as a z-index, frames in a stable DOM order by id),
@@ -374,8 +374,13 @@ own origin, i.e. its own OPFS, service worker and localStorage.
   `CanvasView` (`CanvasCommands`). Insertion entries come from `BlockDefinition.catalog`; workspace extensions
   from `buckyos.block-def` entities. Nothing prompts for a title: text, notes and wishes open their editor at once;
   entries that need data or a file ask for it first.
-- **Clipboard.** Per window, in memory, same workspace only: copy = new Block / group ids, same data references,
-  one commit; cut = mark, paste moves in one commit (identity kept). Editors keep the text clipboard.
+- **Clipboard and drops** (`ui/canvas/transfer.ts`, 剪贴板规范 §2–§4). A copy or cut keeps the clip in a desktop
+  transfer record scoped to the workspace and writes its handle with readable text (`text/plain`, `text/html`) and,
+  for resource Blocks, a Zone reference list; only a paste carrying that handle pastes objects. Copy = new Block /
+  group ids, same data references, one commit; cut = mark, paste moves in one commit (identity kept), consumed once.
+  A paste or drop goes: objects of this workspace → Zone references (read like a picked file, then the drop path) →
+  typed table → files → HTML table → text (BuckyOS addresses ask "file or text", TSV, draw.io, SVG, a text Block).
+  Editors keep the text clipboard; an inner drop target (a directory) claims its drop.
 - **Leaving.** Close, switch, a changed tab address, window close and log out run `store.prepareLeave()`; what would
   be lost is asked about (返回处理 / 导出后离开 / 仍然离开). Closing or reloading a tab with such edits makes the
   browser ask (`beforeunload`). In a Desktop window the identity menu logs out through the Desktop

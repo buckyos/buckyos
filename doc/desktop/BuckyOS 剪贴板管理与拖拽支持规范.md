@@ -49,7 +49,9 @@
 | `application/vnd.buckyos.content-refs+json` | BuckyOS 标准 | Zone 内容引用列表 | Files、预览、压缩包浏览、HomeStation、聊天附件、AIWS 资源 Block / 聊天附件、AIWS 画布与目录、Files、打开方式 |
 | `text/html` 中的 `data-buckyos-table`、`data-buckyos-value` | BuckyOS 标准 | 带类型表格 | AIWS 表格及其他表格视图 / AIWS 表格导入、电子表格类 App |
 | `text/plain`、`text/uri-list` 中的 `cyfs://`、`obj://` | BuckyOS 标准（文本形式） | BuckyOS 地址 | 复制路径、Zone 引用的标准表示 / 接受引用的落点 |
-| `application/vnd.buckyos.transfer+json` | 传输句柄 | `{"v":1,"offerId":"…"}`，指向桌面传输记录 | 剪切、体积大或延迟生成的表示、需要经 Shell 取回的私有选区（§3.4） |
+| `text/html` 中的 `data-buckyos-ref` | BuckyOS 标准（嵌入表示） | Zone 内容引用列表的链接标记 `{"v":1,"kind":"file"\|"folder"}` | 同 Zone 内容引用列表 |
+| `application/vnd.buckyos.transfer+json` | 传输句柄 | `{"v":1,"offerId":"…"}`，指向桌面传输记录；剪切另带 `"cut":true` | 剪切、体积大或延迟生成的表示、需要经 Shell 取回的私有选区（§3.4） |
+| `text/html` 中的 `data-buckyos-transfer` | 传输句柄（嵌入表示） | 同上，写在包住本次 HTML 的元素上 | 同上；供只能读到 Web 标准格式的粘贴路径使用（§3.4） |
 | `application/vnd.buckyos-aiws.clip+json` | App 自定义 | AIWS Block、组、连接线的复制 | AIWS 画布；体积可能较大且依赖源 Workspace，v1 经传输句柄取回 |
 
 ### 2.2 BuckyOS 标准内容 v1
@@ -72,7 +74,7 @@
 }
 ```
 
-同一次写入的标准表示：`text/plain` 每行一个显示名称；`text/uri-list` 每行一个 `cyfs://` 或 `obj://` 地址；`text/html` 是同序的 `<a href="cyfs://…">名称</a>` 列表。专用 MIME 被丢弃时，BuckyOS 接收端可从 `text/html` 的链接还原引用，此时只有地址，没有 `objId` 和提示。这些地址、名称和 `objId` 会进入系统剪贴板，可能被剪贴板历史、跨设备同步或其他本机应用读到。路径不是凭证，读取仍需权限，v1 接受这一点；凭证、签名地址和未选择的条目仍按第 6 节禁止写入。
+同一次写入的标准表示：`text/plain` 每行一个显示名称；`text/uri-list` 每行一个 `cyfs://` 或 `obj://` 地址（路径各段按 URI 转义）；`text/html` 是同序的 `<a href="cyfs://…" data-buckyos-ref='{"v":1,"kind":"file"}'>名称</a>` 列表，`data-buckyos-ref` 标明这是引用列表的嵌入表示并给出版本和种类（文件或文件夹）。专用 MIME 被丢弃时，BuckyOS 接收端可从带该标记的链接还原引用，此时只有地址、种类和作名称提示的链接文字，没有 `objId` 和其他提示；不带标记的 `cyfs://` 链接按 BuckyOS 地址处理。这些地址、名称和 `objId` 会进入系统剪贴板，可能被剪贴板历史、跨设备同步或其他本机应用读到。路径不是凭证，读取仍需权限，v1 接受这一点；凭证、签名地址和未选择的条目仍按第 6 节禁止写入。
 
 **带类型表格。** 写在 `text/html` 的 `<table data-buckyos-table="…">` 上，属性值是 JSON `{"v":1,"fields":[…]}`，每个字段给 `name`、`type`，按类型另给 `scale`、`currency` 或 `options`（选项标签列表）。每个 `<td>` 可带 `data-buckyos-value`，值为该单元格的 JSON 线上值。字段类型取 AIWS 标准表的类型集合，作为系统级表格的字段类型标准：`text`、`boolean`、`number`、`decimal`、`date`、`datetime`、`select`、`multi_select`、`currency`、`json`。值的编码与 AIWS 核心一致，另有三条交付规则：
 - 选项写标签而不写选项 ID。
@@ -107,7 +109,7 @@ App 内部的拖拽，如排序、形状库到画布，只用 App 自定义 MIME
 1. **复制与剪切。** 快捷键和系统菜单走真实的 `copy`、`cut` 事件，处理器在事件期间写 `clipboardData`。工具栏和右键菜单复用同一序列化器，可在前台用户手势中调用 `navigator.clipboard.write()`。同一项的可用表示应一次写入一个 `ClipboardItem`；耗时的表示可用 Promise 生成。写入的内容按 §2.3。写入失败要告知用户实际复制到了哪里，不能报告系统复制成功。[WebKit Async Clipboard](https://webkit.org/blog/10855/async-clipboard-api/)
 2. **普通粘贴。** 真实 `paste` 优先使用事件携带的内容，在返回事件循环前提取文本、文件或所需句柄。显式“粘贴”按钮可在安全上下文和用户操作中尝试异步读取；被拒绝时，保留焦点并给出系统粘贴快捷键或菜单入口。Shell 不在启动、聚焦、悬停时预读系统剪贴板，不向 iframe 提供“读取当前剪贴板”的宿主代理。[W3C 剪贴板事件](https://www.w3.org/TR/clipboard-apis/#clipboard-event-api) · [浏览器权限与 iframe 委派](https://web.dev/articles/async-clipboard#permissions_policy_integration)
 3. **焦点优先。** 在输入框、富文本、表格单元格编辑器中，由最内层活动编辑器决定如何粘贴；弹窗打开时归弹窗。选中对象且没有文本插入点时，才由对象视图处理。处理器只在认领操作后调用 `preventDefault()`；嵌套容器还应停止或识别已处理事件。快捷键、工具栏和菜单对同一“粘贴”命令使用同一规则。
-4. **自包含内容与传输句柄。** BuckyOS 标准内容和小而自包含的自定义内容直接写在剪贴板或拖放数据里。外部复制会把它们与标准表示一起覆盖，因此无需另外证明它们对应本次粘贴。只有以下几类内容由桌面保留一份会话记录：剪切、体积大或延迟生成的表示，以及需要经 Shell 跨源交付的私有选区。写入时附带传输句柄 `application/vnd.buckyos.transfer+json`，其值仅含版本和不透明的 `offerId`，如 `{"v":1,"offerId":"…"}`，与内容格式和标准表示在同一次写入中给出。同文档原生拖放或剪贴板事件能保留格式时使用原名；支持 Web 自定义异步剪贴板的浏览器使用带 `web ` 前缀的格式名。异步写入前按能力选择类型；私有格式导致整次写入失败时，若仍有用户激活，可只写 Web 标准表示（含 HTML 嵌入表示），否则提示重新复制。同步事件需要的标识应预先备好，不能在 `await` 后补写原事件。[Chromium Web 自定义格式](https://developer.chrome.com/blog/web-custom-formats-for-the-async-clipboard-api) · [WebKit 自定义 MIME 的同源约束](https://webkit.org/blog/8170/clipboard-api-improvements/)
+4. **自包含内容与传输句柄。** BuckyOS 标准内容和小而自包含的自定义内容直接写在剪贴板或拖放数据里。外部复制会把它们与标准表示一起覆盖，因此无需另外证明它们对应本次粘贴。只有以下几类内容由桌面保留一份会话记录：剪切、体积大或延迟生成的表示，以及需要经 Shell 跨源交付的私有选区。写入时附带传输句柄 `application/vnd.buckyos.transfer+json`，其值仅含版本和不透明的 `offerId`，如 `{"v":1,"offerId":"…"}`；剪切的句柄另带 `"cut":true`，记录已不在（刷新、另一个标签页）时接收端仍能按第 6 节提示原剪切已失效，与内容格式和标准表示在同一次写入中给出。同文档原生拖放或剪贴板事件能保留格式时使用原名；支持 Web 自定义异步剪贴板的浏览器使用带 `web ` 前缀的格式名。同一次写入有 `text/html` 时，句柄另以 `data-buckyos-transfer` 属性嵌入其中：Chromium 的 `copy` 事件写入的自定义类型无法被异步剪贴板读到，Web 自定义格式也读不到 `paste` 事件，工具栏“粘贴”和快捷键“复制”之间只能靠这份嵌入表示衔接。嵌入的句柄和专用 MIME 一样会被外部复制覆盖。异步写入前按能力选择类型；私有格式导致整次写入失败时，若仍有用户激活，可只写 Web 标准表示（含 HTML 嵌入表示），否则提示重新复制。同步事件需要的标识应预先备好，不能在 `await` 后补写原事件。[Chromium Web 自定义格式](https://developer.chrome.com/blog/web-custom-formats-for-the-async-clipboard-api) · [WebKit 自定义 MIME 的同源约束](https://webkit.org/blog/8170/clipboard-api-improvements/)
 5. **外部复制一定覆盖原意。** 本条约束传输句柄；直接写入的内容随剪贴板一起被覆盖。只有本次粘贴携带有效句柄、范围匹配且权限允许时，才能用桌面记录还原对象。缺句柄、过期、纯文本碰巧相同、读权限被拒或只有 `keydown`，都不能证明这次粘贴指向记录。例：复制 Block，再从网页复制“周五发版”，回到 AIWS 必须处理这句话或提示当前落点不收文本。需要取回桌面私有选区时，可单列“粘贴桌面对象…”并显示待粘贴对象和目的地。
 6. **保留范围。** v1 桌面记录限同一顶层桌面实例、登录用户和 Zone。普通复制可重复粘贴；对象剪切在移动成功后消费，取消剪切时解除标记。退出登录、切换用户或 Zone、桌面重载时清理；源文档关闭后使依赖该文档的延迟表示失效。直接写入的 BuckyOS 标准内容不受此限：刷新后、在另一个标签页或同 Zone 的另一个桌面实例里仍可粘贴，目标按自己的权限读取。系统剪贴板由系统管理，可能进入历史或跨设备同步；其中的 Zone 路径、`objId` 和名称按 §2.2 处理。桌面记录只保留当前操作所需数据，不默认记录历史或把内容同步到服务端。[Windows 剪贴板格式及历史控制](https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats)
 

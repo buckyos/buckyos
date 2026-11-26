@@ -70,7 +70,9 @@ test('FB-01/02: a slow move preserves a new selection in another tab', async ({ 
   await expect(win.getByRole('cell', { name: 'Kyoto Trip Plan.md', exact: true })).toBeVisible()
 })
 
-test('FB-02/04: partial move reports each item and retains pending clipboard entries', async ({ page }) => {
+test('FB-02/04: partial move reports each item and retains pending clipboard entries', async ({ page, context }) => {
+  // The menu's Paste reads the system clipboard.
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const win = await openFiles(page)
   await fixture(page, [
     { id: 'review-a', name: 'A-ok.txt', path: '/home/Documents/A-ok.txt' },

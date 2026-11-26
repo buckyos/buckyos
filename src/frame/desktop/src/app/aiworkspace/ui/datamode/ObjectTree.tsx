@@ -40,7 +40,9 @@ import { PERMISSIONS_TAB } from './tabs'
 import './objectTree.css'
 
 const EXPANDED_KEY = 'datatree:expanded'
-const DRAG_MIME = 'application/x-aiws-entity'
+/** An object being dragged inside the tree (an App-internal format, 剪贴板规范 §2.3: no text for other targets). */
+const DRAG_MIME = 'application/vnd.buckyos-aiws.entity+json'
+const dragged = (event: ReactDragEvent): string => { try { const id: unknown = JSON.parse(event.dataTransfer.getData(DRAG_MIME)); return typeof id === 'string' ? id : '' } catch { return '' } }
 
 /** Folded unless unfolded: the canvas content area, each canvas's folder, presentations, a session's data, canvases. */
 function foldedByDefault(entity: EntityEnvelope): boolean {
@@ -108,7 +110,7 @@ export function ObjectTree({ activeId, host, phone, coarse, lead, tail }: {
   const onDrop = (event: ReactDragEvent, at: DropAt) => {
     event.preventDefault()
     setDrop(null)
-    const id = event.dataTransfer.getData(DRAG_MIME)
+    const id = dragged(event)
     const over = store.outline.get(at.id)
     if (!id || !over || id === at.id) return
     if (at.where === 'into') { if (canMoveInto(store, id, at.id)) void move(store, id, at.id); return }
@@ -358,7 +360,7 @@ function TreeRow({ rowKey, macro = false, entity, depth, activeId, open, hit, co
       data-testid={macro ? 'aiws-dm-macro' : 'aiws-tree-item'} data-entity-id={entity.entity_id} data-row-key={rowKey} data-type={entity.type_id} data-system={entity.system ?? undefined} data-hit={hit ? 'true' : undefined} data-path-only={pathOnly ? 'true' : undefined}>
       <div className={`aiws-tree-row aiws-dm-row${activeId === entity.entity_id ? ' is-selected' : ''}${drop ? ` is-drop-${drop}` : ''}${pathOnly ? ' is-path-only' : ''}`} style={{ paddingLeft: 4 + depth * 14 }}
         draggable={draggable}
-        onDragStart={(event) => { event.dataTransfer.setData(DRAG_MIME, entity.entity_id); event.dataTransfer.effectAllowed = 'move' }}
+        onDragStart={(event) => { event.dataTransfer.setData(DRAG_MIME, JSON.stringify(entity.entity_id)); event.dataTransfer.effectAllowed = 'move' }}
         onDragOver={(event) => { if (dropless || !event.dataTransfer.types.includes(DRAG_MIME)) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; onDragOver(where(event)) }}
         onDragLeave={onDragLeave}
         onDrop={(event) => { if (!dropless) onDrop(event, where(event)) }}

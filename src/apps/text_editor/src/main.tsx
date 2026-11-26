@@ -1,9 +1,11 @@
 import { createRoot } from 'react-dom/client'
 import { buckyos, bucket } from 'buckyos'
 import { NfspClient } from 'buckyos/nfsp'
-import { AppFrameClient, embedderOrigin, originInZone, type FrameInit } from 'buckyos/app-frame'
+import { AppFrameClient, embedderOrigin, originInZone, TransferError, type AppFrameTransferHandlers, type FrameInit, type TransferPoint } from 'buckyos/app-frame'
 import { type OpenRequest } from 'buckyos/content'
-import { App, handleBack } from './ui/App.tsx'
+import { EditorView } from '@codemirror/view'
+import { App, activeView, handleBack } from './ui/App.tsx'
+import { deliverToEditor, offeredSelection, probeAnswer, type OfferedSelection } from './platform/transfer.ts'
 import { Workspace, dirty } from './model/workspace.ts'
 import { APP_ID, AppData } from './fs/appData.ts'
 import { NfspDocumentStore } from './fs/documentStore.ts'
@@ -40,8 +42,52 @@ function origins(test: boolean): { shell: string; system: string } {
   const system = `${location.protocol}//${zone}`
   return { shell: embedderOrigin(origin => originInZone(origin, zone)) ?? system, system }
 }
+// Content to and from other Apps through the desktop Shell (transfer.v1): the selected text, else the open Zone file,
+// is offered for the Shell's "Drag to another app"; text dropped here goes in at the point, Zone files open in tabs.
+let offered: (OfferedSelection & { offerId: string }) | undefined
+let offerTimer: ReturnType<typeof setTimeout> | undefined
+function scheduleOffer(): void {
+  clearTimeout(offerTimer)
+  offerTimer = setTimeout(() => {
+    if (!frame?.transferAvailable || !workspace) return
+    const selection = activeView && !activeView.state.selection.main.empty ? activeView.state.sliceDoc(activeView.state.selection.main.from, activeView.state.selection.main.to) : undefined
+    const next = offeredSelection({ selection, doc: workspace.active })
+    if (next?.key === offered?.key) return
+    if (offered) frame.withdrawTransfer(offered.offerId)
+    offered = undefined
+    if (!next) return
+    void frame.offerTransfer({ purpose: 'drag', items: [next.item] }).then(reply => { if (reply.ok) offered = { ...next, offerId: reply.offerId } })
+  }, 250)
+}
+/** The editor a drop lands in: the one under the point, or the focused one; only when it can take text. */
+function insertionView(at: TransferPoint): EditorView | undefined {
+  const element = at === 'focus' ? undefined : document.elementFromPoint(at.x, at.y)?.closest<HTMLElement>('.cm-editor')
+  const view = at === 'focus' ? activeView : element ? EditorView.findFromDOM(element) ?? undefined : undefined
+  return view && !view.state.readOnly ? view : undefined
+}
+const transfer: AppFrameTransferHandlers = {
+  onAvailable: () => scheduleOffer(),
+  onProbe: probe => probeAnswer(probe, { canInsert: !!insertionView(probe.at), phrases: { insert: t('transferInsert'), open: t('transferOpen') } }),
+  onDeliver: delivery => deliverToEditor(delivery, {
+    insert: text => {
+      const view = insertionView(delivery.at)
+      if (!view) return false
+      const at = delivery.at === 'focus' ? view.state.selection.main.head : view.posAtCoords(delivery.at) ?? view.state.selection.main.head
+      view.dispatch({ changes: { from: at, insert: text }, selection: { anchor: at + text.length } })
+      view.focus()
+      return true
+    },
+    open: source => workspace ? workspace.open({ requestId: crypto.randomUUID(), source }) : Promise.reject(new Error('not_ready')),
+  }),
+  onRead: read => {
+    if (!offered || read.offerId !== offered.offerId) throw new TransferError('stale')
+    const values = offered.values
+    return read.items.map(item => item.format in values ? { ...item, value: values[item.format] } : { ...item, error: 'unsupported' as const })
+  },
+}
+document.addEventListener('selectionchange', scheduleOffer)
 let frame: AppFrameClient
-const connectFrame = (shellOrigin: string, systemOrigin: string) => new AppFrameClient({ shellOrigin, systemOrigin, appId: APP_ID,
+const connectFrame = (shellOrigin: string, systemOrigin: string) => new AppFrameClient({ shellOrigin, systemOrigin, appId: APP_ID, transfer,
   onInit: init => { initial = init; useLocale(init.locale); if (workspace) { applyFrame(init); if (init.launch) workspace.run(open(init.launch)) } },
   onOpen: async request => { if (!workspace) pending.push(request); else await open(request); return { accepted: true } },
   onTheme: theme => { if (workspace) { workspace.theme = theme.mode; workspace.emit() } },
@@ -117,6 +163,7 @@ async function start(): Promise<void> {
   workspace.onOpenWith = ({ request, hints }) => frame.openContent(request, 'chooser', { hints })
   workspace.selectContent = params => frame.selectContent(params, { theme: workspace!.theme === 'dark' ? 'dark' : 'light', locale: workspace!.locale })
   root.render(<App workspace={workspace} />)
+  workspace.subscribe(scheduleOffer)
   workspace.subscribe(() => {
     const title = workspace!.active ? `${workspace!.active.name} — ${t('title')}` : t('title')
     const changed = [...workspace!.documents.values()].some(dirty)

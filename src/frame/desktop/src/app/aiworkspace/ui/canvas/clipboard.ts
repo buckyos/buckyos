@@ -19,8 +19,9 @@
  *                  the canvas are ordinary Blocks (no mind map around them); a Block pasted into a composite takes the
  *                  slot of the Block it follows, else the first slot that accepts it (none: refused).
  *
- * The clipboard is per window and in memory; it never touches the system clipboard, annotations, run
- * history or data snapshots. */
+ * A clip travels as a desktop transfer record behind the handle a copy or cut writes (./transfer.ts, 剪贴板规范 §3.4):
+ * a paste uses it only when that paste carries its handle. It never touches annotations, run history or data
+ * snapshots. */
 
 import { isControlKind, isTextView } from '@controls/contract'
 import { num } from '@controls/placement'
@@ -28,7 +29,6 @@ import { randomId } from '../../api/ids'
 import type { Json, Operation, StoredPlacement } from '../../api/types'
 import { aiwsT } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
-import { Emitter } from '../../state/emitter'
 import { boxOf } from './connectors/geometry'
 import { isConnector } from './connectors/layout'
 import type { Point } from './geometry'
@@ -52,27 +52,9 @@ export interface Clip {
   ids: string[]
   items: ClipItem[]
   bounds: Rect
+  /** Pastes of a copy so far: each one lands a step further. */
   pastes: number
 }
-
-class CanvasClipboard {
-  private clip: Clip | null = null
-  private readonly emitter = new Emitter()
-  readonly subscribe = this.emitter.subscribe
-  snapshot = (): Clip | null => this.clip
-
-  set(clip: Clip | null) {
-    this.clip = clip
-    this.emitter.emit()
-  }
-
-  notePaste() {
-    if (this.clip) this.clip = { ...this.clip, pastes: this.clip.pastes + 1 }
-    this.emitter.emit()
-  }
-}
-
-export const canvasClipboard = new CanvasClipboard()
 
 async function snapshotItem(store: WorkspaceStore, laid: Map<string, Laid>, id: string, placement: StoredPlacement): Promise<ClipItem | null> {
   const entity = store.outline.get(id)
@@ -106,7 +88,7 @@ function worldPlacement(l: Laid): StoredPlacement {
   return { x: Math.round(l.rect.x), y: Math.round(l.rect.y), w: Math.round(l.rect.w), h: Math.round(l.rect.h), ...(l.rotation ? { rotation: l.rotation } : {}) }
 }
 
-/** The clip of the top-level selection, without putting it on the clipboard (Ctrl+D duplicates through it). */
+/** The clip of the top-level selection (a copy snapshots the view payloads now; Ctrl+D duplicates through it). */
 export async function makeClip(store: WorkspaceStore, surfaceId: string, laid: Map<string, Laid>, selection: ReadonlySet<string>, kind: 'copy' | 'cut'): Promise<Clip | null> {
   // a cut moves the objects: locked ones stay out of it
   const ids = topLevel(laid, new Set(selection)).filter((id) => kind === 'copy' || !laid.get(id)?.locked)
@@ -131,14 +113,6 @@ export async function makeClip(store: WorkspaceStore, surfaceId: string, laid: M
     }
   }
   return { workspaceId: store.session.workspaceId, surfaceId, kind, ids, items, bounds, pastes: 0 }
-}
-
-/** Put the top-level selection on the clipboard. Copy snapshots the view payloads now. */
-export async function copyToClipboard(store: WorkspaceStore, surfaceId: string, laid: Map<string, Laid>, selection: ReadonlySet<string>, kind: 'copy' | 'cut'): Promise<number> {
-  const clip = await makeClip(store, surfaceId, laid, selection, kind)
-  if (!clip) return 0
-  canvasClipboard.set(clip)
-  return clip.items.length
 }
 
 /** Does a Block size itself inside a control (a text view, a control)? Its pasted size then stays "auto". */

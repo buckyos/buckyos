@@ -1,6 +1,7 @@
 import { buckyos } from 'buckyos'
 import { clearMessageHubLocalState } from '../app/messagehub/api/local'
 import { isMockRuntime } from '../runtime'
+import { desktopTransfers } from '../transfer/records'
 
 function removeLocalAuthItems() {
   window.localStorage.removeItem('user_info')
@@ -10,6 +11,7 @@ function removeLocalAuthItems() {
 }
 
 export function clearDesktopAuthState() {
+  desktopTransfers.clear()
   if (!isMockRuntime()) {
     buckyos.logout(true)
   }

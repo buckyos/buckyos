@@ -14,7 +14,7 @@ import { aiwsT } from '../../i18n'
 import { useOutlineVersion, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { TABULAR_ACCEPT, tabularKind } from '@table/files'
-import { looksLikeHtmlTable, looksLikeTsv } from '@table/mod'
+import { readClipboardCommand, readTransferEvent } from '../../../../transfer'
 import { useActionContext } from '../framework/hooks'
 import { useMacroWatch } from '../framework/macros'
 import { clipboardTable } from '../import/clipboardTable'
@@ -103,23 +103,14 @@ function useDataController(): DataController {
     const id = await importFiles(store, place, files, folder, controller.signal)
     if (id) tabs.open(id, { preview: true })
   }, [store, tabs])
+  // the menu's "paste a table": the system clipboard read on request; refused, the user is pointed to Ctrl/⌘V (剪贴板规范 §3.2)
   const pasteTable = useCallback(async (place: Place) => {
     if (tableImports.busy) { store.notify('info', aiwsT('aiworkspace.import.busy')); return }
-    try {
-      let html: string | null = null
-      let text: string | null = null
-      if (navigator.clipboard?.read) {
-        for (const item of await navigator.clipboard.read()) {
-          if (item.types.includes('text/html')) html = await (await item.getType('text/html')).text()
-          if (item.types.includes('text/plain')) text = await (await item.getType('text/plain')).text()
-        }
-      } else text = await navigator.clipboard.readText()
-      const source = html && looksLikeHtmlTable(html) ? { kind: 'clipboard' as const, html, text } : text && looksLikeTsv(text) ? { kind: 'clipboard' as const, html: null, text } : null
-      if (!source) { store.notify('info', t('aiworkspace.datamode.pasteNone')); return }
-      tableImports.open({ source, step: 'wizard', destination: { folderId: place.parentId } })
-    } catch {
-      store.notify('info', t('aiworkspace.datamode.pasteDenied'))
-    }
+    const read = await readClipboardCommand()
+    if (!read.ok) { store.notify('info', t('aiworkspace.datamode.pasteDenied')); return }
+    const source = clipboardTable(read.reader)
+    if (!source) { store.notify('info', t('aiworkspace.datamode.pasteNone')); return }
+    tableImports.open({ source, step: 'wizard', destination: { folderId: place.parentId } })
   }, [store, t])
   const host = useMemo<DataHost>(() => ({
     open,
@@ -148,7 +139,7 @@ function useDataController(): DataController {
     const onPaste = (event: ClipboardEvent) => {
       const el = event.target instanceof Element ? event.target : null
       if (el?.closest('input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"], .aiws-dialog') || !(el?.closest('.aiws-dm') || el === document.body)) return
-      const table = event.clipboardData ? clipboardTable(event.clipboardData) : null
+      const table = event.clipboardData ? clipboardTable(readTransferEvent(event.clipboardData)) : null
       if (!table || tableImports.busy) return
       const current = activeEntity && acceptsData(activeEntity) ? activeEntity.entity_id : activeEntity?.parent_id && acceptsData(store.outline.get(activeEntity.parent_id)) ? activeEntity.parent_id : DATA_ID
       if (!store.outline.get(current)?.capabilities.includes('structure')) return

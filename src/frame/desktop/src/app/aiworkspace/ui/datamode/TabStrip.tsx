@@ -3,7 +3,7 @@
  * middle button closes. What does not fit scrolls sideways, and the list button lists every tab. A tab's menu: close,
  * close the others, close those to the right, locate on a canvas, copy the path. */
 
-import { createElement, useEffect, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from 'react'
+import { createElement, useEffect, useRef, useState, useSyncExternalStore, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import { ChevronDown, Lock, X } from 'lucide-react'
 import { useOutlineVersion, useReadOnlyReason, useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
@@ -13,7 +13,9 @@ import { blocksShowing, iconOf, nameOf, pathText, readOnlyReason } from './model
 import { useDirty } from './hooks'
 import { PERMISSIONS_TAB, type DataTab, type DataTabs } from './tabs'
 
-const DRAG_MIME = 'application/x-aiws-data-tab'
+/** A tab being dragged along the strip (an App-internal format: no text for other targets). */
+const DRAG_MIME = 'application/vnd.buckyos-aiws.data-tab+json'
+const dragged = (event: DragEvent): string => { try { const id: unknown = JSON.parse(event.dataTransfer.getData(DRAG_MIME)); return typeof id === 'string' ? id : '' } catch { return '' } }
 
 export function TabStrip({ tabs, controller, onLocate }: { tabs: DataTabs; controller: { tabs: DataTab[]; active: string | null }; onLocate: (blockId: string) => void }) {
   const { t } = useAiwsText()
@@ -49,7 +51,7 @@ export function TabStrip({ tabs, controller, onLocate }: { tabs: DataTabs; contr
     <div className="aiws-dm-tabbar">
       <div ref={strip} className="aiws-dm-tabs" role="tablist" aria-label={t('aiworkspace.datamode.tabs')} data-testid="aiws-dm-tabs" data-count={controller.tabs.length}
         onDragOver={(event) => { if (event.dataTransfer.types.includes(DRAG_MIME)) event.preventDefault() }}
-        onDrop={(event) => { const id = event.dataTransfer.getData(DRAG_MIME); if (id && event.target === event.currentTarget) tabs.move(id, null) }}>
+        onDrop={(event) => { const id = dragged(event); if (id && event.target === event.currentTarget) tabs.move(id, null) }}>
         {controller.tabs.map((tab) => (
           <Tab key={tab.id} tab={tab} active={tab.id === active} tabs={tabs} onMenu={(at) => setMenu({ id: tab.id, at })} />
         ))}
@@ -82,10 +84,10 @@ function Tab({ tab, active, tabs, onMenu }: { tab: DataTab; active: boolean; tab
   return (
     <div role="tab" tabIndex={active ? 0 : -1} aria-selected={active} className={`aiws-dm-tab${active ? ' is-active' : ''}${tab.preview ? ' is-preview' : ''}${gone ? ' is-gone' : ''}${over ? ' is-over' : ''}`}
       data-testid="aiws-dm-tab" data-tab-id={tab.id} data-preview={tab.preview ? 'true' : 'false'} data-dirty={dirty ? 'true' : 'false'} data-read-only={reason ? 'true' : 'false'} title={reason ? `${name} · ${reason}` : name}
-      draggable onDragStart={(event) => { event.dataTransfer.setData(DRAG_MIME, tab.id); event.dataTransfer.effectAllowed = 'move' }}
+      draggable onDragStart={(event) => { event.dataTransfer.setData(DRAG_MIME, JSON.stringify(tab.id)); event.dataTransfer.effectAllowed = 'move' }}
       onDragOver={(event) => { if (!event.dataTransfer.types.includes(DRAG_MIME)) return; event.preventDefault(); setOver(true) }}
       onDragLeave={() => setOver(false)}
-      onDrop={(event) => { event.preventDefault(); setOver(false); const id = event.dataTransfer.getData(DRAG_MIME); if (id) tabs.move(id, tab.id) }}
+      onDrop={(event) => { event.preventDefault(); setOver(false); const id = dragged(event); if (id) tabs.move(id, tab.id) }}
       onClick={() => tabs.activate(tab.id)} onDoubleClick={() => tabs.pin(tab.id)}
       onAuxClick={(event) => { if (event.button === 1) { event.preventDefault(); tabs.close(tab.id) } }}
       onContextMenu={(event) => { event.preventDefault(); onMenu(menuAt(event)) }}

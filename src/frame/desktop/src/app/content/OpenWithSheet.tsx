@@ -50,8 +50,9 @@ export function OpenWithSheet({ target, onClose, preferFullApp, overlay = 'absol
     void ensurePreviewProvider().then(provider => provider.resolvePreviewSource(source, {})).then(resolved => { if (current) setReadRef(resolved.readRef) }).catch(() => {})
     return () => { current = false }
   }, [source, target.readRef])
-  // AI Workspace imports the formats its own importers accept (`externalImport.ts`): the original's bytes are handed
-  // to the AI Workspace window, which imports them on the page the user opens there.
+  // AI Workspace imports the formats its own importers accept (`externalImport.ts`). A Zone file is handed over by its
+  // reference and read there with the user's session, as a pasted or dropped one is (剪贴板规范 §7 case 1); other
+  // content as the original's bytes. The AI Workspace window imports it on the page the user opens there.
   const fileName = target.displayName ?? name
   const [importable, setImportable] = useState(false)
   const [importing, setImporting] = useState<{ state: 'reading' } | { state: 'failed'; reason: string } | null>(null)
@@ -66,9 +67,15 @@ export function OpenWithSheet({ target, onClose, preferFullApp, overlay = 'absol
     if (!readRef) return
     setImporting({ state: 'reading' })
     try {
-      const blob = readRef.kind === 'blob' ? readRef.blob : await fetch(readRef.url).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob() })
       const { externalImports } = await import('../aiworkspace/ui/import/externalImport')
-      externalImports.offer(new File([blob], fileName, { type: mediaType ?? blob.type }))
+      const zone = isCyfsPathRef(source) ? { kind: 'cyfs-path' as const, path: normalizeCyfsPath(source.path) }
+        : isObjectIdRef(source) ? { kind: 'object-id' as const, objectId: source.objectId, ...(source.innerPath ? { innerPath: source.innerPath } : {}) } : null
+      if (zone) {
+        externalImports.offer({ name: fileName, items: [{ origin: 'zone', kind: 'file', source: zone, hints: { name: fileName, ...(mediaType ? { mime: mediaType } : {}), ...(size !== undefined ? { size } : {}) } }] })
+      } else {
+        const blob = readRef.kind === 'blob' ? readRef.blob : await fetch(readRef.url).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob() })
+        externalImports.offer({ name: fileName, files: [new File([blob], fileName, { type: mediaType ?? blob.type })] })
+      }
       desktopUIStore.openAppWindow('aiworkspace')
       onClose()
     } catch (error) {

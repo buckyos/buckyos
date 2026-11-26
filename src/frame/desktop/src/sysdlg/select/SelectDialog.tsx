@@ -1,9 +1,10 @@
 import clsx from 'clsx'
 import { Check, ChevronRight, FolderPlus, HardDrive, History, House, Library, MonitorSmartphone, Search, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { contentDescriptor, matchSelector, mediaTypeFromExtension, type ContentSelector, type SelectDialogResult, type SelectedContent, type ZoneContent } from 'buckyos/content'
+import { contentDescriptor, matchSelector, mediaTypeFromExtension, type ContentSelector, type SelectDialogResult, type SelectedContent } from 'buckyos/content'
 import { useI18n } from '../../i18n/provider'
 import { normalizeCyfsPath } from '../../components/preview/session'
+import { zoneContentOfEntry } from '../../transfer/zone'
 import { FileThumb } from '../../components/preview/FileThumb'
 import { useMobileBackHandler } from '../../desktop/windows/MobileNavContext'
 import { useCollections } from '../../app/filebrowser/data/collectionDirectory'
@@ -31,16 +32,6 @@ const refOf = (path: string) => ({ kind: 'cyfs-path' as const, path: normalizeCy
 const splitPath = (path: string) => ({ parent: path.slice(0, path.lastIndexOf('/')) || '/', name: path.slice(path.lastIndexOf('/') + 1) })
 const accepted = (accept: ContentSelector[], name: string, size?: number, mime?: string) =>
   !accept.length || accept.some((selector) => matchSelector(selector, contentDescriptor(refOf(`/${name}`), { name, size, mime })) > 0)
-
-function zoneContent(entry: FileEntry): ZoneContent {
-  const source = refOf(entry.path)
-  const folder = entry.kind === 'folder'
-  return {
-    origin: 'zone', kind: folder ? 'folder' : 'file', source,
-    ...(entry.objId ? { objId: entry.objId } : {}),
-    hints: folder ? { name: entry.name } : { name: entry.name, mime: contentDescriptor(source, { name: entry.name }).mime, size: entry.sizeBytes },
-  }
-}
 
 /** `<input accept>` for the selectors; undefined when they cannot be expressed as MIME patterns and extensions. */
 function inputAccept(accept: ContentSelector[]): string | undefined {
@@ -221,7 +212,7 @@ function SelectBrowser({ input, callerId, compact, onDone, start }: SelectDialog
         : path !== null && ready && !excluded && writable && nameCheck.success)
   const confirm = async (overwrite = false) => {
     if (!canConfirm) return
-    if (mode === 'open') return finish({ action: 'selected', items: [...selected.values()].map(zoneContent) })
+    if (mode === 'open') return finish({ action: 'selected', items: [...selected.values()].map(zoneContentOfEntry) })
     if (path === null) return
     if (mode === 'folder') {
       const folderName = splitPath(path).name
@@ -361,7 +352,7 @@ function SelectBrowser({ input, callerId, compact, onDone, start }: SelectDialog
                     type: 'button' as const, role: 'option', 'aria-selected': isSelected, 'aria-disabled': !usable, title: reason ?? (searching ? entry.path : undefined),
                     'data-testid': 'select-row', 'data-name': entry.name, 'data-kind': folder ? 'folder' : 'file',
                     onClick: () => { clicks.current = [clicks.current[1], item.key]; if (usable) activate(item) },
-                    onDoubleClick: () => { if (mode === 'open' && !input.multiple && selectable(entry) && clicks.current[0] === item.key) finish({ action: 'selected', items: [zoneContent(entry)] }) },
+                    onDoubleClick: () => { if (mode === 'open' && !input.multiple && selectable(entry) && clicks.current[0] === item.key) finish({ action: 'selected', items: [zoneContentOfEntry(entry)] }) },
                   }
                   if (grid) return <button key={item.key} {...common}
                     className={clsx('relative flex min-w-0 flex-col gap-1.5 rounded-[10px] border border-transparent p-1.5 text-left text-[12px] transition-colors', isSelected ? 'border-[color:var(--files-selected-line)] bg-[color:var(--files-selected)]' : 'hover:bg-[color:var(--files-hover)]', !usable && 'cursor-not-allowed opacity-45')}>

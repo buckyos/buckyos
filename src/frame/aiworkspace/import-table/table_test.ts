@@ -220,6 +220,20 @@ Deno.test('html sources', async () => {
   equal(numbers.rows[1].map((x) => x.text), ['Alpha', '¥12,000.00', 'TRUE', 'first\nsecond'])
 })
 
+Deno.test('html: the BuckyOS typed table, and one of another major version read as a plain table', async () => {
+  const typed = readHtmlTable('t', await text('clipboard/aiws.html'))!
+  equal(typed.header, true)
+  equal(typed.columns.map((c) => c?.type), ['text', 'select', 'currency', 'date'])
+  equal(typed.rows[1][2].exact, { amount: '12.50', currency: 'EUR' })
+  const other = readHtmlTable('t', await text('clipboard/typed-v2.html'))!
+  equal(other.columns, [])
+  equal(other.rows[1][2].exact, undefined)
+  equal(other.rows[1].map((x) => x.text), ['Plan', 'Open', 'EUR 12.50', '2026-11-01'])
+  // the names the typed table replaced are not read
+  const old = readHtmlTable('t', (await text('clipboard/aiws.html')).replaceAll('data-buckyos-', 'data-aiws-'))!
+  equal(old.columns, [])
+})
+
 Deno.test('xlsx: workbook, formats, notes', async () => {
   const wb = await openXlsx(await bytes('xlsx/workbook.xlsx'))
   equal(wb.sheets.map((s) => [s.name, s.hidden]), [['Sales', false], ['Events', false], ['Hidden', true]])

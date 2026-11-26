@@ -29,6 +29,7 @@ import type { ToolbarItem } from '../blocks/registry'
 import { annotatedRecords, useRecordFocus } from '../controls/data/focus'
 import { FieldManager } from '../FieldManager'
 import { quickColumnOps, insertColumnId } from '../fieldOps'
+import { copyDeferredWithCommand } from '../canvas/transfer'
 import { COPY_LIMIT, tableClipboard } from '../import/copyTable'
 import { usePhone } from '../shell/shellContext'
 import { TablePager, type PagerQuery } from '../tablePager'
@@ -239,16 +240,12 @@ function TableEditorSession({ cell, sourceMode, size, awaitingLock, readOnly, re
     const data = only
       ? Promise.resolve(rows.rows.filter((row) => row && only.has(row.record_id))).then((picked) => ({ ...tableClipboard(shown, picked), count: picked.length, total: picked.length }))
       : pager.fetchAll(COPY_LIMIT).then(({ rows: all, total }) => ({ ...tableClipboard(shown, all), count: all.length, total }))
-    const blob = (type: string, pick: (d: { text: string; html: string }) => string) => data.then((d) => new Blob([pick(d)], { type }))
-    let written: Promise<void>
-    try {
-      written = navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob('text/plain', (d) => d.text), 'text/html': blob('text/html', (d) => d.html) })])
-    } catch (error) {
-      written = Promise.reject(error)
-    }
-    void written.then(() => data).then(
-      (d) => store.notify('info', d.total > d.count ? t('aiworkspace.data.table.copiedPart', { count: d.count, total: d.total }) : t('aiworkspace.data.table.copied', { count: d.count })),
-      (error: unknown) => store.notify('error', t('aiworkspace.data.table.copyFailed', { reason: error instanceof Error ? error.message : String(error) })))
+    // the BuckyOS typed table (HTML) and its TSV, one clipboard item (剪贴板规范 §2.2, §3.1)
+    void copyDeferredWithCommand(['text/plain', 'text/html'], data.then((d) => ({ 'text/plain': d.text, 'text/html': d.html })))
+      .then((written) => (written.ok ? data : Promise.reject(new Error(t('aiworkspace.data.table.clipboardRefused')))))
+      .then(
+        (d) => store.notify('info', d.total > d.count ? t('aiworkspace.data.table.copiedPart', { count: d.count, total: d.total }) : t('aiworkspace.data.table.copied', { count: d.count })),
+        (error: unknown) => store.notify('error', t('aiworkspace.data.table.copyFailed', { reason: error instanceof Error ? error.message : String(error) })))
   }
   // the Block toolbar's "copy as table" reaches the editor as an intent (once per request: effects run twice on a development mount)
   const copyRef = useRef(copyRows)

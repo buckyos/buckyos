@@ -152,5 +152,16 @@
   "cases.ndm_proxy writes, registers and reads back its own object": "يكتب ndm_proxy الكائن الخاص به ويسجله ثم يعيد قراءته",
   "cases.ndm_proxy denies reading an object this app does not hold": "يرفض ndm_proxy قراءة كائن لا يملكه التطبيق",
   "cases.ndm_proxy rejects restricted outboxCount for apps": "يرفض ndm_proxy استدعاء outboxCount المقيّد من التطبيقات",
-  "cases.bash → xllm preserves AppService identity with inherited OOD environment (#640)": "يحافظ bash ثم xllm على هوية AppService ضمن بيئة OOD الموروثة (#640)"
+  "cases.bash → xllm preserves AppService identity with inherited OOD environment (#640)": "يحافظ bash ثم xllm على هوية AppService ضمن بيئة OOD الموروثة (#640)",
+  "transfer.title": "المحتوى بين التطبيقات",
+  "transfer.intro": "اعرض هذا النص على التطبيقات الأخرى، ثم استخدم «اسحب إلى تطبيق آخر» في شريط عنوان هذه النافذة. يظهر أدناه المحتوى الذي تسلّمه التطبيقات الأخرى هنا.",
+  "transfer.text": "النص المعروض",
+  "transfer.defaultText": "مرحبًا من sys_test",
+  "transfer.offer": "اعرض على التطبيقات الأخرى",
+  "transfer.offered": "تم العرض. اسحبه من شريط عنوان النافذة.",
+  "transfer.refused": "لم يُعرض: {{code}}",
+  "transfer.available": "جاهز لتبادل المحتوى",
+  "transfer.unavailable": "افتح هذا التطبيق في سطح المكتب لتبادل المحتوى",
+  "transfer.received": "المستلم",
+  "transfer.action": "أضف إلى قائمة المستلم في sys_test"
 }

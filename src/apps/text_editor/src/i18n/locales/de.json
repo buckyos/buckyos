@@ -165,5 +165,7 @@
   "cm.replaced $ matches": "$ Treffer ersetzt",
   "cm.replaced match on line $": "Treffer in Zeile $ ersetzt",
   "conflictCopy": "Konfliktkopie",
-  "untitledFile": "unbenannt.txt"
+  "untitledFile": "unbenannt.txt",
+  "transferInsert": "An der Cursorposition einfügen",
+  "transferOpen": "Im Texteditor öffnen"
 }

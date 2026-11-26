@@ -186,12 +186,17 @@ const richtext: BlockDefinition = {
     { key: 'text_size', id: 'text-size', get label() { return aiwsT('aiworkspace.blocks.fontSize') }, kind: 'select', quick: true, icon: ALargeSmall, default: 'm', get options() { return textSizes() } },
     { key: 'text_color', id: 'text-color', get label() { return aiwsT('aiworkspace.blocks.textColor') }, kind: 'color', quick: true, palette: 'ink', default: '' },
   ],
-  create: (args) => (args.existingSourceId ? [cellOp(args, 'richtext', args.existingSourceId)] : [
-    createOp(args.dataId, 'buckyos.richtext', args.contentFolderId, args.dataOrderKey, {
-      content: { type: 'doc', content: [{ type: 'paragraph', attrs: { block_id: randomId('b') }, content: args.title ? [{ type: 'text', text: args.title }] : [] }] },
-    }, args.title || undefined),
-    cellOp(args, 'richtext', args.dataId),
-  ]),
+  // `config.doc`: the document a new text starts with (pasted text, 剪贴板规范 §7 case 6); it is the data's, not the Cell's
+  create: (args) => {
+    if (args.existingSourceId) return [cellOp(args, 'richtext', args.existingSourceId)]
+    const { doc, ...rest } = args.config ?? {}
+    return [
+      createOp(args.dataId, 'buckyos.richtext', args.contentFolderId, args.dataOrderKey, {
+        content: doc ?? { type: 'doc', content: [{ type: 'paragraph', attrs: { block_id: randomId('b') }, content: args.title ? [{ type: 'text', text: args.title }] : [] }] },
+      }, args.title || undefined),
+      cellOp({ ...args, config: Object.keys(rest).length > 0 ? rest : undefined }, 'richtext', args.dataId),
+    ]
+  },
 }
 
 // ---- record

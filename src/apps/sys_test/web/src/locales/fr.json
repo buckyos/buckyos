@@ -152,5 +152,16 @@
   "cases.ndm_proxy writes, registers and reads back its own object": "ndm_proxy écrit, enregistre et relit son propre objet",
   "cases.ndm_proxy denies reading an object this app does not hold": "ndm_proxy refuse la lecture d’un objet non détenu par l’application",
   "cases.ndm_proxy rejects restricted outboxCount for apps": "ndm_proxy refuse l’appel restreint outboxCount aux applications",
-  "cases.bash → xllm preserves AppService identity with inherited OOD environment (#640)": "bash → xllm conserve l’identité AppService dans l’environnement OOD hérité (#640)"
+  "cases.bash → xllm preserves AppService identity with inherited OOD environment (#640)": "bash → xllm conserve l’identité AppService dans l’environnement OOD hérité (#640)",
+  "transfer.title": "Contenu entre applications",
+  "transfer.intro": "Proposez ce texte aux autres applications, puis utilisez « Glisser vers une autre application » dans la barre de titre de cette fenêtre. Le contenu reçu d’autres applications s’affiche ci-dessous.",
+  "transfer.text": "Texte à proposer",
+  "transfer.defaultText": "Bonjour de sys_test",
+  "transfer.offer": "Proposer aux autres applications",
+  "transfer.offered": "Proposé. Faites-le glisser depuis la barre de titre.",
+  "transfer.refused": "Non proposé : {{code}}",
+  "transfer.available": "Prêt à échanger du contenu",
+  "transfer.unavailable": "Ouvrez cette application dans le bureau pour échanger du contenu",
+  "transfer.received": "Reçu",
+  "transfer.action": "Ajouter à la liste des éléments reçus de sys_test"
 }

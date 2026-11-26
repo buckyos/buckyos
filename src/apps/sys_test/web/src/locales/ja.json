@@ -152,5 +152,16 @@
   "cases.ndm_proxy writes, registers and reads back its own object": "ndm_proxy が自分のオブジェクトを書き込み・登録・読み取り",
   "cases.ndm_proxy denies reading an object this app does not hold": "ndm_proxy がアプリの保持していないオブジェクトの読み取りを拒否",
   "cases.ndm_proxy rejects restricted outboxCount for apps": "ndm_proxy がアプリによる制限付き outboxCount 呼び出しを拒否",
-  "cases.bash → xllm preserves AppService identity with inherited OOD environment (#640)": "bash → xllm が継承した OOD 環境で AppService の識別情報を保持（#640）"
+  "cases.bash → xllm preserves AppService identity with inherited OOD environment (#640)": "bash → xllm が継承した OOD 環境で AppService の識別情報を保持（#640）",
+  "transfer.title": "アプリ間のコンテンツ",
+  "transfer.intro": "このテキストを他のアプリに提供し、ウィンドウのタイトルバーの「他のアプリへドラッグ」を使います。他のアプリから届いた内容は下に表示されます。",
+  "transfer.text": "提供するテキスト",
+  "transfer.defaultText": "sys_test からこんにちは",
+  "transfer.offer": "他のアプリに提供",
+  "transfer.offered": "提供しました。タイトルバーからドラッグできます。",
+  "transfer.refused": "提供できませんでした：{{code}}",
+  "transfer.available": "コンテンツを交換できます",
+  "transfer.unavailable": "コンテンツを交換するにはデスクトップでこのアプリを開いてください",
+  "transfer.received": "受信済み",
+  "transfer.action": "sys_test の受信リストに追加"
 }

@@ -152,5 +152,16 @@
   "cases.ndm_proxy writes, registers and reads back its own object": "ndm_proxy가 자체 객체를 쓰고 등록한 후 다시 읽기",
   "cases.ndm_proxy denies reading an object this app does not hold": "ndm_proxy가 앱이 보유하지 않은 객체의 읽기를 거부",
   "cases.ndm_proxy rejects restricted outboxCount for apps": "ndm_proxy가 앱의 제한된 outboxCount 호출을 거부",
-  "cases.bash → xllm preserves AppService identity with inherited OOD environment (#640)": "bash → xllm이 상속된 OOD 환경에서 AppService ID를 유지 (#640)"
+  "cases.bash → xllm preserves AppService identity with inherited OOD environment (#640)": "bash → xllm이 상속된 OOD 환경에서 AppService ID를 유지 (#640)",
+  "transfer.title": "앱 간 콘텐츠",
+  "transfer.intro": "이 텍스트를 다른 앱에 제공한 다음 창 제목 표시줄의 ‘다른 앱으로 끌기’를 사용하세요. 다른 앱이 보낸 콘텐츠는 아래에 표시됩니다.",
+  "transfer.text": "제공할 텍스트",
+  "transfer.defaultText": "sys_test에서 보낸 인사",
+  "transfer.offer": "다른 앱에 제공",
+  "transfer.offered": "제공했습니다. 창 제목 표시줄에서 끌 수 있습니다.",
+  "transfer.refused": "제공하지 못했습니다: {{code}}",
+  "transfer.available": "콘텐츠를 주고받을 수 있습니다",
+  "transfer.unavailable": "콘텐츠를 주고받으려면 데스크톱에서 이 앱을 여세요",
+  "transfer.received": "받은 항목",
+  "transfer.action": "sys_test 받은 목록에 추가"
 }

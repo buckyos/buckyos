@@ -165,5 +165,7 @@
   "cm.replaced $ matches": "Occurrences remplacées : $",
   "cm.replaced match on line $": "Occurrence remplacée à la ligne $",
   "conflictCopy": "copie en conflit",
-  "untitledFile": "sans titre.txt"
+  "untitledFile": "sans titre.txt",
+  "transferInsert": "Insérer au curseur",
+  "transferOpen": "Ouvrir dans l’éditeur de texte"
 }

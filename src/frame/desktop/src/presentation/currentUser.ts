@@ -6,6 +6,7 @@ import { fetchUserDetail } from '../api/user_mgr'
 import { onOwnProfileChanged } from '../app/agent-setup/events'
 import { presentUser, textValue } from './model'
 import { presentationStore } from './store'
+import { desktopTransfers } from '../transfer/records'
 
 export interface CurrentUser {
   userId: string
@@ -18,6 +19,8 @@ export interface CurrentUser {
 async function loadCurrentUser(): Promise<CurrentUser | null> {
   const account = await fetchCurrentAccount().catch(() => null)
   if (!account) return null
+  // Desktop transfer records belong to one user and Zone (剪贴板规范 §3.6).
+  desktopTransfers.bindSession(`${account.user_id}@${window.location.host}`)
   const { data: detail } = await fetchUserDetail({ userId: account.user_id })
   const user = presentUser({
     userId: account.user_id,

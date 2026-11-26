@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { buckyos, getRuntimeEnvironment } from 'buckyos'
-import { appFrameName, AppFrameHost } from 'buckyos/app-frame'
+import { appFrameName, AppFrameHost, TRANSFER_CAPABILITY } from 'buckyos/app-frame'
 import { contentDescriptor, isOpenRequest, type OpenRequest } from 'buckyos/content'
 import { desktopUIStore, useDesktopRuntime } from '../../models/DesktopUIDataModel'
 import { useZoneAccent } from '../../desktop/appearance/accent'
@@ -17,6 +17,7 @@ import { useAppText } from '../../presentation/appText'
 import { currentZoneHost, useZonePresentation } from '../../presentation/zone'
 import { useAppLaunch } from './launch'
 import { AppLaunchStatus } from './AppLaunchStatus'
+import { frameTransfer } from './transfer'
 import { SELECT_DIALOG_PATH, useSystemDialog, type SelectDialogParams } from '../../sysdlg'
 
 /** System dialogs an App may ask the shell to show over its window (`sysdlg.open`). */
@@ -77,9 +78,11 @@ export function WebAppFramePanel({ app, windowId, launch: requested, themeMode, 
     if (!origin || !windowId || !frameUrl) return
     const { request, themeMode, accent, locale } = latest.current
     const zoneHost = currentZoneHost()
+    const transfer = frameTransfer({ windowId, app: app.appInstanceId ?? app.id, frame: () => iframe.current })
     const frame = new AppFrameHost({ target: () => iframe.current?.contentWindow ?? null, origin,
       init: { nonce, windowId, theme: { mode: themeMode, accent }, locale, formFactor: matchMedia('(max-width: 900px)').matches ? 'mobile' : 'desktop', launch: request, presentation: 'window', container: getRuntimeEnvironment().container,
-        shellCapabilities: ['content.open', 'app.open', 'beforeClose', 'back', SELECT_DIALOG_PATH] },
+        shellCapabilities: ['content.open', 'app.open', 'beforeClose', 'back', SELECT_DIALOG_PATH, TRANSFER_CAPABILITY] },
+      ...transfer.callbacks,
       onTitle: (title, dirty) => desktopUIStore.updateWindow(windowId, { title: `${dirty ? '● ' : ''}${title}` }),
       onRequestClose: () => desktopUIStore.closeWindow(windowId, true),
       onContentOpen: (next, target, { newWindow, hints }) => {
@@ -104,12 +107,13 @@ export function WebAppFramePanel({ app, windowId, launch: requested, themeMode, 
         finally { iframe.current?.focus() }
       },
     })
+    transfer.bind(frame)
     host.current = frame; appFrames.set(windowId, { host: frame, handlerKey: payload?.handlerKey })
     const unregister = desktopUIStore.registerCloseGuard(windowId, async (reason = 'user') => {
       try { return await frame.beforeClose(reason) === 'allow' }
       catch { return window.confirm(latest.current.t('webFrame.forceClose')) }
     })
-    return () => { unregister(); appFrames.delete(windowId); frame.dispose(); host.current = undefined }
+    return () => { unregister(); appFrames.delete(windowId); frame.dispose(); transfer.dispose(); host.current = undefined }
   }, [origin, frameUrl, windowId, app.id, app.appInstanceId, nonce, payload?.handlerKey])
   useEffect(() => { host.current?.update({ theme: { mode: themeMode, accent }, locale }); host.current?.send('frame.themeChanged', { mode: themeMode, accent }); host.current?.send('frame.localeChanged', { locale }) }, [themeMode, accent, locale])
   // A click inside the (cross-origin) iframe never reaches the shell document, so the window

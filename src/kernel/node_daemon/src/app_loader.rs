@@ -1379,7 +1379,7 @@ impl AppLoader {
             args.push("-v".to_string());
             args.push(format!(
                 "{}:{}:{}",
-                host_path.to_string_lossy(),
+                bind_mount_source(&host_path)?,
                 container_path,
                 permission
             ));
@@ -1401,7 +1401,7 @@ impl AppLoader {
 
         args.push(image_name.clone());
         let output = run_command("docker", &args, None, None).await?;
-        ensure_success("docker run", &output)?;
+        ensure_run_success("docker run", &output)?;
         info!(
             "docker container {} started for app {} with image {}",
             container_name, self.app_id, image_name
@@ -1956,7 +1956,7 @@ impl AppLoader {
             args.push("-v".to_string());
             args.push(format!(
                 "{}:{}:{}",
-                host_path.to_string_lossy(),
+                bind_mount_source(&host_path)?,
                 container_path,
                 permission
             ));
@@ -2009,7 +2009,7 @@ impl AppLoader {
         args.push(image_name.clone());
 
         let output = self.run_docker(&args).await?;
-        ensure_success("docker run (worker)", &output)?;
+        ensure_run_success("docker run (worker)", &output)?;
 
         info!(
             "worker container {} started (image={}, app_type={})",
@@ -4089,6 +4089,55 @@ fn canonicalize_mount_path(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// The host side of a `-v <host>:<container>:<mode>` bind. The Windows
+/// runtimes (WSLC, Docker Desktop) parse that spec themselves and refuse the
+/// verbatim `\\?\` form `fs::canonicalize` returns there (#763), so the
+/// boundary checks keep the resolved path and only the argument is written in
+/// the ordinary form.
+fn bind_mount_source(path: &Path) -> Result<String> {
+    let raw = path.to_string_lossy();
+    if !cfg!(windows) {
+        return Ok(raw.into_owned());
+    }
+    windows_bind_mount_source(&raw).map_err(ControlRuntItemErrors::ParserConfigError)
+}
+
+/// `\\?\D:\x` is `D:\x` and `\\?\UNC\server\share\x` is `\\server\share\x`.
+/// A name the ordinary form would read differently (a trailing dot or space,
+/// a DOS device name) is refused: the runtime would mount another path than
+/// the one checked.
+pub(crate) fn windows_bind_mount_source(raw: &str) -> std::result::Result<String, String> {
+    let Some(rest) = raw.strip_prefix(r"\\?\") else {
+        return Ok(raw.to_string());
+    };
+    let (ordinary, names) = if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        (format!(r"\\{unc}"), unc)
+    } else {
+        let bytes = rest.as_bytes();
+        if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\'
+        {
+            return Err(format!(
+                "cannot bind-mount {raw}: the container runtime takes a drive or UNC path"
+            ));
+        }
+        (rest.to_string(), &rest[3..])
+    };
+    const DEVICES: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    for name in names.split('\\').filter(|name| !name.is_empty()) {
+        let stem = name.split('.').next().unwrap_or(name).trim_end();
+        if name.ends_with(['.', ' ']) || DEVICES.iter().any(|device| stem.eq_ignore_ascii_case(device))
+        {
+            return Err(format!(
+                "cannot bind-mount {raw}: without the \\\\?\\ prefix `{name}` names another file"
+            ));
+        }
+    }
+    Ok(ordinary)
+}
+
 fn resolve_mount_boundary_path(path: &Path) -> Result<PathBuf> {
     if path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
         return Err(ControlRuntItemErrors::ParserConfigError(format!(
@@ -4391,6 +4440,30 @@ pub(crate) fn ensure_success(step: &str, output: &CommandOutput) -> Result<()> {
     Err(ControlRuntItemErrors::ExecuteError(
         step.to_string(),
         format_command_failure(step, output),
+    ))
+}
+
+/// A failed `docker run` is reported to the Zone as the instance's deployment
+/// error and shown to the user, so it says what the runtime said. The command
+/// line, logged before it ran, carries the app's environment, its login
+/// assertion among it, and stays out.
+fn ensure_run_success(step: &str, output: &CommandOutput) -> Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+    let code = output
+        .status
+        .code()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "terminated by signal".to_string());
+    let said = [output.stderr.trim(), output.stdout.trim()]
+        .into_iter()
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(ControlRuntItemErrors::ExecuteError(
+        step.to_string(),
+        format!("{step} failed (code={code}): {said}"),
     ))
 }
 

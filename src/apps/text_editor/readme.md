@@ -519,6 +519,7 @@ sequenceDiagram
 | `window.requestClose` | `{}` | App 已完成自己的确认流程，请求关闭窗口 |
 | `content.open` | `{ request: { source, session?, mode? }, target: "default"\|"preview"\|"chooser", newWindow?, hints?: { name?, mime?, size? } }` | 请求 Shell 用解析结果 / Preview / 系统“打开方式”选择器打开内容。Shell 补全 `origin`（发起 App 与窗口），每个窗口每 10 s 最多 5 次。它只让 Shell 打开窗口，不授予任何数据访问。`chooser` 由系统列出候选、处理选择并启动应用，**不再提供发起 App 自己的任何 handler**（`text` 与 `any-as-text` 都按 AppId 排除，系统内没有 Text Editor 专用分支）；取消、无候选、启动失败都不改变发起 App 的状态。App 不维护应用列表、不拼 App URL。SDK：`AppFrameClient.openContent(request, target, { hints })`；未嵌入时用构造参数 `systemOrigin` 在新标签页打开 `systemOpenUrl()` 生成的 Zone 根域入口（`/?open=&intent=&name=&mime=&size=&from=<AppId>`，Desktop 用 `parseSystemOpen()` 解析） |
 | `sysdlg.open` | `{ path: "sysdlg/select", params: SelectDialogParams }`，带 `id` | 请求 Shell 在本窗口上画系统对话框，目前名单里只有文件选择器。Shell 校验 `path` 和 `params` 后以 `sysdlg.openResult`（带 `replyTo`）应答：`{ ok: true, result }` 或 `{ ok: false, code }`，`code` 为 `unsupported` / `invalid_params` / `busy`。一个窗口同时只有一个；用户操作没有时限，请求不设超时。Shell 在 `frame.init.shellCapabilities` 里以 `"sysdlg/select"` 声明支持。SDK 入口是 `AppFrameClient.selectContent()`，契约见 `doc/desktop/BuckyOS 系统对话框实现方案.md` |
+| `transfer.connect` 与 `transfer.*` | `transfer.connect { documentId }` 带一个 `MessagePort` | `transfer.v1`：经 Shell 与其他 App 交付内容（剪贴板规范 §5）。双方都声明该能力后，App 在 `frame.init` 之后用精确的 Shell origin 交出端口，其余 `transfer.*` 消息（`offer`/`cancel`，Shell 发来的 `probe`/`read`/`deliver`/`status`/`cancel` 及 `…Result`）都走这个端口；重载或导航后 Shell 废弃旧端口。SDK：`AppFrameClient` 的 `transfer` 处理器与 `offerTransfer()` / `withdrawTransfer()`。编辑器提供选中的文字，没有选区时提供打开的 Zone 文件；接收文字（插入落点或光标处）和 Zone 文件（在新标签打开） |
 
 ### 7.4 关闭守卫
 
@@ -924,7 +925,7 @@ interface Workspace {
 
 - 标签显示文件名，未保存时显示 ●，只读显示锁；同名文件在标签上追加父目录名以区分。
 - 关闭未保存标签时询问“保存 / 保留修改 / 不保存 / 取消”，语义同 §7.4。
-- 拖动标签可在组内排序、跨组移动；中键关闭。
+- 拖动标签可在组内排序、跨组移动（只写本 App 的 `application/vnd.buckyos-text-editor.tab+json`，不写 `text/plain`）；中键关闭。
 - 窗口标题 = 当前活动标签的文件名，经 `window.setTitle{ title, dirty }` 同步给 Shell；任一文档未保存时 `dirty=true`。
 
 ### 9.6 Split

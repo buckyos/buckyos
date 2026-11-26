@@ -28,6 +28,10 @@ import { entriesAt, folderExists, keepBothName, nameTaken, pathOf, placeInside, 
 import { addExistingDirectory, createSubdirectory, moveConflicts, moveEntries, nameError, readDirectory, removeEntries, renameEntry, type Resolution } from './ops'
 import { ConfirmDialog, ConflictDialog, DirDialog, DirMenu, ExistingDialog, MoveDialog, NameDialog, PreviewPane, Thumb, UploadList, type DirMenuItem, type PreviewFile } from './parts'
 import { uploadQueue } from './uploads'
+import type { ZoneContent } from 'buckyos/content'
+import { CONTENT_REFS_FORMAT, transferTypes } from 'buckyos/transfer'
+import { readTransferEvent } from '../../../../transfer'
+import { readZoneItems } from '../import/zoneItems'
 import './directory.css'
 
 export interface DirectoryEditorProps {
@@ -57,7 +61,8 @@ type DialogState =
   | { kind: 'conflict'; names: string[]; done: (resolutions: Record<string, Resolution> | null) => void }
   | { kind: 'linkless' }
 
-const MOVE_MIME = 'application/x-aiws-directory-rows'
+/** The rows being dragged inside this editor (an App-internal format: no text for other targets). */
+const MOVE_MIME = 'application/vnd.buckyos-aiws.directory-rows+json'
 /** Tells a preview opened again from the list from the one already open (its key remounts it). */
 let previewNonce = 0
 const nextPreviewNonce = () => { previewNonce += 1; return previewNonce }
@@ -189,6 +194,13 @@ export function DirectoryEditor({ entityId: rootId, size, variant = 'edit', read
 
   const freeName = (base: string) => (nameTaken(members, place.prefix, base) ? keepBothName(base, (n) => nameTaken(members, place.prefix, n)) : base)
   const pickFromZone = () => { void picker.files({ multiple: true, title: t('aiworkspace.directory.add.zoneTitle') }).then((chosen) => { if (chosen?.length) void addFiles(chosen) }) }
+  /** Zone files dropped in (剪贴板规范 §2.2): read with this user's session, then added as files picked from the Zone are.
+   * A folder is not taken apart into this place: said so. */
+  const addZoneItems = (items: ZoneContent[]) => run(async () => {
+    const files = items.filter((item) => item.kind === 'file')
+    if (files.length < items.length) store.notify('info', t('aiworkspace.directory.foldersSkipped', { count: items.length - files.length }))
+    if (files.length > 0) await addFiles(await readZoneItems(files))
+  })
   const pickFromDevice = () => localInput.current?.click()
 
   const doMove = (moving: Entry[], to: Place) => run(async () => {
@@ -325,14 +337,22 @@ export function DirectoryEditor({ entityId: rootId, size, variant = 'edit', read
       void doMove(entries.filter((entry) => moved.ids.includes(entry.id)), to)
     },
   })
+  // files from this device and Zone references; this editor claims the drop it takes (the canvas around skips it)
   const fileDrop = draggable ? {
-    onDragOver: (event: DragEvent) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDropping(true) } },
+    onDragOver: (event: DragEvent) => {
+      const types = transferTypes(event.dataTransfer)
+      if (types.includes('files') || types.includes(CONTENT_REFS_FORMAT)) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; setDropping(true) }
+    },
     onDragLeave: (event: DragEvent) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropping(false) },
     onDrop: (event: DragEvent) => {
-      if (!event.dataTransfer.types.includes('Files')) return
+      const reader = readTransferEvent(event.dataTransfer)
+      const refs = reader.contentRefs()
+      if (!refs && reader.files.length === 0) return
       event.preventDefault()
+      event.stopPropagation()
       setDropping(false)
-      void addFiles([...event.dataTransfer.files])
+      if (refs) void addZoneItems(refs.items)
+      else void addFiles(reader.files)
     },
   } : {}
 

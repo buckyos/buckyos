@@ -1,5 +1,8 @@
 import { Bookmark, BookmarkCheck, Download, File, FileArchive, FileText, Film, FolderCheck, FolderDown, FolderOpen, Loader2, Music, Play } from 'lucide-react'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
+import { readZoneContent } from 'buckyos/content'
+import { contentRefsRepresentations } from 'buckyos/transfer'
+import { writeTransferEvent } from '../../../transfer'
 import { networkCache } from '../../network/cache'
 import { useSaveToZone } from '../../saveToZone'
 import { usePreviewThumbnail } from '../../preview/thumbnail'
@@ -21,6 +24,32 @@ installMessageHubPreviewSources()
 const THUMBNAIL_BOX = { width: 320, height: 240 }
 /** A local read answers well before this; anything slower is waiting for another Zone. */
 const FETCHING_HINT_MS = 1200
+
+/** Dragging out of the history needs a fine pointer: on touch a press scrolls and long-presses. */
+const canDragOut = () => !window.matchMedia?.('(pointer: coarse)').matches
+
+/**
+ * A received or sent attachment as a Zone content reference (`obj://<objId>`, 剪贴板规范 §2.2) for dragging it to
+ * Files, another conversation or another App. A target reads it with its own session; a local draft object (not sent
+ * yet) is not one.
+ */
+function attachmentDragProps(attachment: MessageAttachment, info: ObjectInfo): { draggable?: true; onDragStart?: (event: DragEvent) => void } {
+  const objId = attachment.objId
+  if (!objId || isLocalObjectId(objId) || !canDragOut()) return {}
+  const name = info.name ?? attachment.label
+  const item = readZoneContent({
+    origin: 'zone', kind: info.isDirectory ? 'folder' : 'file', source: { kind: 'object-id', objectId: objId },
+    hints: { name: name.split('/').pop() || name, mime: info.isDirectory ? undefined : attachmentMediaType(info, attachment.label), size: info.size },
+  })
+  if (!item) return {}
+  return {
+    draggable: true,
+    onDragStart: (event) => {
+      writeTransferEvent(event.dataTransfer, contentRefsRepresentations([item]))
+      event.dataTransfer.effectAllowed = 'copy'
+    },
+  }
+}
 
 function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
@@ -126,17 +155,18 @@ function ObjectAttachment({ attachment, isSelf, onKind }: { attachment: MessageA
     return <span className="text-xs break-all" role="alert" data-testid="attachment-error" data-failure={state.failure}>{label} · {t(final ?? 'messagehub.attachmentUnavailable')} {final ? null : <button type="button" className="underline" onClick={() => { setState({ phase: 'loading' }); setRetry(value => value + 1) }}>{t('messagehub.retry')}</button>}</span>
   }
   const { info } = state
-  if (info.isDirectory) return <DirectoryAttachment attachment={attachment} info={info} />
+  if (info.isDirectory) return <div {...attachmentDragProps(attachment, info)}><DirectoryAttachment attachment={attachment} info={info} /></div>
   if (!info.isFile) {
     return <span className="flex items-center gap-2 text-sm break-all" data-testid="attachment-ready" data-kind="object"><FileText size={14} />{info.name ?? label} · {t('messagehub.attachmentNotFile')}</span>
   }
   const mediaType = attachmentMediaType(info, label)
   const kind = readyKind ?? 'file'
+  const drag = attachmentDragProps(attachment, info)
   let body: ReactNode
   if (kind === 'image' && state.contentUrl) {
     body = (
       <div className="group/collect relative w-fit max-w-full">
-        <InlineImage attachment={attachment} url={state.contentUrl} isGif={mediaType === 'image/gif'} />
+        <InlineImage attachment={attachment} url={state.contentUrl} isGif={mediaType === 'image/gif'} dragOut={!!drag.draggable} />
         <span className="absolute right-2 top-2 flex gap-1">
           <SaveButton attachment={attachment} name={info.name ?? label} kind="file" overlay />
           <CollectButton attachment={attachment} name={info.name ?? label} overlay />
@@ -144,11 +174,11 @@ function ObjectAttachment({ attachment, isSelf, onKind }: { attachment: MessageA
       </div>
     )
   } else if (kind === 'video' || kind === 'image') {
-    body = <ThumbnailTile attachment={attachment} kind={kind} info={info} />
+    body = <ThumbnailTile attachment={attachment} kind={kind} info={info} dragOut={!!drag.draggable} />
   } else {
     body = <FileCard attachment={attachment} kind={kind} info={info} mediaType={mediaType} isSelf={isSelf} />
   }
-  return <div className="flex min-w-0 flex-col gap-1" data-testid="attachment-ready" data-kind={kind}>{body}</div>
+  return <div className="flex min-w-0 flex-col gap-1" data-testid="attachment-ready" data-kind={kind} {...drag}>{body}</div>
 }
 
 // Natural sizes of images already decoded once, so a re-mounted image keeps
@@ -169,7 +199,8 @@ function knownImageBox(size: { width: number; height: number }) {
   }
 }
 
-function InlineImage({ attachment, url, isGif }: { attachment: MessageAttachment; url: string; isGif: boolean }) {
+/** `dragOut`: the attachment around it drags its reference, so the picture does not drag itself. */
+function InlineImage({ attachment, url, isGif, dragOut = false }: { attachment: MessageAttachment; url: string; isGif: boolean; dragOut?: boolean }) {
   const { t } = useI18n()
   const open = useOpenAttachment()
   const { autoplayGif } = useMediaSettings()
@@ -186,7 +217,7 @@ function InlineImage({ attachment, url, isGif }: { attachment: MessageAttachment
     >
       {still
         ? <GifStill url={url} label={attachment.label} />
-        : <img src={url} alt={attachment.label} onLoad={event => rememberImageSize(url, event.currentTarget)} className={size ? 'block' : 'block h-auto max-h-[320px] w-auto max-w-full'} style={size ? knownImageBox(size) : undefined} decoding="async" />}
+        : <img src={url} alt={attachment.label} onLoad={event => rememberImageSize(url, event.currentTarget)} className={size ? 'block' : 'block h-auto max-h-[320px] w-auto max-w-full'} style={size ? knownImageBox(size) : undefined} decoding="async" draggable={dragOut ? false : undefined} />}
       {isGif ? <span className="pointer-events-none absolute left-2 top-2 rounded px-1.5 py-0.5 text-[10px] font-semibold text-white" style={{ background: 'rgba(0,0,0,0.55)' }}>GIF</span> : null}
     </button>
   )
@@ -212,7 +243,7 @@ function GifStill({ url, label }: { url: string; label: string }) {
   return <canvas ref={canvasRef} role="img" aria-label={label} width={size?.width ?? 160} height={size?.height ?? 100} className="block h-auto max-h-[320px] w-auto max-w-full" data-testid="attachment-gif-still" />
 }
 
-function ThumbnailTile({ attachment, kind, info }: { attachment: MessageAttachment; kind: AttachmentKind; info: ObjectInfo }) {
+function ThumbnailTile({ attachment, kind, info, dragOut = false }: { attachment: MessageAttachment; kind: AttachmentKind; info: ObjectInfo; dragOut?: boolean }) {
   const { t } = useI18n()
   const open = useOpenAttachment()
   // A thumbnail needs the bytes: one still in another Zone waits for a click.
@@ -233,7 +264,7 @@ function ThumbnailTile({ attachment, kind, info }: { attachment: MessageAttachme
         data-thumbnail-via={ready?.via}
       >
         {ready
-          ? <img src={ready.url} alt={attachment.label} className="block h-auto max-h-[320px] w-auto max-w-full" decoding="async" />
+          ? <img src={ready.url} alt={attachment.label} className="block h-auto max-h-[320px] w-auto max-w-full" decoding="async" draggable={dragOut ? false : undefined} />
           : (
             <div className="flex h-[150px] w-[240px] max-w-full items-center justify-center" style={{ color: 'var(--cp-muted)' }} role="img" aria-label={attachment.label}>
               {thumbnail.status === 'loading' ? <Loader2 size={20} className="animate-spin" /> : isVideo ? <Film size={28} /> : <File size={28} />}

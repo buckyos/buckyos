@@ -43,6 +43,8 @@ test.use({ actionTimeout: 15000 })
 test.describe('FB-04 real copy tasks', () => {
   test.skip(!process.env.FB_COPY_AUTO || !process.env.FB_NFSP_E2E, 'requires the real NFSP + signed TaskMgr/RDB fixture')
   test.describe.configure({ mode: 'default', timeout: 120000 })
+  // Copy and Paste from the toolbar go through the system clipboard.
+  test.beforeEach(async ({ context }) => { await context.grantPermissions(['clipboard-read', 'clipboard-write']) })
 
   test('browser Copy/Paste to third-level destination, independence, refresh and restart', async ({ page, services: fixture }, testInfo) => {
     const services = fixture!

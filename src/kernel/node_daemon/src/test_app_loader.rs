@@ -2,7 +2,8 @@ use crate::app_loader::{
     buckyos_tool_mounts, container_list_contains_name, docker_deployment_health,
     docker_image_tar_candidates_for_arch, docker_runtime_matches_deployment,
     docker_runtime_matches_target, inspect_docker_image_layout, normalize_digest,
-    parse_docker_container_inspect, primary_service_port, validate_app_launch_config, AppLoader,
+    parse_docker_container_inspect, primary_service_port, validate_app_launch_config,
+    windows_bind_mount_source, AppLoader,
     CommandSpec,
     ControlOperation, DockerCommandRunner,
     DockerExecOutcome, DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget,
@@ -2401,4 +2402,34 @@ async fn a_native_process_does_not_outlive_a_switch_to_an_unsupported_runtime() 
     }
     assert!(crate::service_pkg::read_process_identity(pid).is_none(), "the process ended");
     assert_eq!(native.test_running_native_agent_pid(), None);
+}
+
+#[test]
+fn windows_bind_sources_drop_the_verbatim_prefix() {
+    // #763: WSLC reads `\\?\D:\...:/mnt/...:ro` as having too many colons.
+    for (raw, ordinary) in [
+        (r"\\?\D:\BuckyOS\bin\pkgs\agent\h.pkg", r"D:\BuckyOS\bin\pkgs\agent\h.pkg"),
+        (r"\\?\d:\Buckyos\Data", r"d:\Buckyos\Data"),
+        (r"\\?\C:\Program Files\BuckyOS\data\home", r"C:\Program Files\BuckyOS\data\home"),
+        (r"\\?\D:\", r"D:\"),
+        (r"\\?\UNC\nas\share\BuckyOS\data", r"\\nas\share\BuckyOS\data"),
+        (r"D:\BuckyOS\data", r"D:\BuckyOS\data"),
+        (r"\\nas\share\BuckyOS", r"\\nas\share\BuckyOS"),
+        (r"\\?\D:\BuckyOS\CONSOLE\a.b", r"D:\BuckyOS\CONSOLE\a.b"),
+    ] {
+        assert_eq!(windows_bind_mount_source(raw).as_deref(), Ok(ordinary), "{raw}");
+    }
+    // Names the ordinary form reads as another file, and verbatim forms it
+    // has no spelling for.
+    for raw in [
+        r"\\?\D:\BuckyOS\data\x.",
+        r"\\?\D:\BuckyOS\data\x ",
+        r"\\?\D:\BuckyOS\CON",
+        r"\\?\D:\BuckyOS\nul.txt",
+        r"\\?\UNC\nas\share\com1",
+        r"\\?\Volume{0e6f1c4a-0000-0000-0000-100000000000}\BuckyOS",
+        r"\\?\D:",
+    ] {
+        assert!(windows_bind_mount_source(raw).is_err(), "{raw}");
+    }
 }

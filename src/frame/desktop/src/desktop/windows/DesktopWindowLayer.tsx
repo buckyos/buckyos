@@ -20,6 +20,7 @@ import {
   getDesktopWindowWorkspaceBounds,
 } from './geometry'
 import { resolveDesktopWindowSizing } from './model'
+import { ShellTransferLayer } from '../../transfer/ShellTransferLayer'
 import type {
   DesktopWindowDataModel,
   DesktopWindowLayerDataModel,
@@ -522,6 +523,7 @@ export function DesktopWindowLayer({
           workspaceSize={workspaceSize}
         />
       ))}
+      <ShellTransferLayer />
     </div>
   )
 }

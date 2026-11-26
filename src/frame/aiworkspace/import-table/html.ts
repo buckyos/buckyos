@@ -2,8 +2,13 @@
  * on the clipboard as `text/html` with a `<table>`. Clipboard HTML is not XML (unquoted attributes, unclosed cells,
  * `<br>`), so this reads it with a small tolerant tokenizer. Row and column spans are laid out (the value in the
  * top-left cell). Raw values win over display text where the source gives them: Excel `x:num` / `x:bool` with the
- * class's `mso-number-format`, Google Sheets `data-sheets-value` / `data-sheets-numberformat`, and aiws's own copies
- * (`data-aiws-table` field definitions, `data-aiws-value` wire values). */
+ * class's `mso-number-format`, Google Sheets `data-sheets-value` / `data-sheets-numberformat`, and the BuckyOS typed
+ * table that aiws's own "copy as table" writes (剪贴板规范 §2.2: `data-buckyos-table` field definitions, version 1;
+ * `data-buckyos-value` wire values). A typed table of another major version, or with marks that do not read, is taken as
+ * a plain HTML table.
+ *
+ * Keep the typed table reading in step with buckyos-websdk `src/transfer.ts` (`readTypedTableFields`): this module
+ * stays dependency-free for Deno. */
 
 import { classifyFormat, serialToIso, type FormatInfo } from './format.ts'
 import { cell, note, type Cell, type ColumnHint, type Grid, type GridNote } from './grid.ts'
@@ -179,14 +184,14 @@ function parseJson(s: string | undefined): unknown {
   try { return JSON.parse(s) } catch { return undefined }
 }
 
-/** Raw value and hint of one cell from what its source attached. */
-function typedCell(raw: RawCell, formats: Map<string, string>, notes: GridNote[]): Cell {
+/** Raw value and hint of one cell from what its source attached; `typed`: the cell of a BuckyOS typed table. */
+function typedCell(raw: RawCell, formats: Map<string, string>, notes: GridNote[], typed: boolean): Cell {
   const text = cleanText(raw.text)
   const out: Cell = { text }
   const a = raw.attrs
-  // aiws's own copy: the exact wire value
-  if ('data-aiws-value' in a) {
-    const exact = parseJson(a['data-aiws-value'])
+  // a typed table: the exact wire value
+  if (typed && TYPED_VALUE in a) {
+    const exact = parseJson(a[TYPED_VALUE])
     if (exact !== undefined) out.exact = exact
     return out
   }
@@ -238,11 +243,26 @@ function typedCell(raw: RawCell, formats: Map<string, string>, notes: GridNote[]
   return out
 }
 
-/** The aiws field definitions a copy carries. */
-function aiwsColumns(attr: string | undefined): ColumnHint[] | null {
-  const meta = parseJson(attr) as { fields?: { name?: string; type?: string; scale?: number; currency?: string; options?: string[] }[] } | undefined
-  if (!meta?.fields || !Array.isArray(meta.fields)) return null
-  return meta.fields.map((f) => ({ type: f.type as ColumnHint['type'], ...(typeof f.scale === 'number' ? { scale: f.scale } : {}), ...(f.currency ? { currency: f.currency } : {}), ...(Array.isArray(f.options) ? { options: f.options.map(String) } : {}) }))
+const TYPED_TABLE = 'data-buckyos-table'
+const TYPED_VALUE = 'data-buckyos-value'
+/** The field types of the system table standard (剪贴板规范 §2.2). */
+const TYPED_FIELD_TYPES = new Set(['text', 'boolean', 'number', 'decimal', 'date', 'datetime', 'select', 'multi_select', 'currency', 'json'])
+
+/** The field definitions of a typed table (`{"v":1,"fields":[…]}`); null for another major version or marks that do
+ * not read (the table is then a plain one). */
+function typedColumns(attr: string | undefined): ColumnHint[] | null {
+  const meta = parseJson(attr) as { v?: unknown; fields?: unknown } | undefined
+  if (!meta || meta.v !== 1 || !Array.isArray(meta.fields) || meta.fields.length === 0) return null
+  const columns: ColumnHint[] = []
+  for (const raw of meta.fields as { name?: unknown; type?: unknown; scale?: unknown; currency?: unknown; options?: unknown }[]) {
+    if (!raw || typeof raw.name !== 'string' || typeof raw.type !== 'string' || !TYPED_FIELD_TYPES.has(raw.type)) return null
+    const money = raw.type === 'currency'
+    if (raw.scale !== undefined && !(Number.isInteger(raw.scale) && (raw.scale as number) >= 0 && (raw.scale as number) <= 18 && (money || raw.type === 'decimal'))) return null
+    if (raw.currency !== undefined && !(money && typeof raw.currency === 'string' && /^[A-Z]{3}$/.test(raw.currency))) return null
+    if (raw.options !== undefined && !((raw.type === 'select' || raw.type === 'multi_select') && Array.isArray(raw.options) && raw.options.every((o) => typeof o === 'string'))) return null
+    columns.push({ type: raw.type as ColumnHint['type'], ...(typeof raw.scale === 'number' ? { scale: raw.scale } : {}), ...(typeof raw.currency === 'string' ? { currency: raw.currency } : {}), ...(Array.isArray(raw.options) ? { options: raw.options as string[] } : {}) })
+  }
+  return columns
 }
 
 const MAX_SPAN = 1000
@@ -254,6 +274,7 @@ export function readHtmlTable(name: string, html: string): Grid | null {
   const table = tables.filter((t) => size(t) > 0).sort((a, b) => size(b) - size(a))[0]
   if (!table) return null
   const formats = classFormats(css)
+  const columns = typedColumns(table.attrs[TYPED_TABLE])
   const notes: GridNote[] = []
   const rows: Cell[][] = []
   // laid out: a span takes its slots; the value stays in the top-left one
@@ -267,7 +288,7 @@ export function readHtmlTable(name: string, html: string): Grid | null {
       while (taken.has(`${r},${c}`)) c++
       const colspan = Math.min(MAX_SPAN, Math.max(1, parseInt(raw.attrs.colspan ?? '1', 10) || 1))
       const rowspan = Math.min(MAX_SPAN, Math.max(1, parseInt(raw.attrs.rowspan ?? '1', 10) || 1))
-      rows[r][c] = typedCell(raw, formats, notes)
+      rows[r][c] = typedCell(raw, formats, notes, columns !== null)
       if (colspan > 1 || rowspan > 1) {
         if (r === 0) mergedHeader += 1; else merged += 1
         for (let dr = 0; dr < rowspan; dr++) for (let dc = 0; dc < colspan; dc++) {
@@ -283,7 +304,6 @@ export function readHtmlTable(name: string, html: string): Grid | null {
   for (let r = 0; r < rows.length; r++) { rows[r] ??= []; for (let c = 0; c < rows[r].length; c++) rows[r][c] ??= cell('') }
   if (mergedHeader) note(notes, 'merged_header', undefined, mergedHeader)
   if (merged) note(notes, 'merged_cells', undefined, merged)
-  const columns = aiwsColumns(table.attrs['data-aiws-table'])
   const header = columns ? true : table.head > 0 || (table.rows[0]?.length > 0 && table.rows[0].every((c) => c.th)) ? true : null
   return { name, rows, header, columns: columns ?? [], notes }
 }

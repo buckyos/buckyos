@@ -27,19 +27,14 @@ export function commandState(command: string, ctx: FileMenuContext): CommandStat
     return available
   }
   if (['copy', 'copy-to', 'copy-other'].includes(command)) {
-    if (!folderOps().supportsCopy) return unsupported(folderOps().copyUnavailableReason ?? 'File content copying is not supported')
+    // Copy only puts the selection on the clipboard (other Apps read it); copying content is the paste's business.
+    if (command !== 'copy' && !folderOps().supportsCopy) return unsupported(folderOps().copyUnavailableReason ?? 'File content copying is not supported')
     if (!ctx.entries.length) return unsupported('Select a file first')
     if (ctx.entries.some((entry) => !entry.path.startsWith('/') && !entry.path.startsWith('device://'))) return unsupported('This item does not resolve to a local filesystem entity')
     if (command === 'copy-other' && !ctx.otherPath) return unsupported('Open a destination in the other pane')
   }
-  if (command === 'paste') {
-    if (!ctx.clipboard) return unsupported('The clipboard is empty')
-    if (ctx.clipboard.mode === 'text') return unsupported('The clipboard contains text. Paste it into a text field.')
-    if (ctx.capabilities.acceptsReferences && ctx.clipboard.mode !== 'references') return unsupported('Use Copy references or Add existing files to add references.')
-    if (!ctx.capabilities.acceptsReferences && ctx.clipboard.mode === 'references') return unsupported('Choose a collection to paste references')
-    if (!ctx.capabilities.acceptsReferences && (!ctx.capabilities.acceptsContent || ctx.searching)) return unsupported('Choose a writable destination folder')
-    if (!ctx.capabilities.acceptsReferences && ctx.clipboard.mode === 'copy' && !folderOps().supportsCopy) return unsupported('File content copying is not supported')
-  }
+  // What the clipboard holds is read on paste (it may come from another App); here only the destination counts.
+  if (command === 'paste' && (ctx.searching || (!ctx.capabilities.acceptsReferences && !ctx.capabilities.acceptsContent))) return unsupported('Choose a writable destination folder')
   if (ctx.busy && ['copy-to', 'copy-other', 'cut', 'paste', 'rename', 'move-to', 'move-other', 'delete', 'remove-from-collection', 'download'].includes(command)) return { state: 'loading', reason: 'Wait for the current operation to finish' }
   if (['rename', 'cut', 'move-to', 'move-other', 'delete'].includes(command)) {
     if (ctx.searching) return unsupported('Open the original location to change this file')

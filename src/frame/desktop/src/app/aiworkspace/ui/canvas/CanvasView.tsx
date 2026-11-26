@@ -11,15 +11,18 @@
  * over the keyboard. */
 
 import { onInsertDefinition } from '../extensions/extEvents'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { looksLikeDrawio } from '@drawio/file'
 import { svgShapeFromDocument } from '@drawio/svg'
 import { isControlKind, isDataControl } from '@controls/contract'
 import { ALL_AUTO, fixed } from '@controls/placement'
 import { Expand, Group, Link2, Lock, LockOpen, MessageSquarePlus, Shield, SlidersHorizontal, Sparkles, Square, Ungroup } from 'lucide-react'
+import { readZoneContent, type ZoneContent } from 'buckyos/content'
+import { CONTENT_REFS_FORMAT, mayCarryContentRefs, readContentRefs, TRANSFER_HANDLE_FORMAT, transferTypes, type TransferReader, type TransferRepresentations } from 'buckyos/transfer'
+import { afterShortcut, copyWithCommand, desktopTransfers, isEditableTarget, offerWindowSelection, readClipboardCommand, readTransferEvent, registerWindowTransferTarget, withTransferHandle, writeTransferEvent, type TransferDelivery, type TransferDeliveryResult, type TransferOffer, type TransferOfferItem, type TransferPoint, type TransferProbe, type TransferProbeAnswer } from '../../../../transfer'
 import { describeError } from '../../api/session'
 import { randomId } from '../../api/ids'
-import type { CellPayload, EntityEnvelope, Json, KeyedContent, Operation, Placement } from '../../api/types'
+import type { AssetContent, AssetPayload, CellPayload, EntityEnvelope, Json, KeyedContent, Operation, Placement } from '../../api/types'
 import { aiwsT } from '../../i18n'
 import { useAiwsText } from '../../useAiwsText'
 import { useReadOnlyReason, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
@@ -52,7 +55,8 @@ import { FormatBar } from '../phone/FormatBar'
 import { usePenSeen } from '../../ink/device'
 import { describeMediaFile } from '../media/poster'
 import { mediaBlockSize, stageMediaFile } from '../media/stage'
-import { canvasClipboard, copyToClipboard, makeClip, pasteOperations } from './clipboard'
+import { makeClip, pasteOperations, type Clip } from './clipboard'
+import { AIWS_APP, assetRef, CLIP_FORMAT, isSpentCut, selectionItems, selectionRepresentations, spendCut, textDocument, TransferWindowContext } from './transfer'
 import { controlCommands } from '../controls/commands'
 import { addNode } from '../controls/mindmap/definition'
 import { importOutline, outlineFileKind, richtextToMindmap } from '../controls/mindmap/convert'
@@ -80,6 +84,7 @@ import { TABULAR_ACCEPT, tabularKind } from '@table/files'
 import { clipboardTable } from '../import/clipboardTable'
 import { tableImports, type TableImportSource } from '../import/tableImportRequest'
 import { DRAWIO_ACCEPT, externalImports, PDF_ACCEPT } from '../import/externalImport'
+import { readZoneItems, zoneItemName } from '../import/zoneItems'
 import { libraryShapeConfig, SHAPE_DRAG_TYPE, stencilPack } from './stencilLibrary'
 import { InsertCatalog, type CatalogTab } from './InsertCatalog'
 import { importedAssetOps } from '../sources/dataOps'
@@ -179,6 +184,25 @@ function EmptyCanvas({ mode }: { mode: CanvasMode }) {
 }
 
 type MenuState = { at: { x: number; y: number }; world: { x: number; y: number } | null; blockId: string | null; parentId?: string }
+/** One draw.io import at a time on a canvas (kept with the view, not a ref: the paste command that reaches it is
+ * built during render). */
+class OneAtATime {
+  private busy = false
+  take(): boolean { if (this.busy) return false; this.busy = true; return true }
+  release() { this.busy = false }
+}
+/** The Zone items of a delivered reference list: one item, several, or the list's own value. */
+function zoneItemsOf(value: unknown): ZoneContent[] | undefined {
+  if (typeof value === 'string') return readContentRefs(value)
+  const items = (Array.isArray(value) ? value : [value]).map((v) => readZoneContent(v))
+  return items.every((item): item is ZoneContent => item !== undefined) ? items : undefined
+}
+const filesOf = (value: unknown): File[] | undefined => {
+  const list = Array.isArray(value) ? value : [value]
+  return list.every((v) => v instanceof File) ? list as File[] : undefined
+}
+/** A choice a paste asks for: the first is the default; cancelling (Esc, outside) is always there. */
+interface PasteQuestion { title: string; note?: string; choices: { id: string; label: string; testId: string }[]; resolve: (choice: string | null) => void }
 
 function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: CanvasMode; focus: CanvasFocus | null }) {
   const store = useStore()
@@ -189,7 +213,10 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const readOnlyReason = useReadOnlyReason()
   const readOnlyNow = readOnlyReason !== null
   const overlayOpen = useOverlayOpen()
-  const clip = useSyncExternalStore(canvasClipboard.subscribe, canvasClipboard.snapshot)
+  // the transfer records of this window (剪贴板规范 §3.4): its live cut is marked on the canvas
+  const windowId = useContext(TransferWindowContext)
+  useSyncExternalStore(desktopTransfers.subscribe, desktopTransfers.getVersion)
+  const cutRecord = desktopTransfers.cutOf(AIWS_APP, windowId)
   const surfaceId = surface.entity_id
   const policy = modePolicy(mode)
   const [selection, setSelectionState] = useState<Set<string>>(new Set())
@@ -882,14 +909,13 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }
 
   // ---- draw.io import, dropped and pasted files (draw.io 导入 TODO §2.3, §2.4, §3)
-  const importBusy = useRef(false)
+  const [importBusy] = useState(() => new OneAtATime())
   const canCreateSurfaces = store.session.info().capabilities.includes('structure')
   // a phone does not insert into its canvas: a draw.io file becomes canvases of its own there (UI 框架 PRD §6.1)
   const importReason = (!isFree || phone) && !canCreateSurfaces ? t('aiworkspace.canvas.reason.noCreateCanvas') : phone ? readOnlyReason : insertReason
   const runImport = async (input: { name: string; bytes?: Uint8Array; text?: string }, at: { x: number; y: number } | null) => {
     if (importReason) { store.notify('info', importReason); return }
-    if (importBusy.current) { store.notify('info', t('aiworkspace.canvas.import.busy')); return }
-    importBusy.current = true
+    if (!importBusy.take()) { store.notify('info', t('aiworkspace.canvas.import.busy')); return }
     const progress = store.notify('info', t('aiworkspace.canvas.import.progress', { name: input.name }))
     const c = camera.center
     try {
@@ -908,7 +934,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     } catch (error) {
       store.notify('error', t('aiworkspace.canvas.import.failed', { reason: describeError(error) }))
     } finally {
-      importBusy.current = false
+      importBusy.release()
       store.dismissNotice(progress)
     }
   }
@@ -1051,20 +1077,42 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       spot = spot ? { x: spot.x + 24, y: spot.y + 24 } : null
     }
   }
+  /** Zone files (a paste or drop of references, the Shell's delivery, "Import to AI Workspace"; 剪贴板规范 §7 cases 1–2):
+   * read with this user's own session, then the way of a file dropped here — the same asks (a PDF: as a file, or its
+   * pages). False when they could not be read: the caller goes on with the next representation. */
+  const importZone = async (items: ZoneContent[], at: { x: number; y: number } | null): Promise<boolean> => {
+    if (insertReason && importReason) { store.notify('info', insertReason); return true }
+    const files = items.filter((item) => item.kind === 'file')
+    if (files.length < items.length) store.notify('info', t('aiworkspace.canvas.transfer.foldersSkipped', { count: items.length - files.length }))
+    if (files.length === 0) return true
+    const reading = store.notify('info', t('aiworkspace.canvas.transfer.reading', { name: list(files.map(zoneItemName)) }))
+    let read: File[]
+    try {
+      read = await readZoneItems(files)
+    } catch (error) {
+      store.notify('error', t('aiworkspace.canvas.transfer.readFailed', { reason: describeError(error) }))
+      return false
+    } finally {
+      store.dismissNotice(reading)
+    }
+    await handleFiles(read, at)
+    return true
+  }
   // a file handed over from elsewhere ("Import to AI Workspace" in Open with…) goes in as if it was dropped here
   const handedOver = useSyncExternalStore(externalImports.subscribe, externalImports.snapshot)
   const pdfAsking = useSyncExternalStore(pdfImports.subscribe, pdfImports.snapshot)
   const officeAsking = useSyncExternalStore(officeImports.subscribe, officeImports.snapshot)
   const tableAsking = useSyncExternalStore(tableImports.subscribe, tableImports.snapshot)
   const otherImport = pdfAsking ?? officeAsking ?? tableAsking
-  const handleFilesRef = useRef(handleFiles)
-  useEffect(() => { handleFilesRef.current = handleFiles })
+  const takeRef = useRef({ handleFiles, importZone })
+  useEffect(() => { takeRef.current = { handleFiles, importZone } })
   useEffect(() => {
     if (!handedOver) return
     const blocked = insertReason ?? (otherImport ? t('aiworkspace.canvas.import.busy') : null)
     if (blocked) { externalImports.block(handedOver.id, blocked); return }
-    const file = externalImports.take(handedOver.id)
-    if (file) void handleFilesRef.current([file], null)
+    const taken = externalImports.take(handedOver.id)
+    if (taken?.items) void takeRef.current.importZone(taken.items, null)
+    else if (taken?.files) void takeRef.current.handleFiles(taken.files, null)
   }, [handedOver, insertReason, otherImport, t])
   /** A library shape dragged from the shape library onto the canvas (§2.4). */
   const dropLibraryShape = async (data: string, at: { x: number; y: number } | null) => {
@@ -1076,29 +1124,83 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     const { size, config } = libraryShapeConfig(shape)
     void insert({ entry: { ...entry, title: shape.title, size, config } }, at ? { x: Math.round(at.x - size.w / 2), y: Math.round(at.y - size.h / 2) } : null)
   }
-  /** The canvas clipboard leaves a marker in the system clipboard: a later paste of it is ours, anything else is a
-   * file, a picture, an SVG or a draw.io model from outside. */
-  const copyMarker = useRef<string | null>(null)
-  const pendingCopy = useRef<string | null>(null)
-  const pendingPaste = useRef(false)
-
-  // ---- clipboard (UI improvement §6.4)
+  // ---- clipboard (UI improvement §6.4; 剪贴板规范 §2.3, §3): a copy or a cut keeps the clip in a desktop transfer record
+  // and writes its handle with the selection's readable text; a paste reads what it carries, layer by layer, and never
+  // falls back to an earlier copy
+  /** Resource Blocks' files, read once they are selected: a copy event writes during its dispatch and cannot wait. */
+  const [assetFacts] = useState(() => new Map<string, { rev: number; payload: AssetPayload }>())
+  const selectionKey = [...selection].sort().join(',')
+  useEffect(() => {
+    for (const id of selectionKey ? selectionKey.split(',') : []) {
+      const entity = store.outline.get(id)
+      const sourceId = entity?.view_type === 'asset' ? entity.source_id : null
+      const rev = sourceId ? store.outline.get(sourceId)?.content_rev : undefined
+      if (!sourceId || rev === undefined || assetFacts.get(sourceId)?.rev === rev) continue
+      void store.session.read<AssetContent>(sourceId).then((read) => { if (read.content.payload?.object_id) assetFacts.set(sourceId, { rev, payload: read.content.payload }) }, () => undefined)
+    }
+  }, [selectionKey, store, assetFacts])
+  const knownAssets = () => new Map([...assetFacts].flatMap(([id, facts]) => (store.outline.get(id)?.content_rev === facts.rev ? [[id, facts.payload] as const] : [])))
+  /** The Blocks as the Shell hands them to other Apps (剪贴板规范 §5): each as its text, a resource Block also as its
+   * file — read only once the user chose where they go. */
+  const shellItems = (ids: string[]): TransferOfferItem[] => ids.map((id) => {
+    const text = () => selectionItems(store, [id], document, knownAssets())[0]?.text ?? ''
+    const entity = store.outline.get(id)
+    const sourceId = entity?.view_type === 'asset' ? entity.source_id : null
+    if (!sourceId) return { kind: 'text', formats: { 'text/plain': text } }
+    const file = async () => assetRef((await store.session.read<AssetContent>(sourceId)).content.payload, store.outline.get(sourceId)?.name ?? undefined)
+    return { kind: 'zone-file', formats: { [CONTENT_REFS_FORMAT]: file, 'text/plain': text } }
+  })
+  /** The selection as one transfer: the clip in a record of this window (a cut takes the Blocks it may move), the
+   * readable representations and the record's handle; null when there is nothing to take. */
+  const transferOfSelection = (kind: 'copy' | 'cut'): { offer: TransferOffer; representations: TransferRepresentations; clip: Promise<Clip | null> } | null => {
+    const ids = topLevel(laid, selection).filter((id) => kind === 'copy' || !laid.get(id)?.locked)
+    if (ids.length === 0) return null
+    const clip = makeClip(store, surfaceId, laid, selection, kind)
+    // a copy is also the desktop object other Apps can paste ("Paste desktop object…"); a cut moves Blocks only here
+    const offer = desktopTransfers.offer({ purpose: kind, source: { app: AIWS_APP, windowId }, scope: { workspaceId: store.session.workspaceId }, itemKeys: ids, formats: { [CLIP_FORMAT]: clip }, operations: kind === 'cut' ? ['move'] : ['copy'], ...(kind === 'copy' ? { items: shellItems(ids) } : {}) })
+    const items = selectionItems(store, ids, document, knownAssets())
+    // a cut moves Blocks inside the Workspace: it offers no files to others
+    return { offer, clip, representations: withTransferHandle(selectionRepresentations(kind === 'cut' ? items.map((item) => ({ text: item.text })) : items), offer.offerId, { cut: kind === 'cut' }) }
+  }
+  const announce = (kind: 'copy' | 'cut', made: { offer: TransferOffer; clip: Promise<Clip | null> }) => made.clip.then((clip) => {
+    if (!clip) { desktopTransfers.withdraw(made.offer.offerId); return }
+    store.notify('info', t(kind === 'copy' ? 'aiworkspace.canvas.clipboard.copied' : 'aiworkspace.canvas.clipboard.cut', { count: clip.items.length }))
+  }, (error: unknown) => {
+    desktopTransfers.withdraw(made.offer.offerId)
+    store.notify('error', t('aiworkspace.canvas.clipboard.copyFailed', { reason: describeError(error) }))
+  })
+  /** Copy or cut from a menu or a button, or a shortcut the browser fired no clipboard event for: the same
+   * representations through the async clipboard. */
+  const copyCommand = (kind: 'copy' | 'cut') => {
+    const made = transferOfSelection(kind)
+    if (!made) return
+    void copyWithCommand(made.representations).then((result) => {
+      if (!result.ok) {
+        desktopTransfers.withdraw(made.offer.offerId)
+        store.notify('error', t('aiworkspace.canvas.clipboard.copyFailed', { reason: t('aiworkspace.canvas.clipboard.writeRefused') }))
+        return
+      }
+      // neither the HTML nor the handle's own format arrived: only the text was copied, the objects cannot come back
+      if (!result.formats.includes('text/html') && !result.formats.includes(TRANSFER_HANDLE_FORMAT)) {
+        desktopTransfers.withdraw(made.offer.offerId)
+        store.notify('info', t('aiworkspace.canvas.clipboard.textOnly'))
+        return
+      }
+      void announce(kind, made)
+    })
+  }
   const copy: Command = {
     reason: !policy.select ? t('aiworkspace.canvas.reason.cannotSelect') : selection.size === 0 ? t('aiworkspace.canvas.reason.noSelection') : null,
-    run: () => {
-      void copyToClipboard(store, surfaceId, laid, selection, 'copy').then(
-        (n) => { if (n > 0) store.notify('info', t('aiworkspace.canvas.clipboard.copied', { count: n })) },
-        (error: unknown) => store.notify('error', t('aiworkspace.canvas.clipboard.copyFailed', { reason: describeError(error) })))
-    },
+    run: () => copyCommand('copy'),
   }
   const cut: Command = {
     reason: !canLayout ? t(policy.layout ? 'aiworkspace.canvas.reason.noLayoutPermission' : 'aiworkspace.canvas.reason.cannotMove') : selection.size === 0 ? t('aiworkspace.canvas.reason.noSelection') : null,
-    run: () => { void copyToClipboard(store, surfaceId, laid, selection, 'cut').then((n) => { if (n > 0) store.notify('info', t('aiworkspace.canvas.clipboard.cut', { count: n })) }) },
+    run: () => copyCommand('cut'),
   }
-  const pasteAt = (at: { x: number; y: number } | null) => {
-    const current = canvasClipboard.snapshot()
-    if (!current) return
-    if (current.workspaceId !== store.session.workspaceId) { store.notify('info', t('aiworkspace.canvas.clipboard.crossWorkspace')); return }
+  /** A clip of this Workspace: a copy makes new objects, a step further each time; a cut moves its objects once, held
+   * while the commit runs (a paste in another window is told they are moving) and released when it fails. */
+  const pasteClip = (clip: Clip, record: TransferOffer, at: { x: number; y: number } | null) => {
+    if (!canLayout) { store.notify('info', insertReason ?? t(policy.layout ? 'aiworkspace.canvas.reason.noLayoutPermission' : 'aiworkspace.canvas.reason.cannotMove')); return }
     const c = camera.center
     // with a node (or a control) selected the clip hangs under it (脑图方案 §7.2); in a composite it goes beside the
     // selected Block, into a slot, and a selected composite itself is pasted beside on the canvas (扩展控件 P1)
@@ -1106,23 +1208,179 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     const into = !selectionControl || at ? undefined
       : composite ? (selectionControl.nodeId ? { parentId: selectionControl.containerId, after: selectionControl.nodeId } : undefined)
         : { parentId: selectionControl.nodeId ?? selectionControl.containerId }
-    const { operations, newIds, label, refused } = pasteOperations(store, current, { surfaceId, isFree, at, center: camera.toWorld(c.x, c.y), into })
+    const { operations, newIds, label, refused } = pasteOperations(store, clip, { surfaceId, isFree, at, center: camera.toWorld(c.x, c.y), into })
     if (refused) { store.notify('info', refused); return }
-    if (operations.length === 0) { store.notify('info', t('aiworkspace.canvas.clipboard.cutGone')); canvasClipboard.set(null); return }
-    void store.submit({ editId: `paste:${randomId().slice(0, 8)}`, label, operations }).then((outcome) => {
+    const cutting = clip.kind === 'cut'
+    if (operations.length === 0) {
+      store.notify('info', t('aiworkspace.canvas.clipboard.cutGone'))
+      if (cutting) { desktopTransfers.withdraw(record.offerId); spendCut(record.offerId) }
+      return
+    }
+    const operationId = randomId('paste')
+    if (cutting) {
+      const held = desktopTransfers.reserve(record.offerId, clip.ids, operationId)
+      if (!held.ok) { store.notify('info', t(held.reason === 'busy' ? 'aiworkspace.canvas.clipboard.cutMoving' : 'aiworkspace.canvas.clipboard.cutSpent')); return }
+    }
+    void store.submit({ editId: operationId, label, operations }).then((outcome) => {
       if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
         setSelectionState(new Set(newIds))
-        if (current.kind === 'cut') canvasClipboard.set(null)
-        else canvasClipboard.notePaste()
-      } else if (outcome.status === 'rejected' || outcome.status === 'conflict') {
-        store.notify('error', t(current.kind === 'cut' ? 'aiworkspace.canvas.clipboard.pasteFailedCut' : 'aiworkspace.canvas.clipboard.pasteFailed', { code: outcome.code }))
+        if (cutting) { desktopTransfers.consume(record.offerId, clip.ids, operationId); spendCut(record.offerId) } else clip.pastes += 1
+        return
       }
+      // an unknown outcome keeps the cut held: the commit may still have happened
+      if (cutting && outcome.status !== 'unknown') desktopTransfers.release(record.offerId, clip.ids, operationId)
+      if (outcome.status === 'rejected' || outcome.status === 'conflict') {
+        store.notify('error', t(cutting ? 'aiworkspace.canvas.clipboard.pasteFailedCut' : 'aiworkspace.canvas.clipboard.pasteFailed', { code: outcome.code }))
+      }
+    }, () => { if (cutting) desktopTransfers.release(record.offerId, clip.ids, operationId) })
+  }
+  /** A question the paste cannot answer itself (an address as a file or as text; a cut elsewhere copied in). */
+  const [asking, setAsking] = useState<PasteQuestion | null>(null)
+  const ask = (question: Omit<PasteQuestion, 'resolve'>) => new Promise<string | null>((resolve) => setAsking({ ...question, resolve }))
+  const answer = (choice: string | null) => { asking?.resolve(choice); setAsking(null) }
+  /** Text as a text Block (web addresses as links) where text can be inserted; otherwise what this canvas takes. */
+  const insertText = (text: string, at: { x: number; y: number } | null) => {
+    const entry = registryEntries().find((e) => e.definition.type === 'richtext' && !e.variant)
+    if (!entry || insertReason) { store.notify('info', insertReason ?? t('aiworkspace.canvas.transfer.notAccepted')); return }
+    const doc = textDocument(text)
+    if (!doc) { store.notify('info', t('aiworkspace.canvas.transfer.textTooLong')); return }
+    const size = entrySize(entry)
+    void insert({ entry, config: { doc: doc as Json } }, at ? { x: Math.round(at.x - size.w / 2), y: Math.round(at.y - size.h / 2) } : null)
+  }
+  /**
+   * A paste or a drop (`at`: the drop point on a free canvas), in the registered order (剪贴板规范 §2.3): this
+   * Workspace's objects behind the handle it carries → Zone references → a typed table → files → an HTML table →
+   * text (BuckyOS addresses, TSV, draw.io, SVG, plain text). A layer that does not fit or fails (another Workspace, an
+   * unreadable file) hands over to the next one; one representation makes one result.
+   */
+  const pasteFrom = async (reader: TransferReader, at: { x: number; y: number } | null): Promise<void> => {
+    const handle = reader.handle()
+    const record = handle ? desktopTransfers.get(handle.offerId) : undefined
+    if (handle && !record && isSpentCut(handle.offerId)) { store.notify('info', t('aiworkspace.canvas.clipboard.cutSpent')); return }
+    if (record && record.source.app === AIWS_APP && CLIP_FORMAT in record.formats) {
+      if (record.scope?.workspaceId === store.session.workspaceId) {
+        const clip = await desktopTransfers.read(record.offerId, CLIP_FORMAT).catch(() => null) as Clip | null | undefined
+        if (clip) { pasteClip(clip, record, at); return }
+      } else if (record.purpose === 'cut') { store.notify('info', t('aiworkspace.canvas.clipboard.cutOtherWorkspace')); return }
+    }
+    if (insertReason && importReason) { store.notify('info', insertReason); return }
+    const refs = reader.contentRefs()
+    if (refs) {
+      // a cut in another App, or a cut whose record is gone (a reload, another tab): its files can only be copied in,
+      // the originals stay (剪贴板规范 §6) — asked, not assumed
+      const cutElsewhere = (record?.purpose === 'cut' && !(CLIP_FORMAT in record.formats)) || (handle?.cut === true && !record)
+      if (cutElsewhere && await ask({ title: t('aiworkspace.canvas.transfer.copyNotMove'), choices: [{ id: 'copy', label: t('aiworkspace.canvas.transfer.copyIn'), testId: 'aiws-paste-ask-copy' }] }) === null) return
+      if (await importZone(refs.items, at)) return
+    }
+    if (reader.typedTable() && reader.html) { openTableImport({ kind: 'clipboard', html: reader.html, text: reader.text ?? null }, false, at); return }
+    if (reader.files.length > 0) { await handleFiles(reader.files, at); return }
+    const table = clipboardTable(reader)
+    if (table) { openTableImport(table, false, at); return }
+    const text = reader.text ?? ''
+    const addresses = reader.addresses()
+    if (addresses) {
+      const choice = await ask({ title: t('aiworkspace.canvas.transfer.addressTitle', { count: addresses.length }), choices: [
+        { id: 'file', label: t('aiworkspace.canvas.transfer.asFile'), testId: 'aiws-paste-ask-file' },
+        { id: 'text', label: t('aiworkspace.canvas.transfer.asText'), testId: 'aiws-paste-ask-text' }] })
+      if (choice === null) return
+      // an address that cannot be read is inserted as text, after its reason was told
+      if (choice === 'file' && await importZone(addresses.map((source): ZoneContent => ({ origin: 'zone', kind: 'file', source, hints: {} })), at)) return
+      insertText(text || (reader.get('text/uri-list') ?? ''), at)
+      return
+    }
+    if (looksLikeDrawio(text)) { void runImport({ name: t('aiworkspace.canvas.import.pastedName'), text }, at); return }
+    if (/^\s*(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*<svg[\s>]/i.test(text)) { if (insertReason) store.notify('info', insertReason); else insertSvg(text, at); return }
+    if (text.trim()) { insertText(text, at); return }
+    store.notify('info', t('aiworkspace.canvas.transfer.notAccepted'))
+  }
+  /** The menu's Paste, or a shortcut the browser fired no paste event for: the system clipboard, read on request. */
+  const pasteCommand = (at: { x: number; y: number } | null) => {
+    void readClipboardCommand().then((result) => {
+      if (result.ok) void pasteFrom(result.reader, at)
+      else store.notify('info', t(result.reason === 'denied' ? 'aiworkspace.canvas.clipboard.readDenied' : 'aiworkspace.canvas.clipboard.readUnsupported'))
     })
   }
   const paste: Command = {
-    reason: !clip ? t('aiworkspace.canvas.clipboard.empty') : clip.workspaceId !== store.session.workspaceId ? t('aiworkspace.canvas.clipboard.otherWorkspace') : insertReason ?? (canLayout ? null : t('aiworkspace.canvas.reason.noLayoutPermission')),
-    run: () => pasteAt(null),
+    reason: insertReason ?? (canLayout ? null : t('aiworkspace.canvas.reason.noLayoutPermission')),
+    run: () => pasteCommand(null),
   }
+  // ---- this window as the Shell's transfer target (剪贴板规范 §5): Zone files and this device's files handed over from
+  // another App go the way of a paste here; a probe only answers (no read, no import, no layout change)
+  const targetId = `canvas:${surfaceId}`
+  const delivered = useRef(new Map<string, TransferDeliveryResult>())
+  /** A point of the window's content box on this canvas (null: the default place). */
+  const pointOf = (at: TransferPoint): { x: number; y: number } | null => {
+    if (at === 'focus' || !isFree) return null
+    const box = (hostRef.current?.closest('.aiws-root')?.parentElement ?? hostRef.current)?.getBoundingClientRect()
+    const r = mainRef.current?.getBoundingClientRect()
+    if (!box || !r) return null
+    const x = box.left + at.x - r.left
+    const y = box.top + at.y - r.top
+    return x >= 0 && y >= 0 && x <= r.width && y <= r.height ? camera.toWorld(x, y) : null
+  }
+  const transferTarget = {
+    probe: (probe: TransferProbe): TransferProbeAnswer | null => {
+      if (insertReason && importReason) return null
+      const accept = probe.items.flatMap((item) => {
+        const format = item.kind === 'zone-file' && item.formats.includes(CONTENT_REFS_FORMAT) ? CONTENT_REFS_FORMAT : item.kind === 'local-file' && item.formats.includes('files') ? 'files'
+          : item.kind === 'text' && item.formats.includes('text/plain') && insertReason === null ? 'text/plain' : null
+        return format && item.operations.includes('copy') ? [{ itemKey: item.itemKey, format, operation: 'copy' as const }] : []
+      })
+      return accept.length ? { targetId, accept, action: t('aiworkspace.canvas.transfer.insertInto', { name: surface.title ?? surface.name ?? t('aiworkspace.canvas.defaultName') }) } : null
+    },
+    // taken at once ("accepted": the import may still ask, a read may still fail — told here, in the app): the receipt
+    // never waits for bytes; the same operation id gets the same receipt
+    deliver: (delivery: TransferDelivery): Promise<TransferDeliveryResult> => {
+      const known = delivered.current.get(delivery.operationId)
+      if (known) return Promise.resolve(known)
+      let result: TransferDeliveryResult
+      if (delivery.targetId !== targetId || (insertReason && importReason)) {
+        const error = delivery.targetId !== targetId ? 'stale' : insertReason ?? ''
+        result = { status: 'failed', items: delivery.items.map((item) => ({ itemKey: item.itemKey, status: 'failed', error })) }
+      } else {
+        const at = pointOf(delivery.at)
+        const zone: ZoneContent[] = []
+        const files: File[] = []
+        const texts: string[] = []
+        const items: TransferDeliveryResult['items'] = []
+        for (const item of delivery.items) {
+          const refs = item.format === CONTENT_REFS_FORMAT ? zoneItemsOf(item.value) : undefined
+          const local = item.format === 'files' ? filesOf(item.value) : undefined
+          const text = item.format === 'text/plain' && typeof item.value === 'string' && item.value.trim() ? item.value : undefined
+          if (refs?.length) zone.push(...refs)
+          else if (local?.length) files.push(...local)
+          else if (text) texts.push(text)
+          items.push({ itemKey: item.itemKey, status: refs?.length || local?.length || text ? 'accepted' : 'skipped' })
+        }
+        result = { status: items.some((item) => item.status === 'accepted') ? 'accepted' : 'failed', items }
+        void (async () => {
+          if (zone.length) await importZone(zone, at)
+          if (files.length) await handleFiles(files, at)
+          // several texts make one text Block, in their order
+          if (texts.length) insertText(texts.join('\n\n'), at)
+        })()
+      }
+      delivered.current.set(delivery.operationId, result)
+      return Promise.resolve(result)
+    },
+    status: (operationId: string) => Promise.resolve(delivered.current.get(operationId) ?? null),
+  }
+  // the selection as the Shell offers it to other Apps (the window's "drag to another App" handle)
+  useEffect(() => {
+    if (!windowId || !policy.select || !selectionKey) return
+    return offerWindowSelection(AIWS_APP, windowId, { scope: { workspaceId: store.session.workspaceId }, items: shellItems(topLevel(laid, new Set(selectionKey.split(',')))) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- offered again when the selection (or the layout it is read from) changes
+  }, [windowId, selectionKey, policy.select, laid, store])
+  const transferTargetRef = useRef(transferTarget)
+  useLayoutEffect(() => { transferTargetRef.current = transferTarget })
+  useEffect(() => {
+    if (!windowId) return
+    return registerWindowTransferTarget(windowId, {
+      probe: (probe) => transferTargetRef.current.probe(probe),
+      deliver: (delivery) => transferTargetRef.current.deliver(delivery),
+      status: (operationId) => transferTargetRef.current.status(operationId),
+    })
+  }, [windowId])
   const remove: Command = { reason: !policy.layout ? t('aiworkspace.canvas.reason.cannotDelete') : selection.size === 0 ? t('aiworkspace.canvas.reason.noSelection') : layoutable.length === 0 ? t('aiworkspace.canvas.reason.noLayoutPermission') : null, run: () => { void deleteSelection() } }
 
   const fitAll = () => { const b = surfaceBounds(laid); if (b) camera.fit(b); else camera.set({ x: -camera.clearArea.x, y: -camera.clearArea.y, zoom: 1 }) }
@@ -1164,7 +1422,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
         if (annotatePick) { setAnnotatePick(false); return }
         if (editing) { setEditing(null); return }
         if (selection.size > 0) { setSelectionState(new Set()); return }
-        if (clip?.kind === 'cut') { canvasClipboard.set(null); return }
+        if (cutRecord) { desktopTransfers.withdraw(cutRecord.offerId); if (!desktopTransfers.get(cutRecord.offerId)) spendCut(cutRecord.offerId); return }
         return
       }
       if (placing && event.key === 'Enter') { event.preventDefault(); void insert(placing, null); setPlacing(null); return }
@@ -1193,13 +1451,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       if (!mod && !event.altKey && inkAllowed && (event.key === 'e' || event.key === 'E')) { chooseTool('eraser'); return }
       if (mod && !event.altKey && !event.shiftKey) {
         const key = event.key.toLowerCase()
-        // copy and cut let the browser's copy event run (it writes the marker); a paste waits for the paste event,
-        // which brings outside content, and falls back to the canvas clipboard when there is none
-        if (key === 'c' && copy.reason === null) { pendingCopy.current = `aiws-clipboard:${randomId()}`; copy.run(); return }
-        if (key === 'x' && cut.reason === null) { pendingCopy.current = `aiws-clipboard:${randomId()}`; cut.run(); return }
-        if (key === 'v') {
-          pendingPaste.current = paste.reason === null
-          window.setTimeout(() => { if (pendingPaste.current) { pendingPaste.current = false; paste.run() } }, 0)
+        // copy, cut and paste are the browser's clipboard events (handled below, which this shortcut hands to the canvas
+        // wherever the page's text selection lies); a browser that fires none for it gets the same through the async clipboard
+        const shortcut = key === 'c' && copy.reason === null ? 'copy' : key === 'x' && cut.reason === null ? 'cut' : key === 'v' ? 'paste' : null
+        if (shortcut) {
+          armed.current = shortcut
+          afterShortcut(shortcut, () => { armed.current = null; if (shortcut === 'paste') pasteCommand(null); else copyCommand(shortcut) })
           return
         }
       }
@@ -1239,45 +1496,46 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
+  /** The clipboard shortcut the canvas's keys just took: its event is the canvas's. */
+  const armed = useRef<'copy' | 'cut' | 'paste' | null>(null)
+  const middleUp = useRef(-Infinity)
   useEffect(() => {
+    // an editor, a field, a dialog or a panel keeps the platform's own clipboard (剪贴板规范 §3.3)
     const outside = (target: EventTarget | null) => {
       const el = target instanceof Element ? target : null
-      if (el?.closest('input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"], [data-role="editor"], .aiws-panel, .aiws-popover, .aiws-dialog, .aiws-menu, .aiws-side, .aiws-near')) return true
+      if (isEditableTarget(el) || el?.closest('.aiws-panel, .aiws-popover, .aiws-dialog, .aiws-menu, .aiws-side, .aiws-near')) return true
       return !hostRef.current?.contains(el) && el !== document.body
     }
-    const onCopy = (event: ClipboardEvent) => {
-      const marker = pendingCopy.current
-      pendingCopy.current = null
-      if (!marker || outside(event.target) || !event.clipboardData) return
-      event.clipboardData.setData('text/plain', marker)
-      event.preventDefault()
-      copyMarker.current = marker
+    /** Whether this clipboard event is the canvas's: its shortcut was pressed here, or (a browser menu) it targets the canvas. */
+    const ours = (event: ClipboardEvent) => {
+      const shortcut = armed.current === event.type
+      armed.current = null
+      return Boolean(event.clipboardData) && !event.defaultPrevented && (shortcut || !outside(event.target))
     }
-    const onPaste = (event: ClipboardEvent) => {
-      if (outside(event.target) || !event.clipboardData) return
-      const data = event.clipboardData
-      const files = [...data.files]
-      const text = data.getData('text/plain')
-      const svg = /^\s*(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*<svg[\s>]/i.test(text)
-      // a table from a spreadsheet, a web page or another table view (after our own marker and files, before draw.io / SVG)
-      const table = files.length === 0 && text !== copyMarker.current ? clipboardTable(data) : null
-      const foreign = files.length > 0 || table !== null || (text !== '' && text !== copyMarker.current && (looksLikeDrawio(text) || svg))
-      if (!foreign) {
-        if (pendingPaste.current) { pendingPaste.current = false; event.preventDefault(); paste.run() }
-        return
-      }
+    const onCopy = (event: ClipboardEvent) => {
+      const kind = event.type === 'cut' ? 'cut' : 'copy'
+      if (!ours(event) || !event.clipboardData || (kind === 'cut' ? cut : copy).reason !== null) return
+      const made = transferOfSelection(kind)
+      if (!made) return
+      writeTransferEvent(event.clipboardData, made.representations)
       event.preventDefault()
-      pendingPaste.current = false
-      if (files.length > 0) void handleFiles(files, null)
-      else if (table) openTableImport(table, false, null)
-      else if (looksLikeDrawio(text)) void runImport({ name: t('aiworkspace.canvas.import.pastedName'), text }, null)
-      else if (insertReason) store.notify('info', insertReason)
-      else insertSvg(text, null)
+      void announce(kind, made)
+    }
+    // a middle click pans the canvas: the selection paste Linux makes of it is not a paste here
+    const onMouseUp = (event: MouseEvent) => { if (event.button === 1) middleUp.current = performance.now() }
+    const onPaste = (event: ClipboardEvent) => {
+      if (armed.current !== 'paste' && performance.now() - middleUp.current < 500) return
+      if (!ours(event) || !event.clipboardData) return
+      // the canvas owns this paste: what it carries is read now, before the event is gone
+      const reader = readTransferEvent(event.clipboardData)
+      event.preventDefault()
+      void pasteFrom(reader, null)
     }
     window.addEventListener('copy', onCopy)
     window.addEventListener('cut', onCopy)
     window.addEventListener('paste', onPaste)
-    return () => { window.removeEventListener('copy', onCopy); window.removeEventListener('cut', onCopy); window.removeEventListener('paste', onPaste) }
+    window.addEventListener('mouseup', onMouseUp, true)
+    return () => { window.removeEventListener('copy', onCopy); window.removeEventListener('cut', onCopy); window.removeEventListener('paste', onPaste); window.removeEventListener('mouseup', onMouseUp, true) }
   })
 
   // ---- the properties panel (§10.2): opened by "properties" only; unpinned it closes when the selection moves on
@@ -1461,7 +1719,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       { id: 'catalog', label: t('aiworkspace.canvas.menu.insertObject'), run: () => openCatalog('all', undefined, menu.world, menu.parentId) },
       { id: 'add-data', label: t('aiworkspace.canvas.menu.addExisting'), run: () => openCatalog('existing', undefined, menu.world, menu.parentId) },
     ] : []),
-    ...(paste.reason === null ? [{ id: 'paste', label: t('aiworkspace.canvas.clipboard.paste'), run: () => pasteAt(menu.world) }] : []),
+    ...(paste.reason === null ? [{ id: 'paste', label: t('aiworkspace.canvas.clipboard.paste'), run: () => pasteCommand(menu.world) }] : []),
     { id: 'sep', separator: true },
     ...(isFree ? [{ id: 'fit', label: t('aiworkspace.canvas.menu.fitAll'), run: fitAll }] : []),
     { id: 'page-settings', label: t('aiworkspace.blockui.pageSettings'), run: () => openProperties(null) },
@@ -1574,7 +1832,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     }
   }
   const sideTabs = CANVAS_SIDE_TABS
-  const clipIds = clip?.kind === 'cut' && clip.surfaceId === surfaceId ? clip.ids.join(',') : ''
+  const clipIds = cutRecord && cutRecord.scope?.workspaceId === store.session.workspaceId ? [...cutRecord.remaining].filter((id) => laid.has(id)).join(',') : ''
   const cutIds = useMemo(() => (clipIds ? new Set(clipIds.split(',')) : undefined), [clipIds])
 
   const placingTitle = placing?.entry.title ?? ''
@@ -1584,19 +1842,24 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       <div className="aiws-canvas-view" data-testid="aiws-canvas-view" data-mode={mode}>
         <div className="aiws-canvas-body" ref={hostRef} data-testid="aiws-canvas-body">
           <div ref={mainRef} className={`aiws-canvas-main${shell.prefs.grid ? '' : ' no-grid'}${showObjectToolbar && !collapsed ? ' has-left-tools' : ''}`}
+            // a drop takes what a paste takes, at the drop point (剪贴板规范 §4): dragover looks at the types only; a drop an
+            // inner target claimed (a text editor, a directory editor) is not taken again
             onDragOver={(event) => {
-              const types = event.dataTransfer.types
-              if ((types.includes('Files') && (insertReason === null || importReason === null)) || (types.includes(SHAPE_DRAG_TYPE) && insertReason === null)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' }
+              if (event.defaultPrevented) return
+              const types = transferTypes(event.dataTransfer)
+              const content = types.includes('files') || mayCarryContentRefs(types) || types.includes('text/plain')
+              if ((content && (insertReason === null || importReason === null)) || (types.includes(SHAPE_DRAG_TYPE) && insertReason === null)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' }
             }}
             onDrop={(event) => {
+              if (event.defaultPrevented) return
               const r = mainRef.current?.getBoundingClientRect()
               const at = isFree && r ? camera.toWorld(event.clientX - r.left, event.clientY - r.top) : null
               const libraryDrop = event.dataTransfer.getData(SHAPE_DRAG_TYPE)
               if (libraryDrop) { event.preventDefault(); void dropLibraryShape(libraryDrop, at); return }
-              const files = [...event.dataTransfer.files]
-              if (files.length === 0) return
+              const reader = readTransferEvent(event.dataTransfer)
+              if (reader.snapshot.types.length === 0) return
               event.preventDefault()
-              void handleFiles(files, at)
+              void pasteFrom(reader, at)
             }}>
             {isFree ? (
               <EditorToolbarContext.Provider value={toolbarSink}>
@@ -1662,6 +1925,18 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             {expanded && <ExpandView key={expanded.sourceId} target={expanded} onClose={() => setExpanded(null)} onMore={(anchor) => menuFrom(anchor, expanded.cellId)} />}
             {propertyPanel}
             {menu && <ContextMenu at={menu.at} items={menuItems} onClose={() => setMenu(null)} sheet={phone} testId={menu.blockId && !isFree ? 'aiws-flow-block-menu' : 'aiws-context-menu'} />}
+            {asking && (
+              <div className="aiws-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) answer(null) }}>
+                <div className="aiws-dialog" role="dialog" aria-modal="true" aria-label={asking.title} data-testid="aiws-paste-ask" onKeyDown={(event) => { if (event.key === 'Escape') answer(null) }}>
+                  <b>{asking.title}</b>
+                  {asking.note && <div className="aiws-muted">{asking.note}</div>}
+                  <div className="aiws-dialog-actions">
+                    {asking.choices.map((choice, i) => <button key={choice.id} type="button" className={i === 0 ? 'is-primary' : undefined} autoFocus={i === 0} data-testid={choice.testId} onClick={() => answer(choice.id)}>{choice.label}</button>)}
+                    <button type="button" data-testid="aiws-paste-ask-cancel" onClick={() => answer(null)}>{t('aiworkspace.common.cancel')}</button>
+                  </div>
+                </div>
+              </div>
+            )}
             {defining && defining.length > 0 && <DefineControlDialog ids={defining} laid={laid} surfaceId={surfaceId} onClose={() => setDefining(null)} onDone={(ids) => { setDefining(null); setSelectionState(new Set(ids)) }} />}
             {picker && <Picker kind={picker.kind} selection={selectedEntities} surfaceId={surfaceId} onClose={() => setPicker(null)} onPick={(choice) => {
               if (picker.kind === 'move-surface') moveToSurface(choice)

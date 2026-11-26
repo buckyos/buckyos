@@ -1,6 +1,8 @@
 import { FileUp, Lock, Pin, Search, Ticket } from 'lucide-react'
 import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { CONTENT_REFS_FORMAT, mayCarryContentRefs, transferTypes } from 'buckyos/transfer'
 import { useI18n } from '../../i18n/provider'
+import { isEditableTarget, readTransferEvent, registerWindowTransferTarget } from '../../transfer'
 import { AgentControlsContext } from './agentControls'
 import { ConversationClockContext } from './clock'
 import { ConversationMessageActionsContext } from './history/actions'
@@ -21,9 +23,21 @@ import { useSwipe } from './swipe'
 import { useTaskSummary } from './tasks'
 import { TurnControls } from './tasks/TurnControls'
 import { taskWorklogTarget } from './worklog/model'
+import { composerTransferTarget, ConversationWindowContext } from './transferTarget'
 import './conversation.css'
 
 const MIN_HISTORY_PANE_HEIGHT = 180
+
+/**
+ * What a drag over the conversation would add to the draft, from its types alone (hover never reads): files of this
+ * device and Zone references (`attach`); a text or link drag that may carry references in its HTML (`maybe`), left to
+ * an input under the pointer, which takes it as text.
+ */
+function dropKindOf(event: React.DragEvent): 'attach' | 'maybe' | null {
+  const types = transferTypes(event.dataTransfer)
+  if (types.includes(CONTENT_REFS_FORMAT) || isTransferWithFiles(event.dataTransfer)) return 'attach'
+  return mayCarryContentRefs(types) && !isEditableTarget(event.target) ? 'maybe' : null
+}
 
 /** What a host header gets: the button that opens the search (focus goes back to it when the search closes). */
 export interface ConversationHeaderControls {
@@ -104,7 +118,6 @@ export function ConversationSurface({
   const historyReader = filteredReader ?? markedReader
   const bodyRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<ConversationComposerHandle>(null)
-  const dragDepthRef = useRef(0)
   const historyPaneRef = useRef<ConversationHistoryPaneHandle>(null)
   const [isDropActive, setIsDropActive] = useState(false)
   const [composerMaxHeight, setComposerMaxHeight] = useState<number | undefined>(undefined)
@@ -186,31 +199,57 @@ export function ConversationSurface({
   const swipe = useSwipe({ onLeft: onSwipeLeft })
 
   const canDrop = features?.drop !== false && canSend && source.attachments !== false
-  const handleDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!canDrop || !isTransferWithFiles(event.dataTransfer)) return
-    event.preventDefault()
-    dragDepthRef.current += 1
-    setIsDropActive(true)
-  }
+  // An attachment dragged out of this conversation's history is on its way elsewhere, not into its own draft. A
+  // source row the history unmounts sends no `dragend`: any drop or the next press ends the drag as well.
+  const ownDragRef = useRef(false)
+  useEffect(() => {
+    const reset = () => { ownDragRef.current = false }
+    window.addEventListener('drop', reset)
+    window.addEventListener('pointerdown', reset, true)
+    return () => { window.removeEventListener('drop', reset); window.removeEventListener('pointerdown', reset, true) }
+  }, [])
+  // The conversation is the innermost drop place under it: what it takes, an outer one (a canvas) does not see.
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!canDrop || !isTransferWithFiles(event.dataTransfer)) return
+    const kind = canDrop && !ownDragRef.current ? dropKindOf(event) : null
+    if (!kind) { if (isDropActive) setIsDropActive(false); return }
     event.preventDefault()
+    event.stopPropagation()
     event.dataTransfer.dropEffect = 'copy'
-    setIsDropActive(true)
+    if (!isDropActive) setIsDropActive(true)
   }
   const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!canDrop || !isTransferWithFiles(event.dataTransfer)) return
-    event.preventDefault()
-    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
-    if (dragDepthRef.current === 0) setIsDropActive(false)
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsDropActive(false)
   }
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!canDrop || !isTransferWithFiles(event.dataTransfer)) return
-    event.preventDefault()
-    dragDepthRef.current = 0
     setIsDropActive(false)
-    void composerRef.current?.addTransferData(event.dataTransfer)
+    if (!canDrop || ownDragRef.current) return
+    // Read before anything awaits; one representation per item: Zone references, else the files, else nothing.
+    const reader = readTransferEvent(event.dataTransfer)
+    const refs = reader.contentRefs()
+    if (refs) {
+      event.preventDefault()
+      event.stopPropagation()
+      void composerRef.current?.addZoneContent(refs.items)
+    } else if (isTransferWithFiles(event.dataTransfer)) {
+      event.preventDefault()
+      event.stopPropagation()
+      void composerRef.current?.addTransferData(event.dataTransfer)
+    } else if (dropKindOf(event)) {
+      // A text or link with nothing to attach: keep the browser from opening it; an input takes it as text.
+      event.preventDefault()
+      event.stopPropagation()
+    }
   }
+
+  // The window's transfer target (the Shell's cross-window drag and "Paste desktop object…"): the draft takes Zone
+  // files and folders and files of this device while a composer that can attach is showing.
+  const transferWindowId = useContext(ConversationWindowContext)
+  const attachAction = t('messagehub.drop.addToDraft')
+  const acceptsTransfers = canDrop && composer
+  useEffect(() => {
+    if (!transferWindowId || !acceptsTransfers) return
+    return registerWindowTransferTarget(transferWindowId, composerTransferTarget(`composer:${sessionId}`, attachAction, () => composerRef.current))
+  }, [transferWindowId, acceptsTransfers, sessionId, attachAction])
 
   const runtime = source.runtime.map(state => `${displayName(state.memberDid)} · ${t(`messagehub.runtime.${state.status}`)}${state.statusLine ? ` · ${state.statusLine}` : ''}`).join(' · ')
   const readOnlyReason = source.access?.readOnlyReason || source.unavailableReason
@@ -219,7 +258,9 @@ export function ConversationSurface({
   const body = (
     <div
       className="relative flex flex-col h-full"
-      onDragEnter={handleDragEnter}
+      onDragStart={() => { ownDragRef.current = true }}
+      onDragEnd={() => { ownDragRef.current = false }}
+      onDragEnter={handleDragOver}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
@@ -297,7 +338,7 @@ export function ConversationSurface({
             <div className="rounded-full p-3" style={{ background: 'color-mix(in srgb, var(--cp-accent) 16%, transparent)', color: 'var(--cp-accent)' }}>
               <FileUp size={20} />
             </div>
-            <p className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>{t('messagehub.dropFilesTitle', 'Drop files or folders to attach')}</p>
+            <p className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }} data-testid="conversation-drop-action">{attachAction}</p>
             <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.dropFilesHint', 'Everything you drop here will be added to the current draft.')}</p>
           </div>
         </div>

@@ -1,14 +1,16 @@
 /* A file another part of the system hands to AI Workspace to import ("Import to AI Workspace" in Open with…, which
- * Preview and the system chooser show). It waits here until a canvas of a workspace this window has open can take it,
- * then goes through the same steps as a file dropped there (CanvasView `handleFiles`): a PDF, Office document or
- * table asks first (a file Block, or an import), a draw.io file is imported. While it waits the app shows what it is
- * waiting for (a workspace, a page, the right to insert) and can drop it: nothing is imported then.
+ * Preview and the system chooser show): a Zone file as its reference, other content as its bytes. It waits here until
+ * a canvas of a workspace this window has open can take it, then goes through the same steps as the same file pasted
+ * or dropped there (CanvasView `importZone` / `handleFiles`, 剪贴板规范 §7 case 1): a PDF, Office document or table
+ * asks first (a file Block, or an import), a draw.io file is imported. While it waits the app shows what it is waiting
+ * for (a workspace, a page, the right to insert) and can drop it: nothing is read or imported then.
  *
  * Which files are offered at all is read from the importers' own accept lists (the file pickers of "Import draw.io",
  * "Import PDF", "Import Office document" and "Import table"), so the offer cannot drift from what imports. Names that
  * only some files of carry an importable model (a PNG or SVG with a draw.io model inside, a .txt that is a table) are
  * left out: their bytes decide when they are dropped on a canvas. */
 
+import type { ZoneContent } from 'buckyos/content'
 import { OFFICE_ACCEPT } from '@office/package'
 import { TABULAR_ACCEPT } from '@table/files'
 import { Emitter } from '../../state/emitter'
@@ -34,9 +36,11 @@ export function importFormatOf(name: string, mime?: string): ImportFormat | null
   return null
 }
 
-export interface ExternalImport {
+/** What is handed over: Zone files by reference (read when a canvas takes them), or bytes. */
+export type ExternalHandover = { name: string; items: ZoneContent[]; files?: undefined } | { name: string; files: File[]; items?: undefined }
+
+export type ExternalImport = ExternalHandover & {
   id: number
-  file: File
   /** Why the page shown cannot take it now (read-only, presenting, no page), when one is shown. */
   blocked: string | null
 }
@@ -47,15 +51,17 @@ class ExternalImports {
   private readonly emitter = new Emitter()
   readonly subscribe = this.emitter.subscribe
   snapshot = () => this.pending
-  /** Hand a file over; it replaces one still waiting. */
-  offer(file: File) { this.pending = { id: this.next++, file, blocked: null }; this.emitter.emit() }
-  /** A canvas takes the file to import it (null when there is none, or it was taken). */
-  take(id: number): File | null {
+  /** Hand content over; it replaces what is still waiting. */
+  offer(handover: ExternalHandover) { this.pending = { ...handover, id: this.next++, blocked: null }; this.emitter.emit() }
+  /** A canvas takes it to import (null when there is none, or it was taken). */
+  take(id: number): ExternalHandover | null {
     if (this.pending?.id !== id) return null
-    const { file } = this.pending
+    const { id: _id, blocked: _blocked, ...handover } = this.pending
+    void _id
+    void _blocked
     this.pending = null
     this.emitter.emit()
-    return file
+    return handover
   }
   /** The canvas shown says why it cannot take the file now. */
   block(id: number, reason: string | null) {

@@ -10,7 +10,7 @@ Deno). Files import each other with explicit `.ts` extensions.
 grid.ts        Grid / Cell (display text, raw value, hint, currency, exact wire value); tidy (empty rows and columns)
 csv.ts         encoding (BOM → strict UTF-8 → GB 18030; UTF-16 without BOM), delimiter (, ; tab |), RFC 4180
 text.ts        pasted TSV (is it a table?), split on runs of spaces on request
-html.ts        clipboard HTML tables: spans laid out, Excel x:num / mso-number-format, Google data-sheets-*, aiws marks
+html.ts        clipboard HTML tables: spans laid out, Excel x:num / mso-number-format, Google data-sheets-*, BuckyOS typed table
 xlsx.ts        zip (stored / deflate) + workbook, shared strings, styles, sheets, merged cells, 1900 / 1904 dates
 sqlite.ts      tables (views on request), declared types by SQLite affinity, BLOB columns left out
 format.ts      number formats → date / datetime / time / money / percent; Excel serial numbers

@@ -328,7 +328,7 @@ function PickerBody({ phone, onClose }: { phone: boolean; onClose: () => void })
               <div key={row.key} className={`aiws-surface-item aiws-sp-row${isActive ? ' is-active' : ''}${folder ? ' is-folder' : ''}${over ? ` is-drop-${over}` : ''}${drag?.id === e.entity_id ? ' is-dragging' : ''}`}
                 style={style} data-testid={row.testId} data-entity-id={e.entity_id} data-depth={row.depth}
                 draggable={draggable}
-                onDragStart={(event) => { event.dataTransfer.setData('application/x-aiws-entry', e.entity_id); event.dataTransfer.effectAllowed = 'move'; setDrag({ id: e.entity_id, over: null }) }}
+                onDragStart={(event) => { event.dataTransfer.setData('application/vnd.buckyos-aiws.entry+json', JSON.stringify(e.entity_id)); event.dataTransfer.effectAllowed = 'move'; setDrag({ id: e.entity_id, over: null }) }}
                 onDragOver={(event) => {
                   if (!drag) return
                   const at = dropAt(event, e)

@@ -1,6 +1,6 @@
 import { IconButton, useMediaQuery } from '@mui/material'
 import clsx from 'clsx'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
   ChevronRight,
   FolderPlus,
@@ -78,6 +78,17 @@ import { mockHostRequestPassword } from './mock/host'
 import { toUiError } from './data/state'
 import { stashLocalInput, transferStore, type LocalUpload } from './data/transfers'
 import { describeUpload, droppedUploads, selectedUploads } from './data/localUploads'
+import { CONTENT_REFS_FORMAT, TRANSFER_HANDLE_FORMAT, transferTypes } from 'buckyos/transfer'
+import { readZoneContent, type ZoneContent } from 'buckyos/content'
+import {
+  afterShortcut, copyWithCommand, desktopTransfers, dfsPathOfContent, isEditableTarget, isZoneEntry, readClipboardCommand, readTransferEvent,
+  offerWindowSelection, registerWindowTransferTarget, writeTransferEvent, zoneContentOfEntry,
+  type TransferDelivery, type TransferDeliveryResult, type TransferItemStatus, type TransferOperation, type TransferPoint, type TransferProbe, type TransferProbeAnswer,
+} from '../../transfer'
+import {
+  allowedEffect, classifyIncoming, contentOfAddress, cutEntryIds, effectAllowedOf, mayCarryFiles, offerEntries, payloadOf, realmOfPath,
+  referenceEntries, remainingEntries, resolveZoneItems, type FilesTransferPayload, type Incoming,
+} from './data/transfer'
 import { useBrowserPane } from './data/useBrowserPane'
 import {
   COLLECTION_SCHEME,
@@ -100,7 +111,6 @@ import {
 } from './data/urls'
 import type {
   BrowserTab,
-  ClipboardState,
   DfsNode,
   FileEntry,
   SortDir,
@@ -135,8 +145,14 @@ function writablePathOf(url: string): string | null {
 const followedRequests = new Map<string, string>()
 
 type BrowserPane = ReturnType<typeof useBrowserPane>
-const FILE_DRAG_TYPE = 'application/x-buckyos-file-items'
-let draggedFiles: { token: string; pane: BrowserPane; items: FileItem[] } | null = null
+
+/** Every open Files window's panes: a cut can be pasted in another window, and a move updates the selection of all. */
+const paneReconcilers = new Set<() => Array<(ids: Set<string>) => void>>()
+
+/** A cut being moved: its record and each entry's item key there. */
+type CutLink = { offerId: string; keys: Map<string, string> }
+/** What a drop asked for with its modifier keys. */
+type DropIntent = { copy: boolean; move: boolean }
 
 type FileBrowserProps = { windowId?: string; openRequest?: FilesOpenRequest }
 
@@ -176,6 +192,11 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
   useAppPath(appPath('', { path: left.currentUrl !== homeUrl ? dfsPathOf(left.currentUrl) : null }))
   const livePanes = useRef([left, right])
   useEffect(() => { livePanes.current = [left, right] }, [left, right])
+  useEffect(() => {
+    const panes = () => livePanes.current.map((pane) => pane.reconcileMovedEntries)
+    paneReconcilers.add(panes)
+    return () => { paneReconcilers.delete(panes) }
+  }, [])
   const [, refreshCopyCapability] = useState(0)
   useEffect(() => { const refresh = () => refreshCopyCapability((n) => n + 1); window.addEventListener('files-copy-capability', refresh); return () => window.removeEventListener('files-copy-capability', refresh) }, [])
   const [closedTabs, setClosedTabs] = useState<BrowserTab[]>([])
@@ -207,8 +228,12 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
   const [archivePassword, setArchivePassword] = useState<{ pane: BrowserPane; url: string; name: string } | null>(null)
   const [defaultApp, setDefaultApp] = useState<{ plans: HandlerPlan[]; request: Parameters<typeof openContent>[0]; name: string; size?: number; key: string; always: boolean; selector: string } | null>(null)
   const [previewCollapsed, setPreviewCollapsed] = useState(true)
-  /** Toolbar clipboard, shared by both panes. */
-  const [clipboard, setClipboard] = useState<ClipboardState | null>(null)
+  // A pending cut is the desktop's record: its marking follows the record (moved items, Esc, a newer copy).
+  useSyncExternalStore(desktopTransfers.subscribe, desktopTransfers.getVersion)
+  const pendingCut = desktopTransfers.cutOf('files', windowId)
+  /** A paste or drop that needs the user's choice first (a stale cut, BuckyOS addresses, a move that can only copy). */
+  const [transferChoice, setTransferChoice] = useState<{ message: string; confirmLabel: string; onConfirm: () => void } | null>(null)
+  const dragOffer = useRef<string | null>(null)
   /** Active form dialog (new collection/group, rename, new folder). */
   const [namePrompt, setNamePrompt] = useState<NamePromptRequest | null>(null)
   const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(null)
@@ -390,7 +415,6 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
   const copyText = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text)
-      setClipboard({ entries: [], mode: 'text', text, token: crypto.randomUUID() })
       showToast(t('filebrowser.toast.copied', 'Copied to clipboard'))
     } catch {
       showToast(t('filebrowser.toast.copyFailed', 'Copy failed'))
@@ -405,6 +429,17 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
     () => [...right.selectedItemsMap.values()],
     [right.selectedItemsMap],
   )
+  // The focused pane's Zone selection, offered to the Shell: its drag handle carries it to an App in another window
+  // (剪贴板规范 §5) — the only way into a cross-origin App, which a native drag from this document does not reach.
+  const offeredSelection = focusedSide === 'right' ? rightSelectedItems : leftSelectedItems
+  useEffect(() => {
+    const zone = offeredSelection.map((item) => item.entry).filter(isZoneEntry)
+    if (!windowId || !zone.length || zone.length !== offeredSelection.length) return
+    return offerWindowSelection('files', windowId, {
+      items: zone.map((entry) => ({ kind: entry.kind === 'folder' ? 'zone-folder' as const : 'zone-file' as const, formats: { [CONTENT_REFS_FORMAT]: zoneContentOfEntry(entry) } })),
+      operations: ['copy', 'link'],
+    })
+  }, [offeredSelection, windowId])
   // The preview panel & detail status only make sense for a single selection.
   const leftSelectedItem = leftSelectedItems.length === 1 ? leftSelectedItems[0] : null
   const rightSelectedItem = rightSelectedItems.length === 1 ? rightSelectedItems[0] : null
@@ -734,27 +769,52 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
 
   const paneFor = (side: 'left' | 'right') => (side === 'right' ? right : left)
 
-  // ─── Toolbar (desktop) ───
+  // ─── Clipboard and drags (剪贴板规范 §3, §6): Zone references for every App, a desktop record for Files ───
 
-  const cutEntries = (entries: FileEntry[]) => {
-    if (!entries.length) return
-    setClipboard({ entries, mode: 'cut', token: crypto.randomUUID() })
-    showToast(t('filebrowser.toast.cut', 'Cut {{count}} item(s)', { count: entries.length }))
+  /** A copy, cut or drag of these items: what the source allows and why it refuses the rest. */
+  const offerItems = (pane: BrowserPane, purpose: 'copy' | 'cut' | 'drag', items: FileItem[]) => {
+    const entries = items.map((item) => item.entry)
+    const move = commandState('move-to', contextFor(pane, items))
+    const moves = purpose === 'cut' || (purpose === 'drag' && move.state === 'available')
+    const operations: TransferOperation[] = ['copy', ...(entries.every(isZoneEntry) ? ['link' as const] : []), ...(moves ? ['move' as const] : [])]
+    return offerEntries(purpose, entries, { windowId, side: pane === right ? 'right' : 'left' }, operations, move.state === 'available' ? {} : { move: move.reason })
+  }
+  const copiedToast = (purpose: 'copy' | 'cut', count: number) => showToast(purpose === 'cut'
+    ? t('filebrowser.toast.cut', 'Cut {{count}} item(s)', { count })
+    : t('filebrowser.toast.copyItems', 'Copied {{count}} item(s)', { count }))
+  /** Copy / Cut from the toolbar or a menu: the same representations through the async clipboard. */
+  const copyCommand = async (pane: BrowserPane, purpose: 'copy' | 'cut', items: FileItem[]) => {
+    if (!items.length) return
+    const { offer, representations } = offerItems(pane, purpose, items)
+    const result = await copyWithCommand(representations)
+    if (result.ok && result.complete) { copiedToast(purpose, items.length); return }
+    // Without `text/html` the handle did not reach the clipboard: nothing there can be pasted as these items.
+    desktopTransfers.withdraw(offer.offerId)
+    showToast(result.ok
+      ? t('filebrowser.transfer.namesOnly', 'Only the names were copied, as text. Press Ctrl/⌘C to copy the items.')
+      : t('filebrowser.transfer.writeFailed', 'Could not write to the clipboard. Press Ctrl/⌘C to copy.'))
   }
 
-  const copyEntries = (entries: FileEntry[], mode: 'copy' | 'references' = 'copy') => {
-    if (!entries.length) return
-    setClipboard({ entries, mode, token: crypto.randomUUID() })
-    showToast(
-      t('filebrowser.toast.copyItems', 'Copied {{count}} item(s)', { count: entries.length }),
-    )
-  }
-
-  const runBatch = async (pane: BrowserPane, items: FileItem[], kind: 'copy' | 'move' | 'delete' | 'remove-ref' | 'add-ref', target?: string, cutClipboard?: ClipboardState | null, previousResults: OperationResult[] = [], retryOf?: string, requestKey = crypto.randomUUID(), resumeTaskId?: string) => {
-    if (operationFeedback.isRunning() || !items.length) return
+  /** Runs a batch and shows its results; null when it did not start (another operation runs, the items of a cut are
+   * being moved elsewhere). A move of a cut holds its items for this operation and consumes the ones that moved. */
+  const runBatch = async (pane: BrowserPane, items: FileItem[], kind: 'copy' | 'move' | 'delete' | 'remove-ref' | 'add-ref', target?: string, cut?: CutLink, previousResults: OperationResult[] = [], retryOf?: string, requestKey = crypto.randomUUID(), resumeTaskId?: string): Promise<OperationResult[] | null> => {
+    if (!items.length) return null
+    const cutKeys = kind === 'move' && cut ? items.flatMap((item) => cut.keys.get(item.entry.id) ?? []) : []
+    let holding = false
+    if (cut && cutKeys.length) {
+      const held = desktopTransfers.reserve(cut.offerId, cutKeys, requestKey)
+      if (!held.ok && held.reason === 'busy') { showToast(t('filebrowser.transfer.busy', 'These items are already being moved in another window.')); return null }
+      // A retry of a move the user started still runs when the cut itself is gone.
+      holding = held.ok
+    }
+    if (operationFeedback.isRunning()) {
+      if (holding) desktopTransfers.release(cut!.offerId, cutKeys, requestKey)
+      showToast(t('filebrowser.commandReason.Wait for the current operation to finish', 'Wait for the current operation to finish'))
+      return null
+    }
     busyRef.current = true
     const selectedAtStart = [...pane.selectedItemsMap.values()]
-    const reconcileSources = livePanes.current.map((source) => source.reconcileMovedEntries)
+    const reconcileSources = [...paneReconcilers].flatMap((panes) => panes())
     const captured = items.map((item) => ({ ...item, entry: { ...item.entry } }))
     const controller = new AbortController()
     const title = `${kind === 'copy' ? t('filebrowser.actions.copyTo', 'Copy to') : kind === 'move' ? t('filebrowser.actions.moveTo', 'Move to') : kind === 'delete' ? t('filebrowser.operation.permanentDelete', 'Permanently delete') : kind === 'add-ref' ? t('filebrowser.operation.addReferences', 'Add references') : t('filebrowser.actions.removeFromCollection', 'Remove from collection')} · ${target ?? displayPath(pane.currentUrl)}`
@@ -792,26 +852,29 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
     const succeeded = new Set(results.filter((result) => result.status === 'success').map((result) => result.entry.id))
     if (kind === 'move' || kind === 'delete') reconcileSources.forEach((reconcile) => reconcile(succeeded))
     if (kind !== 'copy') pane.reconcileSelection(selectedAtStart.filter((item) => !successfulKeys.has(item.key)))
-    if (kind === 'move' && cutClipboard) setClipboard((current) => {
-      if (!current || current.token !== cutClipboard.token) return current
-      const entries = current.entries.filter((entry) => !succeeded.has(entry.id))
-      return entries.length ? { ...current, entries } : null
-    })
+    if (holding) {
+      const moved = cutKeys.filter((key) => captured.some((item) => succeeded.has(item.entry.id) && cut!.keys.get(item.entry.id) === key))
+      desktopTransfers.consume(cut!.offerId, moved, requestKey)
+      desktopTransfers.release(cut!.offerId, cutKeys.filter((key) => !moved.includes(key)), requestKey)
+    }
     const retry = () => {
       if (kind === 'copy') { void runBatch(pane, captured, kind, target, undefined, [], monitorFailed ? undefined : copyTaskId, monitorFailed ? requestKey : undefined, monitorFailed ? copyTaskId : undefined); return }
       const failed = new Set(results.filter((result) => result.status === 'failed').map((result) => result.entry.id))
       const current = livePanes.current.find((current) => current.activeTabId === pane.activeTabId && current.currentUrl === pane.currentUrl && [...current.selectedItemsMap.values()].every((item) => failed.has(item.entry.id)))
-      void runBatch(current ?? pane, captured.filter((item) => failed.has(item.entry.id)), kind, target, cutClipboard, results.filter((result) => result.status !== 'failed'))
+      void runBatch(current ?? pane, captured.filter((item) => failed.has(item.entry.id)), kind, target, cut, results.filter((result) => result.status !== 'failed'))
     }
     setBatchTask((current) => ({ ...initial, ...current, taskId: copyTaskId, summary: monitorFailed ? undefined : current?.summary, results, running: false, cancelling: false, retry }))
     if (kind !== 'add-ref' && kind !== 'remove-ref') {
-      for (const folder of new Set([pane.currentUrl, ...(target ? [normalizeUrl(target)] : [])])) forgetFolderChildren(folder)
+      // A move or delete also changes the folders the items came from (a cut pasted in another pane or window).
+      const sources = kind === 'copy' ? [] : captured.flatMap((item) => parentUrl(normalizeUrl(item.entry.path)) ?? [])
+      for (const folder of new Set([pane.currentUrl, ...sources, ...(target ? [normalizeUrl(target)] : [])])) forgetFolderChildren(folder)
     }
     // The computer relocked under the operation: ask for sudo again, then redo what failed.
     if (results.some((result) => result.error?.code === 'SUDO_REQUIRED')) void unlockComputer().then((ok) => { if (ok) retry() })
+    return results
   }
 
-  const moveSelected = (pane: BrowserPane, entries: FileEntry[], target: string, clip?: ClipboardState | null) => runBatch(pane, entries.map(itemOf), 'move', target, clip)
+  const moveSelected = (pane: BrowserPane, entries: FileEntry[], target: string) => runBatch(pane, entries.map(itemOf), 'move', target)
   const zonePath = (item: SelectedContent) => item.origin === 'zone' && item.source.kind === 'cyfs-path' ? item.source.path.slice('cyfs://'.length) : null
   const pickDestination = async (pane: BrowserPane, entries: FileEntry[], copy: boolean): Promise<string | null> => {
     const result = await systemDialog.open(SELECT_DIALOG_PATH, {
@@ -838,15 +901,102 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
       if (entries.length) void runBatch(pane, entries.map(itemOf), 'add-ref', url)
     })
   }
-  const pasteInto = (pane: BrowserPane) => {
-    if (!clipboard) return
-    if (pane.list.capabilities.acceptsReferences && clipboard.mode === 'references') {
-      void runBatch(pane, clipboard.entries.map(itemOf), 'add-ref', pane.currentUrl)
+  /** Where a paste or drop lands in a pane: references in a collection, content in a writable folder. */
+  const destinationOf = (pane: BrowserPane) => {
+    const searching = !!pane.searchQuery
+    return {
+      collection: !searching && pane.list.capabilities.acceptsReferences,
+      folder: !searching && pane.list.capabilities.acceptsContent ? writablePathOf(pane.currentUrl) : null,
+    }
+  }
+  /** How a Files selection lands in a folder: move within one realm by default, copy across realms or when the
+   * source refuses a move; Ctrl/Alt copies, Shift moves (§6). */
+  const filesOperation = (payload: FilesTransferPayload, offer: { operations: readonly TransferOperation[]; purpose: string }, folder: string, intent?: DropIntent): 'copy' | 'move' | 'ask' => {
+    if (offer.purpose === 'cut') return 'move'
+    if (offer.purpose === 'copy' || intent?.copy) return 'copy'
+    const movable = offer.operations.includes('move')
+    if (intent?.move) return movable ? 'move' : 'ask'
+    return movable && payload.realm === realmOfPath(folder) ? 'move' : 'copy'
+  }
+  const reasonText = (reason: string | undefined) => reason ? t(`filebrowser.commandReason.${reason}`, reason) : t('filebrowser.operation.unavailable')
+  /** Items that could not even start (gone, object references) are reported like a finished batch. */
+  const reportFailed = (title: string, failed: OperationResult[]) => {
+    setBatchTask({ ownerId: windowId, title, results: failed, total: failed.length, running: false, cancel: () => {}, retry: () => {} })
+    return failed
+  }
+  /** Copies Zone references into a folder: each path is looked up with this user's session first. */
+  const copyReferences = async (pane: BrowserPane, items: ZoneContent[], folder: string) => {
+    if (!folderOps().supportsCopy) { showToast(reasonText(folderOps().copyUnavailableReason ?? 'File content copying is not supported')); return null }
+    const { entries, failed } = await resolveZoneItems(items, (parent, name) => withHostRetry(() => folderOps().statEntry(parent, name)))
+    if (!entries.length) return reportFailed(`${t('filebrowser.actions.copyTo', 'Copy to')} · ${folder}`, failed)
+    return runBatch(pane, entries.map(itemOf), 'copy', folder, undefined, failed)
+  }
+  const linkReferences = async (pane: BrowserPane, items: ZoneContent[]) => {
+    const { entries, failed } = referenceEntries(items)
+    if (!entries.length) return reportFailed(`${t('filebrowser.operation.addReferences', 'Add references')} · ${displayPath(pane.currentUrl)}`, failed)
+    return runBatch(pane, entries.map(itemOf), 'add-ref', pane.currentUrl, undefined, failed)
+  }
+  const askTransfer = (message: string, confirmLabel: string, onConfirm: () => void) => setTransferChoice({ message, confirmLabel, onConfirm })
+  const closeTransferChoice = () => { setTransferChoice(null); rootRef.current?.focus() }
+
+  /**
+   * One paste or drop into a pane, in the registered order (§2.3): a live Files record (cut → move, copy → copy, drag →
+   * move or copy), Zone references from any App (copy into a folder, references in a collection), local files (upload),
+   * BuckyOS addresses (only after the user chooses), text (explained). A handle whose record is gone never brings back an
+   * earlier selection; a stale cut asks before copying (§6).
+   */
+  const receive = (pane: BrowserPane, incoming: Incoming, options: { intent?: DropIntent; local?: () => Promise<LocalUpload[]> } = {}) => {
+    const { collection, folder } = destinationOf(pane)
+    const count = (n: number) => ({ count: n })
+    if (incoming.kind === 'text') { showToast(t('filebrowser.transfer.textOnly', 'This is text. Files can only paste files and folders here.')); return }
+    if (incoming.kind === 'empty') { showToast(t('filebrowser.transfer.empty', 'There is nothing here Files can paste.')); return }
+    if (incoming.kind === 'stale') { showToast(t('filebrowser.transfer.stale', 'The copied items are no longer available. Copy them again.')); return }
+    if (!collection && !folder) { showToast(reasonText(pane.searchQuery ? 'Choose a writable destination folder' : 'Choose a writable folder')); return }
+    if (incoming.kind === 'local') {
+      if (!folder) { showToast(t('filebrowser.operation.localUploadUnsupported', 'Local files can only be uploaded to a writable folder')); return }
+      void options.local?.().then((inputs) => enqueueInputs(pane.currentUrl, inputs)).catch((error: unknown) => showToast(String(error)))
       return
     }
-    const target = writablePathOf(pane.currentUrl)
-    if (target && pane.list.capabilities.acceptsContent && clipboard.mode === 'copy') void runBatch(pane, clipboard.entries.map(itemOf), 'copy', target)
-    if (target && pane.list.capabilities.acceptsContent && clipboard.mode === 'cut') void moveSelected(pane, clipboard.entries, target, clipboard)
+    if (incoming.kind === 'addresses') {
+      const items = incoming.refs.map(contentOfAddress)
+      if (collection) askTransfer(t('filebrowser.transfer.addressesLink', 'Add references to the {{count}} item(s) these BuckyOS addresses name?', count(items.length)), t('filebrowser.operation.addReferences', 'Add references'), () => void linkReferences(pane, items))
+      else askTransfer(t('filebrowser.transfer.addressesCopy', 'Copy the {{count}} item(s) these BuckyOS addresses name here?', count(items.length)), t('filebrowser.operation.copyHere', 'Copy here'), () => void copyReferences(pane, items, folder!))
+      return
+    }
+    if (incoming.kind === 'refs') {
+      if (collection) { void linkReferences(pane, incoming.items); return }
+      const copy = () => void copyReferences(pane, incoming.items, folder!)
+      if (incoming.staleCut) askTransfer(t('filebrowser.transfer.cutStale', 'The cut is no longer available. Copy {{count}} item(s) here instead?', count(incoming.items.length)), t('filebrowser.transfer.copyInstead', 'Copy instead'), copy)
+      else if (options.intent?.move) askTransfer(t('filebrowser.transfer.moveUnavailable', '{{count}} item(s) cannot be moved here. Copy them instead?', count(incoming.items.length)), t('filebrowser.transfer.copyInstead', 'Copy instead'), copy)
+      else copy()
+      return
+    }
+    const { offer, payload } = incoming
+    const remaining = remainingEntries(offer, payload)
+    const entries = remaining.map((item) => item.entry)
+    if (collection) {
+      // A cut added to a collection stays a pending cut: the originals stay in place (§6).
+      const zone = entries.filter(isZoneEntry)
+      if (!zone.length) { showToast(t('filebrowser.transfer.notHere', 'These items cannot be added here.')); return }
+      void runBatch(pane, zone.map(itemOf), 'add-ref', pane.currentUrl)
+      return
+    }
+    const operation = filesOperation(payload, offer, folder!, options.intent)
+    const copy = () => {
+      if (!folderOps().supportsCopy) { showToast(reasonText(folderOps().copyUnavailableReason ?? 'File content copying is not supported')); return }
+      void runBatch(pane, entries.map(itemOf), 'copy', folder!)
+    }
+    if (operation === 'ask') { askTransfer(t('filebrowser.transfer.moveUnavailable', '{{count}} item(s) cannot be moved here. Copy them instead?', count(entries.length)), t('filebrowser.transfer.copyInstead', 'Copy instead'), copy); return }
+    if (operation === 'copy') { copy(); return }
+    // Dropping items back where they are is no move.
+    if (offer.purpose === 'drag' && entries.every((entry) => parentUrl(normalizeUrl(entry.path)) === normalizeUrl(folder!))) return
+    void runBatch(pane, entries.map(itemOf), 'move', folder!, offer.purpose === 'cut' ? { offerId: offer.offerId, keys: new Map(remaining.map((item) => [item.entry.id, item.key])) } : undefined)
+  }
+  /** Paste from the toolbar or a menu: reads the system clipboard inside the user's click. */
+  const pasteCommand = async (pane: BrowserPane) => {
+    const result = await readClipboardCommand()
+    if (!result.ok) { showToast(t('filebrowser.transfer.readDenied', 'The browser did not allow reading the clipboard. Press Ctrl/⌘V to paste.')); return }
+    receive(pane, classifyIncoming(result.reader), { local: () => Promise.resolve(selectedUploads(result.reader.files)) })
   }
   const removeFromCollection = (pane: BrowserPane, keys: string[]) => {
     const items = keys.map((key) => pane.selectedItemsMap.get(key) ?? pane.list.loadedItemByKey(key)).filter((item): item is FileItem => !!item)
@@ -888,7 +1038,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
     viewMode: pane.viewMode, iconSize, capabilities: pane.list.capabilities, sortKey: pane.sortKey,
     collections: collections.map((item) => ({ id: item.id, title: item.title })), moveTargets,
     pane: { canOpenInNewTab: !isMobile, canOpenInRightPane: !isMobile && width >= 700 },
-    clipboard, searching: !!pane.searchQuery, contextToken: pane.contextToken,
+    searching: !!pane.searchQuery, contextToken: pane.contextToken,
     loadedCount: pane.searchQuery ? pane.searchItems.length : pane.list.loadedKeys().length,
     busy: !!batchTask?.running || pane.enumerating,
     otherPath: splitActive ? writablePathOf(pane === left ? right.currentUrl : left.currentUrl) ?? undefined : undefined,
@@ -904,8 +1054,8 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
       onDetails: () => setPreviewCollapsed((value) => !value),
       onPlaces: () => { if (splitActive && width < 1300) { setNavOverlayOpen(!navOverlayOpen); return }; const next = !navCollapsed; setNavCollapsed(next); localStorage.setItem('files.navCollapsed', String(next)) },
       onMoveTo: () => requestMove(pane, ctx.entries),
-      onCopy: commandState('copy', ctx).state === 'available' ? () => copyEntries(ctx.entries.map((entry) => ({ ...entry }))) : undefined,
-      onPaste: commandState('paste', ctx).state === 'available' ? () => pasteInto(pane) : undefined,
+      onCopy: commandState('copy', ctx).state === 'available' ? () => void copyCommand(pane, 'copy', items) : undefined,
+      onPaste: commandState('paste', ctx).state === 'available' ? () => void pasteCommand(pane) : undefined,
       onCopyTo: commandState('copy-to', ctx).state === 'available' ? () => requestCopy(pane, ctx.entries) : undefined,
       sortKey: pane.sortKey, sortDir: pane.sortDir,
       onSortChange: (key: SortKey, dir: SortDir) => { pane.setSortKey(key); pane.setSortDir(dir) },
@@ -1015,16 +1165,15 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
           setFocusedSide('right')
         }
         break
-      case 'cut': cutEntries(entries.map((entry) => ({ ...entry }))); break
-      case 'copy': copyEntries(entries.map((entry) => ({ ...entry }))); break
-      case 'copy-references': copyEntries(entries.map((entry) => ({ ...entry })), 'references'); break
+      case 'cut': void copyCommand(pane, 'cut', items); break
+      case 'copy': void copyCommand(pane, 'copy', items); break
       case 'copy-to': requestCopy(pane, entries); break
       case 'copy-other': {
         const path = String(action.args?.path ?? context.otherPath ?? '')
         if (path) void runBatch(pane, items, 'copy', path)
         break
       }
-      case 'paste': pasteInto(pane); break
+      case 'paste': void pasteCommand(pane); break
       case 'details':
         if (first) pane.applySelection([first.key], new Map([[first.key, first]]))
         if (isMobile) setMobilePreviewOpen(true)
@@ -1217,8 +1366,10 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
     else left.back()
   } : null)
 
+  /** Esc also cancels this window's pending cut: its items are no longer marked or moved by a paste. */
+  const cancelCut = () => { if (pendingCut) desktopTransfers.withdraw(pendingCut.offerId) }
   const handleKeyDown = (event: React.KeyboardEvent) => {
-    if ((event.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"], [role="dialog"]') || namePrompt || deleteRequest || conflictRequest) return
+    if ((event.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"], [role="dialog"]') || namePrompt || deleteRequest || conflictRequest || transferChoice) return
     const pane = focusedPane
     const items = [...pane.selectedItemsMap.values()]
     const ctx = contextFor(pane, items)
@@ -1228,13 +1379,158 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
     if (cmd && event.key.toLowerCase() === 'l') { event.preventDefault(); setPathEditSignal((value) => value + 1); return }
     if (event.altKey && event.key === 'ArrowLeft') { event.preventDefault(); pane.back(); return }
     if (event.altKey && event.key === 'ArrowRight') { event.preventDefault(); pane.forward(); return }
-    if (event.key === 'Escape') { event.preventDefault(); pane.cancelEnumeration(); pane.clearSelection(); setClipboard(null); return }
+    if (event.key === 'Escape') { event.preventDefault(); pane.cancelEnumeration(); pane.clearSelection(); cancelCut(); return }
+    const clip = cmd && !event.shiftKey && !event.altKey ? ({ c: 'copy', x: 'cut', v: 'paste' } as const)[event.key.toLowerCase() as 'c' | 'x' | 'v'] : undefined
+    if (clip) {
+      // The real copy / cut / paste event does the work (see the clipboard listeners); a browser that fires none for
+      // the shortcut goes through the async clipboard instead.
+      afterShortcut(clip, () => runMenuAction(pane, ctx, { type: 'action', id: clip, command: clip, label: { key: '', fallback: clip } }))
+      return
+    }
     if (event.metaKey && event.key === 'Backspace') command = pane.list.capabilities.removal === 'remove-ref' ? 'remove-from-collection' : 'delete'
-    else if (cmd) command = ({ c: 'copy', x: 'cut', v: 'paste' } as Record<string, string>)[event.key.toLowerCase()]
+    else if (cmd) return
     else if (event.key === 'F2') command = 'rename'
     else if (event.key === 'Delete' || (event.metaKey && event.key === 'Backspace')) command = pane.list.capabilities.removal === 'remove-ref' ? 'remove-from-collection' : 'delete'
     else if (event.key === 'Enter' && items.length === 1) command = 'open'
     if (command) { event.preventDefault(); runMenuAction(pane, ctx, { type: 'action', id: command, command, label: { key: '', fallback: command } }) }
+  }
+
+  /** Copy, cut and paste events of this window: whichever element the browser targets (the selection may sit in
+   * another window), they belong to Files while its focus is here, outside fields, editors and dialogs (§3.3). */
+  const clipboardBlocked = (event: ClipboardEvent) => {
+    const root = rootRef.current
+    const active = document.activeElement
+    if (!root || event.defaultPrevented || !active || !root.contains(active) || isEditableTarget(active) || isEditableTarget(event.target)) return true
+    if (namePrompt || deleteRequest || conflictRequest || transferChoice || permissionsRequest || defaultApp) return true
+    // Text the user selected inside Files (the details panel) is copied as text.
+    const selection = document.getSelection()
+    return event.type !== 'paste' && !!selection && !selection.isCollapsed && !!selection.toString().trim() && root.contains(selection.anchorNode)
+  }
+  const onClipboardEvent = (event: ClipboardEvent) => {
+    if (clipboardBlocked(event)) return
+    const pane = focusedPane
+    if (event.type === 'paste') {
+      const reader = readTransferEvent(event.clipboardData)
+      event.preventDefault()
+      // Another operation running is told by the batch itself: a cut held by another window says it is being moved.
+      const state = commandState('paste', { ...contextFor(pane, []), busy: false })
+      if (state.state !== 'available') { showToast(reasonText(state.reason)); return }
+      receive(pane, classifyIncoming(reader), { local: () => Promise.resolve(selectedUploads(reader.files)) })
+      return
+    }
+    const purpose = event.type === 'cut' ? 'cut' : 'copy'
+    const items = [...pane.selectedItemsMap.values()]
+    if (!items.length) return
+    const state = commandState(purpose, contextFor(pane, items))
+    if (state.state !== 'available') { showToast(reasonText(state.reason)); return }
+    const { offer, representations } = offerItems(pane, purpose, items)
+    if (!writeTransferEvent(event.clipboardData, representations)) { desktopTransfers.withdraw(offer.offerId); void copyCommand(pane, purpose, items); return }
+    event.preventDefault()
+    copiedToast(purpose, items.length)
+  }
+  const clipboardListener = useRef(onClipboardEvent)
+  useEffect(() => { clipboardListener.current = onClipboardEvent })
+  useEffect(() => {
+    const listener = (event: ClipboardEvent) => clipboardListener.current(event)
+    for (const type of ['copy', 'cut', 'paste'] as const) document.addEventListener(type, listener)
+    return () => { for (const type of ['copy', 'cut', 'paste'] as const) document.removeEventListener(type, listener) }
+  }, [])
+
+  // ─── The Shell's router (cross-window drag handle, "Paste desktop object…"): this window as a target (§5) ───
+
+  const paneAt = (at: TransferPoint): { side: 'left' | 'right'; pane: BrowserPane } => {
+    if (at === 'focus' || !splitActive) return { side: focusedIsRight ? 'right' : 'left', pane: focusedPane }
+    const root = rootRef.current?.getBoundingClientRect()
+    const rightPane = rootRef.current?.querySelector('[data-pane="right"]')?.getBoundingClientRect()
+    return root && rightPane && root.left + at.x >= rightPane.left ? { side: 'right', pane: right } : { side: 'left', pane: left }
+  }
+  const placeName = (pane: BrowserPane) => placeTitles[pane.currentUrl] ?? pane.list.meta?.title ?? (displayPath(pane.currentUrl).split('/').filter(Boolean).pop() || displayPath(pane.currentUrl))
+  /** What this window would do with the items at a point. Looks at kinds, formats and operations only. */
+  const probeTransfer = (probe: TransferProbe): TransferProbeAnswer | null => {
+    const { side, pane } = paneAt(probe.at)
+    const { collection, folder } = destinationOf(pane)
+    const accept: TransferProbeAnswer['accept'] = []
+    for (const item of probe.items) {
+      const zone = (item.kind === 'zone-file' || item.kind === 'zone-folder') && item.formats.includes(CONTENT_REFS_FORMAT)
+      if (zone && collection && item.operations.includes('link')) accept.push({ itemKey: item.itemKey, format: CONTENT_REFS_FORMAT, operation: 'link' })
+      else if (zone && folder && folderOps().supportsCopy && item.operations.includes('copy')) accept.push({ itemKey: item.itemKey, format: CONTENT_REFS_FORMAT, operation: 'copy' })
+      else if (item.kind === 'local-file' && item.formats.includes('files') && folder && item.operations.includes('copy')) accept.push({ itemKey: item.itemKey, format: 'files', operation: 'copy' })
+    }
+    if (!accept.length) return null
+    const name = placeName(pane)
+    const action = accept.every((a) => a.operation === 'link') ? t('filebrowser.transfer.actionLink', 'Add references to {{name}}', { name })
+      : accept.every((a) => a.format === 'files') ? t('filebrowser.transfer.actionUpload', 'Upload to {{name}}', { name })
+        : t('filebrowser.transfer.actionCopy', 'Copy into {{name}}', { name })
+    return { targetId: `${side}\n${pane.currentUrl}`, accept, action }
+  }
+  const deliveries = useRef(new Map<string, Promise<TransferDeliveryResult>>())
+  /** Commits a delivery once per operation: copies or references for Zone items, uploads for local files. */
+  const deliverTransfer = (delivery: TransferDelivery): Promise<TransferDeliveryResult> => {
+    const known = deliveries.current.get(delivery.operationId)
+    if (known) return known
+    const failAll = (error: string): TransferDeliveryResult => ({ status: 'failed', items: delivery.items.map((item) => ({ itemKey: item.itemKey, status: 'failed', error })) })
+    const run = async (): Promise<TransferDeliveryResult> => {
+      const [side, url] = delivery.targetId.split('\n')
+      const pane = side === 'right' ? right : left
+      const { collection, folder } = destinationOf(pane)
+      if (pane.currentUrl !== url || (delivery.operation === 'link' ? !collection : !folder)) return failAll(t('filebrowser.transfer.destinationChanged', 'The destination changed. Try again.'))
+      const statuses = new Map<string, { status: TransferItemStatus; error?: string }>()
+      const zone: { itemKey: string; item: ZoneContent }[] = []
+      const files: { itemKey: string; file: File }[] = []
+      for (const item of delivery.items) {
+        const content = item.format === CONTENT_REFS_FORMAT ? readZoneContent(item.value) : undefined
+        if (content) zone.push({ itemKey: item.itemKey, item: content })
+        else if (item.format === 'files' && item.value instanceof File && folder) files.push({ itemKey: item.itemKey, file: item.value })
+        else statuses.set(item.itemKey, { status: 'skipped' })
+      }
+      if (files.length) {
+        void enqueueInputs(pane.currentUrl, selectedUploads(files.map((item) => item.file)))
+        for (const item of files) statuses.set(item.itemKey, { status: 'accepted' })
+      }
+      if (zone.length) {
+        const items = zone.map((item) => item.item)
+        const results = delivery.operation === 'link' ? await linkReferences(pane, items) : await copyReferences(pane, items, folder!)
+        const byPath = new Map(zone.map((item) => [dfsPathOfContent(item.item) ?? '', item.itemKey]))
+        for (const result of results ?? []) {
+          const itemKey = byPath.get(result.entry.path)
+          if (itemKey === undefined || statuses.has(itemKey)) continue
+          statuses.set(itemKey, { status: result.status === 'success' ? 'done' : result.status, ...(result.error ? { error: t(result.error.messageKey, result.error.fallback) } : {}) })
+        }
+      }
+      const items = delivery.items.map((item) => ({ itemKey: item.itemKey, ...(statuses.get(item.itemKey) ?? { status: 'failed' as const }) }))
+      const status = items.some((item) => item.status === 'accepted') ? 'accepted' : items.some((item) => item.status === 'done') ? 'done' : items.every((item) => item.status === 'cancelled') ? 'cancelled' : 'failed'
+      return { status, items }
+    }
+    const result = run().catch((error: unknown) => failAll(String(error)))
+    deliveries.current.set(delivery.operationId, result)
+    return result
+  }
+  const transferTarget = useRef({ probe: probeTransfer, deliver: deliverTransfer })
+  useEffect(() => { transferTarget.current = { probe: probeTransfer, deliver: deliverTransfer } })
+  useEffect(() => {
+    if (!windowId) return
+    return registerWindowTransferTarget(windowId, {
+      probe: (probe) => transferTarget.current.probe(probe),
+      deliver: (delivery) => transferTarget.current.deliver(delivery),
+    })
+  }, [windowId])
+
+  /** The drop effect a drag would get in a pane, from its types and this desktop's live Files drag (hover only). */
+  const dropEffectFor = (pane: BrowserPane, event: React.DragEvent): DataTransfer['dropEffect'] => {
+    const types = transferTypes(event.dataTransfer)
+    const { collection, folder } = destinationOf(pane)
+    const allowed = event.dataTransfer.effectAllowed
+    const drag = types.includes(TRANSFER_HANDLE_FORMAT) ? desktopTransfers.dragOf('files') : undefined
+    const payload = payloadOf(drag)
+    if (drag && payload) {
+      if (collection) return payload.realm === 'zone' ? allowedEffect('link', allowed) : 'none'
+      if (!folder) return 'none'
+      const operation = filesOperation(payload, drag, folder, { copy: event.ctrlKey || event.altKey, move: event.shiftKey })
+      if (operation === 'move' && payload.entries.every((entry) => parentUrl(normalizeUrl(entry.path)) === normalizeUrl(folder))) return 'none'
+      return allowedEffect(operation === 'move' ? 'move' : 'copy', allowed)
+    }
+    if (collection) return types.includes('files') && !mayCarryFiles(types.filter((type) => type !== 'files')) ? 'none' : allowedEffect('link', allowed)
+    return folder ? allowedEffect('copy', allowed) : 'none'
   }
   const dropProps = (pane: BrowserPane) => ({
     onDragStart: (event: React.DragEvent) => {
@@ -1242,39 +1538,31 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
       const item = key ? pane.list.loadedItemByKey(key) : undefined
       if (!item) return
       const items = pane.selectedItemsMap.has(item.key) ? [...pane.selectedItemsMap.values()] : [item]
-      const token = crypto.randomUUID()
-      draggedFiles = { token, pane, items: items.map((item) => ({ ...item, entry: { ...item.entry } })) }
-      event.dataTransfer.setData(FILE_DRAG_TYPE, token)
-      event.dataTransfer.effectAllowed = 'copyMove'
+      if (dragOffer.current) desktopTransfers.withdraw(dragOffer.current)
+      // The same content as a copy: other Apps (an AIWS canvas, a chat draft) read the Zone references.
+      const { offer, representations } = offerItems(pane, 'drag', items)
+      writeTransferEvent(event.dataTransfer, representations)
+      event.dataTransfer.effectAllowed = effectAllowedOf([...offer.operations])
+      dragOffer.current = offer.offerId
     },
-    onDragEnd: () => { draggedFiles = null; setDragTarget(null) },
+    onDragEnd: () => { if (dragOffer.current) desktopTransfers.withdraw(dragOffer.current); dragOffer.current = null; setDragTarget(null) },
     onDragOver: (event: React.DragEvent) => {
-      const internal = event.dataTransfer.types.includes(FILE_DRAG_TYPE)
-      if (!internal && !event.dataTransfer.types.includes('Files')) return
+      // Hover looks at the types only: nothing is read, uploaded or copied before the drop.
+      if (!mayCarryFiles(transferTypes(event.dataTransfer))) return
       event.preventDefault()
-      event.dataTransfer.dropEffect = pane.searchQuery ? 'none' : internal && pane.list.capabilities.acceptsReferences ? 'copy' : pane.list.capabilities.acceptsContent ? internal && !event.ctrlKey && !event.altKey ? 'move' : 'copy' : 'none'
-      setDragTarget(pane.currentUrl)
+      const effect = dropEffectFor(pane, event)
+      event.dataTransfer.dropEffect = effect
+      setDragTarget(effect === 'none' ? null : pane.currentUrl)
     },
     onDragLeave: (event: React.DragEvent) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragTarget(null) },
     onDrop: (event: React.DragEvent) => {
       event.preventDefault()
       setDragTarget(null)
-      if (event.dataTransfer.types.includes(FILE_DRAG_TYPE)) {
-        const source = draggedFiles
-        draggedFiles = null
-        if (!source || source.token !== event.dataTransfer.getData(FILE_DRAG_TYPE) || !source.pane.isCurrent()) { showToast(t('filebrowser.operation.contextChanged', 'The selection changed. Open the menu again.')); return }
-        if (pane.searchQuery) { showToast(t('filebrowser.operation.invalidDestination', 'Choose a writable folder outside the selected folders.')); return }
-        if (pane.list.capabilities.acceptsReferences) { void runBatch(source.pane, source.items, 'add-ref', pane.currentUrl); return }
-        const copying = event.ctrlKey || event.altKey
-        const state = commandState(copying ? 'copy-to' : 'move-to', contextFor(source.pane, source.items))
-        if (state.state !== 'available') { showToast(state.reason ? t(`filebrowser.commandReason.${state.reason}`, state.reason) : t('filebrowser.operation.unavailable')); return }
-        const target = writablePathOf(pane.currentUrl)
-        if (!target || !pane.list.capabilities.acceptsContent) { showToast(t('filebrowser.operation.invalidDestination', 'Choose a writable folder outside the selected folders.')); return }
-        void runBatch(source.pane, source.items, copying ? 'copy' : 'move', target)
-        return
-      }
-      if (!pane.list.capabilities.acceptsContent || pane.searchQuery) { showToast(t('filebrowser.operation.localUploadUnsupported', 'Local files can only be uploaded to a writable folder')); return }
-      void droppedUploads(event.dataTransfer).then(inputs => enqueueInputs(pane.currentUrl, inputs)).catch(error => showToast(String(error)))
+      const incoming = classifyIncoming(readTransferEvent(event.dataTransfer))
+      // Folders dropped from this device are walked from the event's items, which only exist during the event.
+      const local = incoming.kind === 'local' ? droppedUploads(event.dataTransfer) : null
+      local?.catch(() => undefined)
+      receive(pane, incoming, { intent: { copy: event.ctrlKey || event.altKey, move: event.shiftKey }, local: () => local ?? Promise.resolve([]) })
     },
   })
   const dialogs = <>
@@ -1287,6 +1575,10 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
       <div className="flex justify-end gap-2"><button type="button" className="files-btn" onClick={() => setDefaultApp(null)}>{t('common.cancel', 'Cancel')}</button><button type="button" className="files-btn files-btn-primary" onClick={() => { const choice = defaultApp; void (async () => { if (choice.always) await (await contentRegistry())?.setDefault('open', choice.selector, choice.key); setDefaultApp(null); await openContent(choice.request, { handlerKey: choice.key, name: choice.name, size: choice.size }) })().catch(error => showToast(String(error))) }}>{t('filebrowser.menu.open', 'Open')}</button></div>
     </section></div>}
 
+    {transferChoice && <div className="files-scrim absolute inset-0 z-50 flex items-center justify-center p-4"><section role="dialog" aria-modal="true" aria-label={t('filebrowser.menu.paste', 'Paste')} data-testid="files-transfer-choice" className="flex w-[min(384px,100%)] flex-col gap-4 rounded-[12px] border border-[color:var(--files-hairline)] bg-[color:var(--cp-surface-opaque)] p-5 shadow-[var(--cp-panel-shadow)]" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); closeTransferChoice() } }}>
+      <p className="text-[14px]">{transferChoice.message}</p>
+      <div className="flex justify-end gap-2"><button type="button" className="files-btn" onClick={closeTransferChoice}>{t('common.cancel', 'Cancel')}</button><button type="button" autoFocus className="files-btn files-btn-primary" onClick={() => { const choice = transferChoice; closeTransferChoice(); choice.onConfirm() }}>{transferChoice.confirmLabel}</button></div>
+    </section></div>}
     <DeleteDialog request={deleteRequest} onClose={() => setDeleteRequest(null)} />
     <ConflictDialog request={conflictRequest?.ownerId === windowId ? conflictRequest : null} />
     {permissionsRequest && <PermissionsDialog key={permissionsRequest.path} request={permissionsRequest} onClose={() => setPermissionsRequest(null)} />}
@@ -1324,7 +1616,7 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
     thumbnailSource,
     onUnlock: () => void unlockComputer().then((ok) => { if (ok) pane.list.reload() }),
     scroll: pane.scroll, onScroll: pane.setScroll, revealIndex: pane.revealIndex,
-    cutIds: clipboard?.mode === 'cut' ? new Set(clipboard.entries.map((entry) => entry.id)) : new Set<string>(),
+    cutIds: cutEntryIds(pendingCut),
     onSelectLoaded: pane.selectLoaded, onSelectAll: () => void pane.selectAll(),
     sortKey: pane.sortKey, sortDir: pane.sortDir,
     onSortChange: (key: SortKey, dir: SortDir) => { pane.setSortKey(key); pane.setSortDir(dir) },
@@ -1430,7 +1722,6 @@ function FileBrowserWindow({ windowId, openRequest, home }: FileBrowserProps & {
           { command: 'copy-to', label: t('filebrowser.actions.copyTo', 'Copy to') },
           { command: 'copy-other', label: t('filebrowser.menu.copyOther', 'Copy to other pane') },
           { command: 'move-to', label: t('filebrowser.actions.moveTo', 'Move to') },
-          { command: 'copy-references', label: t('filebrowser.menu.copyReferences', 'Copy references for a collection') },
         ].map(({ command, label }) => <button type="button" key={command} className="files-btn !rounded-[10px]" disabled={commandState(command, contextFor(left, leftSelectedItems)).state !== 'available'} onClick={() => runMenuAction(left, contextFor(left, leftSelectedItems), { type: 'action', id: command, command, label: { key: '', fallback: label } })}>{label}</button>)}</div>}
         {selectionProgress(left)}
         {/* Address bar: path crumbs + refresh on the right */}

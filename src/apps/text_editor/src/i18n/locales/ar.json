@@ -165,5 +165,7 @@
   "cm.replaced $ matches": "عدد التطابقات المستبدلة: $",
   "cm.replaced match on line $": "استُبدل التطابق في السطر $",
   "conflictCopy": "نسخة متعارضة",
-  "untitledFile": "بدون عنوان.txt"
+  "untitledFile": "بدون عنوان.txt",
+  "transferInsert": "إدراج عند المؤشر",
+  "transferOpen": "فتح في محرر النصوص"
 }

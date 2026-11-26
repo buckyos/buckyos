@@ -10,7 +10,9 @@ async function setup(page: Page) {
   return win
 }
 
-test('copy clipboard survives success and same-directory conflicts in mock mode', async ({ page }) => {
+test('copy clipboard survives success and same-directory conflicts in mock mode', async ({ page, context }) => {
+  // The toolbar's Copy and Paste go through the system clipboard.
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const win = await setup(page)
   await win.getByRole('cell', { name: 'Kyoto Trip Plan.md', exact: true }).click()
   await win.getByRole('button', { name: 'Copy files', exact: true }).click()

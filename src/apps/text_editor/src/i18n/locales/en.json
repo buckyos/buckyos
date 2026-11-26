@@ -165,5 +165,7 @@
   "cm.replaced $ matches": "replaced $ matches",
   "cm.replaced match on line $": "replaced match on line $",
   "conflictCopy": "conflict copy",
-  "untitledFile": "untitled.txt"
+  "untitledFile": "untitled.txt",
+  "transferInsert": "Insert at the cursor",
+  "transferOpen": "Open in Text Editor"
 }

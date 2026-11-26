@@ -165,5 +165,7 @@
   "cm.replaced $ matches": "已替换 $ 个匹配项",
   "cm.replaced match on line $": "已替换第 $ 行的匹配项",
   "conflictCopy": "冲突副本",
-  "untitledFile": "未命名.txt"
+  "untitledFile": "未命名.txt",
+  "transferInsert": "插入到光标处",
+  "transferOpen": "在文本编辑器中打开"
 }

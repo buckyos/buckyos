@@ -23,6 +23,7 @@ import { myNetworkEn, myNetworkZh } from './my-network'
 import { loadingTipsEn, loadingTipsZh } from './loading-tips'
 import { sharesEn, sharesZh } from './shares'
 import { sysdlgSelectEn, sysdlgSelectZh } from './sysdlg-select'
+import { transferEn, transferZh } from './transfer'
 import { fileBrowserFilesEn, fileBrowserFilesZh } from './filebrowser-files'
 import { appLaunchEn, appLaunchZh } from './app-launch'
 import { archiveEn, archiveZh } from './archive'
@@ -780,6 +781,8 @@ const en: Dictionary = {
   'preview.action.more': 'More',
   'preview.action.download': 'Download original',
   'preview.action.copySource': 'Copy path / object id',
+  'preview.action.copyFile': 'Copy file',
+  'preview.action.dragOut': 'Drag to another app',
   'preview.action.exitFullscreen': 'Exit fullscreen',
   'preview.action.fullscreen': 'Fullscreen',
   'preview.action.share': 'Share',
@@ -844,6 +847,7 @@ const en: Dictionary = {
   'previewApp.kept': 'Kept',
   'previewApp.landing.placeholder': 'cyfs:///home/… or an Object ID',
   'previewApp.landing.drop': 'Drop files here to preview them (several files become one session)',
+  'previewApp.landing.dropFolder': 'Folders cannot be previewed. Open them in Files.',
   'previewApp.landing.chooseFiles': 'Choose files…',
   'previewApp.landing.restore': 'Reopen last session',
   'previewApp.landing.samples': 'Sample gallery (mock runtime)',
@@ -1609,6 +1613,8 @@ const zhCN: Dictionary = {
   'preview.action.more': '更多',
   'preview.action.download': '下载原始文件',
   'preview.action.copySource': '复制路径 / Object ID',
+  'preview.action.copyFile': '复制文件',
+  'preview.action.dragOut': '拖到其他 App',
   'preview.action.exitFullscreen': '退出全屏',
   'preview.action.fullscreen': '全屏',
   'preview.action.share': '分享',
@@ -1673,6 +1679,7 @@ const zhCN: Dictionary = {
   'previewApp.kept': '已保留',
   'previewApp.landing.placeholder': 'cyfs:///home/… 或 Object ID',
   'previewApp.landing.drop': '将文件拖到这里进行预览（多个文件会组成一个会话）',
+  'previewApp.landing.dropFolder': '文件夹不能预览，请在“文件”中打开。',
   'previewApp.landing.chooseFiles': '选择文件…',
   'previewApp.landing.restore': '重新打开上次会话',
   'previewApp.landing.samples': '示例内容（Mock 运行时）',
@@ -1700,8 +1707,8 @@ const zhCN: Dictionary = {
 }
 
 export const dictionaries: Record<SupportedLocale, Dictionary> = {
-  en: { ...en, ...workflowEn, ...appUiEn, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...zoneDomainEn, ...trayEn, ...taskCenterEn, ...filePermissionsEn, ...networkEn, ...myNetworkEn, ...sharesEn, ...sysdlgSelectEn, ...fileBrowserFilesEn, ...appLaunchEn, ...ssoEn, ...agentBrowserEn, ...agentBrowserConversationEn, ...agentBrowserReflowEn, ...agentBrowserSiteEn, ...archiveEn, ...desktopEditEn },
-  'zh-CN': { ...zhCN, ...workflowZh, ...appUiZh, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...zoneDomainZh, ...trayZh, ...taskCenterZh, ...filePermissionsZh, ...networkZh, ...myNetworkZh, ...sharesZh, ...sysdlgSelectZh, ...fileBrowserFilesZh, ...appLaunchZh, ...ssoZh, ...agentBrowserZh, ...agentBrowserConversationZh, ...agentBrowserReflowZh, ...agentBrowserSiteZh, ...archiveZh, ...desktopEditZh },
+  en: { ...en, ...workflowEn, ...appUiEn, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...zoneDomainEn, ...trayEn, ...taskCenterEn, ...filePermissionsEn, ...networkEn, ...myNetworkEn, ...sharesEn, ...sysdlgSelectEn, ...transferEn, ...fileBrowserFilesEn, ...appLaunchEn, ...ssoEn, ...agentBrowserEn, ...agentBrowserConversationEn, ...agentBrowserReflowEn, ...agentBrowserSiteEn, ...archiveEn, ...desktopEditEn },
+  'zh-CN': { ...zhCN, ...workflowZh, ...appUiZh, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...zoneDomainZh, ...trayZh, ...taskCenterZh, ...filePermissionsZh, ...networkZh, ...myNetworkZh, ...sharesZh, ...sysdlgSelectZh, ...transferZh, ...fileBrowserFilesZh, ...appLaunchZh, ...ssoZh, ...agentBrowserZh, ...agentBrowserConversationZh, ...agentBrowserReflowZh, ...agentBrowserSiteZh, ...archiveZh, ...desktopEditZh },
   'zh-TW': {},
   ja: {},
   ko: {},

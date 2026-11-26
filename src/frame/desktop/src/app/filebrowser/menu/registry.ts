@@ -172,7 +172,6 @@ const clipboardProvider: FileMenuProvider = {
     const section: FileMenuSection = [
       action('cut', label('cut', 'Cut'), { icon: 'move', shortcut: 'Ctrl/⌘X' }),
       action('copy', label('copyFiles', 'Copy files'), { icon: 'copy', shortcut: 'Ctrl/⌘C' }),
-      ...(onComputer(ctx) ? [] : [action('copy-references', label('copyReferences', 'Copy references for a collection'), { icon: 'collection' })]),
       isSelection(ctx)
         ? action('copy-path', label('copyPaths', 'Copy {{count}} paths', { count }), {
             icon: 'copy',

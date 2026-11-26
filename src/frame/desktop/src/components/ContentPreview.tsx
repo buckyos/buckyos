@@ -25,8 +25,10 @@ import {
   Download,
   ExternalLink,
   FileQuestion,
+  Files,
   FileX,
   Fullscreen,
+  GripVertical,
   Info,
   Loader2,
   Lock,
@@ -58,8 +60,11 @@ import {
   type ReactNode,
   type Ref,
 } from 'react'
+import { contentRefsRepresentations } from 'buckyos/transfer'
 import { useI18n } from '../i18n/provider'
+import { copyWithCommand, writeTransferEvent } from '../transfer'
 import { readAll, readProbe, readText } from './preview/io'
+import { zoneContentOfPreviewSource } from './preview/transferSource'
 import {
   classifyMedia,
   contentLabelOf,
@@ -1046,6 +1051,24 @@ function ContentViewer(props: ContentPreviewProps) {
     void navigator.clipboard?.writeText(sourceLabel(itemInfo.source)).catch(() => {})
   }, [invokeAction, itemInfo])
 
+  // The item as a Zone reference (剪贴板规范 §2.2): dragged from the toolbar's handle to Files, a conversation or
+  // another App, or copied from More. Content outside the Zone (a file of this device) has neither.
+  const zoneItem = useMemo(
+    () => (itemInfo ? zoneContentOfPreviewSource(itemInfo.source, { name: displayName, mime: current?.classification?.mediaType, size: current?.resolved?.size }) : null),
+    [current?.classification?.mediaType, current?.resolved?.size, displayName, itemInfo],
+  )
+  const [finePointer] = useState(() => !window.matchMedia?.('(pointer: coarse)').matches)
+  const dragItem = useCallback((event: React.DragEvent) => {
+    if (!zoneItem) return
+    writeTransferEvent(event.dataTransfer, contentRefsRepresentations([zoneItem]))
+    event.dataTransfer.effectAllowed = 'copy'
+  }, [zoneItem])
+  const copyItem = useCallback(() => {
+    if (!zoneItem) return
+    invokeAction('copy-file')
+    void copyWithCommand(contentRefsRepresentations([zoneItem]))
+  }, [invokeAction, zoneItem])
+
   const zoomIn = useCallback(() => {
     if (rendererType === 'text') setFontScale((s) => clamp(s * 1.15, 0.5, 4))
     else if (rendererType === 'pdf' || rendererType === 'sheet') zoomRef.current?.zoomBy(ZOOM_STEP)
@@ -1323,6 +1346,19 @@ function ContentViewer(props: ContentPreviewProps) {
               if (!event.currentTarget.contains(event.relatedTarget as Node | null)) holdUi('focus', false)
             }}
           >
+            {zoneItem && finePointer ? (
+              <span
+                draggable
+                onDragStart={dragItem}
+                role="img"
+                aria-label={t('preview.action.dragOut', 'Drag to another app')}
+                title={t('preview.action.dragOut', 'Drag to another app')}
+                data-testid="content-preview-drag"
+                className="inline-flex h-8 w-6 shrink-0 cursor-grab items-center justify-center rounded-[8px] text-[color:var(--cp-muted)] transition-colors hover:bg-[color:var(--files-hover)] active:cursor-grabbing"
+              >
+                <GripVertical size={16} />
+              </span>
+            ) : null}
             {onRequestExit && !titleInHost ? (
               <ToolButton label={t('preview.action.exit', 'Exit preview')} shortcut="Esc" onClick={requestExit} testId="content-preview-exit">
                 <X size={16} />
@@ -1467,6 +1503,11 @@ function ContentViewer(props: ContentPreviewProps) {
               {capabilities.export ? (
                 <MenuItem onClick={() => closeMenuThen(downloadCurrent)}>
                   <Download size={16} className="mr-3 text-[color:var(--cp-muted)]" /> {t('preview.action.download', 'Download original')}
+                </MenuItem>
+              ) : null}
+              {zoneItem ? (
+                <MenuItem onClick={() => closeMenuThen(copyItem)} data-testid="content-preview-menu-copy-file">
+                  <Files size={16} className="mr-3 text-[color:var(--cp-muted)]" /> {t('preview.action.copyFile', 'Copy file')}
                 </MenuItem>
               ) : null}
               <MenuItem onClick={() => closeMenuThen(copySource)}>

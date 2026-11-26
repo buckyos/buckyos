@@ -18,6 +18,7 @@ import {
   FolderOpen,
   ImageIcon,
   ListChecks,
+  Loader2,
   Mic,
   Paperclip,
   Send,
@@ -29,6 +30,8 @@ import { useI18n } from '../../../i18n/provider'
 import { LinkifiedText } from '../history/MessageMarkdown'
 import { displayedContent, effectiveContent, messageObjId } from '../history/relations'
 import type { ndn } from 'buckyos'
+import type { ZoneContent } from 'buckyos/content'
+import { readTransferEvent } from '../../../transfer'
 import { agentAskQuestionText, buildAgentAskAnswer, getMessageSenderName, type MessageObject, type VoiceNote } from '../model/msgobj'
 import { formatVoiceDuration, voiceRecordingSupported } from '../media/voice'
 import { EmojiPanel } from './EmojiPanel'
@@ -48,6 +51,7 @@ import {
   type ComposerAttachmentInput,
   type ComposerAttachmentItem,
 } from './attachmentDraft'
+import { readZoneAttachment, zoneAttachFailure, zoneAttachmentKey, zoneItemName, type ZoneAttachFailure, type ZoneAttachResult } from './zoneAttachments'
 
 /** Keystrokes are coalesced before the draft text is persisted. */
 const DRAFT_PERSIST_DELAY_MS = 300
@@ -55,10 +59,10 @@ const COMPOSER_FIELD_MIN_HEIGHT = 44
 const COMPOSER_FIELD_CHROME = 18
 
 function sameAttachmentInputs(a: readonly ComposerAttachmentInput[], b: readonly ComposerAttachmentInput[]) {
-  return a.length === b.length && a.every((item, index) => item.file === b[index].file && item.relativePath === b[index].relativePath && item.voice === b[index].voice && item.directory === b[index].directory)
+  return a.length === b.length && a.every((item, index) => item.file === b[index].file && item.relativePath === b[index].relativePath && item.voice === b[index].voice && item.directory === b[index].directory && item.zoneKey === b[index].zoneKey)
 }
 
-const attachmentInput = ({ file, relativePath, voice, directory }: ComposerAttachmentInput): ComposerAttachmentInput => ({ file, relativePath, directory, ...(voice ? { voice } : {}) })
+const attachmentInput = ({ file, relativePath, voice, directory, zoneKey }: ComposerAttachmentInput): ComposerAttachmentInput => ({ file, relativePath, directory, ...(voice ? { voice } : {}), ...(zoneKey ? { zoneKey } : {}) })
 
 export interface ConversationComposerSubmitPayload {
   signal?: AbortSignal
@@ -90,7 +94,15 @@ export interface ComposerRelation {
 export type { MentionCandidate } from './mentions'
 
 export interface ConversationComposerHandle {
+  /** Files of this device dropped on the conversation (call it while the drop event is dispatched). */
   addTransferData: (dataTransfer: DataTransfer) => Promise<void>
+  /**
+   * Zone files and folders (a drop, a paste, the Shell): read with the user's own session into the draft, one result
+   * per item in order. Nothing is sent; an item already in the draft is skipped.
+   */
+  addZoneContent: (items: ZoneContent[]) => Promise<ZoneAttachResult[]>
+  /** Files of this device handed over by the Shell. */
+  addFiles: (files: File[]) => void
   focus: () => void
 }
 
@@ -160,6 +172,10 @@ const ConversationComposerInner = forwardRef<
   const [mentionAll, setMentionAll] = useState(false)
   const [pendingSends, setPendingSends] = useState(0)
   const [oversizeNames, setOversizeNames] = useState<string[]>([])
+  // Zone items being read into the draft, and the items that could not be.
+  const [zonePending, setZonePending] = useState(0)
+  const [zoneFailures, setZoneFailures] = useState<Array<{ name: string; reason: string }>>([])
+  const zoneReads = useRef(new Set<AbortController>())
   const [sendError, setSendError] = useState<string | false>(false)
   // Each submit snapshots the draft into this queue and clears the input at
   // once, so typing continues while earlier messages are still being sent.
@@ -170,6 +186,7 @@ const ConversationComposerInner = forwardRef<
   const draining = useRef(false)
   const mounted = useRef(false)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  useEffect(() => () => { for (const controller of zoneReads.current) controller.abort() }, [])
   const sendCallback = useRef(onSendMessage)
   useEffect(() => { sendCallback.current = onSendMessage }, [onSendMessage])
   const queueCallback = useRef(onQueueChange)
@@ -451,6 +468,7 @@ const ConversationComposerInner = forwardRef<
     if (command) command()
     else enqueue(draftText, attachments)
     setOversizeNames([])
+    setZoneFailures([])
     setInputValue('')
     latestDraft.current = ''
     flushDraft()
@@ -587,15 +605,87 @@ const ConversationComposerInner = forwardRef<
     }
   }, [appendAttachmentInputs, allowFiles])
 
+  const addFiles = useCallback((files: File[]) => {
+    if (allowFiles) appendAttachmentInputs(filesFromInputList(files))
+  }, [appendAttachmentInputs, allowFiles])
+
+  const zoneReason = useCallback((failure: ZoneAttachFailure, message: string) => {
+    switch (failure) {
+      case 'denied': return t('messagehub.zoneAttach.denied')
+      case 'not_found': return t('messagehub.zoneAttach.notFound')
+      case 'too_large': return t('messagehub.zoneAttach.tooLarge', undefined, { limit: formatAttachmentSize(MAX_ATTACHMENT_BYTES) })
+      case 'empty_folder': return t('messagehub.zoneAttach.emptyFolder')
+      case 'folder_object': return t('messagehub.zoneAttach.folderObject')
+      default: return message
+    }
+  }, [t])
+
+  // Items are read one at a time and join the draft as each arrives, in the order they were chosen.
+  const addZoneContent = useCallback(async (items: ZoneContent[]): Promise<ZoneAttachResult[]> => {
+    if (!allowFiles || items.length === 0) return items.map(() => ({ status: 'skipped' as const }))
+    const known = new Set(attachmentsRef.current.map(getAttachmentKey))
+    const controller = new AbortController()
+    zoneReads.current.add(controller)
+    setZoneFailures([])
+    setZonePending(count => count + items.length)
+    const results: ZoneAttachResult[] = []
+    const failures: Array<{ name: string; reason: string }> = []
+    for (const item of items) {
+      const key = `zone:${zoneAttachmentKey(item)}`
+      try {
+        if (known.has(key)) { results.push({ status: 'skipped' }); continue }
+        known.add(key)
+        const input = await readZoneAttachment(item, controller.signal)
+        if (!mounted.current || controller.signal.aborted) { results.push({ status: 'cancelled' }); continue }
+        const oversized = oversizedAttachmentNames(input)
+        if (oversized.length) {
+          const reason = zoneReason('too_large', '')
+          failures.push({ name: oversized.join(', '), reason })
+          results.push({ status: 'failed', failure: 'too_large', error: reason })
+          continue
+        }
+        appendAttachmentInputs([input])
+        results.push({ status: 'accepted' })
+      } catch (error) {
+        const { failure, message } = zoneAttachFailure(error)
+        if (failure === 'cancelled' || controller.signal.aborted) { results.push({ status: 'cancelled' }); continue }
+        const reason = zoneReason(failure, message)
+        failures.push({ name: zoneItemName(item), reason })
+        results.push({ status: 'failed', failure, error: reason })
+      } finally {
+        if (mounted.current) setZonePending(count => Math.max(0, count - 1))
+      }
+    }
+    zoneReads.current.delete(controller)
+    if (mounted.current && failures.length) setZoneFailures(failures)
+    return results
+  }, [allowFiles, appendAttachmentInputs, zoneReason])
+
+  const cancelZoneReads = useCallback(() => {
+    for (const controller of zoneReads.current) controller.abort()
+    zoneReads.current.clear()
+    setZonePending(0)
+  }, [])
+
   useImperativeHandle(ref, () => ({
     addTransferData,
+    addZoneContent,
+    addFiles,
     focus: () => inputRef.current?.focus(),
-  }), [addTransferData])
+  }), [addTransferData, addZoneContent, addFiles])
 
   const handlePaste = async (
     event: React.ClipboardEvent<HTMLTextAreaElement>,
   ) => {
     const clipboardData = event.clipboardData
+    // Zone files copied in BuckyOS join the draft; their names (the same items' text) are not typed in. An address
+    // pasted as text (`cyfs://…`) stays text (§7).
+    const refs = allowFiles ? readTransferEvent(clipboardData).contentRefs() : undefined
+    if (refs) {
+      event.preventDefault()
+      void addZoneContent(refs.items)
+      return
+    }
     const hasFileItems = Array.from(clipboardData.items).some(
       (item) => item.kind === 'file',
     )
@@ -666,6 +756,8 @@ const ConversationComposerInner = forwardRef<
 
       {pendingSends > 0 && <button type="button" className="px-3 text-xs underline" onClick={() => uploadAbort.current?.abort()}>{t('messagehub.cancel')} · {t('messagehub.sendingQueue', undefined, { count: pendingSends })}</button>}
       {oversizeNames.length > 0 && <p role="alert" className="px-3 pt-2 text-xs text-[color:var(--cp-danger)]" data-testid="attachment-too-large">{t('messagehub.attachmentTooLarge', undefined, { name: oversizeNames.join(', '), limit: formatAttachmentSize(MAX_ATTACHMENT_BYTES) })}</p>}
+      {zonePending > 0 && <p role="status" className="flex items-center gap-1.5 px-3 pt-2 text-xs text-[color:var(--cp-muted)]" data-testid="zone-attach-pending"><Loader2 size={12} className="shrink-0 animate-spin" aria-hidden /><span className="min-w-0 flex-1">{t('messagehub.zoneAttach.reading', undefined, { count: zonePending })}</span><button type="button" className="underline" onClick={cancelZoneReads}>{t('messagehub.cancel')}</button></p>}
+      {zoneFailures.length > 0 && <div role="alert" className="px-3 pt-2 text-xs text-[color:var(--cp-danger)]" data-testid="zone-attach-failed">{zoneFailures.map((failure, index) => <p key={index}>{t('messagehub.zoneAttach.failed', undefined, { name: failure.name, reason: failure.reason })}</p>)}</div>}
       {sendError && <p role="alert" className="px-3 pt-2 text-xs text-[color:var(--cp-danger)]">{t('messagehub.sendFailed')}{typeof sendError === 'string' && sendError !== 'true' ? ` ${describeSendError(sendError, t)}` : ''}</p>}
       {/* Anchored to the composer root: the message input area is overflow-hidden
           and would clip a menu popping upward from inside it. */}

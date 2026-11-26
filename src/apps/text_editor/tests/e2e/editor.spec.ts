@@ -122,6 +122,46 @@ test('App Frame handshake, open reuse, theme and pending close guard', async ({ 
   await expect(page.locator('#app')).toHaveCount(0)
 })
 
+test('transfer.v1: offers the open file, then the selected text; takes text at the cursor and opens Zone files', async ({ page }) => {
+  await page.goto('/tests/harness/shell.html')
+  const editor = page.frameLocator('#app')
+  await expect(editor.locator('.cm-content')).toContainText('Hello')
+  const offers = () => page.evaluate(() => (window as any).offers as Array<{ offerId: string; purpose: string; items: Array<{ kind: string; formats: string[]; inline?: Record<string, string> }> }>)
+  await expect.poll(async () => (await offers()).at(-1)?.items[0].kind).toBe('zone-file')
+  const file = (await offers()).at(-1)!
+  expect(file.purpose).toBe('drag')
+  expect(JSON.parse(file.items[0].inline!['application/vnd.buckyos.content-refs+json']).items[0].source).toEqual({ kind: 'cyfs-path', path: 'cyfs://' + path })
+  expect(file.items[0].inline!['text/plain']).toBe('demo.md')
+  // Selecting text offers it instead; the file offer is withdrawn.
+  await editor.locator('.cm-content').click(); await page.keyboard.press('Control+a')
+  await expect.poll(async () => (await offers()).at(-1)?.items[0].kind).toBe('text')
+  expect((await offers()).at(-1)!.items[0].inline!['text/plain']).toContain('Hello')
+  await expect.poll(() => page.evaluate(() => (window as any).withdrawn as string[])).toContain(file.offerId)
+  // As a target: text goes in at the cursor, a Zone file opens in a tab.
+  await page.keyboard.press('Control+End')
+  const result = await page.evaluate(async () => {
+    const host = (window as any).host
+    const operationId = 'operation-0000000001'
+    const items = [{ itemKey: '0', kind: 'text', formats: ['text/plain'], operations: ['copy'] }]
+    const answer = await host.transferProbe({ operationId, seq: 1, items, at: 'focus' })
+    const delivered = await host.transferDeliver({ operationId, targetId: answer.targetId, operation: 'copy', at: 'focus', items: [{ itemKey: '0', format: 'text/plain', value: ' Delivered' }] })
+    return { answer, delivered }
+  })
+  expect(result.answer).toEqual({ targetId: 'cursor', action: 'Insert at the cursor', accept: [{ itemKey: '0', format: 'text/plain', operation: 'copy' }] })
+  expect(result.delivered).toEqual({ status: 'done', items: [{ itemKey: '0', status: 'done' }] })
+  await expect(editor.locator('.cm-content')).toContainText('Delivered')
+  const opened = await page.evaluate(async () => {
+    const host = (window as any).host
+    const operationId = 'operation-0000000002'
+    const ref = { origin: 'zone', kind: 'file', source: { kind: 'cyfs-path', path: 'cyfs:///home/test-user/notes/other.txt' }, hints: { name: 'other.txt' } }
+    const items = [{ itemKey: '0', kind: 'zone-file', formats: ['application/vnd.buckyos.content-refs+json', 'text/plain'], operations: ['copy', 'link'] }]
+    const answer = await host.transferProbe({ operationId, seq: 1, items, at: { x: 10, y: 10 } })
+    return host.transferDeliver({ operationId, targetId: answer.targetId, operation: answer.accept[0].operation, at: { x: 10, y: 10 }, items: [{ itemKey: '0', format: answer.accept[0].format, value: ref }] })
+  })
+  expect(opened).toEqual({ status: 'done', items: [{ itemKey: '0', status: 'done' }] })
+  await expect(editor.getByRole('tab')).toHaveCount(2)
+})
+
 test('offline editing keeps local prewrite and reconnect synchronizes', async ({ page }) => {
   await open(page)
   await page.route(server, route => route.abort('internetdisconnected'))

@@ -6,7 +6,7 @@
  * one undo step, and every edit of the steps replays itself on a newer version (pathOps). */
 
 import { fixed } from '@controls/placement'
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent } from 'react'
 import { ArrowDown, ArrowUp, Crosshair, Frame as FrameIcon, Play, Plus, Power, Trash2, X } from 'lucide-react'
 import { describeError } from '../api/session'
 import type { EntityEnvelope, Json, KeyedContent, Operation, PresentationProps, ShowPathPayload, ShowPurpose, ShowStep, StageSize, StepTransition, ViewportPayload } from '../api/types'
@@ -28,6 +28,9 @@ const TRANSITIONS: { value: StepTransition; key: string }[] = [
   { value: 'fade', key: 'aiworkspace.presentation.transition.fade' }, { value: 'cut', key: 'aiworkspace.presentation.transition.cut' },
 ]
 /** The viewfinder of "添加当前视角" takes this share of the clear area. */
+/** A step being dragged along the list (an App-internal format: no text for other targets). */
+const STEP_MIME = 'application/vnd.buckyos-aiws.step+json'
+const draggedStep = (event: DragEvent): string => { try { const id: unknown = JSON.parse(event.dataTransfer.getData(STEP_MIME)); return typeof id === 'string' ? id : '' } catch { return '' } }
 const FINDER_SHARE = 0.72
 const HANDLE = 6
 
@@ -253,7 +256,7 @@ export function PathEditor({ surface, camera, laid }: { surface: EntityEnvelope;
           <>
             <h4>{problems > 0 ? t('aiworkspace.presentation.steps.titleProblems', { count: problems }) : t('aiworkspace.presentation.steps.title')}</h4>
             <div className="aiws-path-steps" data-testid="aiws-path-steps" role="listbox" aria-label={t('aiworkspace.presentation.steps.title')}
-              onDragOver={(event) => { event.preventDefault(); setDropAt('$end') }} onDrop={(event) => { const id = event.dataTransfer.getData('text/x-aiws-step'); if (id) dropOn(id, null) }}>
+              onDragOver={(event) => { event.preventDefault(); setDropAt('$end') }} onDrop={(event) => { const id = draggedStep(event); if (id) dropOn(id, null) }}>
               {resolved.length === 0 && <div className="aiws-muted">{t('aiworkspace.presentation.steps.empty')}</div>}
               {resolved.map((s, i) => (
                 <button key={s.step.id} type="button" role="option" aria-selected={s.step.id === selectedStep} draggable={canEditPath}
@@ -264,9 +267,9 @@ export function PathEditor({ surface, camera, laid }: { surface: EntityEnvelope;
                     if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) { event.preventDefault(); move(s.step.id, event.key === 'ArrowUp' ? -1 : 1) }
                     else if (event.key === 'Delete' && canEditPath) { event.preventDefault(); void removeStep(s.step.id) }
                   }}
-                  onDragStart={(event) => { event.dataTransfer.setData('text/x-aiws-step', s.step.id); event.dataTransfer.effectAllowed = 'move' }}
+                  onDragStart={(event) => { event.dataTransfer.setData(STEP_MIME, JSON.stringify(s.step.id)); event.dataTransfer.effectAllowed = 'move' }}
                   onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); setDropAt(s.step.id) }}
-                  onDrop={(event) => { event.preventDefault(); event.stopPropagation(); const id = event.dataTransfer.getData('text/x-aiws-step'); if (id) dropOn(id, s.step.id) }}
+                  onDrop={(event) => { event.preventDefault(); event.stopPropagation(); const id = draggedStep(event); if (id) dropOn(id, s.step.id) }}
                   onDragEnd={() => setDropAt(null)}>
                   <span className="aiws-path-step-n">{i + 1}</span>
                   <span className="aiws-path-step-title">{s.title}</span>

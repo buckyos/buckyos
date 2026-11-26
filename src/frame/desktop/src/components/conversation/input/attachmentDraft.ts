@@ -14,6 +14,8 @@ export interface ComposerAttachmentInput {
   relativePath?: string
   /** A recorded voice note: sent alone it goes out as one (`MsgObject.voice`), next to other files as an audio file. */
   voice?: VoiceNote
+  /** The Zone item the bytes were read from (its address): the same item is attached once. */
+  zoneKey?: string
 }
 
 export interface ComposerAttachmentItem extends ComposerAttachmentInput {
@@ -63,7 +65,7 @@ export function isTransferWithFiles(dataTransfer: DataTransfer | null): boolean 
 }
 
 export function filesFromInputList(
-  files: FileList | null,
+  files: FileList | readonly File[] | null,
 ): ComposerAttachmentInput[] {
   if (!files) {
     return []
@@ -131,12 +133,14 @@ export function createAttachmentItem(
     previewUrl,
     relativePath: input.relativePath,
     ...(input.voice ? { voice: input.voice } : {}),
+    ...(input.zoneKey ? { zoneKey: input.zoneKey } : {}),
   }
 }
 
 export function getAttachmentKey(
   input: ComposerAttachmentInput,
 ): string {
+  if (input.zoneKey) return `zone:${input.zoneKey}`
   const fingerprint = (entry: AttachmentDirectory | { kind: 'file'; file: File }): unknown => entry.kind === 'file' ? [entry.file.name, entry.file.size, entry.file.lastModified] : [entry.name, entry.children.map(fingerprint)]
   return input.directory ? JSON.stringify(fingerprint(input.directory)) : [normalizeAttachmentPath(input.relativePath || input.file.name), input.file.size, input.file.lastModified].join(':')
 }

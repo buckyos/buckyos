@@ -26,6 +26,8 @@ export const en: Record<string, string> = {
   'aiworkspace.directory.viewList': 'Show as a list',
   'aiworkspace.directory.viewGrid': 'Show as thumbnails',
   'aiworkspace.directory.dropHere': 'Drop to add the files here',
+  'aiworkspace.directory.foldersSkipped': 'Folders can’t be added here yet: {{count}} folders were left out. Add the files inside them instead.',
+  'aiworkspace.directory.foldersSkipped_one': 'Folders can’t be added here yet: {{count}} folder was left out. Add the files inside it instead.',
   'aiworkspace.directory.working': 'Processing…',
 
   'aiworkspace.directory.add': 'Add',
@@ -159,6 +161,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.directory.viewList': '显示为列表',
   'aiworkspace.directory.viewGrid': '显示为缩略图',
   'aiworkspace.directory.dropHere': '松开即可添加到这里',
+  'aiworkspace.directory.foldersSkipped': '这里暂不能添加文件夹：跳过了 {{count}} 个文件夹，请改为添加其中的文件。',
   'aiworkspace.directory.working': '正在处理…',
 
   'aiworkspace.directory.add': '添加',

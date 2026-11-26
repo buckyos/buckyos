@@ -691,12 +691,6 @@ interface TabState {
   revision: number
   locationKind?: LocationKind
 }
-export interface ClipboardState {
-  entries: FileEntry[]
-  mode: 'cut' | 'copy' | 'references' | 'text'
-  text?: string
-  token: string
-}
 ~~~
 
 Switching tabs restores that tab's selection/search. Navigating to another location clears its
@@ -706,9 +700,16 @@ capture entries, listing keys and context, then revalidate the context before su
 completion reconciles only captured tab revisions; successful entity moves/deletions also remove
 those IDs from unchanged source-tab selections, without clearing newer selections.
 
-Clipboard tokens prevent an older operation from clearing newer clipboard contents. Successful
-moves remove only their own entries; skipped, failed and cancelled entries remain pending.
-Copy records the signed local identity in `FileEntry.copyRef`; Paste creates a task. Successful copies retain the clipboard. Reference and text intents cannot be pasted as file content; native input shortcuts retain text editing behavior.
+Copy, Cut and drags follow the desktop clipboard spec (`doc/desktop/BuckyOS 剪贴板管理与拖拽支持规范.md`,
+`data/transfer.ts`): they write the Zone reference list with names and `cyfs://` links to the system clipboard or the
+drag, plus the handle of a desktop transfer record that holds the captured entries
+(`application/vnd.buckyos-files.entries+json`). There is no window clipboard state: a pending cut is the record
+(`desktopTransfers.cutOf`), Esc withdraws it, and a paste reserves its items, consumes the ones that moved and releases
+skipped, failed and cancelled ones, which stay pending. Paste reads only what the current paste carries: a live Files
+record, then Zone references from any App (copy into a folder, references in a collection), local files (upload),
+BuckyOS addresses (after the user chooses), text (explained). A stale cut handle with references asks before copying.
+Copy records the signed local identity in `FileEntry.copyRef`; Paste creates a task. Native input shortcuts retain text
+editing behavior.
 
 In-memory session snapshots (bounded to twenty pane sessions) retain tabs, history and scroll when
 the mobile shell unmounts Files to show Preview. Remount clears captured selections. Preview carries
@@ -1071,7 +1072,7 @@ The store in <code>data/transfers.ts</code> tracks executor work and preflight s
 outcomes. UI preflight checks target names through the operation adapter and uses the same conflict
 dialog as moves. Native folder selection preserves <code>webkitRelativePath</code> by creating/checking
 parent folders. External local-file drops upload to the highlighted writable folder; unsupported
-folder drops and local uploads into Collections/Views show an explicit explanation. Internal dragging uses a session token and captured source context, moves into the receiving pane's writable folder, and adds references into a Collection. Modifier-copy into a folder submits the same copy task used by Paste. Dragging never creates a content upload from a system reference.
+folder drops and local uploads into Collections/Views show an explicit explanation. Dragging Files items writes the same content as Copy with a drag record's handle: within one realm it moves into the receiving pane's writable folder (Ctrl/Alt copies, Shift moves), across realms it copies, and it adds references into a Collection; Zone references dropped from other Apps are copied. Modifier-copy into a folder submits the same copy task used by Paste. Dragging never creates a content upload from a system reference.
 
 Retry callbacks are held outside the shared task DTO and re-run destination preparation and
 conflict checks. A late NFSP name conflict never overwrites; retry returns through preflight.

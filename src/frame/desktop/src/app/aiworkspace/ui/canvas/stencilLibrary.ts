@@ -51,7 +51,7 @@ export async function libraryShape(name: string): Promise<ResolvedStencil | null
 }
 
 /** What dragging a library shape carries (the canvas drop reads it). */
-export const SHAPE_DRAG_TYPE = 'application/x-aiws-library-shape'
+export const SHAPE_DRAG_TYPE = 'application/vnd.buckyos-aiws.library-shape+json'
 
 /** The insertion of a library shape: its size (at most 120 on the longer side) and configuration. */
 export function libraryShapeConfig(shape: StencilPackShape): { size: { w: number; h: number }; config: Record<string, Json> } {

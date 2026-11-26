@@ -1,17 +1,20 @@
 /**
  * Landing view of the Preview App when launched without content (§13.2):
- * open a CYFS path / Object ID, drop files, reopen the last session, or —
- * in the mock runtime — browse the generated sample gallery.
+ * open a CYFS path / Object ID, drop files of this device or Zone files (from
+ * Files, a conversation or another App), reopen the last session, or — in the
+ * mock runtime — browse the generated sample gallery.
  */
 
 import { FolderOpen, History, ScanEye, Settings2, Upload } from 'lucide-react'
 import '../../components/preview/files.css'
 import { useEffect, useState, type DragEvent } from 'react'
 import type { SelectedContent } from 'buckyos/content'
+import { CONTENT_REFS_FORMAT, mayCarryContentRefs, transferTypes } from 'buckyos/transfer'
 import type { ContentRef, PreviewSessionContext, PreviewSessionItemInput } from '../../components/preview/types'
 import { useI18n } from '../../i18n/provider'
 import { isMockRuntime } from '../../runtime'
 import { useSelectContent } from '../../sysdlg'
+import { isEditableTarget, readTransferEvent } from '../../transfer'
 import { usePreviewSettings } from './settings'
 import type { PreviewOpenRequest } from './types'
 import { previewWindowManager } from './windowManager'
@@ -39,7 +42,11 @@ const filesToRequest = (files: File[]) => itemsToRequest(files.map((file) => ({ 
 function selectedToRequest(items: SelectedContent[]): PreviewOpenRequest | null {
   return itemsToRequest(items.flatMap((item): Array<{ source: ContentRef; title: string }> => {
     if (item.origin === 'zone') {
-      if (item.source.kind !== 'cyfs-path') return []
+      if (item.kind === 'folder') return []
+      if (item.source.kind === 'object-id') {
+        const { objectId, innerPath } = item.source
+        return [{ source: { kind: 'object-id', objectId, ...(innerPath ? { innerPath } : {}) }, title: item.hints.name ?? (innerPath ?? objectId).split('/').pop() ?? objectId }]
+      }
       return [{ source: { kind: 'cyfs-path', path: item.source.path }, title: item.hints.name ?? item.source.path.slice(item.source.path.lastIndexOf('/') + 1) }]
     }
     if (item.kind === 'file') return [{ source: { kind: 'blob', value: { blob: item.file, name: item.file.name } }, title: item.file.name }]
@@ -52,6 +59,7 @@ export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: P
   const settings = usePreviewSettings()
   const [value, setValue] = useState('')
   const [dragOver, setDragOver] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
   const [lastSession] = useState(() => (settings.restoreLastSession ? previewWindowManager.lastSession() : null))
   const selectContent = useSelectContent()
   // The sample gallery only exists in the mock runtime; load it lazily so the
@@ -77,11 +85,23 @@ export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: P
     const request = result.action === 'selected' ? selectedToRequest(result.items) : null
     if (request) onOpen(request)
   }
+  // Zone files dropped here open like opening them from Files (by reference, read with the user's session); the
+  // files of this device as blobs. Folders are not content to preview.
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault()
     setDragOver(false)
-    const request = filesToRequest([...event.dataTransfer.files])
+    const reader = readTransferEvent(event.dataTransfer)
+    const refs = reader.contentRefs()
+    // A text dropped on the address field stays text there.
+    if (!refs && !reader.files.length && isEditableTarget(event.target)) return
+    event.preventDefault()
+    const request = refs ? selectedToRequest(refs.items) : filesToRequest(reader.files)
     if (request) onOpen(request)
+    else if (refs) setNotice(t('previewApp.landing.dropFolder', 'Folders cannot be previewed. Open them in Files.'))
+  }
+  const acceptsDrag = (event: DragEvent) => {
+    const types = transferTypes(event.dataTransfer)
+    if (types.includes('files') || types.includes(CONTENT_REFS_FORMAT)) return true
+    return mayCarryContentRefs(types) && !isEditableTarget(event.target)
   }
 
   return (
@@ -89,8 +109,11 @@ export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: P
       className="files-ui flex h-full w-full flex-col items-center overflow-y-auto bg-[color:var(--cp-surface-opaque)] px-4 py-12 sm:px-6"
       data-testid="preview-landing"
       onDragOver={(event) => {
+        if (!acceptsDrag(event)) return
         event.preventDefault()
+        event.dataTransfer.dropEffect = 'copy'
         setDragOver(true)
+        setNotice(null)
       }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
@@ -139,6 +162,7 @@ export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: P
         >
           <Upload size={20} strokeWidth={1.5} />
           <span>{t('previewApp.landing.drop', 'Drop files here to preview them (several files become one session)')}</span>
+          {notice ? <span role="status" className="text-[color:var(--cp-text)]" data-testid="preview-landing-notice">{notice}</span> : null}
           <button
             type="button"
             onClick={() => void chooseFiles()}

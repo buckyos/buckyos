@@ -238,10 +238,3 @@ export interface HistoryState {
   back: PaneLocation[]
   forward: PaneLocation[]
 }
-
-export interface ClipboardState {
-  token: string
-  entries: FileEntry[]
-  mode: 'cut' | 'copy' | 'references' | 'text'
-  text?: string
-}

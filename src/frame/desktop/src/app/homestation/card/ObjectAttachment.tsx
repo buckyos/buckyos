@@ -1,6 +1,9 @@
 import { mockAttachmentUrl, readMockAttachment } from '../mock/attachments'
 import { Download, File, FolderCheck, FolderDown, FolderOpen, Loader2 } from 'lucide-react'
-import { useState } from 'react'
+import { useState, type DragEvent } from 'react'
+import { readZoneContent } from 'buckyos/content'
+import { contentRefsRepresentations } from 'buckyos/transfer'
+import { writeTransferEvent } from '../../../transfer'
 import { useSaveToZone } from '../../../components/saveToZone'
 import { isMockRuntime } from '../../../runtime'
 import { useI18n } from '../../../i18n/provider'
@@ -63,9 +66,17 @@ export function ObjectAttachment({ objId, name }: { objId: string; name: string 
   const transport = homeStationTransport()
   const [entries, setEntries] = useState<Record<string, string> | null>(null)
   const [error, setError] = useState('')
-  // Downloading to this device is a desktop's extra next to saving into the Zone.
+  // Downloading to this device is a desktop's extra next to saving into the Zone; so is dragging it out.
   const [canDownload] = useState(() => !window.matchMedia?.('(pointer: coarse)').matches)
   const directory = objId.startsWith('cydir:')
+  // The posted file or folder as a Zone reference (`obj://<objId>`, 剪贴板规范 §2.2): the target reads it with its own session.
+  const ref = canDownload ? readZoneContent({ origin: 'zone', kind: directory ? 'folder' : 'file', source: { kind: 'object-id', objectId: objId }, hints: { name } }) : undefined
+  const dragOut = (event: DragEvent) => {
+    if (!ref) return
+    event.stopPropagation()
+    writeTransferEvent(event.dataTransfer, contentRefsRepresentations([ref]))
+    event.dataTransfer.effectAllowed = 'copy'
+  }
   const open = async () => {
     if (entries) { setEntries(null); return }
     try {
@@ -76,7 +87,7 @@ export function ObjectAttachment({ objId, name }: { objId: string; name: string 
       setError('')
     } catch (error) { setError(error instanceof Error ? error.message : String(error)) }
   }
-  return <div className="rounded-xl px-3 py-2 text-[14px]" style={{ border: '1px solid var(--hs-line-strong)' }} data-testid="hs-object-attachment" data-name={name}>
+  return <div className="rounded-xl px-3 py-2 text-[14px]" style={{ border: '1px solid var(--hs-line-strong)' }} data-testid="hs-object-attachment" data-name={name} draggable={ref ? true : undefined} onDragStart={ref ? dragOut : undefined}>
     <span className="flex items-center gap-1">
       {directory
         ? <button type="button" onClick={() => void open()} className="flex min-w-0 flex-1 items-center gap-2 text-left"><FolderOpen size={16} className="shrink-0" /><span className="truncate">{name}</span></button>

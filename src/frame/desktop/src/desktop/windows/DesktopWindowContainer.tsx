@@ -10,6 +10,8 @@ import { AppIcon } from '../../components/DesktopVisuals'
 import { useI18n } from '../../i18n/provider'
 import { useAppText } from '../../presentation/appText'
 import type { ThemeMode, WindowAppearancePreferences } from '../../models/ui'
+import { TransferHandle, WindowTransferMenu } from '../../transfer/TransferControls'
+import { useWindowTransferControls } from '../../transfer/names'
 import {
   WindowDialogProvider,
   resolveWindowDialogPermissions,
@@ -167,11 +169,16 @@ export function DesktopWindowContainer({
     background: mixWithTransparency('var(--cp-surface-opaque)', backgroundOpacity),
   } satisfies CSSProperties
   const titleTextColor = isFront ? 'var(--cp-text)' : 'var(--cp-muted)'
+  const transfer = useWindowTransferControls(uiModel.id, isFront)
+  // The title leaves room for the buttons on the right (minimize, maximize, close and the transfer controls).
+  const titleInset = 80 + 25 * (Number(transfer.handle) + Number(transfer.menu))
 
   return (
     <div
       ref={ref}
       data-testid={`window-${app.id}`}
+      // The Shell's transfer router finds windows under the pointer by this id (src/transfer/gesture.ts).
+      data-window-id={uiModel.id}
       // Positioned by `transform` (see desktopWindowTransform) so a move is
       // compositor-only; `left/top` stay at 0.
       className={clsx(
@@ -212,9 +219,10 @@ export function DesktopWindowContainer({
         >
           <div
             className={clsx(
-              'absolute inset-y-0 right-20 flex min-w-0 items-center gap-2',
-              isMaximized ? 'left-20 justify-center' : 'left-3 justify-start',
+              'absolute inset-y-0 flex min-w-0 items-center gap-2',
+              isMaximized ? 'justify-center' : 'left-3 justify-start',
             )}
+            style={{ right: titleInset, ...(isMaximized ? { left: titleInset } : {}) }}
           >
             <span
               className="flex size-4 shrink-0 items-center justify-center"
@@ -241,6 +249,8 @@ export function DesktopWindowContainer({
             className="relative flex items-center gap-px"
             onPointerDown={(event) => event.stopPropagation()}
           >
+            {transfer.handle ? <TransferHandle windowId={uiModel.id} /> : null}
+            {transfer.menu ? <WindowTransferMenu windowId={uiModel.id} /> : null}
             {app.manifest.allowMinimize ? (
               <WindowChromeButton
                 ariaLabel={t('common.minimize')}
@@ -274,6 +284,7 @@ export function DesktopWindowContainer({
         </div>
 
         <div
+          data-window-content=""
           className={clsx(
             'desktop-scrollbar min-h-0 flex-1',
             hasFullBleedContent ? 'overflow-hidden p-0' : 'overflow-y-auto p-5',

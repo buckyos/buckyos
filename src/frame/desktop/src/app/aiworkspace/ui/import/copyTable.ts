@@ -1,52 +1,46 @@
-/* "Copy as table" (表格数据导入 TODO §4.1, T6): a table view's rows — its filter and order, up to 20 000 — as
- * tab-separated text (spreadsheets read it) and as an HTML table carrying aiws's own marks: the field definitions on
- * the table (`data-aiws-table`: names, types, scales, currencies, option labels) and each cell's wire value
- * (`data-aiws-value`, option labels instead of ids). Pasting it into a workspace prefills the wizard with exactly
- * those types and options. */
+/* "Copy as table" (表格数据导入 TODO §4.1, T6; 剪贴板规范 §2.2): a table view's rows — its filter and order, up to
+ * 20 000 — as the BuckyOS typed table: an HTML table carrying the field definitions (`data-buckyos-table`: names,
+ * types, scales, currencies, option labels) and each cell's wire value (`data-buckyos-value`: option labels instead of
+ * ids), with the tab-separated text spreadsheets read. A reference means nothing outside its workspace (its text is
+ * copied as a text field); a formula is the reader's to evaluate (its cell stays empty). Pasting it into a workspace
+ * prefills the wizard with exactly those types and options. */
 
+import { typedTableRepresentations, type TableFieldType, type TypedTableCell, type TypedTableField } from 'buckyos/transfer'
 import type { FieldDef, Json, QueryRow } from '../../api/types'
 import { formatValue, moneyParts } from '../values'
 
 export const COPY_LIMIT = 20_000
 
 const isFormula = (v: Json | undefined) => typeof v === 'object' && v !== null && !Array.isArray(v) && '$formula' in v
-const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
 
-/** A cell as spreadsheets take it: plain values (ISO dates, `CNY 500.00`), quoted when it holds a tab, quote or line break. */
-function tsvCell(field: FieldDef, value: Json | undefined): string {
-  if (value === undefined || value === null) return ''
-  let text: string
-  switch (field.type) {
-    case 'boolean': text = value === true ? 'TRUE' : 'FALSE'; break
-    case 'select': text = field.options?.find((o) => o.option_id === value)?.label ?? String(value); break
-    case 'multi_select': text = (Array.isArray(value) ? value : []).map((id) => field.options?.find((o) => o.option_id === id)?.label ?? String(id)).join(', '); break
-    case 'currency': { const m = moneyParts(value); text = m ? `${m.currency} ${m.amount}` : String(value); break }
-    case 'object_ref': text = formatValue(field, value); break
-    default: text = typeof value === 'string' || typeof value === 'number' ? String(value) : JSON.stringify(value)
+function typedField(field: FieldDef): TypedTableField {
+  const type: TableFieldType = field.type === 'object_ref' ? 'text' : field.type
+  return {
+    name: field.name, type,
+    ...(field.scale !== undefined && (type === 'decimal' || type === 'currency') ? { scale: field.scale } : {}),
+    ...(field.currency && type === 'currency' ? { currency: field.currency } : {}),
+    ...(field.options && (type === 'select' || type === 'multi_select') ? { options: field.options.map((o) => o.label) } : {}),
   }
-  return /[\t\n\r"]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
 
-/** The wire value with option ids as labels (ids mean nothing in another table). */
-function exactValue(field: FieldDef, value: Json): Json {
-  if (field.type === 'select') return field.options?.find((o) => o.option_id === value)?.label ?? String(value)
-  if (field.type === 'multi_select') return (Array.isArray(value) ? value : []).map((id) => field.options?.find((o) => o.option_id === id)?.label ?? String(id))
-  // a reference means nothing in another workspace: its text
-  if (field.type === 'object_ref') return formatValue(field, value)
-  return value
+/** The wire value with option ids as labels (ids mean nothing in another table), a reference as its text. */
+function wireValue(field: FieldDef, value: Json): unknown {
+  switch (field.type) {
+    case 'select': return field.options?.find((o) => o.option_id === value)?.label ?? String(value)
+    case 'multi_select': return (Array.isArray(value) ? value : []).map((id) => field.options?.find((o) => o.option_id === id)?.label ?? String(id))
+    case 'object_ref': return formatValue(field, value)
+    case 'currency': return moneyParts(value) ?? undefined
+    default: return value
+  }
+}
+
+function typedCell(field: FieldDef, value: Json | undefined): TypedTableCell {
+  if (value === undefined || value === null || isFormula(value)) return {}
+  const wire = wireValue(field, value)
+  return { ...(wire !== undefined ? { value: wire } : {}), text: formatValue(field, value) }
 }
 
 export function tableClipboard(fields: FieldDef[], rows: QueryRow[]): { text: string; html: string } {
-  const lines = [fields.map((f) => tsvCell({ ...f, type: 'text' }, f.name)).join('\t')]
-  for (const row of rows) lines.push(fields.map((f) => (isFormula(row.values[f.field_id]) ? '' : tsvCell(f, row.values[f.field_id]))).join('\t'))
-  const meta = { fields: fields.map((f) => ({ name: f.name, type: f.type === 'object_ref' ? 'text' : f.type, ...(f.scale !== undefined ? { scale: f.scale } : {}), ...(f.currency ? { currency: f.currency } : {}), ...(f.options ? { options: f.options.map((o) => o.label) } : {}) })) }
-  const head = `<tr>${fields.map((f) => `<th>${escapeHtml(f.name)}</th>`).join('')}</tr>`
-  const body = rows.map((row) => `<tr>${fields.map((f) => {
-    const v = row.values[f.field_id]
-    // a formula is the reader's to evaluate: not copied
-    if (v === undefined || v === null || isFormula(v)) return '<td></td>'
-    return `<td data-aiws-value="${escapeHtml(JSON.stringify(exactValue(f, v)))}">${escapeHtml(formatValue(f, v)).replace(/\n/g, '<br>')}</td>`
-  }).join('')}</tr>`).join('')
-  const html = `<meta charset="utf-8"><table data-aiws-table="${escapeHtml(JSON.stringify(meta))}"><thead>${head}</thead><tbody>${body}</tbody></table>`
-  return { text: lines.join('\r\n') + '\r\n', html }
+  const typed = typedTableRepresentations({ fields: fields.map(typedField), rows: rows.map((row) => fields.map((f) => typedCell(f, row.values[f.field_id]))) })
+  return { text: typed['text/plain'], html: typed['text/html'] }
 }

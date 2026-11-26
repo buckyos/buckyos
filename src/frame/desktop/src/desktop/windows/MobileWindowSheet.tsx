@@ -13,6 +13,7 @@ import {
   WindowDialogProvider,
   resolveWindowDialogPermissions,
 } from './dialogs'
+import { ShellTransferLayer } from '../../transfer/ShellTransferLayer'
 
 export function MobileWindowSheet({
   activityLog,
@@ -50,7 +51,7 @@ export function MobileWindowSheet({
   const hasFullBleedContent = app.manifest.contentPadding === 'none'
 
   return (
-    <div className="absolute inset-0 z-40 overflow-hidden bg-[color:color-mix(in_srgb,var(--cp-bg)_94%,var(--cp-surface))]">
+    <div data-window-id={windowId} className="absolute inset-0 z-40 overflow-hidden bg-[color:color-mix(in_srgb,var(--cp-bg)_94%,var(--cp-surface))]">
       <WindowDialogProvider
         insets={{
           top: topInset,
@@ -68,6 +69,7 @@ export function MobileWindowSheet({
           }}
         >
           <div
+            data-window-content=""
             className={clsx(
               'desktop-scrollbar min-h-0 flex-1',
               hasFullBleedContent ? 'overflow-hidden p-0' : 'overflow-y-auto p-4',
@@ -95,6 +97,7 @@ export function MobileWindowSheet({
           </div>
         </div>
       </WindowDialogProvider>
+      <ShellTransferLayer />
     </div>
   )
 }

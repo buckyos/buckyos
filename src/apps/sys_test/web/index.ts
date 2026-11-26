@@ -22,6 +22,7 @@ import { NfspClient } from 'buckyos/nfsp'
 import { TEST_GROUPS, TestCase, TestContext, TestGroup } from './src/test_groups'
 import { renderCustomerTicket } from './src/customer_ticket'
 import { renderSupportGroupPanel } from './src/support_group'
+import { renderTransferPanel, transferHandlers } from './src/transfer_panel'
 
 const APP_ID = 'buckyos-systest.buckyos.bns.did'
 const SELFTEST_BASE_URL = '/sdk/appservice/selftest'
@@ -608,6 +609,7 @@ async function extractNdmObjects() {
 async function main() {
   renderGroups()
   renderNdmDemoPanel()
+  renderTransferPanel()
   setAuthStatus({ kind: 'init' })
 
   try {
@@ -627,7 +629,9 @@ async function main() {
       throw new Error('AppService runtime is missing its app instance identity or Zone hostname')
     }
     const shellOrigin = embedderOrigin(origin => originInZone(origin, runtime.zoneHost))
-    if (shellOrigin) new AppFrameClient({ shellOrigin, appId: APP_ID, onInit: init => setLocale(init.locale), onLocale: setLocale })
+    if (shellOrigin) {
+      const frame: AppFrameClient = new AppFrameClient({ shellOrigin, appId: APP_ID, onInit: init => setLocale(init.locale), onLocale: setLocale, transfer: transferHandlers(() => frame) })
+    }
     await buckyos.initBuckyOS(APP_ID, {
       appId: APP_ID,
       appInstanceId: runtime.appInstanceId,

@@ -19,6 +19,7 @@ import { OfflineUnavailable, openPreparedReplica, prepareOffline, type PrepareRe
 import { ReplicaWorkspaceSession } from './offline/replicaSession'
 import { forgetRecent, readRecent, rememberRecent } from './state/recent'
 import { WorkspaceStore } from './state/store'
+import { TransferWindowContext } from './ui/canvas/transfer'
 import { externalImports } from './ui/import/externalImport'
 import { LeaveDialog, type LeaveSummary } from './ui/shell/dialogs'
 import type { LaunchTarget } from './ui/shell/WorkspaceShell'
@@ -257,13 +258,14 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
   const login = () => leaveThen(t('aiworkspace.core.app.leave.login'), () => { window.location.assign(loginUrl()) })
 
   return (
+    <TransferWindowContext.Provider value={windowId}>
     <div className="aiws-root" data-testid="aiws-root">
       {error && <div className="aiws-error aiws-root-error" role="alert" data-testid="aiws-open-error">{error} <button type="button" className="aiws-link" onClick={() => setError(null)}>{t('aiworkspace.core.app.dismiss')}</button></div>}
       {handedOver && (
         <div className="aiws-warning aiws-root-error" role="status" data-testid="aiws-external-import">
-          {!store ? t('aiworkspace.core.app.import.openWorkspace', { name: handedOver.file.name })
-            : handedOver.blocked ? t('aiworkspace.core.app.import.blocked', { name: handedOver.file.name, reason: handedOver.blocked })
-              : t('aiworkspace.core.app.import.openPage', { name: handedOver.file.name })}
+          {!store ? t('aiworkspace.core.app.import.openWorkspace', { name: handedOver.name })
+            : handedOver.blocked ? t('aiworkspace.core.app.import.blocked', { name: handedOver.name, reason: handedOver.blocked })
+              : t('aiworkspace.core.app.import.openPage', { name: handedOver.name })}
           {' '}<button type="button" className="aiws-link" onClick={() => externalImports.cancel()} data-testid="aiws-external-import-cancel">{t('aiworkspace.core.app.import.cancel')}</button>
         </div>
       )}
@@ -297,5 +299,6 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
           onLeave={() => { leave.resolve(true); setLeave(null) }} />
       )}
     </div>
+    </TransferWindowContext.Provider>
   )
 }
