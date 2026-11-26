@@ -31,6 +31,10 @@
     "urls": ["https://github.com/buckyos/buckyos/releases/download/ext-tools-upstream-mirror/busybox-w32-FRP-6354-g5f09fb446.tgz"],
     "reason": "BuckyOS copy of frippery.org's release source (frippery.org answers GitHub runners with 403); same bytes."
   },
+  "21b26bc75cd37b548d7952f2794cde711efa6c6151c4147cc3c52cfedbf11df4": {
+    "urls": ["https://github.com/buckyos/buckyos/releases/download/ext-tools-upstream-mirror/libunwind-1.8.3-tag-44aa1a5b.tar.gz"],
+    "reason": "BuckyOS copy of GitHub's archive of libunwind tag v1.8.3 as the Conda recipe pinned it (commit 44aa1a5b). Upstream re-pointed the tag on 2026-11-18 to 7bda80a5, a commit with the identical tree, so GitHub now serves other bytes of the same files; same bytes as the original."
+  },
   "8290c8f46cb33d6df8f681cb796e0697461ea070f86ec55b63c94d7eb9d9a476": {
     "urls": ["https://downloadarchive.documentfoundation.org/libreoffice/old/26.8.2.2/deb/x86_64/LibreOffice_26.8.2.2_Linux_x86-64_deb.tar.gz"],
     "reason": "The Document Foundation's own archive (no mirror redirector; a redirected mirror failed TLS verification on GitHub runners); same bytes."
