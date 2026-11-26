@@ -171,6 +171,7 @@ Deno.test('app icons: absolute and data URLs pass, a relative one resolves on th
   assertEquals(icon('https://cdn.example/notes.png'), 'https://cdn.example/notes.png', 'absolute')
   assertEquals(icon('data:image/png;base64,AAAA'), 'data:image/png;base64,AAAA', 'data URL')
   assertEquals(icon('res/icon.png'), 'https://notes.home.example/res/icon.png', 'relative to the app host')
+  assertEquals(icon('/icon.svg?v=2'), 'https://notes.home.example/icon.svg?v=2', 'root-relative to the app host')
   assertEquals(icon('res/icon.png', []), undefined, 'relative without a web host')
   assertEquals(icon('javascript:alert(1)'), undefined, 'scripts')
   assertEquals(icon(null), undefined, 'none')

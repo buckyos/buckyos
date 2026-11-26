@@ -76,7 +76,7 @@ export function usableImageUrl(value: unknown): string | undefined {
 /** An icon reference; a relative one resolves against `base` (e.g. the app's own web host). */
 export function resolveImageReference(value: unknown, base?: string): string | undefined {
   const usable = usableImageUrl(value)
-  if (usable || !base) return usable
+  if (!base || (usable && !usable.startsWith('/'))) return usable
   const text = textValue(value)
   if (!text || /^[a-z][a-z0-9+.-]*:/i.test(text)) return undefined
   try {
