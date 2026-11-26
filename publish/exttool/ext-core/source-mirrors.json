@@ -23,6 +23,26 @@
     "urls": ["https://deb.debian.org/debian/pool/main/k/keyutils/keyutils_1.6.3.orig.tar.gz"],
     "reason": "Debian's copy of the upstream tarball; bytes match the exact source SHA256 from the Conda recipe (git.kernel.org was unreachable from GitHub runners)."
   },
+  "3b08f5f4f9b4eb82f151a7040bfd6fe6c6fb922efe4b1659c66ea933276965e8": {
+    "urls": ["https://mirrors.kernel.org/gnu/libiconv/libiconv-1.18.tar.gz", "https://mirrors.ocf.berkeley.edu/gnu/libiconv/libiconv-1.18.tar.gz"],
+    "reason": "GNU mirrors; bytes match the exact source SHA256 from the Conda recipe (ftp.gnu.org intermittently refuses GitHub runners)."
+  },
+  "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898": {
+    "urls": ["https://mirrors.kernel.org/gnu/gmp/gmp-6.3.0.tar.xz", "https://mirrors.ocf.berkeley.edu/gnu/gmp/gmp-6.3.0.tar.xz"],
+    "reason": "GNU mirrors; bytes match the exact source SHA256 from the Conda recipe (gmplib.org timed out and ftp.gnu.org refused a GitHub runner)."
+  },
+  "fe10c37353213d78a5b83d48af231e005c4da84db5ce88037d88355938259640": {
+    "urls": ["https://mirrors.kernel.org/gnu/gettext/gettext-0.22.5.tar.xz", "https://mirrors.ocf.berkeley.edu/gnu/gettext/gettext-0.22.5.tar.xz"],
+    "reason": "GNU mirrors; bytes match the exact source SHA256 from the Conda recipe (ftp.gnu.org intermittently refuses GitHub runners)."
+  },
+  "071d00a097579e5ef7ce97fc4a9e58e73fd3503c0a013c765c970370a5a53b9b": {
+    "urls": ["https://mirrors.kernel.org/gnu/gcc/gcc-16.2.0/gcc-16.2.0.tar.gz"],
+    "reason": "GNU mirror; bytes match the exact source SHA256 from the Conda recipe (ftp.gnu.org intermittently refuses GitHub runners)."
+  },
+  "e61b31ab26358b946e767ed7eb7f4bb2e507da1cfefeb7a8861ace7fd5c899a1": {
+    "urls": ["https://downloads.sourceforge.net/project/freetype/freetype2/2.14.3/freetype-2.14.3.tar.gz", "https://mirrors.ocf.berkeley.edu/nongnu/freetype/freetype-2.14.3.tar.gz"],
+    "reason": "FreeType's SourceForge release and a Savannah mirror; bytes match the exact source SHA256 from the Conda recipe."
+  },
   "95343c871869cc0ab57ecec26b2f9af0370eb9c954f7e5ddd017163e4e0d09a0": {
     "urls": ["https://github.com/buckyos/buckyos/releases/download/ext-tools-upstream-mirror/busybox-w64-FRP-6354-g5f09fb446.exe"],
     "reason": "BuckyOS copy of frippery.org's release binary (frippery.org answers GitHub runners with 403); same bytes."
