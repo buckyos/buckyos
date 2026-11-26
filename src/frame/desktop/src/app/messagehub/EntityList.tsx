@@ -9,6 +9,7 @@ import {
   Pin,
   Plus,
   Search,
+  X,
 } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import type {
@@ -526,11 +527,32 @@ function DrilldownEntityRow({
 function FilterStrip({
   filter,
   onFilterChange,
+  searchQuery,
+  onSearchChange,
 }: {
   filter: EntityFilter
   onFilterChange: (filter: EntityFilter) => void
+  searchQuery: string
+  onSearchChange: (query: string) => void
 }) {
   const { t } = useI18n()
+  const [searchOpen, setSearchOpen] = useState(false)
+  const searching = searchOpen || searchQuery !== ''
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const searchToggleRef = useRef<HTMLButtonElement>(null)
+  const closeSearch = () => {
+    onSearchChange('')
+    setSearchOpen(false)
+    requestAnimationFrame(() => searchToggleRef.current?.focus())
+  }
+  const searchLabel = t('messagehub.search', 'Search')
+  const activeFilter = filters.find((item) => item.key === filter)
+  const searchPlaceholder = filter === 'all' || !activeFilter ? searchLabel : `${searchLabel} · ${t(activeFilter.labelKey, filter)}`
+
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus()
+  }, [searchOpen])
+
   const stripRef = useRef<HTMLDivElement>(null)
   const [fade, setFade] = useState<'none' | 'left' | 'right' | 'both'>('none')
   const updateFade = useCallback(() => {
@@ -562,35 +584,93 @@ function FilterStrip({
   }, [filter])
 
   return (
-    <div
-      ref={stripRef}
-      onScroll={updateFade}
-      data-fade={fade}
-      data-testid="entity-filters"
-      className="mh-filter-strip flex items-center overflow-x-auto px-3"
-    >
-      {filters.map((item) => (
+    <div data-testid="entity-filters" className="flex items-center pl-3">
+      {searching ? (
+        <div className="flex min-h-11 min-w-0 flex-1 items-center pl-1 pr-3 md:min-h-9">
+          <div
+            className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-full pl-3 pr-0.5"
+            style={{ background: 'color-mix(in srgb, var(--cp-text) 6%, transparent)' }}
+          >
+            <Search size={15} className="shrink-0" style={{ color: 'var(--cp-muted)' }} aria-hidden />
+            <input
+              ref={searchInputRef}
+              type="search"
+              value={searchQuery}
+              onChange={(event) => onSearchChange(event.target.value)}
+              onFocus={() => setSearchOpen(true)}
+              onBlur={() => { if (searchQuery === '') setSearchOpen(false) }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  closeSearch()
+                }
+              }}
+              placeholder={searchPlaceholder}
+              aria-label={searchLabel}
+              className="min-w-0 flex-1 border-none bg-transparent text-sm outline-none [&::-webkit-search-cancel-button]:hidden"
+              style={{ color: 'var(--cp-text)' }}
+              data-testid="entity-search-input"
+            />
+            <button
+              type="button"
+              onClick={closeSearch}
+              aria-label={t('messagehub.search.close', 'Close search')}
+              title={t('messagehub.search.close', 'Close search')}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[color:var(--cp-muted)] transition-colors hover:text-[color:var(--cp-text)]"
+              data-testid="entity-search-close"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        </div>
+      ) : (
         <button
-          key={item.key}
-          onClick={() => onFilterChange(item.key)}
-          aria-pressed={filter === item.key}
-          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center px-1 md:min-h-9"
+          ref={searchToggleRef}
           type="button"
+          onClick={() => setSearchOpen(true)}
+          aria-label={searchLabel}
+          title={searchLabel}
+          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center px-1 md:min-h-9"
+          data-testid="entity-search-toggle"
         >
           <span
-            className="whitespace-nowrap rounded-full px-3 py-1 text-[13px] font-medium leading-5 transition-colors"
-            style={{
-              background:
-                filter === item.key
-                  ? 'var(--cp-text)'
-                  : 'color-mix(in srgb, var(--cp-text) 6%, transparent)',
-              color: filter === item.key ? 'var(--cp-surface-opaque)' : 'var(--cp-muted)',
-            }}
+            className="flex h-7 w-7 items-center justify-center rounded-full transition-colors"
+            style={{ background: 'color-mix(in srgb, var(--cp-text) 6%, transparent)', color: 'var(--cp-muted)' }}
           >
-            {t(item.labelKey, item.key)}
+            <Search size={15} />
           </span>
         </button>
-      ))}
+      )}
+      <div
+        ref={stripRef}
+        onScroll={updateFade}
+        data-fade={fade}
+        className={`mh-filter-strip min-w-0 flex-1 items-center overflow-x-auto pr-3 ${searching ? 'hidden' : 'flex'}`}
+      >
+        {filters.map((item) => (
+          <button
+            key={item.key}
+            onClick={() => onFilterChange(item.key)}
+            aria-pressed={filter === item.key}
+            className="flex min-h-11 min-w-11 shrink-0 items-center justify-center px-1 md:min-h-9"
+            type="button"
+          >
+            <span
+              className="whitespace-nowrap rounded-full px-3 py-1 text-[13px] font-medium leading-5 transition-colors"
+              style={{
+                background:
+                  filter === item.key
+                    ? 'var(--cp-text)'
+                    : 'color-mix(in srgb, var(--cp-text) 6%, transparent)',
+                color: filter === item.key ? 'var(--cp-surface-opaque)' : 'var(--cp-muted)',
+              }}
+            >
+              {t(item.labelKey, item.key)}
+            </span>
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
@@ -838,7 +918,7 @@ export function EntityList({
         }
       }}
     >
-      <div className="px-4 pt-4 pb-2">
+      <div className="px-4 pt-4">
         <EntityListHeader
           identity={identity}
           unreadTotal={unreadTotal}
@@ -852,7 +932,7 @@ export function EntityList({
         />
 
         {enableDrilldownNavigation && drilldownEntity && !isEditing ? (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 pb-2">
             <button
               type="button"
               onClick={() => setDrilldownPath((prev) => prev.slice(0, -1))}
@@ -869,24 +949,7 @@ export function EntityList({
               {breadcrumbLabel}
             </span>
           </div>
-        ) : (
-          <div
-            className="flex items-center gap-2 rounded-xl px-3 py-2"
-            style={{
-              background: 'color-mix(in srgb, var(--cp-text) 6%, transparent)',
-            }}
-          >
-            <Search size={16} style={{ color: 'var(--cp-muted)' }} />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(event) => onSearchChange(event.target.value)}
-              placeholder={t('messagehub.search', 'Search')}
-              className="flex-1 border-none bg-transparent text-sm outline-none"
-              style={{ color: 'var(--cp-text)' }}
-            />
-          </div>
-        )}
+        ) : null}
       </div>
 
       {enableDrilldownNavigation && drilldownEntity && !isEditing ? (
@@ -897,7 +960,7 @@ export function EntityList({
         />
       ) : (
         <>
-          <FilterStrip filter={filter} onFilterChange={onFilterChange} />
+          <FilterStrip filter={filter} onFilterChange={onFilterChange} searchQuery={searchQuery} onSearchChange={onSearchChange} />
 
           <div className="flex-1 overflow-y-auto pb-2 pt-1 shell-scrollbar">
             {filter === 'groups' && onCreateGroup && !isEditing ? (
