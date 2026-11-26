@@ -69,7 +69,8 @@ Options:
   --arch <arch>   Build only one architecture (amd64|aarch64); can be repeated
   --apt-package   Add an extra apt package to the image; can be repeated
   --reuse-cargo-target
-                  Reuse Cargo artifacts from a stable /tmp cache across runs (development only)
+                  Reuse this checkout's Cargo artifacts across development builds under
+                  $XDG_CACHE_HOME/buckyos/build_aios (default: ~/.cache/buckyos/build_aios)
   --cargo-target-dir <dir>
                   Reuse a specific Cargo target dir; relative paths are resolved from repo root
   -h, --help      Show this help
@@ -231,16 +232,15 @@ EOF
 }
 
 default_reused_cargo_target_dir() {
-  local tmp_base="${TMPDIR:-/tmp}"
-  local repo_name
+  local cache_base="${XDG_CACHE_HOME:-}"
   local repo_key
-  local cache_owner
 
-  repo_name="$(basename "$ROOT_DIR" | tr -c 'A-Za-z0-9._-' '_')"
+  if [[ "$cache_base" != /* ]]; then
+    cache_base="$HOME/.cache"
+  fi
   repo_key="$(printf '%s' "$ROOT_DIR" | cksum | awk '{print $1}')"
-  cache_owner="${USER:-$(id -un 2>/dev/null || id -u)}"
 
-  printf '%s\n' "$tmp_base/build_aios-cargo-$cache_owner-$repo_name-$repo_key"
+  printf '%s\n' "$cache_base/buckyos/build_aios/${ROOT_DIR##*/}-$repo_key"
 }
 
 resolve_cargo_target_dir() {
