@@ -114,4 +114,26 @@
 - e2e：`my-network.spec.ts` 与 `messagehub-group.spec.ts` 共 21 条，20 条通过。
   - “加入他 Zone 的群”一步原来断言“不支持”，已改为加入成功，群数量相应加一。
   - 失败的是 `messagehub-group.spec.ts:315`（message relations，超时）。它在 HEAD 的干净 worktree 上同样失败，属于基线失败，与本次改动无关。
-- 未做：本机或 PVE 真实双 Zone DV。部署时宿主和成员两端的 msg_center 都要升级，Desktop 前端也要重新构建。
+- 部署要求：宿主和成员两端的 msg_center 都要升级，Desktop 前端也要重新构建。
+
+### PVE 双 Zone DV（2026-11-25）
+
+环境是本机 PVE 上的 `ssotest`：SN 为 VM 300；alice 为 VM 301，作群宿主；charlie 为 VM 303，作成员。没有用 bob，原因是 alice 的 Zone 里有一个 DID 与 bob 相同的账号 `bobfed`，发给 bob 的消息会在 alice 本地投递。
+
+部署内容：
+- alice 和 charlie 都换上本树的 msg_center（sha256 前缀 `88b121d1`），旧文件保存为 `msg_center.bak-760`。
+- charlie 换上本树的 Desktop（`bin/control-panel/web`），旧目录保存为 `web.bak-760`。
+- 没有用 `ssotest update`：它会推送整个 base 目录，覆盖 alice 上为 Agent 浏览器二期手工放入的 `nfs_server` 和 `web`。
+
+脚本和结果：
+- [cross_zone_join_dv.mjs](../test/test_msg_center/cross_zone_join_dv.mjs)：**27/27 通过**。全程不调用 `group.sync_joined`。
+  - 批准约 9 秒后、拒绝约 12 秒后，由 charlie 的 Zone 通过后台跟进自行得知。
+  - 拒绝之后又等了 45 秒，宿主上的记录仍是 rejected，没有被重新申请。
+  - 邀请链接加入和定向邀请都能收到宿主之后发出的消息。
+  - 定向邀请约 3 秒后进入 charlie 的列表，带群名；被撤销的邀请在接受失败后消失。
+- [cross_zone_join_ui_dv.mjs](../test/test_msg_center/cross_zone_join_ui_dv.mjs)：**9/9 通过**，页面无报错。在 charlie 的 Desktop 上：
+  - 用 DID 查找 alice 的群，预览显示“Hosted by another Zone”和“Anyone can join”，点 Join 后成功加入；
+  - 「请求 → 群邀请」列出 alice 的邀请和群名，点 Join 后加入。
+  - 第一次运行时页面报 `registration.waiting` 错误。原因是脚本照搬 #737 DV 的写法屏蔽了 Service Worker，`register()` 因此返回 undefined。改为允许 Service Worker 后不再报错，与本次改动无关。
+
+观察到的现象：alice 是 charlie 的陌生人，向他发了多份群邀请后，「请求」里还出现了一条“alice sent 5 message(s)”消息请求。原有规则只在会话里只有一条邀请通知时才不算消息请求。本地群也是同一规则，这次没有改。

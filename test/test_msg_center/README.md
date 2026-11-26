@@ -36,3 +36,23 @@ BUCKYOS_TEST_DNS=<SN-IP> BUCKYOS_TEST_JOINED_GROUP=<已同步的群DID> \
 沿用 `BUCKYOS_TEST_GROUP_HOST`、`BUCKYOS_TEST_ZONE_A/B`、`BUCKYOS_TEST_HOST_MAP`、测试账号和 CA 配置。可通过 `BUCKYOS_TEST_UI_SAMPLES` 调整样本数，`BUCKYOS_TEST_UI_BASE` 指向指定的成员 Desktop（默认是成员 Zone 的 HTTPS 根地址）。`BUCKYOS_TEST_UI_OUT` 指定输出父目录，默认使用系统临时目录，每次生成独立的样本 JSON 和最终画面。测试 Chromium 允许测试域的证书。
 
 事件时间取自页面 WebSDK 解析到本会话指定 msg_id 的 INBOX upsert。展示时间取正文进入聊天区域且可命中该文本的首个浏览器动画帧。相减得到同一浏览器单调时钟下的事件到可见时延；成员 INBOX 的 `created_at_ms`、宿主 `sort_key` 对应入库和接受时间，和该帧的绝对时间相减得到另外两列。每列分别给出有效样本数、nearest-rank P50/P95 和最大值；未捕获到对应事件的样本该列记 null。
+
+### 加入他 Zone 托管的群（#760）
+
+alice 托管、charlie 加入。两台 OOD 都要部署本树的 msg-center，因为宿主负责写申请 id，成员 Zone 负责转发和跟进。alice 的 Zone 里有一个 DID 与 bob 相同的账号，所以成员不用 bob。
+
+```bash
+BUCKYOS_TEST_DNS=<SN-IP> node test/test_msg_center/cross_zone_join_dv.mjs
+BUCKYOS_TEST_DNS=<SN-IP> node test/test_msg_center/cross_zone_join_ui_dv.mjs
+```
+
+`cross_zone_join_dv.mjs` 覆盖以下场景，全程不调用 `group.sync_joined`，审批和拒绝都等成员 Zone 自己的后台跟进：
+
+- 用 DID 申请，分 invite_only、request_and_approve（批准和拒绝各一次）两种策略；
+- 用邀请链接加入；
+- 接受定向邀请；
+- 接受已被撤销的邀请。
+
+`cross_zone_join_ui_dv.mjs` 在 charlie 的 Zone 上打开已部署的 Desktop，走两条路径：从「我的网络 → 加入群」用 DID 加入，从「请求 → 群邀请」接受邀请。截图保存在 `BUCKYOS_TEST_UI_OUT`。如果 Desktop 的 `@playwright/test` 需要的 Chromium 没有安装，用 `BUCKYOS_TEST_CHROMIUM` 指定另一个 Chromium 可执行文件。
+
+每次运行都会在 alice 的 Zone 上留下名为 `#760 <场景> <时间>` 的群。
