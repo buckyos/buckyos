@@ -182,18 +182,25 @@ impl JoinedGroupRoute {
         Ok((headers, bytes))
     }
     pub(crate) async fn put(&self, center: &MessageCenter, path: &str, body: &Value) -> Result<Value> {
-        let (_, bytes) = self.send(center, reqwest::Method::PUT, path, serde_json::to_vec(body).map_err(invalid)?).await?;
+        self.put_query(center, path, &[], body).await
+    }
+    pub(crate) async fn put_query(&self, center: &MessageCenter, path: &str, query: &[(&str, String)], body: &Value) -> Result<Value> {
+        let path_and_query = if query.is_empty() { path.to_owned() } else { Self::path_and_query(path, query)? };
+        let (_, bytes) = self.send(center, reqwest::Method::PUT, &path_and_query, serde_json::to_vec(body).map_err(invalid)?).await?;
         serde_json::from_slice(&bytes).map_err(|_| invalid("invalid-group-response"))
     }
     pub(crate) async fn fetch(&self, center: &MessageCenter, path: &str, query: &[(&str, String)]) -> Result<Value> {
+        let path_and_query = Self::path_and_query(path, query)?;
+        let (_, bytes) = self.send(center, reqwest::Method::GET, &path_and_query, vec![]).await?;
+        serde_json::from_slice(&bytes).map_err(invalid)
+    }
+    fn path_and_query(path: &str, query: &[(&str, String)]) -> Result<String> {
         let mut url = reqwest::Url::parse("http://group.invalid").map_err(invalid)?;
         url.set_path(path);
         if !query.is_empty() {
             url.query_pairs_mut().extend_pairs(query.iter().map(|(k, v)| (*k, v.as_str())));
         }
-        let path_and_query = format!("{}{}", url.path(), url.query().map(|q| format!("?{q}")).unwrap_or_default());
-        let (_, bytes) = self.send(center, reqwest::Method::GET, &path_and_query, vec![]).await?;
-        serde_json::from_slice(&bytes).map_err(invalid)
+        Ok(format!("{}{}", url.path(), url.query().map(|q| format!("?{q}")).unwrap_or_default()))
     }
     async fn object(
         &self,

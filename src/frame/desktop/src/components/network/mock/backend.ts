@@ -259,7 +259,6 @@ export function createMockNetworkBackend(): NetworkBackend {
   const joinOwn = (groupDid: string, invite?: string) => write((): JoinOutcome => {
       const group = world.groups.get(groupDid)
       if (!group) throw new MockError('not-found')
-      if (!group.hostedHere) throw new MockError('remote-group-unsupported')
       if (world.joined.has(groupDid)) throw new MockError('member-already-participating')
       if (invite) {
         if (invite !== group.invite) throw new MockError('invalid-invite-link')

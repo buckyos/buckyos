@@ -1913,3 +1913,363 @@ async fn changing_a_read_hooks_answer_before_send_withholds_the_body() {
     assert!(denied_calls.load(Ordering::SeqCst) > 0);
     assert_no_pull(&zones.faults);
 }
+async fn request_join(
+    center: &MessageCenter,
+    who: &DID,
+    invite: Option<&Value>,
+) -> Result<Value, RPCErrors> {
+    let mut params = json!({});
+    if let Some(token) = invite {
+        params["invite"] = token.clone();
+    }
+    rpc(center, who, "group.request_join", params).await
+}
+async fn set_join_policy(zones: &TwoZones, policy: &str) {
+    let revision = rpc(&zones.host, &alice(), "group.get_config", json!({}))
+        .await
+        .unwrap()["revision"]
+        .clone();
+    rpc(
+        &zones.host,
+        &alice(),
+        "group.apply_config",
+        json!({
+            "expected_revision":revision,"idempotency_key":format!("policy-{policy}"),
+            "patch":{"membership":{"join_policy":policy}}
+        }),
+    )
+    .await
+    .unwrap();
+}
+async fn lookup_state(center: &MessageCenter, who: &DID) -> Option<String> {
+    center
+        .contact_lookup(
+            who,
+            buckyos_api::ContactLookupReq {
+                input: group().to_string(),
+                kinds: Some(vec![LookupKind::Group]),
+                limit: None,
+                contact_mgr_owner: Some(who.clone()),
+            },
+        )
+        .await
+        .unwrap()
+        .candidates
+        .into_iter()
+        .find(|candidate| candidate.did == group())
+        .expect("the group is found")
+        .relation
+        .group_state
+}
+async fn host_member_state(zones: &TwoZones, who: &DID) -> Option<MemberStatus> {
+    zones
+        .host
+        .groups
+        .load(&group())
+        .await
+        .unwrap()
+        .unwrap()
+        .members
+        .get(&who.to_string())
+        .map(|member| member.state)
+}
+async fn host_seq(zones: &TwoZones) -> u64 {
+    zones
+        .host
+        .groups
+        .load(&group())
+        .await
+        .unwrap()
+        .unwrap()
+        .group_seq
+}
+
+#[tokio::test]
+async fn cross_zone_join_requests_follow_the_hosts_join_policy() {
+    let zones = two_zones().await;
+    create(&zones).await;
+    assert!(matches!(
+        request_join(&zones.local, &bob(), None).await,
+        Err(RPCErrors::NoPermission(reason)) if reason == "invite-required"
+    ));
+    assert!(zones
+        .local
+        .load_group_binding(&bob(), &group())
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(lookup_state(&zones.local, &bob()).await, None);
+
+    set_join_policy(&zones, "request_and_approve").await;
+    let requested = request_join(&zones.local, &bob(), None).await.unwrap();
+    assert_eq!(requested["state"], "pending_admin_approval");
+    assert!(requested["invitation_id"]
+        .as_str()
+        .is_some_and(|id| !id.is_empty()));
+    let listed = list(&zones.local, &bob()).await;
+    assert_eq!(listed["invitations"][0]["group_did"], json!(group()));
+    assert_eq!(
+        listed["invitations"][0]["member"]["state"],
+        "pending_admin_approval"
+    );
+    assert_eq!(
+        lookup_state(&zones.local, &bob()).await.as_deref(),
+        Some("pending_admin_approval")
+    );
+    // Asking again while waiting is refused by the host and keeps the wait as it was.
+    let seq = host_seq(&zones).await;
+    assert!(matches!(
+        request_join(&zones.local, &bob(), None).await,
+        Err(RPCErrors::NoPermission(reason)) if reason == "member-already-participating"
+    ));
+    assert_eq!(host_seq(&zones).await, seq);
+    assert_eq!(
+        lookup_state(&zones.local, &bob()).await.as_deref(),
+        Some("pending_admin_approval")
+    );
+    zones.local.sync_remote_groups().await.unwrap();
+    assert!(list(&zones.local, &bob()).await["joined"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    rpc(
+        &zones.host,
+        &alice(),
+        "group.approve_member",
+        json!({"member_did":bob()}),
+    )
+    .await
+    .unwrap();
+    zones.local.sync_remote_groups().await.unwrap();
+    assert_eq!(
+        list(&zones.local, &bob()).await["joined"][0]["group_did"],
+        json!(group())
+    );
+    assert!(list(&zones.local, &bob()).await["invitations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        lookup_state(&zones.local, &bob()).await.as_deref(),
+        Some("active")
+    );
+    let history = host_message(&zones.host, "after approval", 1).await;
+    sync(&zones.local, &bob()).await;
+    assert!(projected(&zones.local, &bob()).await.contains(&history));
+
+    // A rejection ends the request; following it up never asks the host again.
+    assert_eq!(
+        request_join(&zones.local, &carol(), None).await.unwrap()["state"],
+        "pending_admin_approval"
+    );
+    rpc(
+        &zones.host,
+        &alice(),
+        "group.reject_member",
+        json!({"member_did":carol()}),
+    )
+    .await
+    .unwrap();
+    zones.local.sync_remote_groups().await.unwrap();
+    assert!(zones
+        .local
+        .load_group_binding(&carol(), &group())
+        .await
+        .unwrap()
+        .is_none());
+    zones.local.sync_remote_groups().await.unwrap();
+    assert_eq!(
+        host_member_state(&zones, &carol()).await,
+        Some(MemberStatus::Rejected)
+    );
+    assert_eq!(lookup_state(&zones.local, &carol()).await, None);
+
+    set_join_policy(&zones, "open").await;
+    let joined = request_join(&zones.local, &carol(), None).await.unwrap();
+    assert_eq!(joined["state"], "active");
+    assert_eq!(joined["sync_pending"], false);
+    assert!(projected(&zones.local, &carol()).await.contains(&history));
+    assert_eq!(
+        lookup_state(&zones.local, &carol()).await.as_deref(),
+        Some("active")
+    );
+}
+
+#[tokio::test]
+async fn cross_zone_invite_link_join_survives_a_lost_reply_without_using_the_link_twice() {
+    let mut zones = two_zones().await;
+    create(&zones).await;
+    let link = rpc(
+        &zones.host,
+        &alice(),
+        "group.create_invite_link",
+        json!({"max_uses":1}),
+    )
+    .await
+    .unwrap();
+    let token = link["token"].as_str().unwrap().to_owned();
+    let used = |zones: &TwoZones| {
+        let center = zones.host.clone();
+        let token = token.clone();
+        async move {
+            center
+                .groups
+                .load(&group())
+                .await
+                .unwrap()
+                .unwrap()
+                .invite_links[&token]
+                .used
+        }
+    };
+    zones.faults.lose_join_reply.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        request_join(&zones.local, &bob(), Some(&link["token"])).await,
+        Err(RPCErrors::ReasonError(_))
+    ));
+    assert_eq!(
+        host_member_state(&zones, &bob()).await,
+        Some(MemberStatus::Active)
+    );
+    assert_eq!(used(&zones).await, 1);
+    let seq = host_seq(&zones).await;
+
+    zones.local = open(&zones.local_path, false, zones.directory.clone()).await;
+    reconnect(&zones.local, &zones.host_url);
+    zones.local.sync_remote_groups().await.unwrap();
+    assert_eq!(
+        list(&zones.local, &bob()).await["joined"][0]["group_did"],
+        json!(group())
+    );
+    assert_eq!(used(&zones).await, 1);
+    assert_eq!(host_seq(&zones).await, seq);
+    assert_eq!(
+        lookup_state(&zones.local, &bob()).await.as_deref(),
+        Some("active")
+    );
+
+    // The link is used up: the next person is refused and nothing is left behind.
+    assert!(matches!(
+        request_join(&zones.local, &carol(), Some(&link["token"])).await,
+        Err(RPCErrors::NoPermission(reason)) if reason == "invalid-invite-link"
+    ));
+    assert!(zones
+        .local
+        .load_group_binding(&carol(), &group())
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn cross_zone_invitations_wait_with_the_members_invitations_until_answered() {
+    let zones = two_zones().await;
+    rpc(
+        &zones.host,
+        &alice(),
+        "group.create",
+        json!({
+            "idempotency_key":"create",
+            "configuration":{"default_session":{"history":"all"},"profile":{"name":"Support Desk"}}
+        }),
+    )
+    .await
+    .unwrap();
+    let invitation = invite(&zones, &alice(), &bob()).await;
+    pump_one(&zones.host).await;
+    let listed = list(&zones.local, &bob()).await;
+    let items = listed["invitations"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["group_did"], json!(group()));
+    assert_eq!(items[0]["hosted_here"], false);
+    assert!(items[0]["doc"].is_null());
+    assert_eq!(items[0]["profile"]["name"], "Support Desk");
+    assert_eq!(items[0]["member"]["state"], "invited");
+    assert_eq!(items[0]["member"]["invitation_id"], invitation["invite_id"]);
+    assert_eq!(items[0]["member"]["invited_by"], json!(alice()));
+    assert_eq!(items[0]["member"]["role"], "member");
+    assert_eq!(
+        lookup_state(&zones.local, &bob()).await.as_deref(),
+        Some("invited")
+    );
+    assert!(list(&zones.local, &carol()).await["invitations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    assert_eq!(
+        accept(&zones.local, &bob(), &invitation).await.unwrap()["state"],
+        "active"
+    );
+    let listed = list(&zones.local, &bob()).await;
+    assert!(listed["invitations"].as_array().unwrap().is_empty());
+    assert_eq!(listed["joined"][0]["group_did"], json!(group()));
+
+    // The host does not tell the invitee about a revocation: accepting it finds out.
+    let revoked = invite(&zones, &alice(), &carol()).await;
+    pump_one(&zones.host).await;
+    assert_eq!(
+        list(&zones.local, &carol()).await["invitations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    rpc(
+        &zones.host,
+        &alice(),
+        "group.revoke_invite",
+        json!({"member_did":carol()}),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        accept(&zones.local, &carol(), &revoked).await,
+        Err(RPCErrors::NoPermission(reason)) if reason == "invitation-revoked"
+    ));
+    assert!(list(&zones.local, &carol()).await["invitations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(lookup_state(&zones.local, &carol()).await, None);
+
+    // A request answered by the host's pending invitation also clears it.
+    let pending = invite(&zones, &alice(), &carol()).await;
+    pump_one(&zones.host).await;
+    let joined = request_join(&zones.local, &carol(), None).await.unwrap();
+    assert_eq!(joined["state"], "active");
+    assert_eq!(joined["invitation_id"], pending["invite_id"]);
+    assert!(list(&zones.local, &carol()).await["invitations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn expired_cross_zone_invitations_are_not_listed() {
+    let zones = two_zones().await;
+    create(&zones).await;
+    rpc(
+        &zones.host,
+        &alice(),
+        "group.invite_member",
+        json!({"member_did":bob(),"expires_at_ms":MessageCenter::now_ms() + 800}),
+    )
+    .await
+    .unwrap();
+    pump_one(&zones.host).await;
+    assert_eq!(
+        list(&zones.local, &bob()).await["invitations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    assert!(list(&zones.local, &bob()).await["invitations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(lookup_state(&zones.local, &bob()).await, None);
+}

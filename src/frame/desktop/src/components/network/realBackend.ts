@@ -60,6 +60,9 @@ interface ByMemberItem {
   group_did?: string
   hosted_here?: boolean
   doc?: unknown
+  /** Invitations into a group hosted elsewhere carry no document, only the profile from the invitation. */
+  profile?: { name?: unknown } | null
+  received_at_ms?: number
   member?: { state?: string; role?: GroupRole | null; invitation_id?: string | null; invited_by?: string | null; expires_at_ms?: number | null } | null
 }
 
@@ -251,14 +254,17 @@ export function createRealNetworkBackend(): NetworkBackend {
       const result = await listByMember()
       const invitations = (result.invitations ?? []).flatMap((item): GroupInvitationItem[] => {
         const doc = docOf(item.doc)
+        const groupDid = doc?.id ?? item.group_did
         const member = item.member
-        if (!doc || member?.state !== 'invited' || !member.invitation_id || !member.invited_by) return []
+        if (!groupDid || member?.state !== 'invited' || !member.invitation_id || !member.invited_by) return []
+        const groupName = text(doc?.profile?.name) ?? text(item.profile?.name)
         return [{
-          groupDid: doc.id,
-          groupName: text(doc.profile?.name),
+          groupDid,
+          ...(groupName ? { groupName } : {}),
           inviteId: member.invitation_id,
           inviterDid: member.invited_by,
-          role: 'member',
+          role: member.role === 'admin' ? 'admin' : 'member',
+          ...(item.received_at_ms ? { receivedAtMs: item.received_at_ms } : {}),
           ...(member.expires_at_ms ? { expiresAtMs: member.expires_at_ms } : {}),
         }]
       })

@@ -448,6 +448,13 @@ impl MessageCenter {
                 reason: Some("no-zone".into()),
             },
         };
+        let mut relation = self.relation_of(owner, None, did).await?;
+        if profile.kind == LookupKind::Group {
+            relation.group_state = self
+                .remote_group_state(owner, did)
+                .await?
+                .map(str::to_owned);
+        }
         Ok(Ok(LookupCandidate {
             did: did.clone(),
             kind: profile.kind,
@@ -456,7 +463,7 @@ impl MessageCenter {
             avatar: profile.avatar,
             note: None,
             reachability: reachability.clone(),
-            relation: self.relation_of(owner, None, did).await?,
+            relation,
             group: (profile.kind == LookupKind::Group).then(|| LookupGroupInfo {
                 invite,
                 hosted_here: false,

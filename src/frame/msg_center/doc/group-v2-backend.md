@@ -27,7 +27,7 @@ RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；�
 | group.create_invite_link | expires_at_ms?、max_uses?、require_approval?；返回 token |
 | group.revoke_invite_link | token |
 | group.accept_invitation | invitation_id（必填，防止误接受过期后重新发出的另一份邀请）、member_did?（仅 Agent 的 owner 代为接受时传 Agent DID，否则 agent-owner-required；Agent 的 `allow_group` 关闭时返回 agent_group_disabled）、attestation?；接受即接受邀请中的角色；邀请人在接受时仍有 group.approve_member 能力则直接 active，否则 pending_admin_approval。当前成员仍持有同一 invitation_id 且为 active / pending_admin_approval 时重试返回当前成员状态；过期、撤销、重签发或退出后不能用旧邀请重新加入。本地未托管的群由本 Zone msg-center 解析宿主并转发；宿主已接受但首次同步未完成时返回 sync_pending=true |
-| group.request_join | invite?、attestation?；只授予 member；join_policy open 直接 active，request_and_approve 进入 pending_admin_approval，invite_only 拒绝 invite-required；邀请链接直接 active，除非 require_approval |
+| group.request_join | invite?、attestation?；只授予 member；join_policy open 直接 active，request_and_approve 进入 pending_admin_approval，invite_only 拒绝 invite-required；邀请链接直接 active，除非 require_approval。成员记录的 invitation_id 是这次申请新生成的 id，成员 Zone 用它跟进结果；群在他 Zone 时由本 Zone 转发（见 Joined Group 一节） |
 | group.approve_member / reject_member | member_did；审批仅推进 PendingAdminApproval |
 | group.leave | 操作者本人退出，Owner 需先转让 |
 | group.remove_member | member_did；同时生成个人通知 |
@@ -82,7 +82,7 @@ RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；�
 
 自动跨 Zone 请求通过 `CrossZoneClient` 使用设备签名断言向目标 verify-hub 登录，再携带目标 msg-center 的 Bearer 会话。拉取使用成员 DID，推送使用群宿主 Zone DID。显式配置的拉取路由也可使用宿主签发的 Bearer。身份取自已验证的会话。
 
-远端 actor 不携带可信客户端身份，因此 `allowed_clients=Only` 默认拒绝远端访问；只有群配置显式开启 allow_unverified_remote 才放行。`join[?invite=]` 的 body 可带 invitation_id、member_did、idempotency_key；显式 invitation_id 接受该邀请，否则存在本人待接受邀请时按其处理，再否则按 group.request_join。`sessions/<sid>/join` 对应 group.accept_session_invitation；`guest_requests` 带 request_id。删除群后曾参与者按 DID（tombstone_readers）读到删除通知。
+远端 actor 不携带可信客户端身份，因此 `allowed_clients=Only` 默认拒绝远端访问；只有群配置显式开启 allow_unverified_remote 才放行。`join[?invite=]` 的 body 可带 invitation_id、member_did、idempotency_key；显式 invitation_id 接受该邀请，否则存在本人待接受邀请时按其处理，再否则按 group.request_join。对申请的 id 发 `{invitation_id}` 只返回当前记录、不改状态：审批通过后是 active，被拒绝或移除后是 invitation-mismatch。`sessions/<sid>/join` 对应 group.accept_session_invitation；`guest_requests` 带 request_id。删除群后曾参与者按 DID（tombstone_readers）读到删除通知。
 
 inbox PUT 的 body 为 canonical MsgObject JSON 或 `application/cyfs-named-object+jwt`，携带 cyfs-obj-id；JWT 必须验证成功，委托签名按 from 的 DID Document authentication 或 G3 Zone custody 授权校验。成功返回标准 CYFS accepted 状态和 cyfs-session-seq，终局拒绝可查询和幂等重试。JWT 对象读取原样返回签名原文，不降级 JSON。
 
@@ -95,6 +95,10 @@ read_markers 的标准 body 为 `{ "session": "群的规范 MailboxAddress", "la
 ## Joined Group 配置与运行
 
 用户接受跨 Zone 邀请时，本地 msg-center 从群 DID Document 的 host 解析宿主。来源须为本 Zone 非 External、非 restricted 的已认证主体；代表 Agent 接受时还校验本 Zone 的 owner 关系及 allow_group。请求发出前持久化 owner/group/host/待确认 invitation_id，成功后保存宿主成员记录并同步；网络失败、成功响应丢失或进程重启后，后台从该登记恢复同一次接受。宿主进入 pending_admin_approval 时保留待审批展示，获批后再登记可读 Session；active 成员首次同步失败时返回 sync_pending=true，后台继续恢复。
+
+主动申请（`group.request_join`，可带邀请链接 token）的来源要求相同。请求发出前在绑定里持久化 `pending_request { idempotency_key, invite? }`，再 `PUT join[?invite=] {idempotency_key}`。宿主的答复（接受、拒绝、需要邀请、已在群中、响应格式错误）都会清掉这次申请，没有成员记录时删除绑定；宿主不可达时保留，恢复循环用同一个 key 重发，宿主返回保存的结果，邀请链接不会多用一次。之后按申请 id 跟进，与接受邀请相同。上一次接受或申请还没得到答复时，先完成它。
+
+他 Zone 群的定向邀请只以邀请人发来的 `buckyos.group_invitation` / `invite` 通知到达。另一个 Zone 发来、已投进本地收件人信箱的这类通知，若群不在本 Zone 托管，记入 `group_received_invitations`（owner + group 一条，后到的覆盖，每个 owner 最多 256 条），保存 invitation_id、邀请人、role、过期时间和通知里的群 profile。`group.list_by_member` 把其中未过期、尚未加入或申请的条目并进 `invitations`：`member.state = invited`、`doc = null`，带 `group_did` 和 `profile`。接受或申请成功、宿主答复邀请不匹配 / 过期 / 已撤销时删除；过期条目在列出时清理。这些字段是邀请人的声明，宿主在接受时校验；宿主撤销邀请不通知受邀人。`contact.lookup` 对他 Zone 的群按这里的登记给出 `group_state`（active / pending_admin_approval / invited）。
 
 自动登记保存在 `group_joined_bindings`，不存用户 token 或 OOD 私钥；跨 Zone 客户端使用当前 Zone signer 登录并复用有时限的目标会话。`upstream` 来自现有 Zone origin 解析，默认 HTTPS；测试或专用网络可用服务 Settings 的 zone_origins 映射。已有部署也可以显式配置 Joined Group：
 

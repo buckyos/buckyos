@@ -971,6 +971,7 @@ pub struct HookBinding {
 
 如果本 Zone 用户只是某些 Session 的 Guest，Joined Group 记录只包含这些 Session，不缓存群的其它信息。
 
+- **加入他 Zone 的群**：本 Zone 用户用群 DID 或邀请链接申请，或接受定向邀请，都由本 Zone 的 Message Center 转发到 host（§11.1 `join`），按 host 的加入策略得到结果，并登记 Joined Group。收到但尚未答复的跨 Zone 邀请也由本 Zone 记下，与本 Zone 群的邀请一起列出。
 - **向 Joined Group 发言**：构造群消息（用 `to_session` 指定 Session）并调用 `post_send`。原生投递按 Group DID 解析到 host 的 inbox 路径，并携带 `cyfs-original-user` 和成员证明。
 - **外部平台群**：从外部平台同步进来的群（例如 Telegram 群）是 tunnel 连接，不是 Self-host Group，不使用本文的成员与 Session 模型。
 
@@ -1057,7 +1058,7 @@ GET  https://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束
 对象   MsgObject（§2.5 的群形态，含 §2.6 的关系消息）、Action Log event
 ```
 
-- 消息的 `PUT` body 是 canonical JSON NamedObject；签名的消息用 JWT 形式（`application/cyfs-named-object+jwt`，见 CYFS dispatch）。路径不带 `/@/`，body 不带附件内容。`objects/<obj_id>` 对有 JWT 原文的消息返回 JWT 形式。`join` 的 body 是 `{ "invitation_id"?: "..." }` 或空：带 `invitation_id`，或省略但调用者有待接受的邀请时，按接受邀请处理；否则按主动申请处理。`sessions/<sid>/join` 的 body 为空或 `{}`。`guest_requests` 的 body 是 `{ "request_id": "..." }`。`read_markers` 的 body 是小型 JSON 对象 `{ session, last_read_seq }`，读者取自认证上下文。
+- 消息的 `PUT` body 是 canonical JSON NamedObject；签名的消息用 JWT 形式（`application/cyfs-named-object+jwt`，见 CYFS dispatch）。路径不带 `/@/`，body 不带附件内容。`objects/<obj_id>` 对有 JWT 原文的消息返回 JWT 形式。`join` 的 body 是 `{ "invitation_id"?: "..." }` 或空：带 `invitation_id`，或省略但调用者有待接受的邀请时，按接受邀请处理；否则按主动申请处理。主动申请的成员记录带一个新生成的申请 id（放在 `invitation_id`），成员 Zone 之后用 `{ "invitation_id": <申请 id> }` 查询结果，不会重复申请；body 也可带 `idempotency_key`，丢失响应后用同一个 key 重发得到原结果。`sessions/<sid>/join` 的 body 为空或 `{}`。`guest_requests` 的 body 是 `{ "request_id": "..." }`。`read_markers` 的 body 是小型 JSON 对象 `{ session, last_read_seq }`，读者取自认证上下文。
 - 受保护请求携带目标 Zone 签发并验证的 Bearer token，读取依据认证主体和成员表 / Guest 记录。`GET` 返回针对该读者过滤后的结果；对非有效成员按 §4.1 返回 `not-found`。
 - `updates` 由 host 以宿主 Zone DID 通过跨 Zone 断言登录投递。请求为 JSON 对象 `{entries:[{reader_did,member_epoch,delta?}]}`。`delta` 含 `previous_token`、`next_token`、`change`、`content_type` 和字符串 `object`。JSON 对象及 JWT 均按原始编码传输，附件仅包含引用。响应 `{committed:[{reader_did,next_token}]}` 逐项确认已提交的版本。
 - `members` 与 `participants` 的结果与对应 RPC 相同；成员 Zone 对 joined 群的 `group.list_members` / `group.list_session_members` 经 joined 绑定以成员身份转发到这两个入口。

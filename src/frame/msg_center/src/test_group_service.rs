@@ -2558,7 +2558,9 @@ async fn invitation_retries_follow_current_membership_instead_of_saved_operation
         .unwrap();
     assert_eq!(joined["state"], "active");
     assert_eq!(joined["epoch"], 3);
-    assert!(joined["invitation_id"].is_null());
+    // The rejoin carries the request's own id, never the earlier invitation's.
+    assert!(joined["invitation_id"].as_str().is_some_and(|id| !id.is_empty()));
+    assert_ne!(joined["invitation_id"], second["invite_id"]);
     assert!(call(
         &c,
         &member(),

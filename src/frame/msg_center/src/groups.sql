@@ -12,3 +12,4 @@ CREATE TABLE IF NOT EXISTS group_object_purges (obj_id TEXT PRIMARY KEY, attachm
 CREATE TABLE IF NOT EXISTS group_doc_publications (group_did TEXT PRIMARY KEY, generation BIGINT NOT NULL, published_generation BIGINT NOT NULL DEFAULT 0, document_status TEXT NOT NULL, document_json TEXT);
 CREATE TABLE IF NOT EXISTS joined_groups (owner TEXT NOT NULL, group_did TEXT NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY(owner, group_did));
 CREATE TABLE IF NOT EXISTS joined_group_projections (owner TEXT NOT NULL, group_did TEXT NOT NULL, member_epoch BIGINT NOT NULL, session_key TEXT NOT NULL, session_seq BIGINT NOT NULL, obj_id TEXT NOT NULL, PRIMARY KEY(owner,group_did,member_epoch,session_key,session_seq));
+CREATE TABLE IF NOT EXISTS group_received_invitations (owner TEXT NOT NULL, group_did TEXT NOT NULL, invitation_json TEXT NOT NULL, PRIMARY KEY(owner, group_did));

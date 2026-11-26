@@ -1685,6 +1685,12 @@ impl MessageCenter {
             IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
             IdempotencyCommitOutcome::Committed => {
                 self.note_records_committed(&mailbox_records).await;
+                if receiver.is_some() {
+                    for record in mailbox_records.iter() {
+                        self.note_received_group_invitation(&record.owner, &stored_msg)
+                            .await;
+                    }
+                }
                 for record in mailbox_records.iter() {
                     Self::publish_box_changed_event(record, "upsert");
                 }

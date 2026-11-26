@@ -35,13 +35,12 @@ function GroupPreview({ candidate, onDone }: { candidate: LookupCandidate; onDon
   const [error, setError] = useState<{ code: string; text: string } | null>(null)
 
   useEffect(() => {
-    if (!hostedHere) return
     let cancelled = false
     networkActions.getGroupDoc(candidate.did)
       .then(value => { if (!cancelled) setDoc({ did: candidate.did, value }) })
       .catch(() => { if (!cancelled) setDoc({ did: candidate.did, value: null }) })
     return () => { cancelled = true }
-  }, [candidate.did, hostedHere])
+  }, [candidate.did])
 
   const loadedDoc = doc?.did === candidate.did ? doc.value : null
   const name = loadedDoc?.name ?? candidate.name ?? personName(candidate)
@@ -49,7 +48,7 @@ function GroupPreview({ candidate, onDone }: { candidate: LookupCandidate; onDon
   const owner = loadedDoc?.owner ?? info?.owner
   const host = loadedDoc?.host ?? info?.host
   const state = candidate.relation.group_state
-  const loadingDoc = hostedHere && doc?.did !== candidate.did
+  const loadingDoc = doc?.did !== candidate.did
 
   const join = async () => {
     setPending(true)
@@ -98,10 +97,9 @@ function GroupPreview({ candidate, onDone }: { candidate: LookupCandidate; onDon
       )}
       <p className="px-1 text-xs text-[color:var(--cp-muted)]">{t('network.joinGroup.risk')}</p>
 
-      {!hostedHere ? <StateMessage tone="warning" testId="join-group-remote">{t('network.joinGroup.remoteUnsupported')}</StateMessage> : null}
-      {hostedHere && state === 'active' ? <StateMessage tone="success" testId="join-group-member">{t('network.joinGroup.alreadyMember')}</StateMessage> : null}
-      {hostedHere && state === 'pending_admin_approval' ? <StateMessage tone="warning">{t('network.joinGroup.alreadyPending')}</StateMessage> : null}
-      {hostedHere && state === 'invited' ? <StateMessage>{t('network.joinGroup.invited')}</StateMessage> : null}
+      {state === 'active' ? <StateMessage tone="success" testId="join-group-member">{t('network.joinGroup.alreadyMember')}</StateMessage> : null}
+      {state === 'pending_admin_approval' ? <StateMessage tone="warning">{t('network.joinGroup.alreadyPending')}</StateMessage> : null}
+      {state === 'invited' ? <StateMessage>{t('network.joinGroup.invited')}</StateMessage> : null}
       {error ? (
         <StateMessage tone={error.code === 'invite-required' ? 'warning' : 'danger'} testId="join-group-error">
           {error.code === 'invite-required' ? t('network.joinGroup.inviteRequired') : error.text}
@@ -110,7 +108,7 @@ function GroupPreview({ candidate, onDone }: { candidate: LookupCandidate; onDon
 
       <div className="flex flex-wrap justify-end gap-2">
         <Button variant="text" onClick={() => onDone({ action: 'cancelled' })}>{t('network.close')}</Button>
-        {hostedHere && state !== 'active' && state !== 'pending_admin_approval' ? (
+        {state !== 'active' && state !== 'pending_admin_approval' ? (
           <Button variant="contained" disabled={pending || loadingDoc} onClick={() => void join()} data-testid="join-group-submit">
             {t(pending ? 'network.joinGroup.joining' : policy === 'request_and_approve' && !info?.invite ? 'network.joinGroup.request' : 'network.joinGroup.join')}
           </Button>

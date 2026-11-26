@@ -188,7 +188,7 @@ test.describe('My Network', () => {
     expect(errors).toEqual([])
   })
 
-  test('join group: joined, pending approval, invite required and other Zone', async ({ page }) => {
+  test('join group: joined, pending approval, invite required and another Zone\'s group', async ({ page }) => {
     const errors = trackConsole(page)
     const win = await openMyNetwork(page)
 
@@ -213,9 +213,12 @@ test.describe('My Network', () => {
 
     dialog = await openJoinGroup(win)
     await previewGroup(dialog, 'did:bns:garden.eve')
-    await expect(dialog.getByTestId('join-group-remote')).toContainText('not supported yet')
-    await expect(dialog.getByTestId('join-group-submit')).toHaveCount(0)
-    await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+    await expect(dialog.getByTestId('join-group-preview')).toContainText('Hosted by another Zone')
+    await expect(dialog.getByTestId('join-group-preview')).toContainText('Anyone can join')
+    await dialog.getByTestId('join-group-submit').click()
+    await expect(dialog.getByTestId('join-group-outcome')).toHaveAttribute('data-outcome', 'active')
+    await dialog.getByRole('button', { name: 'Done', exact: true }).click()
+    await expect(win.getByTestId('group-detail')).toHaveAttribute('data-did', 'did:bns:garden.eve')
 
     dialog = await openJoinGroup(win)
     await previewGroup(dialog, 'did:bns:book-club')
@@ -228,9 +231,9 @@ test.describe('My Network', () => {
     await expect(detail).toHaveAttribute('data-did', 'did:bns:book-club')
     await expect(detail).toContainText('Hosted by this Zone')
     await expect(detail.getByTestId('group-open-messagehub')).toBeVisible()
-    await expect(win.getByTestId('my-network-group')).toHaveCount(6)
+    await expect(win.getByTestId('my-network-group')).toHaveCount(7)
     await expect(win.getByTestId('my-network-group').filter({ hasText: 'Design Guild' })).toContainText('Waiting for approval')
-    await expect(win.getByTestId('nav-groups')).toContainText('5')
+    await expect(win.getByTestId('nav-groups')).toContainText('6')
 
     await win.getByRole('button', { name: 'Project Alpha', exact: true }).click()
     await win.getByTestId('group-leave').click()

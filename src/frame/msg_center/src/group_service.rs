@@ -478,6 +478,7 @@ impl MessageCenter {
                 }
             }
             invitations.extend(self.remote_group_invitations(&actor.did).await?);
+            invitations.extend(self.received_group_invitations(&actor.did).await?);
             let joined = self.joined_groups(&actor.did).await?;
             return Ok(
                 json!({"items":groups,"invitations":invitations,"session_invitations":session_invitations,"joined":joined}),
@@ -489,6 +490,7 @@ impl MessageCenter {
             && matches!(
                 method,
                 "group.accept_invitation"
+                    | "group.request_join"
                     | "group.get_doc"
                     | "group.list_members"
                     | "group.list_session_members"
@@ -498,6 +500,10 @@ impl MessageCenter {
             return match method {
                 "group.accept_invitation" => {
                     self.accept_remote_group_invitation(&group, &actor, &p, &ctx)
+                        .await
+                }
+                "group.request_join" => {
+                    self.request_remote_group_join(&group, &actor, &p, &ctx)
                         .await
                 }
                 "group.get_doc" => self.remote_group_doc(&actor.did, &group).await,
@@ -1734,8 +1740,10 @@ impl MessageCenter {
         }
         let state = tx.state.members[&d.to_string()].state;
         if consent != MemberConsent::Drop {
-            let mut data =
-                json!({"invite_id":id,"role":role,"expires_at_ms":expires,"state":state});
+            let mut data = json!({
+                "invite_id":id,"role":role,"expires_at_ms":expires,"state":state,
+                "profile":tx.state.config()?.profile,
+            });
             if recipient != d {
                 data["member_did"] = json!(d);
             }
@@ -1837,7 +1845,12 @@ impl MessageCenter {
         };
         Self::rate(&mut tx.state, &a.did, "join", false)?;
         self.join_group(tx, a, GroupRole::Member, approval, None)
-            .await
+            .await?;
+        // The request's own id: a member Zone asks the request's outcome with it, the
+        // same way it follows an accepted invitation (`join {invitation_id}`).
+        let joined = tx.state.members.get_mut(&a.did.to_string()).unwrap();
+        joined.invitation_id = Some(revision());
+        encoded(joined)
     }
     async fn join_group(
         &self,

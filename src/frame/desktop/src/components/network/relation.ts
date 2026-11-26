@@ -177,7 +177,6 @@ const KNOWN_ERRORS = new Set([
   'invitation-expired',
   'invitation-revoked',
   'member-already-participating',
-  'remote-group-unsupported',
   'remote-group-unavailable',
   'remote-group-auth-required',
   'remote-group-auth-failed',

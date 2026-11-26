@@ -143,7 +143,7 @@ type RequestItem =
 | `tag-not-writable` / `invalid-tag` | `contact.update_tags` |
 | `owner-not-hosted` / `contact_mgr_owner-required` | 好友 RPC / 所有 `contact.*` |
 | `invite-required` / `join-not-allowed` / `invalid-invite-link` / `invite-expired` / `member-already-participating` / `capability-denied` / `owner-must-transfer-first` / `member-list-hidden` / `blocked` / `rate-limited` | `group.*` |
-| `remote-group-unsupported` | UI 自身（`group.hosted_here = false` 时在请求前拦下） |
+| `remote-group-unavailable` / `remote-group-auth-failed` / `remote-group-not-found` | 他 Zone 托管的群（`group.request_join`、`group.accept_invitation` 经本 Zone 转发） |
 | `unavailable` | fetch / 网络失败 |
 
 > 原因码在 RPC 错误消息文本里；`networkErrorCode` 按 `[a-z0-9_]+(-[a-z0-9_]+)+` 取第一个已知码。新增码只需在 `relation.ts` 的 `KNOWN_ERRORS` 与 `i18n/network.ts` 各加一项。
@@ -155,7 +155,7 @@ type RequestItem =
 | 好友请求（收到） | `contact.list_friend_requests`（全部状态，最近 200 条；Requests 只取 `pending`），`direction = incoming` | 接受 / 忽略（`ignore`）/ 拒绝并告知（`reject`）/ 屏蔽（`ignore` 后 `block_contact`，explicit 确认） |
 | 好友请求（发出） | 同上，`direction = outgoing`；`delivery.state` 显示为 等待送达 / 等待对方确认 / 未送达 | 撤回（`cancel_friend_request`） |
 | 消息请求 | `msg.list_sessions{with_object:true, lifecycle:'active'}` 翻页（每页 100，最多 5 页）中 `request_count > 0` 的会话，按 §3 规则过滤 | 加好友（AddFriendDialog）/ 允许消息 / 在 MessageHub 中打开该会话 / 屏蔽 |
-| 群邀请 | `group.list_by_member` 的 `invitations`（`member.state = invited`，含 `invitation_id`、`invited_by`、`expires_at_ms`），去掉已过期和已是成员的群 | 加入（`group.accept_invitation { group_did, invitation_id }`）/ 忽略：没有拒绝 RPC，在 `msg.list_session { session_id: dm:<inviter> }` 里找到邀请通知则归档它（之后列表据此隐藏），找不到时只在本页隐藏 |
+| 群邀请 | `group.list_by_member` 的 `invitations`（`member.state = invited`，含 `invitation_id`、`invited_by`、`expires_at_ms`），去掉已过期和已是成员的群。他 Zone 群的邀请没有群文档（`doc = null`），用 `group_did` 和邀请里带的 `profile` 显示 | 加入（`group.accept_invitation { group_did, invitation_id }`）/ 忽略：没有拒绝 RPC，在 `msg.list_session { session_id: dm:<inviter> }` 里找到邀请通知则归档它（之后列表据此隐藏），找不到时只在本页隐藏 |
 | 待我审批的入群申请 | `group.list_by_member` 中我的 `member.role` 为 owner/admin 的群：`group.list_members` 中 `pending_admin_approval` | 批准 / 拒绝（`group.approve_member` / `reject_member`） |
 
 `useRequests()` 返回 `{ status: 'loading' | 'ready' | 'error' | 'partial', items, errors, retry }`；部分列表失败时为 `partial`。`actionableCount(items)` 不计发出的请求，用于角标。
@@ -216,7 +216,7 @@ entityInfoResultSchema = { action: 'message', person } | { action: 'cancelled' }
 
 AddFriend 的结果如实反映投递（TODO §3.6）：`friend_state = friend` → `friends`（本 Zone 显示“同一个 Zone，直接成为好友”）；`outgoing_pending` 且 `delivery.state` 为 `delivered`（或缺省）→ `request_pending`“等待对方确认”，`pending` → `request_queued`“等待送达”，`failed` → `request_failed` + 复制分享链接；lookup 已判定 `unreachable` 时不发送，显示原因与复制分享链接。“分享链接”目前复制本人 DID（`NetworkBackend.shareText()`）。
 
-JoinGroup：`contact.lookup{kinds:['group']}` 解析输入（含邀请 token）→ 本 Zone 托管时 `group.get_doc` 补资料 → `group.request_join{group_did, invite?}` → `active` / `pending_admin_approval` / `invite-required`。`group.hosted_here = false` 时只显示“暂不支持加入其它 Zone 的群”，没有加入按钮。
+JoinGroup：`contact.lookup{kinds:['group']}` 解析输入（含邀请 token）→ `group.get_doc` 补资料 → `group.request_join{group_did, invite?}` → `active` / `pending_admin_approval` / `invite-required`。他 Zone 托管的群（`group.hosted_here = false`）同样可以加入：本 Zone 把 `get_doc` 和 `request_join` 转给群宿主，结果按宿主的加入策略；查找结果的 `relation.group_state` 来自本 Zone 的 Joined Group 登记和收到的邀请（#760）。
 
 ## 8. 组件 API
 
@@ -282,7 +282,7 @@ networkCache.refresh(key) / networkCache.lookup(input, opts) / networkCache.owne
 | `did:bns:oscar` | 他 Zone，Zone 离线 → 等待送达 |
 | `did:bns:quinn` | 不可达（`zone-gateway-unreachable`） |
 | `did:bns:nobody` / `%%%` / `did:bns:secret` | `not-found` / `invalid-input` / `forbidden` |
-| `did:bns:book-club` / `design-guild` / `core-team` / `core-team?invite=core-2026` / `garden.eve` | 入群成功 / 待审批 / 需邀请 / 凭邀请加入 / 他 Zone 不支持 |
+| `did:bns:book-club` / `design-guild` / `core-team` / `core-team?invite=core-2026` / `garden.eve` | 入群成功 / 待审批 / 需邀请 / 凭邀请加入 / 加入他 Zone 的群 |
 | Requests | Nina、Peggy 的好友请求；Victor（2 条）、Wendy 的消息请求；Hiking Club 邀请；Ruth 申请加入 Project Alpha；发出给 Ivan 的请求 |
 
 ### 10.1 mock 宿主桥（`mock/hosts.ts`）
