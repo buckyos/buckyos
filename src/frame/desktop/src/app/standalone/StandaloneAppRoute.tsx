@@ -4,20 +4,16 @@ import { useEffect, useMemo, useState } from 'react'
 import { Navigate, useLocation, useParams } from 'react-router-dom'
 import { LoadingOrb } from '../../components/LoadingOrb'
 import { useMediaQuery } from '@mui/material'
-import { useI18n } from '../../i18n/provider'
-import { desktopUIStore, useDesktopUISnapshot } from '../../models/DesktopUIDataModel'
-import type { SystemPreferencesInput, WindowLaunch } from '../../models/ui'
-import { useThemeMode } from '../../theme/provider'
+import { desktopUIStore } from '../../models/DesktopUIDataModel'
 import { agentGuide } from '../agent-setup/guide'
 import { AGENT_GUIDE_APP_ID } from '../agent-setup/model'
 import { pathOfLaunch } from '../launchPath'
-import { AppContentRenderer } from '../registry'
 import { systemAppAddress } from './address'
 import { hasStandalonePage } from './catalog'
 import { standaloneFrame } from './frame'
 import { closeStandalonePage, openStandaloneWindow } from './host'
 import { pageLaunch } from './pageLaunch'
-import { StandalonePage } from './StandalonePage'
+import { StandalonePage, SystemAppContent } from './StandalonePage'
 
 const APP_ROUTE = /^\/app\/([^/]+)/
 
@@ -45,31 +41,6 @@ function SystemAppPage({ appId }: { appId: string }) {
         </div>
       )}
     </StandalonePage>
-  )
-}
-
-function SystemAppContent({ appId, windowId, launch }: { appId: string; windowId: string; launch?: WindowLaunch }) {
-  const snap = useDesktopUISnapshot()
-  const { locale, setLocale } = useI18n()
-  const { themeMode, setThemeMode } = useThemeMode()
-  const app = snap.apps.find((item) => item.id === appId)
-  const { runtimeContainer, windowAppearance } = snap.syncData.appearance
-  const saveSettings = (values: SystemPreferencesInput) =>
-    desktopUIStore.applySettings(values, { setLocale, setThemeMode, viewportSize: { width: window.innerWidth, height: window.innerHeight } })
-  if (!app || !snap.layoutState) return null
-  return (
-    <AppContentRenderer
-      activityLog={snap.runtime.activityLog}
-      app={app}
-      windowId={windowId}
-      launch={launch}
-      layoutState={snap.layoutState}
-      locale={locale}
-      onSaveSettings={saveSettings}
-      runtimeContainer={runtimeContainer}
-      themeMode={themeMode}
-      windowAppearance={windowAppearance}
-    />
   )
 }
 

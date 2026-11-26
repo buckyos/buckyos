@@ -199,6 +199,28 @@ test('the client’s Back goes through an app’s own pages first', async ({ pag
   expect(await ask(page, 'frame.back', {})).toEqual({ handled: false })
 })
 
+test('in the client a file of the unlocked computer opens in the Files page, which holds the sudo session', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await inClient(page)
+  await page.goto('/app/files?fbHost=1')
+  const files = page.getByTestId('standalone-files')
+  await files.getByRole('button', { name: 'Places' }).click()
+  const places = files.getByTestId('files-places')
+  await places.getByRole('button', { name: 'Devices' }).click()
+  await places.getByTestId('sidebar-unlock-host').click()
+  await page.getByRole('textbox', { name: 'Password' }).fill('secret')
+  await page.keyboard.press('Enter')
+  await files.locator('[data-item-key]').filter({ hasText: 'tmp' }).first().click()
+  await files.locator('[data-item-key]').filter({ hasText: 'a b#1.txt' }).first().click()
+  const preview = page.getByTestId('standalone-in-page-preview')
+  await expect(preview.getByText('mock content of /tmp/a b#1.txt')).toBeVisible()
+  expect(await sent(page, 'app.open')).toEqual([])
+  await expect(page).toHaveURL(/\/app\/files/)
+  expect(await ask(page, 'frame.back', {})).toEqual({ handled: true })
+  await expect(preview).toHaveCount(0)
+  await expect(files.locator('[data-item-key]').filter({ hasText: 'a b#1.txt' })).toBeVisible()
+})
+
 test('Settings keeps the account’s appearance in the client and closing asks the client', async ({ page }) => {
   await inClient(page, { env: { container: 'desktop-app', formFactor: 'desktop', platform: 'linux' }, init: { container: 'desktop-app', formFactor: 'desktop' } })
   await page.goto('/app/settings/appearance')

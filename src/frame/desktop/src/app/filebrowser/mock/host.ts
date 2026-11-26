@@ -22,12 +22,16 @@ import { sortEntriesForQuery } from '../data/sortEntries'
 import { DEVICE_SCHEME, deviceUrl, parseDeviceUrl } from '../data/urls'
 import { mockAddEntry, mockEntriesAtPath } from './data'
 
-function param(name: string): string | null {
+const launchSearch = (() => {
   try {
-    return new URLSearchParams(window.location.search).get(name)
+    return window.location.search
   } catch {
-    return null
+    return ''
   }
+})()
+
+function param(name: string): string | null {
+  return new URLSearchParams(launchSearch).get(name)
 }
 
 export function mockHostInfo(): HostInfo | null {

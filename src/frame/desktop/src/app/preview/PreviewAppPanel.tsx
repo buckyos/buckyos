@@ -41,7 +41,7 @@ function nextLocalRequestId() {
   return `pv-local-${localRequestCounter}`
 }
 
-export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
+export function PreviewAppPanel({ windowId, launch, onClose }: AppContentLoaderProps) {
   const { t } = useI18n()
   const isMobile = useMediaQuery('(max-width: 900px)')
   const settings = usePreviewSettings()
@@ -59,7 +59,7 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
   const systemDialog = useSystemDialog()
   const [mobileTitle, setMobileTitle] = useState<{ requestId: string; title: string; subtitle: string; source: ContentRef } | null>(null)
   useAppPath((payload && previewPath(mobileTitle?.requestId === payload.requestId ? { ...payload, source: mobileTitle.source } : payload)) ?? '/')
-  useMobileTitleOverride(isMobile && mobileTitle?.requestId === payload?.requestId && mobileTitle ? { title: mobileTitle.title, subtitle: mobileTitle.subtitle } : null)
+  useMobileTitleOverride(!onClose && isMobile && mobileTitle?.requestId === payload?.requestId && mobileTitle ? { title: mobileTitle.title, subtitle: mobileTitle.subtitle } : null)
 
   useEffect(() => {
     if (windowId && payload) previewWindowManager.register(windowId, payload)
@@ -83,13 +83,14 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
   )
 
   const exit = useCallback(() => {
-    if (windowId) {
+    if (onClose) onClose()
+    else if (windowId) {
       desktopUIStore.closeWindow(windowId)
       if (isMobile && payload?.origin?.windowId) desktopUIStore.focusWindow(payload.origin.windowId)
     }
     else setOverride({ base: launchId, payload: null })
-  }, [launchId, windowId, isMobile, payload])
-  useMobileBackHandler(isMobile && payload?.origin?.app === 'files' ? exit : null)
+  }, [launchId, windowId, isMobile, payload, onClose])
+  useMobileBackHandler(onClose || (isMobile && payload?.origin?.app === 'files') ? exit : null)
 
   const togglePin = useCallback(() => {
     setPinned((prev) => {
@@ -178,7 +179,7 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
         hostActions={hostActions}
         prefetchAdjacent={settings.prefetchAdjacent}
         autoFocus
-        titleInHost
+        titleInHost={!onClose}
         onUiModeChange={(mode) => previewSettingsStore.update({ defaultUiMode: mode })}
         onRequestExit={exit}
         onRequestOpenWith={(request) => setOpenWithState({ requestId: payload.requestId, request })}

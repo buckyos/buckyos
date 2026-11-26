@@ -21,6 +21,7 @@ export interface AppContentLoaderProps {
   windowId?: string
   /** Launch request the window was opened / re-targeted with. */
   launch?: WindowLaunch
+  onClose?: () => void
 }
 
 export type AppContentLoader = ComponentType<AppContentLoaderProps>
