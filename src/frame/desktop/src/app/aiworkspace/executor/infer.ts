@@ -19,6 +19,7 @@ const REFUSALS: Record<string, string> = {
   quota_exhausted: 'AI_QUOTA_EXHAUSTED',
   quota_budget_exceeded: 'AI_QUOTA_BUDGET_EXCEEDED',
   resource_not_permitted: 'AI_RESOURCE_NOT_PERMITTED',
+  no_candidate_model: 'AI_NO_CANDIDATE_MODEL',
   attribution_unavailable: 'AI_ATTRIBUTION_UNAVAILABLE',
   credentials: 'AI_UNAVAILABLE',
 }
@@ -34,7 +35,7 @@ export function classified(error: unknown): Error & { code?: string } {
     const failure = error.error.failure
     if (typeof failure === 'object' && failure && 'refused' in failure) {
       const e = new Error(error.message) as Error & { code?: string }
-      e.code = REFUSALS[failure.refused.code] ?? 'AI_QUOTA_EXHAUSTED'
+      e.code = REFUSALS[failure.refused.code] ?? 'AI_UNAVAILABLE'
       return e
     }
   }

@@ -181,15 +181,15 @@ impl RuntimeInferencePort {
                 .map_err(|error| {
                     inference_error(AiccErrorCode::NoCandidateModel, error.to_string())
                 })?;
-            let permitted = reachable
-                .into_iter()
-                .filter(|model| access.allows_model(&model.exact_model.to_string()))
-                .map(|model| model.identity.provider_instance_name)
-                .collect::<Vec<_>>();
-            if permitted.is_empty() {
-                return Err(not_permitted());
-            }
-            permitted
+            permitted_providers(
+                reachable.into_iter().map(|model| {
+                    (
+                        model.exact_model.to_string(),
+                        model.identity.provider_instance_name,
+                    )
+                }),
+                &access,
+            )?
         };
         let quota = self
             .quota
@@ -1308,6 +1308,30 @@ pub(super) fn inference_error(code: AiccErrorCode, message: impl Into<String>) -
     AiccError::new(code, message).to_krpc_error()
 }
 
+fn permitted_providers(
+    candidates: impl IntoIterator<Item = (String, String)>,
+    access: &crate::visibility::Access,
+) -> Result<Vec<String>, RPCErrors> {
+    let mut found = false;
+    let providers = candidates
+        .into_iter()
+        .filter_map(|(model, provider)| {
+            found = true;
+            access.allows_model(&model).then_some(provider)
+        })
+        .collect::<Vec<_>>();
+    if !found {
+        return Err(inference_error(
+            AiccErrorCode::NoCandidateModel,
+            "no model is configured for this request",
+        ));
+    }
+    if providers.is_empty() {
+        return Err(not_permitted());
+    }
+    Ok(providers)
+}
+
 fn not_permitted() -> RPCErrors {
     inference_error(
         AiccErrorCode::ResourceNotPermitted,
@@ -1583,6 +1607,40 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
 #[cfg(test)]
 mod search_tests {
     use super::*;
+
+    #[test]
+    fn empty_inventory_and_denied_inventory_have_distinct_errors() {
+        use crate::visibility::Access;
+        let denied = Access::Restricted(Default::default());
+        for access in [&Access::Unrestricted, &denied] {
+            let error = permitted_providers(Vec::new(), access)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("no_candidate_model"), "{error}");
+            assert!(!error.contains("resource_not_permitted"));
+        }
+        let candidates = vec![
+            ("image@a".into(), "a".into()),
+            ("image@b".into(), "b".into()),
+        ];
+        let error = permitted_providers(candidates.clone(), &denied)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("resource_not_permitted"), "{error}");
+        assert!(!error.contains("image@"));
+        let allowed = Access::Restricted(BTreeMap::from([(
+            "b".into(),
+            BTreeSet::from(["image@b".into()]),
+        )]));
+        assert_eq!(
+            permitted_providers(candidates.clone(), &allowed).unwrap(),
+            vec!["b"]
+        );
+        assert_eq!(
+            permitted_providers(candidates, &Access::Unrestricted).unwrap(),
+            vec!["a", "b"]
+        );
+    }
 
     #[test]
     fn named_object_urls_require_explicit_public_base_url() {

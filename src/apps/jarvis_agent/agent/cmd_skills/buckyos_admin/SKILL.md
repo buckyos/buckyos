@@ -42,3 +42,5 @@ buckyos log query --service <id> --since <RFC3339> --limit 100
 - Logs, diagnostic bundles, expired sessions, Agent recovery, node upgrades or tracing a fault into the running source: read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_admin/references/diagnosis.md`.
 
 For App development or release use `buckyos_app_dev` or `buckyos_dev_release`; for model calls use `xllm` or the relevant `aigc_*` skill.
+
+For AICC failures, distinguish `no_candidate_model` (check Provider inventory and requested capabilities) from `resource_not_permitted` (check the caller’s model grants). Dynamic-login authentication rejection without usage triggers one re-login and retry on the same Provider and model; persistent rejection requires fixing that Provider. Keep the Provider, model and upstream error in diagnostic evidence without exposing credentials.

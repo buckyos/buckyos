@@ -21,3 +21,5 @@ Each `run-tool` / `run-program` returns `{status,text}`. Correct `status:"error"
 - `subprocess is not allowed`: use `run-exec` or `run-program`.
 
 Contracts: `src/frame/aiworkspace/aiws/README.md` (also embedded in `stage.system`), `src/frame/aiworkspace/README.md` (`proc.*`), `server/src/wish/{exec,stages}.rs` under that service, and `buckyos-websdk/cli/modules/aiws.ts`.
+
+`AI_NO_CANDIDATE_MODEL` means no configured model can serve the request; the owner should inspect Provider inventory and requested capabilities. `AI_RESOURCE_NOT_PERMITTED` requires checking the caller’s grants. Both stop the run until configuration is corrected; do not repeatedly rerun the macro or substitute another model automatically.

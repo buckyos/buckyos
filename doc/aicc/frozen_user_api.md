@@ -238,6 +238,9 @@ let response = client.helper_llm_chat(request).await?;
 
 重试规则：
 
+- `no_candidate_model` 表示逻辑目录没有可达候选，或模型不满足请求能力；检查 Provider 模型清单与能力配置。`resource_not_permitted` 表示有候选但当前身份无权使用；检查授权。两者均通过结构化 kRPC 错误保留错误码，不应作为瞬时故障反复重试。
+- 动态登录凭证被 Provider 拒绝且错误不携带 usage 时，AICC 对同一 Provider、同一模型重新登录并重试一次；API Key 凭证不自动重登。刷新失败或重试仍失败时返回 Provider 错误。
+
 - `invalid_*`、schema、permission、policy、budget、idempotency conflict 不自动重试；
 - 仅当 `retriable=true` 且请求具有可靠 `idempotency_key` 时重试计费操作；
 - 尊重 Provider 的 retry-after；

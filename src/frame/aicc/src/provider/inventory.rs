@@ -309,6 +309,13 @@ pub(crate) trait CredentialResolver: Send + Sync {
         descriptor: &CredentialDescriptor,
         reference: &CredentialReference,
     ) -> ProviderResult<ResolvedCredential>;
+
+    async fn refresh_dynamic(
+        &self,
+        _reference: &CredentialReference,
+    ) -> ProviderResult<Option<ResolvedCredential>> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone)]

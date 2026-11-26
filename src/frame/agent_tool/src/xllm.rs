@@ -5575,6 +5575,7 @@ impl AiccLlmClient {
 /// §7.4); also the `RunErrorRecord.kind` hosts read.
 pub const REFUSED_QUOTA_EXHAUSTED: &str = "quota_exhausted";
 pub const REFUSED_QUOTA_BUDGET_EXCEEDED: &str = "quota_budget_exceeded";
+pub const REFUSED_NO_CANDIDATE_MODEL: &str = "no_candidate_model";
 pub const REFUSED_RESOURCE_NOT_PERMITTED: &str = "resource_not_permitted";
 pub const REFUSED_ATTRIBUTION_UNAVAILABLE: &str = "attribution_unavailable";
 /// The service refused the caller's credentials (kRPC token errors, HTTP
@@ -5592,6 +5593,7 @@ fn aicc_refusal(code: AiccErrorCode) -> Option<ProviderFailure> {
         AiccErrorCode::QuotaExhausted => refused(REFUSED_QUOTA_EXHAUSTED),
         AiccErrorCode::QuotaBudgetExceeded => refused(REFUSED_QUOTA_BUDGET_EXCEEDED),
         AiccErrorCode::ResourceNotPermitted => refused(REFUSED_RESOURCE_NOT_PERMITTED),
+        AiccErrorCode::NoCandidateModel => refused(REFUSED_NO_CANDIDATE_MODEL),
         AiccErrorCode::AttributionUnavailable => refused(REFUSED_ATTRIBUTION_UNAVAILABLE),
         AiccErrorCode::QuotaUnavailable => Some(ProviderFailure::Transient),
         _ => None,
@@ -9186,6 +9188,9 @@ impl XllmRun {
                         REFUSED_QUOTA_EXHAUSTED | REFUSED_QUOTA_BUDGET_EXCEEDED => {
                             "the AI token quota does not cover this call; wait for it to reset, lower the output budget, or ask an administrator; do not retry right away".into()
                         }
+                        REFUSED_NO_CANDIDATE_MODEL => {
+                            "no configured model can serve this request; check the Provider inventory and requested capabilities".into()
+                        }
                         REFUSED_RESOURCE_NOT_PERMITTED => {
                             "the model is not permitted to this user; choose a permitted model or ask an administrator".into()
                         }
@@ -11671,6 +11676,26 @@ there]]></write_file>
             let record = XllmRun::classify_error(&error, &ProviderConfig::default());
             assert!(!record.recoverable);
             assert_eq!(record.kind, REFUSED_QUOTA_EXHAUSTED);
+        }
+    }
+
+    #[tokio::test]
+    async fn aicc_routing_refusals_keep_distinct_recovery_conditions() {
+        for (code, reason, hint) in [
+            (AiccErrorCode::NoCandidateModel, REFUSED_NO_CANDIDATE_MODEL, "inventory"),
+            (AiccErrorCode::ResourceNotPermitted, REFUSED_RESOURCE_NOT_PERMITTED, "administrator"),
+        ] {
+            let mut refusal = AiccError::new(code, "request cannot be served");
+            refusal.retriable = true;
+            for error in aicc_error_both_ways(refusal).await {
+                assert!(matches!(&error, LLMComputeError::Provider {
+                    failure: ProviderFailure::Refused { code }, ..
+                } if code == reason));
+                let record = XllmRun::classify_error(&error, &ProviderConfig::default());
+                assert!(!record.recoverable);
+                assert_eq!(record.kind, reason);
+                assert!(record.condition.unwrap().contains(hint));
+            }
         }
     }
 
