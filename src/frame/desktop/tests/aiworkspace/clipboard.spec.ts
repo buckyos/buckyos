@@ -2,9 +2,11 @@
  * leaves readable text on the system clipboard and pastes back only through its handle; text copied elsewhere after it
  * is pasted as that text (a text Block), never as the earlier Block; Zone references pasted or dropped take the path of
  * a dropped file (a PDF asks "as a file / its pages"); a Zone address asks "file or text"; a file dropped on a
- * directory editor on the canvas becomes one directory item and nothing on the canvas. Screenshots go to
- * test-results/aiworkspace-clipboard/. */
+ * directory editor on the canvas becomes one directory item and nothing on the canvas; a spreadsheet's copy (a table
+ * and a picture of its cells) is pasted as the table. Screenshots go to test-results/aiworkspace-clipboard/. */
 
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import type { Page } from '@playwright/test'
 import { expect, openCanvas, test, type Api } from './fixtures'
 
@@ -13,6 +15,9 @@ const SHOTS = 'test-results/aiworkspace-clipboard'
 const CONTENT_REFS = 'application/vnd.buckyos.content-refs+json'
 const PDF_PATH = 'cyfs:///home/Documents/Friend Contract Draft.pdf'
 const PDF_NAME = 'Friend Contract Draft.pdf'
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAJCAIAAAC0SDtlAAAAFElEQVR42mPQiDpBEmIY1TAoNAAAk1q5oVLxFXwAAAAASUVORK5CYII=', 'base64')
+/** The shared table importer's clipboard samples. */
+const fixture = (path: string) => readFileSync(resolve('../aiworkspace/fixtures/table', path), 'utf8')
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- API results, read field by field
 type Json = Record<string, any>
@@ -172,4 +177,34 @@ test('CB-05 a resource Block copied also offers its file: its name as text, an o
   expect(JSON.parse(data['application/vnd.buckyos.transfer+json'])).toMatchObject({ v: 1 })
   expect(data['text/html']).toContain(`href="obj://${note.object_id}"`)
   expect(Object.values(data).join('\n')).not.toContain('aiws-clipboard')
+})
+
+/** A paste carrying text formats and a picture, as the browser hands what an Office App or a web page copied. */
+async function pasteWithPicture(page: Page, data: Record<string, string>) {
+  await page.evaluate(([reps, b64]) => {
+    const transfer = new DataTransfer()
+    for (const [format, value] of Object.entries(reps)) transfer.setData(format, value)
+    transfer.items.add(new File([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], 'image.png', { type: 'image/png' }))
+    document.body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }))
+  }, [data, PNG.toString('base64')] as const)
+}
+
+test('CB-06 a spreadsheet copy carries a picture of its cells: the table is pasted, a picture from a page stays a picture', async ({ page, api }) => {
+  const ws = await canvasWith(api, `cb-06 ${Date.now()}`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const before = (await cellsOf(api, ws.workspace_id)).length
+  // Excel: HTML table, TSV and a bitmap of the selection
+  await pasteWithPicture(page, { 'text/html': fixture('clipboard/excel.html'), 'text/plain': fixture('clipboard/excel.txt') })
+  const dialog = page.getByTestId('aiws-table-dialog')
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByTestId('aiws-table-size')).toContainText('3 行 × 4 列')
+  await page.screenshot({ path: `${SHOTS}/cb06-excel-table.png` })
+  await dialog.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  await page.waitForTimeout(400)
+  expect((await cellsOf(api, ws.workspace_id)).length).toBe(before)
+  // a picture copied from a web page (its HTML is the <img>): the picture
+  await pasteWithPicture(page, { 'text/html': '<meta charset="utf-8"><img src="https://example.com/chart.png">' })
+  await expect.poll(async () => (await cellsOf(api, ws.workspace_id)).filter((e: Json) => e.view_type === 'asset').length, { timeout: 30_000 }).toBe(1)
+  await expect(dialog).toHaveCount(0)
 })

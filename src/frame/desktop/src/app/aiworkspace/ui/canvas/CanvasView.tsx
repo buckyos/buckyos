@@ -1249,8 +1249,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }
   /**
    * A paste or a drop (`at`: the drop point on a free canvas), in the registered order (剪贴板规范 §2.3): this
-   * Workspace's objects behind the handle it carries → Zone references → a typed table → files → an HTML table →
-   * text (BuckyOS addresses, TSV, draw.io, SVG, plain text). A layer that does not fit or fails (another Workspace, an
+   * Workspace's objects behind the handle it carries → Zone references → a typed table → files (but not the picture a
+   * spreadsheet puts beside its table) → an HTML table → text (BuckyOS addresses, TSV, draw.io, SVG, plain text). A layer that does not fit or fails (another Workspace, an
    * unreadable file) hands over to the next one; one representation makes one result.
    */
   const pasteFrom = async (reader: TransferReader, at: { x: number; y: number } | null): Promise<void> => {
@@ -1273,8 +1273,11 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       if (await importZone(refs.items, at)) return
     }
     if (reader.typedTable() && reader.html) { openTableImport({ kind: 'clipboard', html: reader.html, text: reader.text ?? null }, false, at); return }
-    if (reader.files.length > 0) { await handleFiles(reader.files, at); return }
+    // a spreadsheet (Excel, LibreOffice, Numbers) puts a picture of the copied cells beside them: images that come
+    // with a table are that picture, and the table is what was copied
     const table = clipboardTable(reader)
+    const tablePicture = table !== null && reader.files.every((file) => file.type.startsWith('image/'))
+    if (reader.files.length > 0 && !tablePicture) { await handleFiles(reader.files, at); return }
     if (table) { openTableImport(table, false, at); return }
     const text = reader.text ?? ''
     const addresses = reader.addresses()

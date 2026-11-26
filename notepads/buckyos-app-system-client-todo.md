@@ -811,3 +811,12 @@ Android 收尾时另外发现并修的：返回键到不了本地界面；标签
 ### 11.8 提交和发布顺序
 
 websdk 先发布（比 0.7.202 新的版本）→ buckyos 合入 main（含 `src/frame/desktop/src/shared`）→ BuckyOSApp 把 `package.json` / 锁文件里的 `buckyos` 升到那个版本再合入。开发时 `BuckyOSApp/node_modules/buckyos` 是指向同级 websdk 的符号链接，`pnpm install` 会把它换成 npm 上的旧版，编译会缺接口。
+
+### 11.9 之后的调整：应用窗口用应用的图标
+
+owner：桌面版弹出的应用窗口，图标应该是应用的，不是 BuckyOS 的。
+
+- 本地页面按应用磁贴的样子画一张 128 px 的 PNG（有图片就裁成圆角方块，没有就是首字母加 `toneOf` 的颜色），新窗口建好后经 `content_set_icon` 交给 Rust（`BuckyOSApp/src/features/content/windowIcon.ts`、`src-tauri/src/content/window_icon.rs`）。Linux 设窗口图标；macOS 的窗口没有图标，不做。
+- Windows：Tauri 的 `set_icon` 只设标题栏的小图标，任务栏和 Alt+Tab 用的大图标直接发 `WM_SETICON`。所有窗口原本都归在客户端一个任务栏按钮下（按钮显示客户端的图标），所以**每个应用的窗口有自己的 AppUserModelID**（“Zone + 应用”一个，同一应用的多个窗口归一组），像 Chrome 安装的网页应用：任务栏上是应用自己的按钮，可以固定，固定的按钮用 `buckyos://app.open` 重新打开应用，图标存在 `%APPDATA%\com.buckyos.buckyosapp\app-icons\`。这一条是我替 owner 选的；不要的话去掉 `claim` 即可，只剩窗口图标。
+- 从应用的固定按钮冷启动时，进程会继承那个按钮的身份，主窗口也归到应用下；启动时识别这种情况（快捷方式启动且参数里有 `app.open` 链接），改回客户端自己的身份 `com.buckyos.buckyosapp`。没有一律设成客户端身份，因为 `src/publish/win_pkg/installer.nsi.in` 建的快捷方式没有 AppUserModelID（Tauri 自己的 NSIS 安装包有），一律设会让用户已固定的客户端和运行中的分成两个按钮。要统一的话，先给那份安装脚本的快捷方式加上 `com.buckyos.buckyosapp`。
+- 验证：113（Windows 10）上 Message Hub（系统应用，SVG 图标）和 Text Editor（没有图片，首字母）的标题栏、任务栏、跳转列表、固定、客户端运行中和未运行时从固定按钮打开；Linux 容器里每个应用窗口有自己的 `_NET_WM_ICON`。没验：macOS（没有可做的）、Windows 11、高 DPI、安装包。
