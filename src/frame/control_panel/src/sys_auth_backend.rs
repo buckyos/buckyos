@@ -37,13 +37,14 @@ struct AuthLoginResponse {
 /// Control Panel methods a restricted Limited session (scope `account_self`)
 /// reaches; each acts on the caller's own account only. `desktop.api` stands
 /// for the desktop state and Desktop folder HTTP API.
-const ACCOUNT_SELF_METHODS: [&str; 12] = [
+const ACCOUNT_SELF_METHODS: [&str; 13] = [
     "auth.invite.set_password",
     PREPARE_APP_LAUNCH_METHOD,
     "ui.locale.get",
     "user.get",
     "user.profile.get",
     "user.profile.set",
+    "user.preferences.get",
     "user.update",
     "user.change_password",
     "zone.presentation.get",
@@ -1768,6 +1769,7 @@ mod tests {
             "user.get",
             "user.profile.get",
             "user.profile.set",
+            "user.preferences.get",
             "user.update",
             "user.change_password",
             "apps.list",

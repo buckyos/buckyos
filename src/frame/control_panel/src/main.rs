@@ -43,6 +43,7 @@ mod task_ops;
 mod ui_session_mgr;
 mod user_group_mgr;
 mod user_mgr;
+mod user_preferences;
 mod zone_domain;
 mod zone_mgr;
 
@@ -1310,6 +1311,7 @@ impl ControlPanelServer {
             "user.update" => Box::pin(self.handle_user_update(req, principal)),
             "user.update_contact" => Box::pin(self.handle_user_update_contact(req, principal)),
             "user.profile.get" => Box::pin(self.handle_user_profile_get(req, principal)),
+            "user.preferences.get" => Box::pin(self.handle_user_preferences_get(req, principal)),
             "user.profile.set" => Box::pin(self.handle_user_profile_set(req, principal)),
             "user.set_msg_tunnel" => Box::pin(self.handle_user_set_msg_tunnel(req, principal)),
             "user.remove_msg_tunnel" => {

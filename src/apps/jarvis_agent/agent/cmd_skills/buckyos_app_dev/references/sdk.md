@@ -8,6 +8,7 @@ await buckyos.login()
 ```
   Then use `getAppDataDir()`, `getAppSetting()/setAppSetting()`, `getZoneServiceURL('<svc>')`. The original check did not exercise the pattern in an installed App.
 - Browser: `await buckyos.initBuckyOS('<app_id>')` then `await buckyos.getAccountInfo()`; use `buckyos.login()` when user_id is absent. `getCurrentIdentity()` distinguishes account (user_type/restricted), External DID and anonymous visitor. Limited sessions can reach their App yet get kRPC `access_denied` on restricted methods. Inspect `buckyos.accessDenialOf(err)?.reason`, show account limitation. Keep the user's identity for all user actions. See `doc/sdk/SSO.md`.
+- Look like the system: `await buckyos.getUserPreferences()` gives `{theme?, accent?, locale?, profile?}` (`profile` = what the user made public). Inside a Desktop window or the client the appearance is the host's; alone in a tab it is the account's (`control-panel` `user.preferences.get`). `buckyos.onUserPreferencesChanged(cb)` returns an unsubscribe; it fires on host pushes, or in a tab after the page returns to the foreground. Missing fields mean unset or not readable by Apps: fall back to `prefers-color-scheme` / `navigator.language`. Read-only; Apps never get the private profile or the Desktop's own layout.
 
 ## Desktop integration
 

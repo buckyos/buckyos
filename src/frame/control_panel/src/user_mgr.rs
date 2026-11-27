@@ -341,7 +341,7 @@ fn set_profile_system_contact(
 }
 
 /// The locally saved profile is the explicit setting; the DID document only fills fields it leaves empty.
-fn merge_profile_values(local_profile: Option<Value>, did_profile: Option<Value>) -> Value {
+pub(crate) fn merge_profile_values(local_profile: Option<Value>, did_profile: Option<Value>) -> Value {
     let mut merged = match local_profile {
         Some(Value::Object(profile)) => profile,
         _ => serde_json::Map::new(),
@@ -420,11 +420,11 @@ fn apply_profile_text_patch(
     Ok(())
 }
 
-fn public_profile_value(profile: &UserPrivateProfile) -> Value {
+pub(crate) fn public_profile_value(profile: &UserPrivateProfile) -> Value {
     serde_json::to_value(profile.to_public_profile()).unwrap_or_else(|_| json!({}))
 }
 
-fn profile_value_from_doc(doc: &Value) -> Option<Value> {
+pub(crate) fn profile_value_from_doc(doc: &Value) -> Option<Value> {
     doc.get("profile")
         .cloned()
         .or_else(|| doc.get("meta").cloned())

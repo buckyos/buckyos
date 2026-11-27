@@ -19,9 +19,12 @@ const storageKey = 'buckyos.prototype.theme.v1'
 
 const ThemeModeContext = createContext<ThemeModeContextValue | null>(null)
 
-/** `mode` fixes the theme for an embedded page (the embedding App decides it); it is not stored. */
-export function PrototypeThemeProvider({ children, mode }: PropsWithChildren<{ mode?: ThemeMode }>) {
+/** `mode` fixes the theme for an embedded page (the embedding App decides it); it is not stored. `initialMode` is the
+ * theme a page knows better than this browser (a Workspace origin's: the account's): it replaces the stored one and
+ * is stored. */
+export function PrototypeThemeProvider({ children, mode, initialMode }: PropsWithChildren<{ mode?: ThemeMode; initialMode?: ThemeMode }>) {
   const [storedMode, setThemeMode] = useState<ThemeMode>(() => {
+    if (initialMode) return initialMode
     const saved = window.localStorage.getItem(storageKey)
     return saved === 'dark' || saved === 'light' ? saved : 'light'
   })
