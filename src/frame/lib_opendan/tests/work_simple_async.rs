@@ -782,8 +782,8 @@ async fn an_answer_to_a_question_opens_the_next_turn() {
 fn set_work_budget(s: &Setup, lines: &str) {
     let path = s.env.agent_root.join("behaviors").join("work_simple.toml");
     let toml = std::fs::read_to_string(&path).unwrap();
-    assert!(toml.contains("max_tool_iterations = 100"), "{toml}");
-    std::fs::write(&path, toml.replace("max_tool_iterations = 100", lines)).unwrap();
+    assert!(toml.contains("max_tool_iterations = 256"), "{toml}");
+    std::fs::write(&path, toml.replace("max_tool_iterations = 256", lines)).unwrap();
 }
 
 /// [`create`] with more `.llm_context` keys.

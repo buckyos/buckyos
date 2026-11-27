@@ -79,7 +79,7 @@ tool_whitelist = ["group:bash", "report"]
 [budget]
 # Runaway protection, not a work quota: refilled every Turn, a warning at
 # 20% left, then only `report` until the Turn ends.
-max_tool_iterations = 100
+max_tool_iterations = 256
 max_consecutive_errors = 4
 
 [model]
