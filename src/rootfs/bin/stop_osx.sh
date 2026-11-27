@@ -73,6 +73,42 @@ stop_instance_processes() {
   done
 }
 
+# Docker refuses rm -f on a container it is already removing (a --rm worker
+# whose program exited once the processes above were stopped, or another rm):
+# how long that removal may take before it counts as a failure.
+REMOVAL_WAIT_SECONDS=30
+
+# Judges the removal by what is left of the container, not by the exit code
+# of rm.
+remove_container() {
+  container_id="$1"
+  if error="$(as_user docker rm -f "$container_id" 2>&1 >/dev/null)"; then
+    echo "$container_id container removed"
+    return
+  fi
+  waited=0
+  while :; do
+    if ! state="$(as_user docker ps -a --filter "id=$container_id" --format '{{.State}}' 2>/dev/null)"; then
+      echo "Failed to remove $container_id: ${error:-unknown error}"
+      return
+    fi
+    if [ -z "$state" ]; then
+      echo "$container_id container removed (Docker was already removing it)"
+      return
+    fi
+    if [ "$state" != "removing" ]; then
+      echo "Failed to remove $container_id ($state): ${error:-unknown error}"
+      return
+    fi
+    if [ "$waited" -ge "$REMOVAL_WAIT_SECONDS" ]; then
+      echo "Failed to remove $container_id: still being removed after ${REMOVAL_WAIT_SECONDS}s: ${error:-unknown error}"
+      return
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
 remove_buckyos_containers() {
   # BuckyOS Desktop Lite (etc/product.json) never calls docker.
   if grep -Eq '"container"[[:space:]]*:[[:space:]]*false' "$ROOT/etc/product.json" 2>/dev/null; then
@@ -92,11 +128,7 @@ remove_buckyos_containers() {
 
   echo "$container_ids" | while IFS= read -r container_id; do
     if [ -n "$container_id" ]; then
-      if as_user docker rm -f "$container_id" >/dev/null 2>&1; then
-        echo "$container_id container removed"
-      else
-        echo "Failed to remove $container_id"
-      fi
+      remove_container "$container_id"
     fi
   done
 }

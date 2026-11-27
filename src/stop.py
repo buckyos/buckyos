@@ -7,12 +7,17 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 
 system = platform.system()
 KEVENT_RING_DIR = Path("/tmp")
 ext = ""
 if system == "Windows":
     ext = ".exe"
+# Docker refuses `rm -f` on a container it is already removing (a --rm worker
+# whose program exited once the services above were killed, or another rm):
+# how long that removal may take before it counts as a failure.
+REMOVAL_WAIT_SECONDS = 30
 
 
 def _windows_subprocess_kwargs() -> dict[str, object]:
@@ -142,40 +147,67 @@ def _container_program():
     return "docker", False
 
 
+def _list_buckyos_containers(program, is_wslc):
+    """({name: state}, None) of the BuckyOS app containers, or (None, error)
+    when the runtime cannot list them. The state is "" under WSLC, whose list
+    is read for names only."""
+    result = subprocess.run(
+        [program, "container", "ls", "-a", "--format", "json" if is_wslc else "{{.Names}} {{.State}}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **_windows_subprocess_kwargs(),
+    )
+    if result.returncode != 0:
+        return None, result.stderr.strip() or "unknown error"
+
+    containers = {}
+    if is_wslc:
+        decoder = json.JSONDecoder()
+        remaining = result.stdout.strip()
+        while remaining:
+            value, offset = decoder.raw_decode(remaining)
+            rows = value if isinstance(value, list) else [value]
+            containers.update((row["Names"].strip(), "") for row in rows)
+            remaining = remaining[offset:].lstrip()
+    else:
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if fields:
+                containers[fields[0]] = fields[1] if len(fields) > 1 else "unknown"
+    return {name: state for name, state in containers.items() if name.startswith("buckyos-app-")}, None
+
+
+def _wait_for_removals(program, is_wslc, names):
+    """{name: state} of these containers still there once the runtime is no
+    longer removing any of them, or once REMOVAL_WAIT_SECONDS is up; None when
+    it cannot list them."""
+    deadline = time.monotonic() + REMOVAL_WAIT_SECONDS
+    while True:
+        containers, _ = _list_buckyos_containers(program, is_wslc)
+        if containers is None:
+            return None
+        left = {name: containers[name] for name in names if name in containers}
+        if "removing" not in left.values() or time.monotonic() >= deadline:
+            return left
+        time.sleep(0.5)
+
+
 def kill_buckyos_containers():
     if not _product_runs_containers():
         print("This product edition runs no containers")
         return
     program, is_wslc = _container_program()
     try:
-        result_list = subprocess.run(
-            [program, "container", "ls", "-a", "--format", "json" if is_wslc else "{{.Names}}"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            **_windows_subprocess_kwargs(),
-        )
+        containers, error = _list_buckyos_containers(program, is_wslc)
     except FileNotFoundError:
         print(f"Container runtime {program} is not installed")
         return
-    if result_list.returncode != 0:
-        stderr = result_list.stderr.strip()
-        print(f"Failed to list buckyos containers: {stderr or 'unknown error'}")
+    if containers is None:
+        print(f"Failed to list buckyos containers: {error}")
         return
-
-    if is_wslc:
-        names = []
-        decoder = json.JSONDecoder()
-        remaining = result_list.stdout.strip()
-        while remaining:
-            value, offset = decoder.raw_decode(remaining)
-            rows = value if isinstance(value, list) else [value]
-            names.extend(row["Names"] for row in rows)
-            remaining = remaining[offset:].lstrip()
-    else:
-        names = result_list.stdout.splitlines()
-    container_names = [name.strip() for name in names if name.strip().startswith("buckyos-app-")]
+    container_names = list(containers)
     if not container_names:
         print("No buckyos containers found")
         return
@@ -188,12 +220,38 @@ def kill_buckyos_containers():
         errors="replace",
         **_windows_subprocess_kwargs(),
     )
-    if result_rm.returncode != 0:
-        stderr = result_rm.stderr.strip()
-        print(f"Failed to remove buckyos containers: {stderr or 'unknown error'}")
+    if result_rm.returncode == 0:
+        for name in container_names:
+            print(f"{name} container removed")
         return
+
+    # rm echoes each container it removed; judge the others by what is left,
+    # not by its exit code.
+    echoed = {line.strip() for line in result_rm.stdout.splitlines()}
+    pending = []
     for name in container_names:
-        print(f"{name} container removed")
+        if name in echoed:
+            print(f"{name} container removed")
+        else:
+            pending.append(name)
+    stderr = result_rm.stderr.strip() or "unknown error"
+    left = _wait_for_removals(program, is_wslc, pending)
+    if left is None:
+        print(f"Failed to remove buckyos containers: {stderr}")
+        return
+    failures = []
+    for name in pending:
+        state = left.get(name)
+        if state is None:
+            print(f"{name} container removed (the runtime was already removing it)")
+        elif state == "removing":
+            failures.append(f"{name} is still being removed after {REMOVAL_WAIT_SECONDS}s")
+        else:
+            failures.append(f"{name} is still there" + (f" ({state})" if state else ""))
+    if failures:
+        print(f"Failed to remove buckyos containers: {stderr}")
+        for failure in failures:
+            print(f"  {failure}")
 
 def kill_process(name):
     if system == "Windows":

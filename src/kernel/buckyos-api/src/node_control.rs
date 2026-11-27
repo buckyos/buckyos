@@ -3400,6 +3400,7 @@ fn blackbox_stop(req: &NodeStopRequest, host: &NodeHostControlState, report: &mu
             }
         }
 
+        let mut refused = Vec::new();
         for target in targets {
             let mut command = Command::new("docker");
             command.args(["rm", "-f", &target]);
@@ -3408,15 +3409,18 @@ fn blackbox_stop(req: &NodeStopRequest, host: &NodeHostControlState, report: &mu
                 Ok(out) if out.status.success() => {
                     report.stopped_containers.push(target);
                 }
-                Ok(out) => report.actions.push(format!(
-                    "docker rm -f {} failed: {}",
+                Ok(out) => refused.push((
                     target,
-                    String::from_utf8_lossy(&out.stderr).trim()
+                    String::from_utf8_lossy(&out.stderr).trim().to_string(),
                 )),
                 Err(e) => report
                     .actions
                     .push(format!("docker rm -f {} error: {}", target, e)),
             }
+        }
+        if !refused.is_empty() {
+            let states = wait_while_docker_removes(&refused);
+            record_refused_removals(refused, states.as_ref(), report);
         }
     }
 
@@ -3426,6 +3430,86 @@ fn blackbox_stop(req: &NodeStopRequest, host: &NodeHostControlState, report: &mu
             let _ = kill_process_by_name(alias);
         }
         let _ = host; // suppress unused on some configs
+    }
+}
+
+/// Docker refuses `rm -f` on a container it is already removing (a `--rm`
+/// worker whose program exited once the services were killed, or another rm):
+/// how long that removal may take before it counts as a failure.
+const CONTAINER_REMOVAL_WAIT: Duration = Duration::from_secs(30);
+
+/// States of all containers once Docker is no longer removing any refused
+/// target, or once `CONTAINER_REMOVAL_WAIT` is up; None when docker cannot
+/// list them.
+fn wait_while_docker_removes(refused: &[(String, String)]) -> Option<BTreeMap<String, String>> {
+    let deadline = std::time::Instant::now() + CONTAINER_REMOVAL_WAIT;
+    loop {
+        let raw = run_capture(
+            "docker",
+            &["ps", "-a", "--format", "{{.ID}} {{.Names}} {{.State}}"],
+        )?;
+        let states = parse_container_states(&raw);
+        let removing = refused
+            .iter()
+            .any(|(target, _)| states.get(target).map(String::as_str) == Some("removing"));
+        if !removing || std::time::Instant::now() >= deadline {
+            return Some(states);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// `docker ps -a --format '{{.ID}} {{.Names}} {{.State}}'` keyed by short ID
+/// and by each name, since a target is either.
+fn parse_container_states(raw: &str) -> BTreeMap<String, String> {
+    let mut states = BTreeMap::new();
+    for line in raw.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let [id, names, rest @ ..] = fields.as_slice() else {
+            continue;
+        };
+        let state = rest.first().copied().unwrap_or("unknown").to_string();
+        for name in names.split(',') {
+            states.insert(name.to_string(), state.clone());
+        }
+        states.insert(id.to_string(), state);
+    }
+    states
+}
+
+/// Settles the targets `docker rm -f` refused by what is left of them, not
+/// by its exit code: one that is gone was removed (by Docker, already busy
+/// removing it).
+fn record_refused_removals(
+    refused: Vec<(String, String)>,
+    states: Option<&BTreeMap<String, String>>,
+    report: &mut NodeStopReport,
+) {
+    for (target, stderr) in refused {
+        let Some(states) = states else {
+            report
+                .actions
+                .push(format!("docker rm -f {} failed: {}", target, stderr));
+            continue;
+        };
+        match states.get(&target).map(String::as_str) {
+            None => {
+                report
+                    .actions
+                    .push(format!("docker was already removing {}", target));
+                report.stopped_containers.push(target);
+            }
+            Some("removing") => report.actions.push(format!(
+                "docker rm -f {} failed: {}; still being removed after {}s",
+                target,
+                stderr,
+                CONTAINER_REMOVAL_WAIT.as_secs()
+            )),
+            Some(state) => report.actions.push(format!(
+                "docker rm -f {} failed: {} (container is {})",
+                target, stderr, state
+            )),
+        }
     }
 }
 
@@ -3490,6 +3574,63 @@ pub fn kill_process_by_name(name: &str) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn container_states_are_keyed_by_id_and_every_name() {
+        let states = parse_container_states(
+            "aaa111 buckyos-app-one running\nbbb222 buckyos-app-two,alias removing\n\nccc333\nddd444 bare\n",
+        );
+        assert_eq!(states["aaa111"], "running");
+        assert_eq!(states["buckyos-app-one"], "running");
+        assert_eq!(states["bbb222"], "removing");
+        assert_eq!(states["alias"], "removing");
+        assert_eq!(states.get("ccc333"), None);
+        assert_eq!(states["ddd444"], "unknown");
+    }
+
+    #[test]
+    fn refused_removals_are_settled_by_what_is_left() {
+        let refused = |targets: &[&str]| {
+            targets
+                .iter()
+                .map(|target| {
+                    (
+                        target.to_string(),
+                        format!("removal of container {target} is already in progress"),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let states = parse_container_states(
+            "bbb222 buckyos-app-two removing\nccc333 buckyos-app-three dead\n",
+        );
+        let mut report = NodeStopReport::default();
+        record_refused_removals(
+            refused(&["aaa111", "buckyos-app-two", "ccc333"]),
+            Some(&states),
+            &mut report,
+        );
+        assert_eq!(report.stopped_containers, ["aaa111"]);
+        assert_eq!(report.actions[0], "docker was already removing aaa111");
+        assert!(
+            report.actions[1].ends_with("still being removed after 30s"),
+            "{}",
+            report.actions[1]
+        );
+        assert!(
+            report.actions[2].ends_with("(container is dead)"),
+            "{}",
+            report.actions[2]
+        );
+
+        let mut report = NodeStopReport::default();
+        record_refused_removals(refused(&["aaa111"]), None, &mut report);
+        assert!(report.stopped_containers.is_empty());
+        assert_eq!(
+            report.actions,
+            ["docker rm -f aaa111 failed: removal of container aaa111 is already in progress"]
+        );
+    }
 
     #[test]
     fn run_plist_path_is_per_root_on_macos() {

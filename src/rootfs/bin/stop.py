@@ -2,11 +2,18 @@ import os
 import platform
 import shutil
 import subprocess
+import time
 
 system = platform.system()
 ext = ""
 if system == "Windows":
     ext = ".exe"
+
+BUCKYOS_CONTAINER_FILTER = "label=buckyos.app_instance_id"
+# Docker refuses `rm -f` on a container it is already removing (a --rm worker
+# whose program exited once the services above were killed, or another rm):
+# how long that removal may take before it counts as a failure.
+REMOVAL_WAIT_SECONDS = 30
 
 
 def _windows_subprocess_kwargs() -> dict[str, object]:
@@ -75,12 +82,36 @@ def kill_devtest_containers():
         else:
             print(f"{container_name} container killed")
 
+def _wait_for_removals(container_ids):
+    """States of these containers once Docker is no longer removing any of
+    them, or once REMOVAL_WAIT_SECONDS is up: {id: state} of those still
+    there (removed ones are absent), None when docker cannot list them."""
+    deadline = time.monotonic() + REMOVAL_WAIT_SECONDS
+    while True:
+        result = subprocess.run(
+            ["docker", "ps", "-a", "--filter", BUCKYOS_CONTAINER_FILTER, "--format", "{{.ID}} {{.State}}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        listed = {}
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if fields:
+                listed[fields[0]] = fields[1] if len(fields) > 1 else "unknown"
+        left = {container_id: listed[container_id] for container_id in container_ids if container_id in listed}
+        if "removing" not in left.values() or time.monotonic() >= deadline:
+            return left
+        time.sleep(0.5)
+
+
 def kill_buckyos_containers():
     if system == "Windows" or not _product_runs_containers() or not shutil.which("docker"):
         return
 
     result_list = subprocess.run(
-        ["docker", "ps", "-aq", "--filter", "label=buckyos.app_instance_id"],
+        ["docker", "ps", "-aq", "--filter", BUCKYOS_CONTAINER_FILTER],
         capture_output=True,
         text=True,
     )
@@ -103,17 +134,39 @@ def kill_buckyos_containers():
         capture_output=True,
         text=True,
     )
-    if result_rm.returncode != 0:
-        stderr = result_rm.stderr.strip()
-        print(f"Failed to remove buckyos docker containers: {stderr or 'unknown error'}")
+    if result_rm.returncode == 0:
+        # A container already gone is not echoed, but rm -f still succeeds.
+        for container_id in container_ids:
+            print(f"{container_id} container removed")
         return
 
-    removed = result_rm.stdout.strip()
-    if removed:
-        for container_id in removed.splitlines():
+    # rm echoes each container it removed; judge the others by what is left,
+    # not by its exit code.
+    echoed = {line.strip() for line in result_rm.stdout.splitlines()}
+    pending = []
+    for container_id in container_ids:
+        if container_id in echoed:
             print(f"{container_id} container removed")
-    else:
-        print("BuckyOS docker containers removed")
+        else:
+            pending.append(container_id)
+    stderr = result_rm.stderr.strip() or "unknown error"
+    left = _wait_for_removals(pending)
+    if left is None:
+        print(f"Failed to remove buckyos docker containers: {stderr}")
+        return
+    failures = []
+    for container_id in pending:
+        state = left.get(container_id)
+        if state is None:
+            print(f"{container_id} container removed (Docker was already removing it)")
+        elif state == "removing":
+            failures.append(f"{container_id} is still being removed after {REMOVAL_WAIT_SECONDS}s")
+        else:
+            failures.append(f"{container_id} is still there ({state})")
+    if failures:
+        print(f"Failed to remove buckyos docker containers: {stderr}")
+        for failure in failures:
+            print(f"  {failure}")
 
 def kill_process(name):
     if system == "Windows":

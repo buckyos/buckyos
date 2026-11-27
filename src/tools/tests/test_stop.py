@@ -95,6 +95,79 @@ class StopContainersTests(unittest.TestCase):
                 else:
                     self.assertEqual(run.call_args_list[1].args[0], ["wslc.exe", "rm", "-f", "buckyos-app-one", "buckyos-app-two"])
 
+    def run_docker_stop(self, lists, rm, clock=(0,)):
+        """`docker container ls` answers with the next of `lists` ({name: state}
+        or None for a failure), `docker rm -f` with `rm`."""
+        module = load_stop()
+        lists = list(lists)
+
+        def run(args, **kwargs):
+            if args[1:3] == ["container", "ls"]:
+                listed = lists.pop(0)
+                if listed is None:
+                    return subprocess.CompletedProcess(args, 1, "", "daemon gone")
+                return subprocess.CompletedProcess(args, 0, "".join(f"{n} {s}\n" for n, s in listed.items()), "")
+            return rm
+
+        output = io.StringIO()
+        with (
+            patch.object(module, "_container_program", return_value=("docker", False)),
+            patch.object(module, "_product_runs_containers", return_value=True),
+            patch.object(module.subprocess, "run", side_effect=run),
+            patch.object(module.time, "monotonic", side_effect=list(clock)),
+            patch.object(module.time, "sleep") as sleep,
+            contextlib.redirect_stdout(output),
+        ):
+            module.kill_buckyos_containers()
+        return output.getvalue().splitlines(), sleep
+
+    def test_docker_removal_already_in_progress_that_finishes_is_success(self):
+        everything = {"buckyos-app-one": "running", "buckyos-app-two": "removing", "unrelated": "running"}
+        rm = subprocess.CompletedProcess([], 1, "buckyos-app-one\n", "removal of container buckyos-app-two is already in progress\n")
+        lines, sleep = self.run_docker_stop([everything, {"buckyos-app-two": "removing"}, {}], rm, clock=(0, 1, 2))
+        self.assertEqual(lines, [
+            "buckyos-app-one container removed",
+            "buckyos-app-two container removed (the runtime was already removing it)",
+        ])
+        self.assertEqual(sleep.call_count, 1)
+
+    def test_docker_removal_still_in_progress_or_failed_is_reported(self):
+        listed = {"buckyos-app-one": "removing", "buckyos-app-two": "dead"}
+        rm = subprocess.CompletedProcess([], 1, "", "already in progress\n")
+        lines, _ = self.run_docker_stop([listed, listed, listed], rm, clock=(0, 5, 31))
+        self.assertEqual(lines, [
+            "Failed to remove buckyos containers: already in progress",
+            "  buckyos-app-one is still being removed after 30s",
+            "  buckyos-app-two is still there (dead)",
+        ])
+        lines, _ = self.run_docker_stop([listed, None], rm)
+        self.assertEqual(lines, ["Failed to remove buckyos containers: already in progress"])
+
+    def test_wslc_failed_removal_is_checked_once_against_the_list(self):
+        module = load_stop()
+        both = json.dumps([{"Names": "buckyos-app-one"}, {"Names": "buckyos-app-two"}])
+        results = [
+            subprocess.CompletedProcess([], 0, both, ""),
+            subprocess.CompletedProcess([], 1, "", "in use"),
+            subprocess.CompletedProcess([], 0, json.dumps([{"Names": "buckyos-app-two"}]), ""),
+        ]
+        output = io.StringIO()
+        with (
+            patch.object(module, "_container_program", return_value=("wslc.exe", True)),
+            patch.object(module, "_product_runs_containers", return_value=True),
+            patch.object(module.subprocess, "run", side_effect=results) as run,
+            patch.object(module.time, "sleep") as sleep,
+            contextlib.redirect_stdout(output),
+        ):
+            module.kill_buckyos_containers()
+        self.assertEqual(run.call_count, 3)
+        sleep.assert_not_called()
+        self.assertEqual(output.getvalue().splitlines(), [
+            "buckyos-app-one container removed (the runtime was already removing it)",
+            "Failed to remove buckyos containers: in use",
+            "  buckyos-app-two is still there",
+        ])
+
     def test_failed_list_does_not_remove_containers(self):
         module = load_stop()
         with (
