@@ -317,7 +317,7 @@ pub fn search_dirs() -> Vec<PathBuf> {
             dirs.push(extra);
         }
     }
-    // Last: a machine keeps the converter it had. ext-core's ffmpeg has no `zscale`, so taking it over a system one would lose HDR tone mapping.
+    // Last: a machine keeps the converter it had.
     dirs.push(ext_tools_dir());
     dirs
 }

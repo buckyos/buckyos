@@ -40,6 +40,15 @@ download from its address fails or has other bytes, the addresses listed for its
 SHA256 are tried in turn and checked the same way. Source templates, VCS-only
 recipes, missing patches, and unpinned downloads fail collection.
 
+ffmpeg alone comes from the channel `https://buckyos.github.io/ffmpeg-feedstock`
+(`conda-env.yml` lists it before conda-forge). That channel publishes conda-forge's
+ffmpeg recipe built with libzimg, which provides the `zscale` filter that nfs_server's
+preview uses to map HDR video to SDR. conda-forge builds ffmpeg without zimg. The
+recipe, the releases with their upstream sources, and the build attestations are at
+https://github.com/buckyos/ffmpeg-feedstock. The packages carry their recipe in
+`info/recipe` like conda-forge's, so their collection is the same. Do not delete a
+release of that repository while this lock points at its packages.
+
 A Cargo.lock inside a source archive brings its crates.io dependencies, each
 pinned by the lock's checksum. A git dependency of such a lock is included only
 when `cargo-git-sources.json` pins an archive of its locked commit (an https

@@ -2,6 +2,11 @@
 # Regenerate the lock after changing this file:
 #   uvx conda-lock lock -f conda-env.yml --lockfile conda-lock.yml --micromamba --mamba
 channels:
+  # conda-forge's ffmpeg recipe built with libzimg (the zscale filter, which
+  # nfs_server's preview needs to map HDR video to SDR); conda-forge builds it
+  # without zimg. Only ffmpeg comes from here. Source and releases:
+  # https://github.com/buckyos/ffmpeg-feedstock (README.buckyos.md).
+  - https://buckyos.github.io/ffmpeg-feedstock
   - conda-forge
 platforms:
   - linux-64
