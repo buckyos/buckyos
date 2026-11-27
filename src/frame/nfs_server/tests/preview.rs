@@ -127,7 +127,13 @@ fn only_tools(names: &[&str]) -> tempfile::TempDir {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&found, &link).unwrap();
         #[cfg(not(unix))]
-        std::fs::copy(&found, &link).unwrap();
+        {
+            if found.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd")) {
+                std::fs::write(dir.path().join(format!("{name}.cmd")), format!("@echo off\r\n\"{}\" %*\r\n", found.display())).unwrap();
+            } else {
+                std::fs::copy(&found, &link).unwrap();
+            }
+        }
     }
     dir
 }

@@ -24,7 +24,7 @@ use super::convert::Profile;
 use super::media::{filter_of, office_of, Filter, Kind, Office};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
 
@@ -525,10 +525,24 @@ fn launcher_target(launcher: &Path) -> Option<PathBuf> {
         let Some(target) = first_word(command).and_then(|w| expand(w, &vars)) else { continue };
         let target = PathBuf::from(target.replace(['\\', '/'], std::path::MAIN_SEPARATOR_STR));
         if target.file_stem().is_some_and(|s| s.eq_ignore_ascii_case("soffice")) {
-            return Some(if target.is_absolute() { target } else { Path::new(&dir).join(target) });
+            return Some(lexical(&Path::new(&dir).join(target)));
         }
     }
     None
+}
+
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir if matches!(out.components().next_back(), Some(Component::Normal(_))) => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The real `soffice` behind `path`: itself inside an install, else what its launcher runs (a few levels deep).
@@ -845,7 +859,7 @@ mod tests {
         let root = dir.path().join("libreoffice");
         let program = root.join("program");
         let registry = root.join("share/registry");
-        for f in ["soffice", "soffice.bin", &module_library("sw"), &module_library("sd")] {
+        for f in ["soffice", &exe_name("soffice"), "soffice.bin", &module_library("sw"), &module_library("sd")] {
             write(&program.join(f), "");
         }
         assert_eq!(office_components(&program.join("soffice")), Some((vec![], vec![])), "libraries without their registry are no application");
@@ -884,12 +898,21 @@ mod tests {
         assert_eq!(office_components(&bin.join("soffice")).map(|c| c.0.len()), Some(4), "ext-core's launcher");
         write(&bin.join("soffice.cmd"), "@echo off\r\nsetlocal\r\nset \"S=%~dp0..\\store\\ext-core\"\r\n\"%S%\\libreoffice\\program\\soffice.com\" %*\r\nexit /b %ERRORLEVEL%\r\n");
         let target = launcher_target(&bin.join("soffice.cmd")).unwrap();
-        assert!(target.ends_with(Path::new("store/ext-core/libreoffice/program/soffice.com")) && target.starts_with(&bin), "{}", target.display());
+        assert!(target.ends_with(Path::new("store/ext-core/libreoffice/program/soffice.com")) && target.starts_with(dir.path().join("tools")), "{}", target.display());
+        #[cfg(windows)]
+        {
+            let ext_program = dir.path().join("tools/store/ext-core/libreoffice/program");
+            for f in ["soffice.com", "soffice.bin"] {
+                write(&ext_program.join(f), "");
+            }
+            assert_eq!(real_soffice(&bin.join("soffice.cmd")).map(|(real, _)| real), std::fs::canonicalize(ext_program.join("soffice.com")).ok(), "ext-core's Windows launcher");
+        }
         write(&bin.join("other"), "#!/bin/sh\nexec \"$(dirname \"$0\")/real-office\" \"$@\"\n");
         assert_eq!(office_components(&bin.join("other")), None, "a launcher that names no soffice");
         write(&bin.join("plain"), "#!/bin/sh\n");
         assert_eq!(office_components(&bin.join("plain")), None);
-        assert_eq!(find_all("soffice", &[bin.clone(), program.clone(), bin.clone()]), vec![bin.join("soffice"), program.join("soffice")]);
+        let bin_soffice = bin.join(if cfg!(windows) { "soffice.cmd" } else { "soffice" });
+        assert_eq!(find_all("soffice", &[bin.clone(), program.clone(), bin.clone()]), vec![bin_soffice, program.join(exe_name("soffice"))]);
     }
 
     fn tools_identity(program: &Path) -> Identity {
