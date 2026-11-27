@@ -133,6 +133,29 @@ class ComplianceTests(unittest.TestCase):
         with self.assertRaisesRegex(compliance.ComplianceError, "unsafe relative path"):
             compliance.artifact(other, recipe, self.root, self.root)
 
+    def test_a_file_of_the_recipe_directory_named_by_its_build_machine_path_is_the_packaged_file(self):
+        # gts 0.7.6 build 5: `path: CMakeLists.txt` rendered as the absolute path it had where it was built.
+        for built, separator in (("/home/conda/recipe_root", "/"), (r"D:\a\gts-feedstock\gts-feedstock\recipe", "\\")):
+            with self.subTest(built=built):
+                recipe = self.root / built.replace(":", "").replace("\\", "/").strip("/") / "info" / "recipe"
+                recipe.mkdir(parents=True)
+                (recipe / "meta.yaml").write_text(
+                    "# This file created by conda-build 26.7.1\n# meta.yaml template originally from:\n"
+                    f"# {built}, last modified Sat Nov 21 10:00:00 2026\n"
+                    f"package:\n  name: gts\nsource:\n  - path: '{built}{separator}CMakeLists.txt'\n")
+                (recipe / "CMakeLists.txt").write_text("project(gts C)\n")
+                source = compliance.recipe_sources(recipe)[0]
+                self.assertIsNone(compliance.recipe_directory_sources(source, recipe, self.root, self.root))
+                record = compliance.artifact(source, recipe, recipe.parent.parent, self.root)
+                self.assertEqual(record["kind"], "recipe-source")
+                self.assertTrue(record["file"].endswith("local-sources/CMakeLists.txt"))
+                self.assertEqual(record["sha256"], compliance.sha256(recipe / "CMakeLists.txt"))
+                # Outside that directory, or missing from the package, it still fails.
+                with self.assertRaisesRegex(compliance.ComplianceError, "unsafe relative path"):
+                    compliance.artifact({"path": built + "-other" + separator + "CMakeLists.txt"}, recipe, recipe.parent.parent, self.root)
+                with self.assertRaisesRegex(compliance.ComplianceError, "recipe local source is missing"):
+                    compliance.artifact({"path": built + separator + "absent.txt"}, recipe, recipe.parent.parent, self.root)
+
     def test_a_cargo_git_source_is_included_only_when_its_commit_archive_is_pinned(self):
         origin = "git+https://github.com/example/crate?rev=" + "c" * 40 + "#" + "c" * 40
         lock = ('[[package]]\nname = "pinned"\nversion = "1.0.0"\nsource = "' + origin + '"\n\n'

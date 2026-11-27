@@ -356,8 +356,20 @@ def recipe_directory_sources(source: dict, recipe: Path, destination: Path, sour
             for item in sorted(copied.rglob("*")) if item.is_file()]
 
 
+def recipe_relative(path: str, recipe: Path) -> str:
+    """A `path` source in the recipe directory. conda-build may render it as the absolute path it had on the build
+    machine (`/home/conda/recipe_root/CMakeLists.txt` for gts): such a path inside the directory that
+    built_recipe_directory names is the same file of the package's info/recipe. Anything else is left as it is."""
+    normal = path.replace("\\", "/")
+    built = (built_recipe_directory(recipe) or "").replace("\\", "/").rstrip("/")
+    if built and (PurePosixPath(normal).is_absolute() or re.match(r"^[A-Za-z]:/", normal)) and normal.startswith(built + "/"):
+        return normal[len(built) + 1:]
+    return path
+
+
 def artifact(source: dict, recipe: Path, destination: Path, source_root: Path) -> dict:
     if "path" in source:
+        source = {**source, "path": recipe_relative(str(source["path"]), recipe)}
         local = recipe / safe_relative(str(source["path"]))
         if not local.is_file():
             raise ComplianceError(f"recipe local source is missing: {local}")
