@@ -1,7 +1,7 @@
 {
   "schema": "buckyos.ext_tools/1",
   "id": "ext-core",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "requires": [],
   "conflicts": [],
   "online": [
