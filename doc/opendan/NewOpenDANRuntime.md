@@ -451,10 +451,9 @@ parser = "xml"                        # 默认 "xml" → llm_context::XmlBehavio
 renderer = "xml"                      # 默认 "xml" → llm_context::XmlStepRenderer
 parser_strict = false                 # XmlBehaviorParser.strict：true 时纯文本回复算错误
 
-# Renderer 调参（XmlStepRenderer 的旋钮，全部可选）
-renderer_recent_full_steps = 2        # 最近 N 步全量渲染；更老的步骤压缩
-renderer_summary_chars = 280          # 压缩步骤的 assistant_text 字符上限
-renderer_max_result_chars = 4096      # 单步 action_result 上限（0 = 不截断）
+# Renderer：run 内的 step 都全量渲染、不改写；分级只在压缩 / 重建历史时发生
+# （agent_tool_result_protocol.md “历史里的分级”）。XmlStepRenderer.max_result_chars
+# 只是兜底，默认等于单结果预算（16K token）。
 
 # 输出与预算
 output = "text"                       # "text" | "json"（json 时需在 output_spec 里给 schema）

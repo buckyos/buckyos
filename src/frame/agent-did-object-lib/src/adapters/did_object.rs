@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
+use agent_tool::prompt_engine::value_text;
+use agent_tool::text_budget::clip_to_default_budget;
 use async_trait::async_trait;
 use buckyos_api::ObjectUrl;
 use name_client::{DIDObjectClient, ResolvedDIDObject};
-use name_lib::{ActionInvocation, ActionObserved, ActionResponse, EventSubscribeRequest, DEFAULT_EXPIRE_TIME};
+use name_lib::{ActionInvocation, ActionObserved, ActionResponse, EventSubscribeRequest};
 use serde_json::{json, Value};
 
 use super::{
@@ -400,14 +402,15 @@ impl AgentObjectAdapter for DidObjectProtocolAdapter {
         }
 
         let content = if explicit {
-            property_values
+            let text = property_values
                 .values()
                 .map(|value| match value {
                     Value::String(text) => text.clone(),
-                    other => serde_json::to_string_pretty(other).unwrap_or_default(),
+                    other => other.to_string(),
                 })
                 .collect::<Vec<_>>()
-                .join("\n")
+                .join("\n");
+            clip_to_default_budget(&text, None).0
         } else {
             render_object_document(&canonical, &endpoint, card, &profile_doc, &property_values)
         };
@@ -435,13 +438,8 @@ impl AgentObjectAdapter for DidObjectProtocolAdapter {
             }],
             errors,
             cache_key: Some(canonical.clone()),
-            version: card
-                .iat
-                .or_else(|| {
-                    card.exp
-                        .map(|exp| exp.saturating_sub(DEFAULT_EXPIRE_TIME))
-                })
-                .map(|value| value.to_string()),
+            // A card is issued per request: its `iat` is no version of the content.
+            version: None,
             route: req.route_trace,
             adapt_meta: json!({
                 "object_url": canonical,
@@ -667,11 +665,77 @@ fn render_object_document(
     if !summary.is_empty() {
         lines.push("Summary:".to_string());
         for (name, value) in summary {
-            lines.push(format!("- {name}:"));
-            lines.push(serde_json::to_string_pretty(value).unwrap_or_default());
+            let text = summary_text(value);
+            if text.contains('\n') {
+                lines.push(format!("- {name}:"));
+                lines.extend(text.lines().map(|l| format!("  {l}")));
+            } else {
+                lines.push(format!("- {name}: {text}"));
+            }
         }
     }
     lines.join("\n")
+}
+
+/// A summary property's value as the document shows it: a collection page
+/// one line per row (`- <object> — <cell>: <value> · …`), anything else by
+/// the rule of template values (its readable fields, else compact JSON).
+fn summary_text(value: &Value) -> String {
+    let Some(rows) = value.get("rows").and_then(Value::as_array) else {
+        return value_text(value).0;
+    };
+    let mut lines: Vec<String> = rows.iter().map(row_line).collect();
+    if let Some(next) = value.get("next_cursor").filter(|c| !c.is_null()) {
+        lines.push(format!("next_cursor: {}", cell_text(next).unwrap_or_default()));
+    }
+    if lines.is_empty() {
+        return "(none)".to_string();
+    }
+    clip_to_default_budget(&lines.join("\n"), None).0
+}
+
+/// One row of a collection: the object and the cells its Provider chose.
+fn row_line(row: &Value) -> String {
+    let object = row
+        .get("object")
+        .or_else(|| row.get("row_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let cells: Vec<String> = row
+        .get("cells")
+        .and_then(Value::as_object)
+        .map(|cells| {
+            cells
+                .iter()
+                .filter_map(|(k, v)| cell_text(v).map(|t| format!("{k}: {t}")))
+                .collect()
+        })
+        .unwrap_or_default();
+    if cells.is_empty() {
+        format!("- {object}")
+    } else {
+        format!("- {object} — {}", cells.join(" · "))
+    }
+}
+
+const CELL_CHARS: usize = 160;
+
+/// A cell on one line, at most [`CELL_CHARS`] characters.
+fn cell_text(v: &Value) -> Option<String> {
+    let text = match v {
+        Value::Null => return None,
+        Value::String(s) => s.split_whitespace().collect::<Vec<_>>().join(" "),
+        other => other.to_string(),
+    };
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= CELL_CHARS {
+        return Some(text);
+    }
+    let mut out: String = text.chars().take(CELL_CHARS - 1).collect();
+    out.push('…');
+    Some(out)
 }
 
 fn did_to_string(did: &name_lib::DID) -> String {

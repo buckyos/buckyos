@@ -46,6 +46,61 @@ fn unknown() -> String {
     "unknown".to_string()
 }
 
+/// What a tool result's envelope (`Observation.host`) says besides the text
+/// the model was shown (prompt mechanics TODO A3): how a rebuilt history
+/// shows it shorter (`title`, `summary`) and what it showed in full
+/// (`dedup_key`, `hint_once_keys`). `dedup_of`: the text is the dedup hint
+/// naming that earlier call.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ResultMeta {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedup_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hint_once_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedup_of: Option<String>,
+}
+
+const RESULT_META_TITLE_CHARS: usize = 300;
+const RESULT_META_SUMMARY_CHARS: usize = 2000;
+
+impl ResultMeta {
+    /// The meta of an envelope (`None`: the observation carries none).
+    pub fn of_host(host: &Option<Value>) -> Option<Self> {
+        let v = agent_tool::ToolResultView::from_host(host)?;
+        let clip = |s: &str, n: usize| s.trim().chars().take(n).collect::<String>();
+        Some(Self {
+            title: clip(&v.title, RESULT_META_TITLE_CHARS),
+            summary: clip(&v.summary, RESULT_META_SUMMARY_CHARS),
+            dedup_key: v.dedup.as_ref().map(|d| d.key.clone()).filter(|k| !k.is_empty()),
+            hint_once_keys: v.once_keys(),
+            dedup_of: v
+                .detail
+                .as_ref()
+                .and_then(|d| d.get("dedup_of"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
+    }
+
+    /// What a context keeps of a result it shows in full: the keys only.
+    pub fn keys(&self) -> Self {
+        Self {
+            dedup_key: self.dedup_key.clone(),
+            hint_once_keys: self.hint_once_keys.clone(),
+            ..Default::default()
+        }
+    }
+
+    pub fn has_keys(&self) -> bool {
+        self.dedup_key.is_some() || !self.hint_once_keys.is_empty()
+    }
+}
+
 /// Source id of inputs the runner synthesizes itself (completion of a
 /// watched task): they have no delivery position to consume.
 pub const INTERNAL_TASK_SRC: &str = "_task";
@@ -158,8 +213,12 @@ pub enum WorklogBody {
         call_id: String,
         /// `ok | error | unresolved | cancelled`.
         status: String,
+        /// The text the model was shown.
         #[serde(default)]
         result: String,
+        /// What the result's envelope says besides that text.
+        #[serde(flatten)]
+        meta: ResultMeta,
     },
     /// How the session ended or set aside a run (written with the run's
     /// history). Outcomes that keep the run open without a decision

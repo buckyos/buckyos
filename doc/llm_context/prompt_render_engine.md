@@ -44,8 +44,10 @@ pub struct EngineConfig {
     pub include_roots: Vec<PathBuf>,
     /// 单次渲染的总递归深度（防止 __INCLUDE__ 循环引用）。默认 8。
     pub max_recursion_depth: u8,
-    /// 宿主注册的命名格式（`render_format`）与额外 filter，引擎自己不带宿主词汇。
+    /// 宿主注册的命名格式（`render_format`）、默认格式与额外 filter，引擎自己不带宿主词汇。
     pub extensions: RenderExtensions,
+    /// 模板名，用在“对象回退成 JSON”的警告里。
+    pub name: String,
 }
 
 #[async_trait]
@@ -110,6 +112,8 @@ pub struct RenderStats {
     pub exec_failed: u32,
     pub var_registered: u32,
     pub var_failed: u32,
+    /// 取不到可读字段、回退成紧凑 JSON 的对象 / 数组数量。
+    pub json_fallback: u32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -146,8 +150,18 @@ pub enum RenderError {
 | `__OPENDAN_VAR(name, $expr)` | `__VAR(name, $expr)__` | 注册一个动态变量：渲染时调用 `loader.load("$expr")` 拿值，绑定到 `vars[name]`，供后续 `{name}` 引用。 |
 | `{var}` | `{var}` | 静态/动态变量替换（内部仍走 `upon`）。字面 `{` `}` 用 `{{` `}}` 转义。 |
 
+**对象的默认渲染**：模板引入的对象不插完整 JSON。`{{ x }}`、`__ENV($x)__` 和文本 filter（`xml`、`attr`、`truncate`、`oneline`、`quote`、`join`）遇到 object / array 时，按同一条规则给出人可读的文本（`RenderExtensions::value_text`）：
+
+1. 宿主用 `RenderExtensions::with_default_format(格式名, 判定函数)` 认领的值，用它的命名格式（libopendan：输入视图 `input.xml`、消息 `message.xml`、事件 `event.xml`、附件列表 `attachments.list`）。
+2. 其余 object 最多两行，用对象自己已有的字段：第一行是 `title` / `name` / `subject` 中第一个有值的（只写值），第二行是 `summary` / `description` / `status` 中第一个有值的，写成 `<字段名>: <值>`；array 每个元素一行（object 元素两段用 ` — ` 接成一行）。
+3. 取不到可读字段：回退成紧凑 JSON，`log::warn!` 记下模板名（`EngineConfig.name`）和变量路径，`RenderStats.json_fallback` 加一；不报错，渲染照常完成。
+4. 结果受单结果预算（16K token，`agent_tool::text_budget`）约束，超出时保留头尾并写明省略了多少。
+
+明确要 JSON 时写 `| json`，不记日志。完整规则见 [Render_Prompt_Template_Variables.md](Render_Prompt_Template_Variables.md) §2.1。
+
 实现细节：
 - 多 pass：先扫一遍所有 `__VAR__` 声明做名字收集与去重；再异步并发解析；最后一遍 substitute + upon。
+- 引擎给 upon 设了自己的默认 formatter（上面的对象规则），`{{ x }}` 遇到 map / list 不会再报 upon 的 “unformattable type”、让这批输入卡住不消费。
 - `__INCLUDE__` 加载到的文本递归再过一遍引擎（受 `max_recursion_depth` 约束），所以模板片段可以嵌套别的指令。
 - 引擎内置 sentinel-based escape pass，保证文件内容里的 `{` `}` 不会被 `upon` 误解析（即原有 `ESCAPED_*_SENTINEL` 机制保留）。
 - 所有失败都计数后用 `<!-- $directive failed: $reason -->` 占位（或可配置为空串），**不抛错**。
@@ -169,7 +183,7 @@ old prompt.rs 是「behavior 层的 LLM 请求装配」。它干的事拆成两�
 ### 宿主侧（不进引擎）
 libopendan 的 `SessionAssembler`（`runner/assembler.rs`）决定 system 段和每个输入批次的内容：
 
-- behavior 配置了 system 模板或输入模板（`on_init` / `on_context_switch` / `on_input`）时，用 `render_template` 经本引擎渲染：`__EXEC__` 关闭，模板变量是宿主预先算好的 JSON（`input` / `handover` / `todos_text` / `background_text` / `builtin` 等），命名格式由 `input_formats()` 注册。
+- behavior 配置了 system 模板或输入模板（`on_init` / `on_context_switch` / `on_input`）时，用 `render_template` 经本引擎渲染：`__EXEC__` 关闭，模板变量是宿主预先算好的 JSON（`input` / `handover` / `runtime` / `*_text` / `background_context` / `builtin` 等，每个变量及其默认渲染见 [Render_Prompt_Template_Variables.md](Render_Prompt_Template_Variables.md) §8），命名格式和默认格式由 `input_formats()` 注册。
 - 没配模板时由 `DefaultAssembler` 直接拼接，不经过引擎。
 
 xllm 的 system 文本由 `PromptPlan` 按段拼接（宿主 / 组文本 + capabilities + cmd_manual + runtime_protocol），见 [LLM Context 设计](<LLM Context 设计.md>) §11.2。
@@ -179,7 +193,7 @@ xllm 的 system 文本由 `PromptPlan` 按段拼接（宿主 / 组文本 + capab
 这些都不是本引擎的模板变量，Round / Turn 编号也没有作为模板变量暴露：
 
 - **Step 历史与动作回响**：由宿主装配的 `StepRenderer`（`agent_tool::XmlStepRenderer`）在每次推理前从 `LLMContextState.steps` / `last_step` 渲染：其它 behavior 的 Step 进 `<<step_history>>`，当前 behavior 的 Step 渲染成 assistant 决策 + `<<last_step_action_results>>` 动作回响。动作回响总是默认渲染；宿主要补充的内容经 `LLMContext::inject` 并入该 Step 的 user 消息（接在动作回响之后）。
-- **Session 历史**：libopendan Runner 从 worklog 重建为一串消息（`runner/history.rs`，`libopendan.history/4`）：user 输入、assistant response 及其工具调用 / 结果、behavior Step 的 `<<last_step_action_results>>`；超出预算时由 `agent_tool::llm_compress` 压缩成开头 + 一条 `<history_summary>` 摘要消息 + 原样的近期 Round。
+- **Session 历史**：libopendan Runner 从 worklog 重建为一串消息（`runner/history.rs`，`libopendan.history/5`）：user 输入、assistant response 及其工具调用 / 结果、behavior Step 的 `<<last_step_action_results>>`；压缩时或 provider 缓存失效后，较旧的工具结果按位置改用 summary / title；仍超出预算时由 `agent_tool::llm_compress` 压缩成开头 + 一条 `<history_summary>` 摘要消息 + 原样的近期 Round。
 - **每个输入批次的 user message**：libopendan 由 `SessionAssembler::render_input(cfg, state, templates, &InputMaterial)` 渲染成 `<session_input hook=… time=…>`（规则同上：有输入模板走本引擎，否则 `DefaultAssembler` 直接拼接）；system 段由 `SessionAssembler::system_text` 生成。
 
 ### workflow DSL 的复用面
@@ -252,6 +266,7 @@ libopendan::runner::SessionAssembler
 6. 多 pass：`__INCLUDE__` 加载的内容里包含 `__VAR__` / `__ENV__` 也会被处理
 7. 输出触顶 `max_total_bytes` 时 `truncated=true`
 8. 渲染统计 `RenderStats` 与 `resolved_vars` 数字正确
+9. 对象的默认渲染：有常见字段的对象、没有常见字段的对象（回退 JSON + 警告 + `json_fallback`）、数组、`| json`、宿主注册了默认格式的对象
 
 ## 8. 实施 checklist（给 CodeAgent）
 

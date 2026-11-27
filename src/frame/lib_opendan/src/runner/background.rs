@@ -108,6 +108,64 @@ pub fn local_time(ms: u64, tz: Option<&str>) -> (String, String) {
     }
 }
 
+/// `<head>: commands run here on <host>, cwd …, shell …, <baseline>
+/// environment; <desc>`: the runtime a session's commands run in, from its
+/// status (`RuntimeInfo`).
+pub fn commands_line(head: &str, status: &Value, desc: Option<&str>) -> String {
+    let field = |k: &str| status.get(k).and_then(Value::as_str).unwrap_or_default();
+    let mut t = format!("{head}: commands run here");
+    let host = field("hostname");
+    if !host.is_empty() {
+        t.push_str(&format!(" on {host}"));
+    }
+    let cwd = field("cwd");
+    if !cwd.is_empty() {
+        t.push_str(&format!(", cwd {cwd}"));
+    }
+    let shell = field("shell_kind");
+    if !shell.is_empty() {
+        t.push_str(&format!(", shell {shell}"));
+    }
+    let baseline = field("baseline");
+    if !baseline.is_empty() {
+        t.push_str(&format!(", {baseline} environment"));
+    }
+    if let Some(desc) = desc.filter(|s| !s.trim().is_empty()) {
+        t.push_str(&format!("; {}", one_line(desc, 800)));
+    }
+    t
+}
+
+/// `<who> `<id>` (<os>, available, desktop access …)`: a runtime of the
+/// agent's table as its entry (`runtime_entry`) describes it.
+pub fn runtime_head(who: &str, entry: &Value) -> String {
+    let s = |k: &str| entry.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    let available = entry.get("available").and_then(Value::as_bool).unwrap_or(false);
+    let mut t = format!("{who} `{}` ({}", s("id"), if s("os").is_empty() { "os unknown".into() } else { s("os") });
+    t.push_str(if available { ", available" } else { ", not available" });
+    if s("computer") != "none" {
+        t.push_str(&format!(", desktop access {}", s("computer")));
+    }
+    if let Some(error) = entry.get("desktop_error").and_then(Value::as_str) {
+        t.push_str(&format!(", desktop unavailable: {}", one_line(error, 200)));
+    }
+    t.push(')');
+    t
+}
+
+/// `workspace <id> at <dir> on runtime <runtime> (<how to reach it>)` of a
+/// session's workspace view.
+pub fn workspace_line(w: &Value) -> String {
+    let s = |k: &str| w.get(k).and_then(Value::as_str).unwrap_or_default();
+    let reach = if w.get("same_runtime").and_then(Value::as_bool) == Some(true) {
+        "on this runtime: cd there or use absolute paths"
+    } else {
+        "on another runtime: copy files with agent-session copy"
+    };
+    let access = if s("access") == "read_only" { "read only; " } else { "" };
+    format!("workspace {} at {} on runtime {} ({access}{reach})", s("workspace_id"), s("directory"), s("runtime_id"))
+}
+
 /// Every candidate line of a UI batch, unfiltered.
 pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
     let mut out = Vec::new();
@@ -126,57 +184,27 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
     let runtimes = i.runtime_status.get("runtimes").filter(|r| r.is_object());
     let kind = field("kind");
     if !kind.is_empty() {
-        let mut t = String::from("your private runtime");
         let private_id = runtimes
             .and_then(|r| r.pointer("/private/id"))
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if !private_id.is_empty() {
-            t.push_str(&format!(" `{private_id}`"));
-        }
-        t.push_str(": commands run here");
-        let host = field("hostname");
-        if !host.is_empty() {
-            t.push_str(&format!(" on {host}"));
-        }
-        let cwd = field("cwd");
-        if !cwd.is_empty() {
-            t.push_str(&format!(", cwd {cwd}"));
-        }
-        let shell = field("shell_kind");
-        if !shell.is_empty() {
-            t.push_str(&format!(", shell {shell}"));
-        }
-        let baseline = field("baseline");
-        if !baseline.is_empty() {
-            t.push_str(&format!(", {baseline} environment"));
-        }
-        if let Some(desc) = runtimes
-            .and_then(|r| r.pointer("/private/desc"))
-            .and_then(Value::as_str)
-            .filter(|s| !s.trim().is_empty())
-        {
-            t.push_str(&format!("; {}", one_line(desc, 800)));
-        }
-        out.push(BackgroundLine::new("runtime", t));
+        let head = if private_id.is_empty() {
+            "your private runtime".to_string()
+        } else {
+            format!("your private runtime `{private_id}`")
+        };
+        let desc = runtimes.and_then(|r| r.pointer("/private/desc")).and_then(Value::as_str);
+        out.push(BackgroundLine::new("runtime", commands_line(&head, i.runtime_status, desc)));
     }
     if let Some(r) = runtimes {
         let line = match r.get("owner_default").filter(|d| d.is_object()) {
             Some(d) => {
-                let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
                 let available = d.get("available").and_then(Value::as_bool).unwrap_or(false);
-                let mut t = format!("owner's default runtime `{}` ({}", s("id"), if s("os").is_empty() { "os unknown".into() } else { s("os") });
-                t.push_str(if available { ", available" } else { ", not available" });
-                if s("computer") != "none" {
-                    t.push_str(&format!(", desktop access {}", s("computer")));
-                }
-                if let Some(error) = d.get("desktop_error").and_then(Value::as_str) {
-                    t.push_str(&format!(", desktop unavailable: {}", one_line(error, 200)));
-                }
+                let mut t = runtime_head("owner's default runtime", d);
                 if r.pointer("/private/id") == d.get("id") {
-                    t.push_str("): the same native runtime as your private environment; the owner's paths are local paths here");
+                    t.push_str(": the same native runtime as your private environment; the owner's paths are local paths here");
                 } else {
-                    t.push_str("): the owner's machine — absolute paths the owner gives are read there; work there is a work session on it");
+                    t.push_str(": the owner's machine — absolute paths the owner gives are read there; work there is a work session on it");
                 }
                 if !available {
                     if let Some(e) = d.get("error").and_then(Value::as_str) {
@@ -190,17 +218,7 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
         out.push(BackgroundLine::new("owner_runtime", line));
     }
     if let Some(w) = i.runtime_status.get("workspace").filter(|w| w.is_object()) {
-        let s = |k: &str| w.get(k).and_then(Value::as_str).unwrap_or_default();
-        let dir = w.get("directory").and_then(Value::as_str).unwrap_or_default();
-        let reach = if w.get("same_runtime").and_then(Value::as_bool) == Some(true) {
-            "on this runtime: cd there or use absolute paths"
-        } else {
-            "on another runtime: copy files with agent-session copy"
-        };
-        out.push(BackgroundLine::new(
-            "workspace",
-            format!("workspace {} at {dir} on runtime {} ({reach})", s("workspace_id"), s("runtime_id")),
-        ));
+        out.push(BackgroundLine::new("workspace", workspace_line(w)));
     }
     if let Some(t) = i.tunnel.filter(|t| !t.is_empty()) {
         out.push(BackgroundLine::new("channel", format!("channel: the user writes through {t}")));

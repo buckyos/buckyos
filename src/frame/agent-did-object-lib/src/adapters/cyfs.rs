@@ -56,7 +56,7 @@ impl CyfsAdapter {
         match tokio::fs::metadata(&local).await {
             Ok(meta) if meta.is_dir() => {
                 let content = list_dir(&local).await?;
-                Ok(self.response(&canonical, &local, content, "inode/directory", None, req))
+                Ok(self.response(&canonical, &local, content, "inode/directory", None, file_version(&meta), req))
             }
             Ok(meta) => {
                 let bytes = tokio::fs::read(&local).await?;
@@ -65,12 +65,12 @@ impl CyfsAdapter {
                         "{canonical} is not text; use llm_understand_media to look at media files"
                     ))
                 })?;
-                Ok(self.response(&canonical, &local, text, "text/plain", Some(meta.len()), req))
+                Ok(self.response(&canonical, &local, text, "text/plain", Some(meta.len()), file_version(&meta), req))
             }
             Err(_) => {
                 if let Some((text, source)) = self.dfs_file_text(&canonical).await? {
                     let size = text.len() as u64;
-                    let mut response = self.response(&canonical, Path::new(&source), text, "text/plain", Some(size), req);
+                    let mut response = self.response(&canonical, Path::new(&source), text, "text/plain", Some(size), None, req);
                     response.adapt_meta = json!({ "dfs_read": source });
                     return Ok(response);
                 }
@@ -125,6 +125,7 @@ impl CyfsAdapter {
         content: String,
         content_type: &str,
         size: Option<u64>,
+        version: Option<String>,
         req: AdapterReadRequest,
     ) -> AdapterReadResponse {
         AdapterReadResponse {
@@ -143,11 +144,23 @@ impl CyfsAdapter {
             trust_guidance: vec![],
             errors: vec![],
             cache_key: Some(canonical.to_string()),
-            version: None,
+            version,
             route: req.route_trace,
             adapt_meta: json!({ "local_path": local.display().to_string() }),
         }
     }
+}
+
+/// `<size>:<mtime secs>` of a local file or directory (as the filesystem
+/// adapter's version).
+fn file_version(meta: &std::fs::Metadata) -> Option<String> {
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some(format!("{}:{mtime}", meta.len()))
 }
 
 async fn list_dir(dir: &Path) -> Result<String, AgentDIDObjectError> {

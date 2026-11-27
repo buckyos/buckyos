@@ -224,13 +224,13 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 属性值转义 `& < > "`。只有一条纯文本消息时也使用 `<msg>`。`machine` 与 `ServiceDid` 引用不在内建渲染中出现。
 
-内建模板（UI Session 除外，见 §6.5）：`<session_input hook="…" time="<批次时间>">` 元素，依次包含交接状态（`<context_switch to>`、`<process_result>`、`<sub_task>`）、bootstrap 的 `<task>` / `<scope>`、`input.text`、`<perceptions>`、活动 session 列表、`<runtime>`；有变化的背景行时，`<<background_context>>` 块放在 `<session_input>` 之前（§6.6）。Memory 线索（§6.5 的 `memory:` 行）只在背景里，内建模板不再另放 `<hints>`；自定义模板可用变量 `hints`（同样的行，字符串数组）或 `hints_text`（`<hints>` 包着的 `- <行>` 列表），线索只有在输入里出现其行文本才算显示。
+内建模板（UI Session 除外，见 §6.5）：`<session_input hook="…" time="<批次时间>">` 元素，依次包含交接状态（`<context_switch to>`、`<process_result>`、`<sub_task>`）、bootstrap 的 `<task>` / `<scope>`、`input.text`、`<perceptions>`、活动 session 列表、`<runtime>`（可读的行：工作 runtime 一行，私有 runtime 与它不同时一行，workspace 一行；不含时间与 JSON；`<process_result>` 的 submission 保持 JSON，受 16K token 的单结果预算约束）；有变化的背景行时，`<<background_context>>` 块放在 `<session_input>` 之前（§6.6）。Memory 线索（§6.5 的 `memory:` 行）只在背景里，内建模板不再另放 `<hints>`；自定义模板可用变量 `hints`（同样的行，字符串数组）或 `hints_text`（`<hints>` 包着的 `- <行>` 列表），线索只有在输入里出现其行文本才算显示。
 
 协议时间与内建渲染一律 UTC。用户时区与 Session 绑定（`session.timezone`，IANA 名），其初始值与后续变化经隐式 semi 订阅进入半订阅状态，不取 Runner 所在机器的时区，变化本身不唤醒推理。
 
 ### 6.3 自定义模板
 
-模板引擎是 `agent_tool::prompt_engine`（upon，`__EXEC__` 关闭）。只含块标签（`{% for %}`、`{% if %}`、`{% endfor %}` …）的行不产生输出行；输出去掉首尾空白。可用变量：`input.{hook, time, messages[], events[], items[], text, count}`（视图字段见 `runner/input_view.rs`；条件用布尔字段 `msg.is_group`、`msg.mentions.me`、`msg.context`、`ev.terminal`、`item.is_msg`）、`session.*`、`runtime.*`、`handover`、各内建块（`task_text`、`handover_text`、`perceptions_text`、`hints_text`、`active_sessions_text`、`runtime_text`、`builtin`）、背景 `background` / `background_context`（§6.6）。
+模板引擎是 `agent_tool::prompt_engine`（upon，`__EXEC__` 关闭）。只含块标签（`{% for %}`、`{% if %}`、`{% endfor %}` …）的行不产生输出行；输出去掉首尾空白。可用变量：`input.{hook, time, messages[], events[], items[], text, count}`（视图字段见 `runner/input_view.rs`；条件用布尔字段 `msg.is_group`、`msg.mentions.me`、`msg.context`、`ev.terminal`、`item.is_msg`）、`session.*`、`runtime.*`、`handover`、各内建块（`task_text`、`handover_text`、`perceptions_text`、`hints_text`、`active_sessions_text`、`runtime_text`、`builtin`）、背景 `background` / `background_context`（§6.6）。对象变量直接插入时不是 JSON：引擎按对象自己的常见字段渲染成至多两行（第一行取 `title` / `name` / `subject`，第二行取 `summary` / `description` / `status`），数组每个元素一行，取不到可读字段时回退为受预算约束的紧凑 JSON 并记日志；要 JSON 写 `| json`。`runtime.status` 是 `<runtime>` 的那几行，原始数据在 `runtime.raw`；每个变量的默认渲染见 [Render Prompt Template Variables](<../../llm_context/Render_Prompt_Template_Variables.md>) §8。
 
 命名格式 `{{ value | render_format: "名称" }}`（未知格式或对象形状不符是模板错误；声明支持空值的格式对空值输出空串）：
 
@@ -253,7 +253,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 ### 6.5 UI Session 的 chat 格式
 
-`session.kind = ui`（一对一与群聊的会话 Session）的内建模板是 chat 格式：只有变化了的背景行，然后是输入本身。没有 `<session_input>` 包装、`<task>`、`<runtime>` JSON、`<active_sessions>`。
+`session.kind = ui`（一对一与群聊的会话 Session）的内建模板是 chat 格式：只有变化了的背景行，然后是输入本身。没有 `<session_input>` 包装、`<task>`、`<runtime>` 块、`<active_sessions>`。
 
 ```text
 <<background_context>>

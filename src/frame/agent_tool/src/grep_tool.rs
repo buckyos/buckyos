@@ -106,6 +106,9 @@ pub struct GrepOutput {
     pub applied_limit: Option<usize>,
     #[serde(rename = "appliedOffset", skip_serializing_if = "Option::is_none")]
     pub applied_offset: Option<usize>,
+    /// Results in all when only a page of them is shown (lines or files).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
 }
 
 #[async_trait]
@@ -172,50 +175,60 @@ impl TypedTool for GrepTool {
     }
 
     fn build_summary(&self, output: &Self::Output) -> String {
-        match output.mode {
-            GrepOutputMode::Content => {
-                let mut summary = format!(
-                    "found {} lines in {}ms",
-                    output.num_lines.unwrap_or(0),
-                    output.duration_ms
-                );
-                append_pagination_summary(&mut summary, output);
-                if let Some(content) = output.content.as_deref().filter(|value| !value.is_empty()) {
-                    summary.push_str("\n```grep\n");
-                    summary.push_str(content);
-                    summary.push_str("\n```");
-                }
-                summary
-            }
-            GrepOutputMode::Count => {
-                let mut summary = format!(
-                    "found {} occurrences across {} files in {}ms",
-                    output.num_matches.unwrap_or(0),
-                    output.num_files,
-                    output.duration_ms
-                );
-                append_pagination_summary(&mut summary, output);
-                if let Some(content) = output.content.as_deref().filter(|value| !value.is_empty()) {
-                    summary.push_str("\n```counts\n");
-                    summary.push_str(content);
-                    summary.push_str("\n```");
-                }
-                summary
-            }
-            GrepOutputMode::FilesWithMatches => {
-                let mut summary = format!(
-                    "found {} files in {}ms",
-                    output.num_files, output.duration_ms
-                );
-                append_pagination_summary(&mut summary, output);
-                if !output.filenames.is_empty() {
-                    summary.push_str("\n```files\n");
-                    summary.push_str(&output.filenames.join("\n"));
-                    summary.push_str("\n```");
-                }
-                summary
-            }
+        let mut summary = match output.mode {
+            GrepOutputMode::Content => format!(
+                "found {} lines in {}ms",
+                output.total.unwrap_or(output.num_lines.unwrap_or(0)),
+                output.duration_ms
+            ),
+            GrepOutputMode::Count => format!(
+                "found {} occurrences across {} files in {}ms",
+                output.num_matches.unwrap_or(0),
+                output.num_files,
+                output.duration_ms
+            ),
+            GrepOutputMode::FilesWithMatches => format!(
+                "found {} files in {}ms",
+                output.total.unwrap_or(output.num_files),
+                output.duration_ms
+            ),
+        };
+        append_pagination_summary(&mut summary, output);
+        summary
+    }
+
+    fn build_output(&self, output: &Self::Output) -> Option<String> {
+        let mut text = match output.mode {
+            GrepOutputMode::Content | GrepOutputMode::Count => output.content.clone()?,
+            GrepOutputMode::FilesWithMatches => output.filenames.join("\n"),
+        };
+        if text.is_empty() {
+            return None;
         }
+        if let Some((from, to, total)) = page_of(output) {
+            text.push_str(&format!(
+                "\n[{from}–{to} of {total} {} shown: the next page is offset={to}{}]",
+                match output.mode {
+                    GrepOutputMode::Content => "lines",
+                    _ => "files",
+                },
+                output
+                    .applied_limit
+                    .map(|limit| format!(" head_limit={limit}"))
+                    .unwrap_or_default()
+            ));
+        }
+        Some(text)
+    }
+
+    fn build_hints(&self, output: &Self::Output) -> Vec<crate::ResultHint> {
+        if page_of(output).is_none() {
+            return Vec::new();
+        }
+        vec![crate::ResultHint {
+            text: "Grep shows one page of results a call: offset reads the next page and head_limit sets its size (0: no limit); a narrower pattern, path, glob or type finds fewer.".to_string(),
+            once: Some("grep.paging".to_string()),
+        }]
     }
 
     fn build_title(&self, output: &Self::Output) -> Option<String> {
@@ -509,7 +522,7 @@ fn build_content_output(
     root_dir: &Path,
     args: &GrepArgs,
 ) -> GrepOutput {
-    let (limited, applied_limit) = apply_head_limit(lines, args.head_limit, args.offset);
+    let (limited, applied_limit, total) = apply_head_limit(lines, args.head_limit, args.offset);
     let final_lines = limited
         .into_iter()
         .map(|line| relativize_rg_line(&line, root_dir, false))
@@ -523,6 +536,7 @@ fn build_content_output(
         content: Some(final_lines.join("\n")),
         num_lines: Some(final_lines.len()),
         num_matches: None,
+        total: applied_limit.map(|_| total),
         applied_limit,
         applied_offset: applied_offset(args.offset),
     }
@@ -534,7 +548,7 @@ fn build_count_output(
     root_dir: &Path,
     args: &GrepArgs,
 ) -> GrepOutput {
-    let (limited, applied_limit) = apply_head_limit(lines, args.head_limit, args.offset);
+    let (limited, applied_limit, total) = apply_head_limit(lines, args.head_limit, args.offset);
     let final_lines = limited
         .into_iter()
         .map(|line| relativize_rg_line(&line, root_dir, true))
@@ -559,6 +573,7 @@ fn build_count_output(
         content: Some(final_lines.join("\n")),
         num_lines: None,
         num_matches: Some(total_matches),
+        total: applied_limit.map(|_| total),
         applied_limit,
         applied_offset: applied_offset(args.offset),
     }
@@ -593,7 +608,7 @@ async fn build_files_output(
         .into_iter()
         .map(|(path, _)| display_path(Path::new(&path), root_dir))
         .collect::<Vec<_>>();
-    let (filenames, applied_limit) = apply_head_limit(sorted, args.head_limit, args.offset);
+    let (filenames, applied_limit, total) = apply_head_limit(sorted, args.head_limit, args.offset);
 
     GrepOutput {
         mode: GrepOutputMode::FilesWithMatches,
@@ -603,27 +618,46 @@ async fn build_files_output(
         content: None,
         num_lines: None,
         num_matches: None,
+        total: applied_limit.map(|_| total),
         applied_limit,
         applied_offset: applied_offset(args.offset),
     }
 }
 
+/// The page `offset..offset + limit` of `items`: the items, the limit when
+/// more follow, the number of items in all.
 fn apply_head_limit<T>(
     items: Vec<T>,
     limit: Option<usize>,
     offset: usize,
-) -> (Vec<T>, Option<usize>) {
+) -> (Vec<T>, Option<usize>, usize) {
+    let total = items.len();
     if limit == Some(0) {
-        return (items.into_iter().skip(offset).collect(), None);
+        return (items.into_iter().skip(offset).collect(), None, total);
     }
     let effective_limit = limit.unwrap_or(DEFAULT_HEAD_LIMIT);
-    let was_truncated = items.len().saturating_sub(offset) > effective_limit;
+    let was_truncated = total.saturating_sub(offset) > effective_limit;
     let selected = items
         .into_iter()
         .skip(offset)
         .take(effective_limit)
         .collect();
-    (selected, was_truncated.then_some(effective_limit))
+    (selected, was_truncated.then_some(effective_limit), total)
+}
+
+/// `(first, last, total)` of a page that is not the whole result.
+fn page_of(output: &GrepOutput) -> Option<(usize, usize, usize)> {
+    let total = output.total?;
+    let offset = output.applied_offset.unwrap_or(0);
+    let shown = match output.mode {
+        GrepOutputMode::Content => output.num_lines.unwrap_or(0),
+        GrepOutputMode::Count => output
+            .content
+            .as_deref()
+            .map_or(0, |c| c.lines().count()),
+        GrepOutputMode::FilesWithMatches => output.filenames.len(),
+    };
+    (offset + shown < total).then_some((offset + 1, offset + shown, total))
 }
 
 fn applied_offset(offset: usize) -> Option<usize> {

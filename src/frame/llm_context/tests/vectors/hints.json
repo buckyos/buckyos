@@ -87,7 +87,7 @@
           "result": {
             "agent_tool_protocol": "1",
             "dedup": {
-              "hint": "unchanged since you read it",
+              "hint": "`a` is unchanged",
               "key": "read:/a:1"
             },
             "detail": {},
@@ -100,12 +100,12 @@
         {
           "expect": {
             "kind": "success",
-            "text": "unchanged since you read it"
+            "text": "`a` is unchanged; same as the result of call c0 above."
           },
           "result": {
             "agent_tool_protocol": "1",
             "dedup": {
-              "hint": "unchanged since you read it",
+              "hint": "`a` is unchanged",
               "key": "read:/a:1"
             },
             "detail": {},
@@ -123,7 +123,7 @@
           "result": {
             "agent_tool_protocol": "1",
             "dedup": {
-              "hint": "unchanged since you read it",
+              "hint": "`b` is unchanged",
               "key": "read:/b:1"
             },
             "detail": {},
@@ -144,7 +144,7 @@
           "result": {
             "agent_tool_protocol": "1",
             "dedup": {
-              "hint": "unchanged since you read it",
+              "hint": "`a` is unchanged",
               "key": "read:/a:1"
             },
             "detail": {},
@@ -192,7 +192,7 @@
         {
           "expect": {
             "kind": "success",
-            "text": "<output>\nunchanged\n</output>\n<runtime_hints>\n- plain\n</runtime_hints>"
+            "text": "<output>\nunchanged; same as the result of call c0 above.\n</output>\n<runtime_hints>\n- plain\n</runtime_hints>"
           },
           "result": {
             "agent_tool_protocol": "1",

@@ -181,9 +181,23 @@ pub trait TypedTool: Send + Sync + 'static {
         None
     }
 
-    /// Optional hook for the post-call summary string.
+    /// The post-call summary: a few lines that read on their own (what was
+    /// done, how it went, the key numbers, whether anything was left out),
+    /// never the result's content itself.
     fn build_summary(&self, _output: &Self::Output) -> String {
         "ok".to_string()
+    }
+
+    /// The result's content as the model reads it (`AgentToolResult.output`:
+    /// a preview, a diff, a list, matches), with what was left out and how
+    /// to read on. `None`: the summary is all there is to show.
+    fn build_output(&self, _output: &Self::Output) -> Option<String> {
+        None
+    }
+
+    /// Hints shown with the result (`AgentToolResult.hints`).
+    fn build_hints(&self, _output: &Self::Output) -> Vec<crate::ResultHint> {
+        Vec::new()
     }
 
     /// Optional title hook. Returning `Some` overrides the default
@@ -407,6 +421,8 @@ fn finalize_typed_result<T: TypedTool>(
 ) -> Result<AgentToolResult, AgentToolError> {
     let summary = tool.build_summary(&output);
     let title = tool.build_title(&output);
+    let body = tool.build_output(&output);
+    let hints = tool.build_hints(&output);
     let detail = serde_json::to_value(&output).map_err(|err| {
         AgentToolError::ExecFailed(format!(
             "serialize output for `{}` failed: {err}",
@@ -416,6 +432,12 @@ fn finalize_typed_result<T: TypedTool>(
     let mut result = build_builtin_tool_result(detail, cmd_line, summary).with_tool(tool.name());
     if let Some(custom_title) = title {
         result.title = custom_title;
+    }
+    if let Some(body) = body {
+        result = result.with_output(body);
+    }
+    for h in hints {
+        result = result.with_hint(h.text, h.once.as_deref());
     }
     Ok(result)
 }

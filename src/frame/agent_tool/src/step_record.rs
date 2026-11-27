@@ -37,13 +37,11 @@ use crate::xml_util::xml_escape;
 /// truncation knobs; share a single `Arc<XmlStepRenderer>` across sessions.
 #[derive(Debug, Clone)]
 pub struct XmlStepRenderer {
-    /// Hard cap on rendered assistant_text length per compressed step.
-    /// Current-behavior steps are never truncated by the renderer; truncation
-    /// only applies to inherited history records.
-    pub summary_chars: usize,
-    /// Hard cap on success-body length per current-behavior step. `0`
-    /// disables truncation. The hot `last_step` always goes through `render`,
-    /// so this knob also caps it.
+    /// Backstop on the body length of one result (characters, `0`: none).
+    /// The dispatcher already keeps every result within the per-result
+    /// budget (`text_budget`), so the default never clips; lower the
+    /// dispatcher's budget instead of this, so that a clipped result is
+    /// not marked as shown in full.
     pub max_result_chars: usize,
     /// Render `started_at_ms` / `ended_at_ms` into history records. Hosts that
     /// need a byte-stable history prefix (Agent Session SDK §8.7 X8) turn it
@@ -54,8 +52,7 @@ pub struct XmlStepRenderer {
 impl Default for XmlStepRenderer {
     fn default() -> Self {
         Self {
-            summary_chars: 280,
-            max_result_chars: 4 * 1024,
+            max_result_chars: crate::text_budget::RESULT_BUDGET_TOKENS as usize * 4,
             timestamps: true,
         }
     }
@@ -208,7 +205,6 @@ fn render_action_results_full(step: &StepRecord, max_body_chars: usize) -> Strin
 struct RenderedActionResult {
     title: String,
     body: String,
-    fence: &'static str,
     action_id: Option<String>,
     /// `<runtime_hints>` of the result, rendered after its output.
     hints: Vec<String>,
@@ -219,7 +215,6 @@ impl RenderedActionResult {
         Self {
             title: title.into(),
             body: body.into(),
-            fence: "output",
             action_id: None,
             hints: Vec::new(),
         }
@@ -279,23 +274,23 @@ fn render_one_action_result_full(
     match obs {
         Observation::Success {
             content,
-            truncated,
+            truncated: _,
             host,
             ..
         } => {
             if let Some(result) = ToolResultView::from_host(host).as_ref() {
                 return with_action_title_id(
                     action,
-                    render_tool_result_full(action, result, max_body_chars, *truncated),
+                    render_tool_result_full(action, result, max_body_chars),
                 );
             }
             let body = stringify_content(content);
-            let (body, body_truncated) = clip(body.as_str(), max_body_chars);
+            let body = clip_body(body.as_str(), max_body_chars);
             with_action_title_id(
                 action,
                 RenderedActionResult::output(
                     format!("Run {command}"),
-                    format_action_result_body(&body, *truncated || body_truncated),
+                    format_action_result_body(&body),
                 ),
             )
         }
@@ -307,7 +302,7 @@ fn render_one_action_result_full(
             if let Some(result) = ToolResultView::from_host(host).as_ref() {
                 return with_action_title_id(
                     action,
-                    render_tool_result_full(action, result, max_body_chars, false),
+                    render_tool_result_full(action, result, max_body_chars),
                 );
             }
             let (msg, _) = clip(message.as_str(), max_body_chars.max(1024));
@@ -356,18 +351,18 @@ fn render_one_action_result_compact(
     match obs {
         Observation::Success {
             content,
-            truncated,
+            truncated: _,
             host,
             ..
         } => {
             if let Some(result) = ToolResultView::from_host(host).as_ref() {
                 return with_action_title_id(
                     action,
-                    render_tool_result_compact(action, result, max_body_chars, *truncated),
+                    render_tool_result_compact(action, result, max_body_chars),
                 );
             }
             let body = stringify_content(content);
-            let (body, body_truncated) = clip(body.as_str(), max_body_chars);
+            let body = clip_body(body.as_str(), max_body_chars);
             let body = body.trim();
             if body.is_empty() {
                 with_action_title_id(
@@ -379,7 +374,7 @@ fn render_one_action_result_compact(
                     action,
                     RenderedActionResult::output(
                         format!("Run {command}"),
-                        format_action_result_body(body, *truncated || body_truncated),
+                        format_action_result_body(body),
                     ),
                 )
             }
@@ -392,7 +387,7 @@ fn render_one_action_result_compact(
             if let Some(result) = ToolResultView::from_host(host).as_ref() {
                 return with_action_title_id(
                     action,
-                    render_tool_result_compact(action, result, max_body_chars, false),
+                    render_tool_result_compact(action, result, max_body_chars),
                 );
             }
             let (msg, _) = clip(message.as_str(), max_body_chars);
@@ -442,18 +437,18 @@ fn render_unpaired_action_result(obs: &Observation, max_body_chars: usize) -> Re
     match obs {
         Observation::Success {
             content,
-            truncated,
+            truncated: _,
             host,
             ..
         } => {
             if let Some(result) = ToolResultView::from_host(host).as_ref() {
-                return render_tool_result_full_placeholder(result, max_body_chars, *truncated);
+                return render_tool_result_full_placeholder(result, max_body_chars);
             }
             let body = stringify_content(content);
-            let (body, body_truncated) = clip(body.as_str(), max_body_chars);
+            let body = clip_body(body.as_str(), max_body_chars);
             RenderedActionResult::output(
                 "Step result".to_string(),
-                format_action_result_body(&body, *truncated || body_truncated),
+                format_action_result_body(&body),
             )
         }
         Observation::Error {
@@ -462,7 +457,7 @@ fn render_unpaired_action_result(obs: &Observation, max_body_chars: usize) -> Re
             ..
         } => {
             if let Some(result) = ToolResultView::from_host(host).as_ref() {
-                return render_tool_result_full_placeholder(result, max_body_chars, false);
+                return render_tool_result_full_placeholder(result, max_body_chars);
             }
             let (msg, _) = clip(message.as_str(), max_body_chars.max(1024));
             RenderedActionResult::output("Step error".to_string(), format!("Error: {msg}"))
@@ -509,10 +504,9 @@ fn render_tool_result_full(
     action: &buckyos_api::AiToolCall,
     result: &ToolResultView,
     max_body_chars: usize,
-    fallback_truncated: bool,
 ) -> RenderedActionResult {
     let mut rendered =
-        render_tool_result_full_placeholder(result, max_body_chars, fallback_truncated);
+        render_tool_result_full_placeholder(result, max_body_chars);
     rendered.title = tool_result_title(Some(action), result);
     rendered.hints = result.hint_texts();
     rendered
@@ -521,18 +515,15 @@ fn render_tool_result_full(
 fn render_tool_result_full_placeholder(
     result: &ToolResultView,
     max_body_chars: usize,
-    fallback_truncated: bool,
 ) -> RenderedActionResult {
-    let (body, fence) = match result.status {
-        ToolResultStatusView::Error => tool_result_full_body(result, "Error"),
-        ToolResultStatusView::Pending => (tool_result_pending_body(result), "output"),
-        ToolResultStatusView::Success => tool_result_full_body(result, "Success"),
+    let body = match result.status {
+        ToolResultStatusView::Pending => tool_result_pending_body(result),
+        ToolResultStatusView::Success | ToolResultStatusView::Error => result.full_text(),
     };
-    let (body, clipped) = clip(body.as_str(), max_body_chars);
+    let body = clip_body(body.as_str(), max_body_chars);
     RenderedActionResult {
         title: tool_result_title(None, result),
-        body: format_action_result_body(&body, fallback_truncated || clipped),
-        fence,
+        body: format_action_result_body(&body),
         action_id: None,
         hints: Vec::new(),
     }
@@ -542,7 +533,6 @@ fn render_tool_result_compact(
     action: &buckyos_api::AiToolCall,
     result: &ToolResultView,
     max_body_chars: usize,
-    fallback_truncated: bool,
 ) -> RenderedActionResult {
     let title = tool_result_title(Some(action), result);
     let body = match result.status {
@@ -558,10 +548,10 @@ fn render_tool_result_compact(
             }
         }
     };
-    let (body, clipped) = clip(body.as_str(), max_body_chars);
+    let body = clip_body(body.as_str(), max_body_chars);
     RenderedActionResult::output(
         title,
-        format_action_result_body(&body, fallback_truncated || clipped),
+        format_action_result_body(&body),
     )
 }
 
@@ -581,33 +571,6 @@ fn tool_result_title(action: Option<&buckyos_api::AiToolCall>, result: &ToolResu
         .map(action_command_text)
         .map(|command| format!("Run {command}"))
         .unwrap_or_else(|| "Step result".to_string())
-}
-
-fn tool_result_full_body(result: &ToolResultView, empty_fallback: &str) -> (String, &'static str) {
-    if let Some(output) = result
-        .output
-        .as_deref()
-        .map(str::trim_end)
-        .filter(|value| !value.is_empty())
-    {
-        return (output.to_string(), "output");
-    }
-    if let Some(detail) = result.detail.as_ref() {
-        if let Some(text) = detail.as_str() {
-            return (text.trim_end().to_string(), "output");
-        }
-        return (
-            serde_json::to_string_pretty(detail).unwrap_or_else(|_| detail.to_string()),
-            "json",
-        );
-    }
-    if !result.summary.trim().is_empty() {
-        return (result.summary.trim().to_string(), "output");
-    }
-    if !result.title.trim().is_empty() {
-        return (result.title.trim().to_string(), "output");
-    }
-    (empty_fallback.to_string(), "output")
 }
 
 fn tool_result_error_body(result: &ToolResultView) -> String {
@@ -663,17 +626,13 @@ fn tool_result_pending_body(result: &ToolResultView) -> String {
     lines.join("\n")
 }
 
-fn format_action_result_body(body: &str, truncated: bool) -> String {
+fn format_action_result_body(body: &str) -> String {
     let body = body.trim_end();
-    let mut s = if body.is_empty() {
+    if body.is_empty() {
         "Success".to_string()
     } else {
         body.to_string()
-    };
-    if truncated {
-        s.push_str("\n[truncated]");
     }
-    s
 }
 
 fn cancelled_label(effect_unknown: bool) -> &'static str {
@@ -820,15 +779,10 @@ fn render_inherited_step_record(step: &StepRecord, timestamps: bool) -> String {
         String::new()
     };
     format!(
-        "<step_record behavior=\"{}\" index=\"{}\"{} compression=\"{}\">\n<observation>{}</observation>\n<intent>{}</intent>\n{}<actions>\n{}\n</actions>\n</step_record>",
+        "<step_record behavior=\"{}\" index=\"{}\"{}>\n<observation>{}</observation>\n<intent>{}</intent>\n{}<actions>\n{}\n</actions>\n</step_record>",
         step.meta.behavior_name,
         step.meta.step_index,
         times,
-        match step.meta.compression_level {
-            llm_context::behavior_loop::StepCompressionLevel::Full => "full",
-            llm_context::behavior_loop::StepCompressionLevel::Compact => "compact",
-            llm_context::behavior_loop::StepCompressionLevel::Summary => "summary",
-        },
         observation,
         thought,
         report,
@@ -851,10 +805,25 @@ fn render_history_actions_compact(step: &StepRecord, max_body_chars: usize) -> S
     } else {
         parts
             .into_iter()
-            .map(|part| format!("- {}\n\n```{}\n{}\n```", part.title, part.fence, part.body))
+            .map(|part| format!("- {}\n\n```output\n{}\n```", part.title, part.body))
             .collect::<Vec<_>>()
             .join("\n\n")
     }
+}
+
+/// A result body within `max_chars` characters (`0`: no limit), saying
+/// how much was left out.
+fn clip_body(input: &str, max_chars: usize) -> String {
+    let total = input.chars().count();
+    if max_chars == 0 || total <= max_chars {
+        return input.to_string();
+    }
+    let head: String = input.chars().take(max_chars).collect();
+    format!(
+        "{}\n…[{} characters omitted by the renderer]",
+        head.trim_end(),
+        total - max_chars
+    )
 }
 
 /// Truncate to `max_chars` characters (not bytes). Returns `(clipped, was_clipped)`.
@@ -1241,34 +1210,85 @@ mod tests {
     }
 
     #[test]
-    fn protocol_tool_result_full_renders_structured_detail_as_json() {
+    fn protocol_tool_result_full_shows_structured_detail_only_without_text() {
         let renderer = XmlStepRenderer::new();
-        let mut step = StepRecord::default();
-        step.actions = vec![tool_call("read_file", "2")];
-        step.action_results = vec![Observation::Success {
-            call_id: "2".into(),
-            content: json!("legacy fallback should not render"),
-            bytes: 0,
-            truncated: false,
-            images: Vec::new(),
-            host: Some(ToolResultView {
-                status: ToolResultStatusView::Success,
-                cmd_name: Some("read_file".into()),
-                cmd_args: Some("HUGE_CMD_ARGS_SHOULD_NOT_RENDER".into()),
-                title: "read completed".into(),
-                summary: "Read 20 lines from demo.txt.".into(),
-                detail: Some(json!({"path": "demo.txt", "content": "line 1"})),
-                ..Default::default()
-            }.into_host()),
-        }];
+        let render = |view: ToolResultView| {
+            let mut step = StepRecord::default();
+            step.actions = vec![tool_call("read_file", "2")];
+            step.action_results = vec![Observation::Success {
+                call_id: "2".into(),
+                content: json!("legacy fallback should not render"),
+                bytes: 0,
+                truncated: false,
+                images: Vec::new(),
+                host: Some(view.into_host()),
+            }];
+            user_text_of(&renderer.render(&step).1)
+        };
+        let with_summary = render(ToolResultView {
+            status: ToolResultStatusView::Success,
+            cmd_name: Some("read_file".into()),
+            cmd_args: Some("HUGE_CMD_ARGS_SHOULD_NOT_RENDER".into()),
+            title: "read completed".into(),
+            summary: "Read 20 lines from demo.txt.".into(),
+            detail: Some(json!({"path": "demo.txt", "content": "line 1"})),
+            ..Default::default()
+        });
+        assert!(with_summary.contains("- #2 read completed"));
+        assert!(with_summary.contains("```output\nRead 20 lines from demo.txt.\n```"));
+        assert!(!with_summary.contains("line 1"), "{with_summary}");
+        assert!(!with_summary.contains("HUGE_CMD_ARGS_SHOULD_NOT_RENDER"));
+        assert!(!with_summary.contains("legacy fallback should not render"));
+        let detail_only = render(ToolResultView {
+            status: ToolResultStatusView::Success,
+            detail: Some(json!({"path": "demo.txt", "content": "line 1"})),
+            ..Default::default()
+        });
+        assert!(
+            detail_only.contains(r#"```output
+{"content":"line 1","path":"demo.txt"}
+```"#),
+            "{detail_only}"
+        );
+    }
 
-        let (_, u) = renderer.render(&step);
-        let user_text = user_text_of(&u);
-        assert!(user_text.contains("- #2 read completed"));
-        assert!(user_text.contains("```output\n{"));
-        assert!(user_text.contains(r#""content": "line 1""#));
-        assert!(!user_text.contains("HUGE_CMD_ARGS_SHOULD_NOT_RENDER"));
-        assert!(!user_text.contains("legacy fallback should not render"));
+    #[test]
+    fn a_result_reads_the_same_in_both_loops() {
+        let results = [
+            crate::AgentToolResult::from_details(json!({"content": "x"}))
+                .with_result("read 1 line")
+                .with_output("1: x"),
+            crate::AgentToolResult::from_details(json!({"content": "x"})).with_result("read 1 line"),
+            crate::AgentToolResult::from_details(json!("a string detail")).with_result("s"),
+            crate::AgentToolResult::from_details(json!({"rows": [1, 2]})),
+            crate::AgentToolResult::from_details(json!({}))
+                .with_status(crate::AgentToolStatus::Error)
+                .with_result("exit=1 in 3ms")
+                .with_output("boom"),
+        ];
+        for r in results {
+            let view = ToolResultView::from_host(&Some(r.to_host())).unwrap();
+            assert_eq!(view.full_text(), r.observation_text(), "{r:?}");
+            let mut step = StepRecord::default();
+            step.actions = vec![tool_call("t", "1")];
+            step.action_results = vec![Observation::Success {
+                call_id: "1".into(),
+                content: json!(r.observation_text()),
+                bytes: 0,
+                truncated: false,
+                images: Vec::new(),
+                host: Some(r.to_host()),
+            }];
+            let text = user_text_of(&renderer_full().render(&step).1);
+            assert!(
+                text.contains(&format!("```output\n{}\n```", r.observation_text().trim_end())),
+                "{text}"
+            );
+        }
+    }
+
+    fn renderer_full() -> XmlStepRenderer {
+        XmlStepRenderer::new()
     }
 
     #[test]
@@ -1339,7 +1359,6 @@ mod tests {
     #[test]
     fn render_history_keeps_current_behavior_steps_full_when_older() {
         let renderer = XmlStepRenderer {
-            summary_chars: 20,
             max_result_chars: 0,
             timestamps: true,
         };
@@ -1455,7 +1474,6 @@ mod tests {
     #[test]
     fn inherited_behavior_steps_render_as_single_history_records() {
         let renderer = XmlStepRenderer {
-            summary_chars: 20,
             max_result_chars: 0,
             timestamps: true,
         };

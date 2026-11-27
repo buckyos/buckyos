@@ -622,6 +622,20 @@ pub(super) async fn ensure_frozen(sh: &Arc<Shared>, behavior: Option<&str>) -> R
     commit_and_report(sh, &mut s).await
 }
 
+/// How long ago the session's last run was written (`None`: no run, or its
+/// record is unreadable).
+pub(super) fn idle_since(sh: &Shared, last_run: Option<&str>) -> Option<u64> {
+    last_run
+        .and_then(|run| sh.dir.runs().record(run).ok())
+        .map(|r| crate::now_ms().saturating_sub(r.updated_at_ms))
+}
+
+/// The provider's prompt cache is most likely gone after `idle_ms`
+/// (`RunnerOptions.prompt_cache_idle`).
+pub(super) fn cache_gone(sh: &Shared, idle_ms: u64) -> bool {
+    idle_ms >= sh.deps.options.prompt_cache_idle.as_millis() as u64
+}
+
 /// A conversation takes the agent's current prompt for the runs that follow
 /// when its context starts over anyway: its history was compacted since the
 /// prompt was frozen, or it comes back after the provider's cache is gone
@@ -645,11 +659,8 @@ async fn refresh_frozen(sh: &Arc<Shared>) -> Result<bool> {
         return Ok(false);
     }
     let compacted = compacted_at.is_some_and(|at| at > frozen.frozen_at_ms);
-    let idle_ms = last_run
-        .and_then(|run| sh.dir.runs().record(&run).ok())
-        .map(|r| crate::now_ms().saturating_sub(r.updated_at_ms))
-        .unwrap_or(0);
-    let idle = idle_ms >= sh.deps.options.prompt_cache_idle.as_millis() as u64;
+    let idle_ms = idle_since(sh, last_run.as_deref()).unwrap_or(0);
+    let idle = cache_gone(sh, idle_ms);
     if !compacted && !idle {
         return Ok(false);
     }

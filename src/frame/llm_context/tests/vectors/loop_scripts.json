@@ -3989,7 +3989,7 @@
           {
             "content": [
               {
-                "text": "<<last_step_action_results behavior=\"xllm\" step=\"0\">>\n- #1 Run echo a\n\n```output\na\n```\n- #2 Run echo b\n\n```output\nb: command failed\n```\n- #3 Run echo c\n\n```output\nNot executed: not executed: an earlier action in this step failed\n```\n\n<</last_step_action_results>>",
+                "text": "<<last_step_action_results behavior=\"xllm\" step=\"0\">>\n- #1 Run echo a\n\n```output\na\n```\n- #2 Run echo b\n\n```output\nexit 1\nb: command failed\n```\n- #3 Run echo c\n\n```output\nNot executed: not executed: an earlier action in this step failed\n```\n\n<</last_step_action_results>>",
                 "type": "text"
               }
             ],
@@ -5267,7 +5267,6 @@
               "assistant_text": "<response><intent>create todos</intent></response>",
               "meta": {
                 "behavior_name": "plan",
-                "compression_level": "full",
                 "ended_at_ms": 20,
                 "started_at_ms": 10,
                 "step_index": 0
@@ -5279,7 +5278,6 @@
               "assistant_text": "<response><intent>switch to do</intent><next_behavior>DO</next_behavior></response>",
               "meta": {
                 "behavior_name": "plan",
-                "compression_level": "full",
                 "ended_at_ms": 30,
                 "started_at_ms": 21,
                 "step_index": 1
@@ -5319,7 +5317,7 @@
           {
             "content": [
               {
-                "text": "<<step_history>>\n<step_record behavior=\"plan\" index=\"0\" started_at_ms=\"10\" ended_at_ms=\"20\" compression=\"full\">\n<observation></observation>\n<intent>created todos</intent>\n<actions>\nNo action.\n</actions>\n</step_record>\n<step_record behavior=\"plan\" index=\"1\" started_at_ms=\"21\" ended_at_ms=\"30\" compression=\"full\">\n<observation></observation>\n<intent>switch to do</intent>\n<actions>\nNo action.\n</actions>\n</step_record>\n<</step_history>>",
+                "text": "<<step_history>>\n<step_record behavior=\"plan\" index=\"0\" started_at_ms=\"10\" ended_at_ms=\"20\">\n<observation></observation>\n<intent>created todos</intent>\n<actions>\nNo action.\n</actions>\n</step_record>\n<step_record behavior=\"plan\" index=\"1\" started_at_ms=\"21\" ended_at_ms=\"30\">\n<observation></observation>\n<intent>switch to do</intent>\n<actions>\nNo action.\n</actions>\n</step_record>\n<</step_history>>",
                 "type": "text"
               }
             ],
@@ -5514,7 +5512,6 @@
               "assistant_text": "<response><intent>create todos</intent></response>",
               "meta": {
                 "behavior_name": "plan",
-                "compression_level": "full",
                 "ended_at_ms": 20,
                 "started_at_ms": 10,
                 "step_index": 0
@@ -5526,7 +5523,6 @@
               "assistant_text": "<response><intent>switch to do</intent><next_behavior>DO</next_behavior></response>",
               "meta": {
                 "behavior_name": "plan",
-                "compression_level": "full",
                 "ended_at_ms": 30,
                 "started_at_ms": 21,
                 "step_index": 1
@@ -5566,7 +5562,7 @@
           {
             "content": [
               {
-                "text": "<<step_history>>\n<step_record behavior=\"plan\" index=\"0\" compression=\"full\">\n<observation></observation>\n<intent>created todos</intent>\n<actions>\nNo action.\n</actions>\n</step_record>\n<step_record behavior=\"plan\" index=\"1\" compression=\"full\">\n<observation></observation>\n<intent>switch to do</intent>\n<actions>\nNo action.\n</actions>\n</step_record>\n<</step_history>>",
+                "text": "<<step_history>>\n<step_record behavior=\"plan\" index=\"0\">\n<observation></observation>\n<intent>created todos</intent>\n<actions>\nNo action.\n</actions>\n</step_record>\n<step_record behavior=\"plan\" index=\"1\">\n<observation></observation>\n<intent>switch to do</intent>\n<actions>\nNo action.\n</actions>\n</step_record>\n<</step_history>>",
                 "type": "text"
               }
             ],

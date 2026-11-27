@@ -239,11 +239,10 @@ detail 关键字段：
 - `lines_read`
 - `total_lines`
 - `eof`
-- `unchanged`
 - `token_limit`
 - `token_truncated`
 
-同一个 `session_id` 中，对同一个文件、同一 `offset/limit` 窗口重复 `read` 时，如果文件内容和上一次相比没有变化，`detail.content` 和顶层 `output` 返回 `和上一次read相比没有变化`，`detail.unchanged` 为 `true`。状态文件保存在系统临时目录下。
+结果带 `dedup`（[协议](agent_tool_result_protocol.md) `dedup`）：键由规范名（文件是解析后的绝对路径，对象是 canonical object）、窗口和内容摘要组成。当前上下文里已经完整显示过同一窗口、同一内容时，派发器只回一句 `` `<uri>` is unchanged; same as the result of call <call_id> above. ``；工具自己不保存读取状态。
 
 
 输出约定：

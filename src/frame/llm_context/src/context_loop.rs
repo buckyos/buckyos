@@ -2338,7 +2338,6 @@ impl LLMContext {
             step_index,
             started_at_ms,
             ended_at_ms: None,
-            compression_level: Default::default(),
         };
         step
     }

@@ -17,7 +17,7 @@ pub use hints::{
     HINT_NS_DEDUP, HINT_NS_ONCE,
 };
 pub use intent::{intent_of, take_intent, with_intent, IntentPolicy, INTENT_ARG};
-pub use result_view::{ToolResultStatusView, ToolResultView};
+pub use result_view::{full_text, DedupView, ToolResultStatusView, ToolResultView};
 pub use step_record::XmlStepRenderer;
 pub use task_model::{
     task_state_observation, task_state_observation_via, CancelUnsupported, RunningTaskResolver,
@@ -54,6 +54,7 @@ pub mod task_bridge;
 pub mod task_model;
 pub mod tasks;
 pub mod tasks_zone;
+pub mod text_budget;
 pub mod todo_tools;
 pub mod tool;
 pub mod xllm;
@@ -139,7 +140,7 @@ pub struct SessionRuntimeContext {
     pub read_token_limit: u32,
 }
 
-pub const DEFAULT_READ_TOKEN_LIMIT: u32 = 20 * 1024;
+pub const DEFAULT_READ_TOKEN_LIMIT: u32 = text_budget::RESULT_BUDGET_TOKENS;
 
 fn default_read_token_limit() -> u32 {
     DEFAULT_READ_TOKEN_LIMIT
@@ -429,37 +430,17 @@ impl AgentToolResult {
         self
     }
 
-    /// The text the LLM sees for this result: the output (or summary) of a
-    /// success, the summary and output of an error. A finished task's
-    /// result reads the same as the call that ended synchronously.
+    /// The text the LLM sees for this result, the same in both loops
+    /// ([`result_view::full_text`]). A finished task's result reads the same
+    /// as the call that ended synchronously.
     pub fn observation_text(&self) -> String {
-        match self.status {
-            AgentToolStatus::Success | AgentToolStatus::Pending => self
-                .output
-                .clone()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| {
-                    if self.summary.trim().is_empty() {
-                        self.details.to_string()
-                    } else {
-                        self.summary.clone()
-                    }
-                }),
-            AgentToolStatus::Error => {
-                let summary = self.summary.trim();
-                let output = self
-                    .output
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty());
-                match (summary.is_empty(), output) {
-                    (false, Some(out)) => format!("{summary}\n{out}"),
-                    (false, None) => summary.to_string(),
-                    (true, Some(out)) => out.to_string(),
-                    (true, None) => "tool error".to_string(),
-                }
-            }
-        }
+        result_view::full_text(
+            self.status == AgentToolStatus::Error,
+            self.output.as_deref(),
+            Some(&self.details),
+            &self.summary,
+            &self.title,
+        )
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -952,6 +933,10 @@ impl TypedTool for GetSessionTool {
         Ok(crate::CliInvocation::Bash {
             line: build_bash_cli_line(TOOL_GET_SESSION, &forwarded),
         })
+    }
+
+    fn build_output(&self, output: &Self::Output) -> Option<String> {
+        Some(output.to_string())
     }
 
     fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {

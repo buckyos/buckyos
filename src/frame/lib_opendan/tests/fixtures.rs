@@ -620,11 +620,11 @@ async fn f14_input_bus() {
     assert_eq!(vars, json_of("rendering/vars.json"));
     for t in expected["rendering"]["templates"].as_array().unwrap() {
         let tpl = read(t["template"].as_str().unwrap());
-        let out = render_template(&tpl, vars.clone()).await.unwrap();
+        let out = render_template(t["template"].as_str().unwrap(), &tpl, vars.clone()).await.unwrap();
         assert_eq!(out, read(t["output"].as_str().unwrap()), "{}", t["template"]);
     }
     // `input.xml` is `input.text`; `message.xml` / `event.xml` are its elements.
-    let same = render_template("{{ input | render_format: \"input.xml\" }}", vars.clone())
+    let same = render_template("input.xml", "{{ input | render_format: \"input.xml\" }}", vars.clone())
         .await
         .unwrap();
     assert_eq!(same, view.text);

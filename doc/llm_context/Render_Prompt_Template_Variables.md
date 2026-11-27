@@ -1,10 +1,10 @@
 # Render Prompt 模板变量说明
 
-本文档是 `llm_context::PromptRenderEngine` 的实现参考，写给修改 / 扩展模板引擎自身的人。引擎位于 [`src/frame/llm_context/src/prompt_engine.rs`](../../src/frame/llm_context/src/prompt_engine.rs)，类型 `PromptRenderEngine`，是 `llm_context` 的通用能力 —— 不认识 OpenDAN 的 session、workspace、owner、todo 等业务概念。
+本文档是 `agent_tool::prompt_engine::PromptRenderEngine` 的实现参考，写给修改 / 扩展模板引擎自身的人。引擎位于 [`src/frame/agent_tool/src/prompt_engine.rs`](../../src/frame/agent_tool/src/prompt_engine.rs)，类型 `PromptRenderEngine`，是 `agent_tool` 的通用能力 —— 不认识 OpenDAN 的 session、workspace、owner、todo 等业务概念。
 
 > 旧 opendan Runtime（`src/frame/opendan/src/prompt_env.rs`）这一侧实际暴露的变量契约、`AgentSessionValueLoader` 的字段映射、`include_roots` 当前设置、behavior 模板可以写什么，全部在 [Agent Enviroment.md](../opendan/Agent%20Enviroment.md)，待下一阶段 opendan 重构接入。本文不重复那一层。其中 `current_context.last_step` / `current_context.step_history` 是从 LLMContext 快照取出的 `StepRecord`，没有 Round / Turn 编号变量。
 >
-> libopendan 不经过本引擎：每个输入批次的 user message 由 `SessionAssembler::render_input(cfg, state, &InputMaterial)` 渲染成 `<session_input hook=… time=…>`；Step 历史和动作回响（`<<step_history>>`、`<<last_step_action_results>>`）由 llm_context 的 `XmlStepRenderer` 在每次推理前渲染；Session 历史由 Runner 从 worklog 重建为一串消息（压缩后含一条 `<history_summary>` 摘要消息）。这些都不是模板变量。
+> libopendan 只在 behavior 配了模板时经过本引擎（`runner/assembler.rs::render_template`：system 模板、`on_init` / `on_input` / `on_context_switch` 输入模板、Goal 头模板），变量见 §8；没配模板的输入批次由 `SessionAssembler::render_input` 直接拼成 `<session_input hook=… time=…>`。Step 历史和动作回响（`<<step_history>>`、`<<last_step_action_results>>`）由 `XmlStepRenderer` 在每次推理前渲染；Session 历史由 Runner 从 worklog 重建为一串消息（压缩后含一条 `<history_summary>` 摘要消息）。这些都不是模板变量。
 
 实际指令名是 `__ENV`、`__INCLUDE`、`__EXEC`、`__VAR`，不是更早设计稿里的 `__OPENDAN_ENV` 等前缀名。
 
@@ -20,6 +20,7 @@
 2. **upon 渲染阶段**
    - 使用 upon 引擎渲染 `{{ name }}`、`{% if %}`、`{% for %}` 等模板语法。
    - 渲染上下文来自 `RenderVars.vars` 和 `__VAR` 注册出来的变量。
+   - 引擎设置了自己的默认 formatter：`{{ x }}` 遇到 map / list 不再报 upon 的 “unformattable type”，按 §2.1 渲染。
    - 最终输出超过 `EngineConfig.max_total_bytes` 时会被截断，并设置 `truncated = true`。
 
 ## 2. 动态表达式解析
@@ -32,11 +33,28 @@
 
 `ValueLoader::load` 返回 `Ok(None)` 表示"不认识这个变量"，引擎把它当作软缺失处理，不会直接报错。
 
-值转成文本时的规则：
+`__ENV` 的值转成文本时的规则：
 
 - JSON string 会先 `trim`，空字符串视为缺失。
 - JSON null 视为缺失。
-- JSON object、array、number、bool 会序列化成紧凑 JSON 字符串。
+- number、bool 输出其字面值。
+- object、array 按 §2.1 的默认渲染输出可读文本，不是 JSON。
+
+### 2.1 对象的默认渲染
+
+模板里引入的对象不插完整 JSON，按对象自己的字段给出人可读的文本（`RenderExtensions::value_text`）。`{{ x }}`、`__ENV($x)__` 和文本 filter（`xml`、`attr`、`truncate`、`oneline`、`quote`、`join` 的元素）都走这一条规则：
+
+1. 宿主为这类值注册了默认格式（`RenderExtensions::with_default_format(格式名, 判定函数)`，第一个判定为真的生效）时，用该命名格式的输出。libopendan 为输入视图、消息、事件、附件列表注册了 `input.xml`、`message.xml`、`event.xml`、`attachments.list`。
+2. 否则 object 最多两行，取对象已有的字段、沿用原字段名，不给对象加统一的展示字段：
+   - 第一行：`title`、`name`、`subject` 中第一个有值的，只写值。
+   - 第二行：`summary`、`description`、`status` 中第一个有值的，写成 `<字段名>: <值>`。
+   - “有值”指非空字符串、数字或 bool；字段值里的换行和连续空白合成一个空格。
+   - 例：`{"title": "Weekly report", "status": "active", …}` → `Weekly report` + 换行 + `status: active`。
+3. array 每个元素一行：字符串、数字、bool 是其字面值，null 跳过，object 把上面两行用 ` — ` 接成一行，嵌套 array 用 `, ` 接成一行。空 array 输出空串。
+4. 取不到可读字段时（某个 object 一个上述字段都没有，或数组里有这样的元素）：整个值回退成紧凑 JSON，`log::warn!` 记下模板名（`EngineConfig.name`）和变量路径（如 `handover.sub_task`；表达式算出的值找不到路径时写 `(an expression)`），`RenderStats.json_fallback += 1`。渲染照常完成，不报错，这批输入照常消费。
+5. 结果（可读文本或回退的 JSON）受单结果预算约束：超过 16K token（`agent_tool::text_budget`，默认按 4 字节一个 token 估算）时保留头尾，中间写 `…[N bytes omitted]…`。
+
+明确要 JSON 时写 `{{ x | json }}`：输出紧凑 JSON，不记日志、不计数。`render_format` 和宿主 filter 拿到的仍是原值。
 
 ## 3. 指令
 
@@ -52,6 +70,7 @@ owner=__ENV($owner.name)__
 规则：
 
 - 参数不以 `$` 开头会返回语法错误。
+- object / array 按 §2.1 渲染；回退成 JSON 时同样记日志并计入 `stats.json_fallback`。
 - 命中变量时，`stats.env_expanded += 1`。
 - 未命中变量时，`stats.env_not_found += 1`，输出 HTML 注释形式的失败标记，例如 `<!-- __ENV__ failed: not found -->`。
 
@@ -150,6 +169,8 @@ __VAR(owner, $owner)__
 | `executor` | `None` | 注入的 PromptExec 执行器 |
 | `include_roots` | 空 | 为空时 `__INCLUDE` 全部失败 |
 | `max_recursion_depth` | 8 | include 嵌套预处理深度 |
+| `extensions` | 空 | 宿主的命名格式、默认格式（§2.1）与额外 filter |
+| `name` | 空串 | 模板名，用在 §2.1 的警告里；libopendan 写 `<behavior>.<hook>`、`<behavior>.system`、`goal_activation` |
 
 ## 6. 返回值与统计
 
@@ -174,6 +195,7 @@ __VAR(owner, $owner)__
 | `exec_failed` | `__EXEC` 失败数量 |
 | `var_registered` | `__VAR` 成功注册数量 |
 | `var_failed` | `__VAR` 未解析到值的数量 |
+| `json_fallback` | 取不到可读字段、回退成紧凑 JSON 的 object / array 数量（§2.1） |
 
 ## 7. 修改 / 扩展引擎时的注意事项
 
@@ -183,3 +205,30 @@ __VAR(owner, $owner)__
 - 新增 `EngineConfig` 字段必须给 `Default` 实现，并在本文 §5 表格里补充。
 - 触发 IO / 进程的新指令要带超时 + 字节上限；不要假设调用方已经做了沙箱。
 - 业务变量映射（`$session.*`、`$workspace.*` 等）一律不进引擎，由调用方的 `ValueLoader` 提供 —— OpenDAN 的实现见 [Agent Enviroment.md](../opendan/Agent%20Enviroment.md)。
+- 新的对象变量先给可读视图（对象自己的字段、宿主注册的默认格式，或现成的 `*_text` 文本），原始数据只在确实需要时以显式的名字（如 `runtime.raw`）保留。
+
+## 8. libopendan 输入模板的变量
+
+`SessionAssembler::render_input`（`lo/runner/assembler.rs`）给 `on_init` / `on_input` / `on_context_switch` 模板的变量（`RenderVars.vars`，模板名 `<behavior>.<hook>`）。“直接放”指 `{{ 变量 }}` 不加 filter 时的输出，规则见 §2.1。
+
+| 变量 | 是什么 | 直接放 |
+| --- | --- | --- |
+| `input` | 这批输入的视图（`hook`、`time`、`messages[]`、`events[]`、`items[]`、`text`、`count`，字段见 `runner/input_view.rs`） | `input.xml`，即 `input.text` |
+| `input.messages[]` / `input.events[]` / `input.items[]` | 消息、事件视图；`items` 按消费顺序混排，带 `is_msg` / `is_event` 等布尔字段 | 每条一个 `message.xml` / `event.xml` 元素 |
+| `msg.attachments` | 附件列表 | `attachments.list`，每个附件一行 |
+| `msg.from` / `msg.conversation` | 说话人 / 会话 | `name` 字段 |
+| `session` | `id`、`kind`、`objective`、`timezone`、`is_bootstrap`、`todos`（TodoList 紧凑视图，文本），以及恒为 false / 空串的 `background_hint_changed` / `default_changed_background_hint_text` | 命名空间，用其中的字段；整体放会回退成 JSON |
+| `runtime.status` | `<runtime>` 块里的那几行（`- ` 开头，工作 runtime、与之不同时的私有 runtime、workspace） | 文本 |
+| `runtime.clock_text` | 批次时间（UTC RFC 3339） | 文本 |
+| `runtime.raw` | 宿主的原始状态（RuntimeInfo + `workspace` + `runtimes`），给要按 os / shell 分支的模板 | 回退成 JSON 并记警告；要 JSON 写 `\| json` |
+| `handover` | 交接：`to`、`process_result`、`sub_task`；不是交接批次时为 null | 命名空间，整体放会回退成 JSON；要整段文本用 `handover_text` |
+| `handover.process_result` | 子 behavior 交回的结果：`behavior`、`status`、`result`（文本）、`submission` | `status: <status>` |
+| `handover.process_result.submission` | 子 behavior 提交的结构化结果，紧凑 JSON 文本，受单结果预算约束（超出时写明 `agent-session read-session <sid> --turn <n>` 能读到全文） | 文本（JSON） |
+| `handover.sub_task` | 被调起时的 `mode` 和 `task` | 回退成 JSON；用 `handover.sub_task.task` |
+| `hints` | 这批的 Memory 线索，每条一行文本 | 每条一行 |
+| `background` | 这批要显示的背景行的文本 | 每条一行 |
+| `background_context` | `<<background_context>>` 块（含 `- ` 前缀），无行时为空 | 文本 |
+| `task_text`、`handover_text`、`todos_text`、`hints_text`、`active_sessions_text`、`runtime_text` | 内建模板的各块，空或以换行结尾；`runtime_text` 是 `<runtime>` 块，plan 还带 `<runtimes>` 表和第一批的 `<skill_candidates>` | 文本 |
+| `builtin` | 内建模板的完整输出 | 文本 |
+
+system 模板（`<behavior>.system`）的变量是 `identity`、`behavior`、`session`、`workspace.id`；Goal 头模板（`goal_activation`）的变量是 `goal`（`GoalView`，`goal.text` 是内建 Goal 头）。

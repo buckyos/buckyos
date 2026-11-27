@@ -7,6 +7,6 @@
   "runtime_id": "rt-fixture-native",
   "connector": "native",
   "workdir": "${FIXTURE_ROOT}/app/work-fixture-kill",
-  "bound_at_ms": 1794290473971,
-  "bound_by": "rn-4d98ab88b95f49a3"
+  "bound_at_ms": 1795768551126,
+  "bound_by": "rn-0d5465a785ab4b70"
 }

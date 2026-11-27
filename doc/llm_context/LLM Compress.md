@@ -149,7 +149,7 @@ pub struct CompressOutcome {
 
 ### 6.1 libopendan Session
 
-历史由 worklog 忠实重建为消息（`runner/history.rs`，渲染器 `libopendan.history/4`）：user 输入（有 `brief` 时用 brief）、assistant 响应与原生 tool calls、tool 结果、最终交付（`report_delivery`；交付 report 的那次调用参数换成交付引用，正文只出现一次）不截断；behavior 上下文里 function call 的调用列在 assistant 文本中、结果放进 `<<last_step_action_results>>`；已返回子 context 的过程不进历史，只留 `process_done` 结果；`drop_kinds` 中的审计条目不渲染。超预算时整段历史交给 `compress_history`，结果写回 `summary.json`：
+历史由 worklog 重建为消息（`runner/history.rs`，渲染器 `libopendan.history/5`；压缩前先按位置分级：较旧的工具结果改用 summary / title，分级后装得下就不调用摘要模型）：user 输入（有 `brief` 时用 brief）、assistant 响应与原生 tool calls、tool 结果（分级时除外）、最终交付（`report_delivery`；交付 report 的那次调用参数换成交付引用，正文只出现一次）不截断；behavior 上下文里 function call 的调用列在 assistant 文本中、结果放进 `<<last_step_action_results>>`；已返回子 context 的过程不进历史，只留 `process_done` 结果；`drop_kinds` 中的审计条目不渲染。超预算时整段历史交给 `compress_history`，结果写回 `summary.json`：
 
 | 字段 | 含义 |
 | --- | --- |

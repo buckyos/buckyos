@@ -4,7 +4,7 @@
   "history_summary": "Summary of turns 0..189.",
   "made_at_seq": 201,
   "made_by": "manual",
-  "renderer": "libopendan.history/4",
+  "renderer": "libopendan.history/5",
   "schema": "opendan.session_summary/3",
   "start_offset": 16349,
   "start_seq": 192,

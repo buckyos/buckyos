@@ -10,8 +10,10 @@ use serde::{Deserialize, Serialize};
 
 pub const SESSION_SUMMARY_SCHEMA: &str = "opendan.session_summary/3";
 /// Renderer id + version of the history rebuilt from the worklog.
-/// 4: entries rebuilt as messages, nothing truncated.
-pub const HISTORY_RENDERER: &str = "libopendan.history/4";
+/// 5: entries rebuilt as messages; older tool results shown by their
+/// summary or title when the history is compressed or the provider's cache
+/// is gone (prompt mechanics TODO C1).
+pub const HISTORY_RENDERER: &str = "libopendan.history/5";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionSummary {

@@ -801,7 +801,6 @@ pub async fn runtimes_view(agent: &dyn crate::state::AgentStateClient, cfg: &Ses
             "working": working,
             "private": private,
             "owner_default": owner_default,
-            "all": all.iter().map(runtime_entry).collect::<Vec<_>>(),
             "lines": all.iter().map(runtime_line).collect::<Vec<_>>(),
         }),
     }

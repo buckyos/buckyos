@@ -686,7 +686,9 @@ fn items_of(v: &Value) -> Result<Vec<InputItem>, String> {
 }
 
 /// The named formats libopendan registers for `render_format`. `input.text`
-/// is rendered by the same functions, so both always agree.
+/// is rendered by the same functions, so both always agree. The input view,
+/// a message, an event and an attachment list placed without a format are
+/// shown in their XML / list format.
 pub fn input_formats() -> RenderExtensions {
     RenderExtensions::new()
         .with_format("input.xml", |v| Ok(render_inputs_xml(&items_of(v)?)))
@@ -715,6 +717,12 @@ pub fn input_formats() -> RenderExtensions {
             )?))
         })
         .with_format("todo.summary_xml", render_todo_summary_xml)
+        .with_default_format("input.xml", |v| v.get("hook").is_some() && items_of(v).is_ok())
+        .with_default_format("message.xml", |v| typed::<MessageView>(v, "").is_ok())
+        .with_default_format("event.xml", |v| typed::<EventView>(v, "").is_ok())
+        .with_default_format("attachments.list", |v| {
+            v.as_array().is_some_and(|a| !a.is_empty()) && typed::<Vec<AttachmentView>>(v, "").is_ok()
+        })
 }
 
 /// Image / document blocks injected next to the text (`input.media =

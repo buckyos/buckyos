@@ -5,17 +5,21 @@
   "epoch": 1,
   "goal_revision_seen": 0,
   "usage": {
-    "period_start_ms": 1794391304699,
+    "period_start_ms": 1795768552327,
     "tokens": 0,
     "activations": 0,
     "works": 0,
-    "work_tokens": 0
+    "work_tokens": 0,
+    "job_tokens": 0
   },
   "consecutive_no_action": 0,
+  "activations_failed_in_a_row": 0,
+  "failing_since_ms": 0,
+  "works_failed_in_a_row": 0,
   "holds": {
     "period_start_ms": 0,
     "min_interval": 0,
     "budget": 0
   },
-  "updated_at_ms": 1794391304699
+  "updated_at_ms": 1795768552327
 }

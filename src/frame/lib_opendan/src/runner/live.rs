@@ -29,7 +29,8 @@ use crate::session::runs::RunHandle;
 
 use super::flush::{run_history_entries, FlushMarks};
 use super::history::{
-    build_chat_history, build_history, compact_for_limit, HistoryLine, HistoryShape, LimitLine, Summarizer,
+    build_chat_history, build_history_for, compact_for_limit, Built, HistoryLine, HistoryShape,
+    LimitLine, Summarizer,
 };
 use agent_tool::llm_compress::CompressReport;
 use super::hook::{scope_touching, SessionCheckpointHook};
@@ -259,8 +260,6 @@ pub(super) async fn new_run_context(
     env: &SessionEnv,
     rebuild: bool,
 ) -> Result<LiveCtx> {
-    // A new context: no result of an earlier one is in it.
-    sh.hints.clear_dedup();
     let (cfg, new) = {
         let s = sh.session.lock().await;
         let cfg = s.config.clone();
@@ -405,6 +404,8 @@ async fn fork_run_context(
         }
     }
     let function_call = record.config.loop_model == LoopModel::FunctionCall;
+    // The branch shows the caller's whole history (prompt mechanics TODO D1).
+    sh.hints.reset(&crate::session::runs::run_results(&record));
     let xdeps = xllm_deps_for(sh, env, depth, function_call).await?;
     let manager = rebuild_toolset(&record, &xdeps).await?;
     let resolver = manager.resolver();
@@ -674,7 +675,12 @@ async fn own_run_context(
         model: hosted.config.summary_model(),
     };
     // The session history is a view selected by the target's entry
-    // (`inherit: recent_dialogue`), never attached implicitly.
+    // (`inherit: recent_dialogue`), never attached implicitly. After
+    // `prompt_cache_idle` the provider's cache is gone: older results are
+    // shown by position (prompt mechanics TODO C1).
+    let last_run = sh.session.lock().await.state.last_run.clone();
+    let cold = super::drive::idle_since(sh, last_run.as_deref())
+        .is_some_and(|idle| super::drive::cache_gone(sh, idle));
     let history = if inherit == InheritMode::RecentDialogue {
         let mut s = sh.session.lock().await;
         if cfg.session.kind == SessionKind::Ui
@@ -697,18 +703,22 @@ async fn own_run_context(
                     .sum::<u64>();
             let line = HistoryLine::of_window(&cfg, &sh.deps.options, &hosted.config.limits, prefix)
                 .unwrap_or(HistoryLine::fixed(budget));
-            build_chat_history(&mut s, &sh.lease, &summarizer, line, rebuild).await?
+            build_chat_history(&mut s, &sh.lease, &summarizer, line, rebuild, cold).await?
         } else {
             let shape = if function_call {
                 HistoryShape::Native
             } else {
                 HistoryShape::Text
             };
-            build_history(&mut s, &sh.lease, Some(&summarizer), shape, budget).await?
+            build_history_for(&mut s, &sh.lease, Some(&summarizer), shape, budget, cold).await?
         }
     } else {
-        Vec::new()
+        Built::default()
     };
+    // What the new context shows in full (prompt mechanics TODO D1, D4).
+    sh.hints.reset(&history.shown);
+    let history_shown = history.shown;
+    let history = history.messages;
     let runs = sh.dir.runs();
     let (run_id, lock) = runs.create_locked()?;
     let record = hosted.new_record(
@@ -731,6 +741,12 @@ async fn own_run_context(
                 }
                 if call_intent {
                     extra.insert(super::tools::EXTRA_CALL_INTENT.into(), json!(true));
+                }
+                if !history_shown.is_empty() {
+                    extra.insert(
+                        crate::session::runs::EXTRA_RESULTS.into(),
+                        json!(history_shown),
+                    );
                 }
                 if extra.is_empty() {
                     Value::Null
@@ -865,6 +881,8 @@ pub(super) async fn resume_live_run(
 ) -> Result<LiveCtx> {
     let record = run.record();
     let run_id = record.run_id.clone();
+    // The resumed context shows what it showed (prompt mechanics TODO D1).
+    sh.hints.reset(&crate::session::runs::run_results(&record));
     let depth = sh.session.lock().await.state.call_depth();
     let xdeps = xllm_deps_for(
         sh,
@@ -1193,8 +1211,6 @@ async fn rewrite_for_limit(
     summary_llm: &Arc<dyn LlmClient>,
     attempt: u32,
 ) -> Result<LLMContext> {
-    // Results shown before are no longer in the history.
-    sh.hints.clear_dedup();
     let started = Instant::now();
     let (reason, estimated_tokens) = match snapshot.state.suspended.as_ref() {
         Some(llm_context::Suspension {
@@ -1301,7 +1317,7 @@ async fn rewrite_for_limit_inner(
             .ok_or_else(|| OpenDanError::Other(format!("run {run_id} is not the live run")))?;
         let turn = s.state.current_turn();
         let (mut bodies, marks) =
-            run_history_entries(&run_id, &snapshot, behavior, FlushMarks::of(&live), turn);
+            run_history_entries(&run_id, &snapshot, behavior, FlushMarks::of(&live), turn, &run.results());
         // The boundary is written with the history it closes: a redo after a
         // crash, or another rewrite before anything new ran, adds nothing.
         if !bodies.is_empty() {
@@ -1357,10 +1373,13 @@ async fn rewrite_for_limit_inner(
         } else {
             HistoryShape::Native
         };
-        let history =
+        let built =
             compact_for_limit(&mut s, &sh.lease, &summarizer, shape, &line, budget).await?;
         crate::fault::point("context_limit:after_compact");
-        (history, turn)
+        // The rewritten context shows what the new history shows in full.
+        sh.hints.reset(&built.shown);
+        run.set_results(&built.shown);
+        ((built.messages, built.report), turn)
     };
     let history_tokens = super::history::estimate(&history);
     let mut input: Vec<AiMessage> = snapshot
@@ -1454,7 +1473,7 @@ pub(super) async fn suspend_run(
         .ok_or_else(|| OpenDanError::Other(format!("run {run_id} is not the live run")))?;
     let turn = s.state.current_turn();
     let (mut bodies, marks) =
-        run_history_entries(&run_id, snapshot, behavior, FlushMarks::of(&live), turn);
+        run_history_entries(&run_id, snapshot, behavior, FlushMarks::of(&live), turn, &run.results());
     bodies.push(WorklogBody::Outcome {
         run_id: run_id.clone(),
         turn,

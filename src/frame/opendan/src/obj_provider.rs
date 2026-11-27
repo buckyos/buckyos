@@ -16,7 +16,11 @@ fn cap(captures: &Captures, name: &str) -> String {
     captures.get(name).cloned().unwrap_or_default()
 }
 
-fn rows(agent: &str, collection: &str, id_field: &str, items: Value) -> Value {
+/// The fields of an item a collection's rows show, as `(cell, JSON pointer)`:
+/// a list names each item in one line; reading the item gives the rest.
+type Cells = &'static [(&'static str, &'static str)];
+
+fn rows(agent: &str, collection: &str, id_field: &str, cells: Cells, items: Value) -> Value {
     let list = match items {
         Value::Array(list) => list,
         Value::Object(mut map) => match map.remove("items").or_else(|| map.remove("entries")) {
@@ -29,13 +33,17 @@ fn rows(agent: &str, collection: &str, id_field: &str, items: Value) -> Value {
         .into_iter()
         .filter_map(|item| {
             let id = item.get(id_field)?.as_str()?.to_string();
-            Some(json!({ "row_id": id, "object": obj_service_url(agent, &[collection, &id]), "cells": item }))
+            let cells: serde_json::Map<String, Value> = cells
+                .iter()
+                .filter_map(|(cell, pointer)| Some((cell.to_string(), item.pointer(pointer).filter(|v| !v.is_null())?.clone())))
+                .collect();
+            Some(json!({ "row_id": id, "object": obj_service_url(agent, &[collection, &id]), "cells": cells }))
         })
         .collect();
     json!({ "rows": rows })
 }
 
-fn collection(agent: &str, name: &str, title: &str, description: &str, method: &str, params: Value, id_field: &'static str) -> ObjectKind {
+fn collection(agent: &str, name: &str, title: &str, description: &str, method: &str, params: Value, id_field: &'static str, cells: Cells) -> ObjectKind {
     let (a, b, c) = (agent.to_string(), name.to_string(), params.clone());
     let (a2, b2) = (agent.to_string(), name.to_string());
     ObjectKind::new(name, &format!("opendan.{name}"), title, description)
@@ -43,12 +51,12 @@ fn collection(agent: &str, name: &str, title: &str, description: &str, method: &
             "items",
             &format!("Every item of {name}"),
             json!({ "type": "array" }),
-            RpcBinding::new(method, move |_, _| Ok(c.clone())).map(move |_, v| rows(&a, &b, id_field, v)),
+            RpcBinding::new(method, move |_, _| Ok(c.clone())).map(move |_, v| rows(&a, &b, id_field, cells, v)),
         )
         .index(
             &format!("List {name}"),
             json!({}),
-            RpcBinding::new(method, move |_, _| Ok(params.clone())).map(move |_, v| rows(&a2, &b2, id_field, v)),
+            RpcBinding::new(method, move |_, _| Ok(params.clone())).map(move |_, v| rows(&a2, &b2, id_field, cells, v)),
         )
 }
 
@@ -134,13 +142,17 @@ pub fn object_kinds(agent: &str) -> Vec<ObjectKind> {
     );
     vec![
         root,
-        collection(agent, "sessions", "Agent sessions", "Sessions of the Agent", "sessions.query", json!({}), "session_id"),
+        collection(agent, "sessions", "Agent sessions", "Sessions of the Agent", "sessions.query", json!({}), "session_id",
+            &[("kind", "/kind"), ("status", "/status/run_state"), ("title", "/title"), ("objective", "/objective")]),
         session,
-        collection(agent, "workspaces", "Agent workspaces", "Workspaces of the Agent", "home.workspaces", json!({}), "workspace_id"),
+        collection(agent, "workspaces", "Agent workspaces", "Workspaces of the Agent", "home.workspaces", json!({}), "workspace_id",
+            &[("name", "/name"), ("lifecycle", "/lifecycle"), ("availability", "/availability"), ("description", "/description")]),
         workspace,
-        collection(agent, "goals", "Agent goals", "Goals of the Agent", "goals.list", json!({}), "goal_id"),
+        collection(agent, "goals", "Agent goals", "Goals of the Agent", "goals.list", json!({}), "goal_id",
+            &[("title", "/title"), ("status", "/status"), ("lifecycle", "/lifecycle")]),
         goal,
-        collection(agent, "artifacts", "Agent artifacts", "Artifacts of the Agent", "artifacts.list", json!({}), "aid"),
+        collection(agent, "artifacts", "Agent artifacts", "Artifacts of the Agent", "artifacts.list", json!({}), "aid",
+            &[("head", "/head"), ("rev", "/rev"), ("workspace", "/workspace/workspace_id")]),
         artifact,
     ]
 }
@@ -208,6 +220,93 @@ mod tests {
         let (_, page) = send(&server, "POST", &format!("{base}/sessions/methods/query"), Some(json!({ "method": "query", "params": {} }))).await;
         let objects: Vec<&str> = page["result"]["rows"].as_array().unwrap().iter().map(|r| r["object"].as_str().unwrap()).collect();
         assert_eq!(objects, ["obj://xiaobai.test.buckyos.io/sessions/s-1", "obj://xiaobai.test.buckyos.io/sessions/s%202"]);
+    }
+
+    struct TenSessions;
+
+    #[async_trait::async_trait]
+    impl RPCHandler for TenSessions {
+        async fn handle_rpc_call(&self, req: RPCRequest, _ip: IpAddr) -> Result<RPCResponse, RPCErrors> {
+            let value = match req.method.as_str() {
+                "sessions.query" => json!((1..=10)
+                    .map(|i| json!({
+                        "session_id": format!("work-{i}"),
+                        "kind": "work",
+                        "class": "",
+                        "location": "/agents/jarvis/sessions",
+                        "driver": { "principal": "did:bns:alice" },
+                        "status": { "rev": i, "run_state": "running", "one_line_status": "building" },
+                        "objective": format!("Fix build {i}\nthen run the tests"),
+                    }))
+                    .collect::<Vec<_>>()),
+                other => json!({ "method": other }),
+            };
+            Ok(RPCResponse::new(RPCResult::Success(value), req.seq))
+        }
+    }
+
+    struct Zone(String);
+
+    #[async_trait::async_trait]
+    impl agent_did_object_lib::zone::ZoneAccess for Zone {
+        fn gateway_origin(&self) -> Option<String> {
+            Some(self.0.clone())
+        }
+        fn zone_host(&self) -> Option<String> {
+            Some("test.buckyos.io".into())
+        }
+        fn data_root(&self) -> std::path::PathBuf {
+            "/nonexistent/data".into()
+        }
+        async fn session_token(&self) -> Option<String> {
+            Some("owner".into())
+        }
+    }
+
+    /// `read <agent>/sessions`: one line per session, with the fields its row names.
+    #[tokio::test]
+    async fn a_session_list_reads_one_line_per_session() {
+        use agent_did_object_lib::adapters::{AdapterRegistry, DidObjectProtocolAdapter};
+        use agent_did_object_lib::{AgentDIDObjectRuntime, ObjectRouteConfig, ObjectUrlReader};
+        use agent_tool::read_tool::UrlReader;
+        let state = Arc::new(TenSessions);
+        let agent = "jarvis.test.buckyos.io";
+        let server = Arc::new(provider(Arc::downgrade(&state), agent, DID::new("web", agent)).into_http_server());
+        let serve = move |req: axum::extract::Request| {
+            let server = server.clone();
+            async move {
+                let (parts, body) = req.into_parts();
+                let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap();
+                let response = server.serve_request(buckyos_api::buffered_request(parts, bytes), StreamInfo::default()).await.unwrap();
+                response.map(axum::body::Body::new)
+            }
+        };
+        let app = axum::Router::new()
+            .route(&format!("/kapi/{agent}/obj"), axum::routing::any(serve.clone()))
+            .route(&format!("/kapi/{agent}/obj/{{*rest}}"), axum::routing::any(serve));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut registry = AdapterRegistry::new();
+        registry.register(Arc::new(DidObjectProtocolAdapter::with_zone("did-object".into(), Arc::new(Zone(origin)))));
+        let reader = ObjectUrlReader::new(AgentDIDObjectRuntime::with_registry(ObjectRouteConfig::builtin(), registry).unwrap());
+        let ctx = agent_tool::SessionRuntimeContext {
+            trace_id: "t".into(),
+            agent_name: agent.into(),
+            behavior: "b".into(),
+            tool_call_index: 0,
+            wakeup_id: "w".into(),
+            session_id: "s".into(),
+            read_token_limit: agent_tool::DEFAULT_READ_TOKEN_LIMIT,
+        };
+        let doc = reader.read_url(&ctx, &format!("obj://{agent}/sessions"), None).await.unwrap();
+        let rows: Vec<&str> = doc.text.lines().filter(|l| l.contains("/sessions/work-")).collect();
+        assert_eq!(rows.len(), 10, "{}", doc.text);
+        assert_eq!(
+            rows[0],
+            "  - obj://jarvis.test.buckyos.io/sessions/work-1 — kind: work · objective: Fix build 1 then run the tests · status: running"
+        );
+        assert!(!doc.text.contains("did:bns:alice") && !doc.text.contains("building"), "{}", doc.text);
     }
 }
 

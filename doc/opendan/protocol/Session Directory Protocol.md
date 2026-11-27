@@ -267,7 +267,7 @@ Schema：`schema/session_state.schema.json`。
 | user_message | 同上 | run_id, turn, content：批次的每条消息一条（Goal 头在前，半订阅快照其次，受控输入在后），只记文本块；brief?：成为历史后代替它的一行（Goal 头：`goal activation <seq> of goal <id> (revision <r>) …`），重建历史时用它代替正文 |
 | assistant_message | 同上（只用于 function call run） | run_id, turn, assistant, tool_calls[{call_id, tool, args(键排序), effect}]：一次模型 response（一个 Round）及其原生工具调用；不是 Step |
 | step | 同上（只用于 behavior run） | run_id, turn, step_index, behavior?, assistant, actions[{call_id, tool, args(键排序), effect}], correction?（解析失败 / 策略拒绝产生的合成纠错 Step 为 true，缺省 false） |
-| action_result | 同上 | run_id, turn, call_id, status(ok/error/unresolved/cancelled), result：原生工具结果（function call，`[not executed]` / `[unresolved…` 记为 unresolved，`[cancelled]` 记为 cancelled）或 action 结果（behavior） |
+| action_result | 同上 | run_id, turn, call_id, status(ok/error/unresolved/cancelled), result：模型看到的原生工具结果（function call，`[not executed]` / `[unresolved…` 记为 unresolved，`[cancelled]` 记为 cancelled）或 action 结果（behavior）；可选 title、summary、dedup_key、hint_once_keys、dedup_of：结果信封的这些字段（被 dedup 替换的结果记它重复的调用），重建历史时分级与重建 hint 账本用。function call run 的信封 meta 在调用时记进 run.json `host.extra.results`（按 call_id），flush 时写入 |
 | outcome | run 结束 / 挂起 / 保活 / 中途重写 | run_id, turn, kind（run 结束：done/wait/process_done/budget/error/stopped；run 为它启动的工作保活：wait；显式暂停：paused；process 挂起：suspended；中途重写：context_rewritten）, next_behavior?, report?。其它可恢复挂起的快照与恢复规则见 §7、§10；outcome 描述本段执行的结局，不单独决定 Session 是否暂停或 Turn 是否关闭 |
 | turn_ended | 关闭 Turn 的同一次提交 | run_id（stop 时没有 run 则为空串）, turn, status(completed/failed/budget_exhausted/stopped), at_ms |
 | compaction | 生成新 summary.json | summary_start_seq, made_by |
@@ -289,13 +289,13 @@ Schema：`schema/session_state.schema.json`。
   "history_summary": "…", "keep_exact": ["+1 (408) 555-0100", "3f2a9c1e"],
   "head_end_seq": 6, "head_end_offset": 1830,      // head：此前的条目原样保留（0 = 没有 head）
   "start_seq": 301, "start_offset": 912384,        // 原始尾巴的起点
-  "renderer": "libopendan.history/4",
+  "renderer": "libopendan.history/5",
   "made_at_seq": 318, "made_by": "context_limit | ratio | manual", "updated_at_ms": 0 }
 ```
 
 - 缺失时等价于没有 head、没有摘要、`start_seq = start_offset = 0`。
 - 下一次 llm_context（没有 live_run 时）= system（身份 + 不可覆盖约束 + 应用 prompt + context + objective + xllm 能力/协议段）+ 按 `inherit` 装配的历史；本次的输入由 run 的第一个输入批次（`<session_input hook=… time=…>` 消息 + receipt）注入。
-- 历史由 worklog 忠实重建为消息（`libopendan.history/4`），不截断：`user_message` → user 消息（有 `brief` 时用 brief）；`assistant_message` → assistant 消息与原生工具调用，各 `action_result` → 对应的 tool 结果；`step` → assistant 文本 + 一条 `<<last_step_action_results behavior="…" step="N">>` user 消息；`report_delivery` → assistant 文本（交付它的那次 report 调用参数换成交付引用，正文只出现一次）。behavior 上下文没有原生工具：function call 的调用列在 assistant 文本里，结果放进同样的 `<<last_step_action_results>>` 消息。`outcome`（error / budget / stopped / process_done / suspended）与未被 `drop_kinds` 排除的其它条目作为一行说明进 user 消息；`done` / `wait` / `context_rewritten` 不渲染。已返回的子 context 只留它的 `process_done` 结果。缺结果的工具调用补一条 `[no result recorded]`，工具调用等待结果期间到来的输入排在结果之后。
+- 历史由 worklog 重建为消息（`libopendan.history/5`）：`user_message` → user 消息（有 `brief` 时用 brief）；`assistant_message` → assistant 消息与原生工具调用，各 `action_result` → 对应的 tool 结果；`step` → assistant 文本 + 一条 `<<last_step_action_results behavior="…" step="N">>` user 消息；`report_delivery` → assistant 文本（交付它的那次 report 调用参数换成交付引用，正文只出现一次）。behavior 上下文没有原生工具：function call 的调用列在 assistant 文本里，结果放进同样的 `<<last_step_action_results>>` 消息。`outcome`（error / budget / stopped / process_done / suspended）与未被 `drop_kinds` 排除的其它条目作为一行说明进 user 消息；`done` / `wait` / `context_rewritten` 不渲染。已返回的子 context 只留它的 `process_done` 结果。缺结果的工具调用补一条 `[no result recorded]`，工具调用等待结果期间到来的输入排在结果之后。工具结果照模型当时看到的文本重建；只有压缩时，或新 run 重建而距上一个 run 已超过 `prompt_cache_idle` 时，才按位置分级：最近 8 轮原样，再往前 16 轮用 `summary`，更早的用 `title`，并附 `agent-session read-session <sid> --turn <n>`；分级后装得下就不调用摘要模型（[AgentToolResult 协议](<../../llm_context/agent_tool/agent_tool_result_protocol.md>)“历史里的分级”）。新 context 的 hint 账本由它完整显示的结果重建，写进新 run 的 `host.extra.results`。
 - 有摘要时历史 = head（`[0, head_end_offset)` 的条目）+ 一条 summary 消息 + 起点之后的原始记录。summary 消息：
 
   ```text

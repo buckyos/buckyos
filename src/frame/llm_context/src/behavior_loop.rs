@@ -11,20 +11,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::observation::Observation;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum StepCompressionLevel {
-    Full,
-    Compact,
-    Summary,
-}
-
-impl Default for StepCompressionLevel {
-    fn default() -> Self {
-        Self::Full
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StepMeta {
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -33,8 +19,6 @@ pub struct StepMeta {
     pub started_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at_ms: Option<u64>,
-    #[serde(default)]
-    pub compression_level: StepCompressionLevel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

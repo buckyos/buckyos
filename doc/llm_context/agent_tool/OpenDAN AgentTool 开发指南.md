@@ -119,6 +119,8 @@ pub trait TypedTool: Send + Sync + 'static {
     fn usage(&self) -> Option<String> { None }
     fn build_cmd_line(&self, _args: &Self::Args) -> Option<String> { None }
     fn build_summary(&self, _output: &Self::Output) -> String { "ok".to_string() }
+    fn build_output(&self, _output: &Self::Output) -> Option<String> { None }
+    fn build_hints(&self, _output: &Self::Output) -> Vec<ResultHint> { Vec::new() }
     fn build_title(&self, _output: &Self::Output) -> Option<String> { None }
     fn parse_bash_args(&self, tokens: &[String], shell_cwd: Option<&Path>) -> Result<Json, AgentToolError> { ... }
     fn parse_cli_args(&self, tokens: &[String], shell_cwd: Option<&Path>) -> Result<CliInvocation, AgentToolError> { ... }
@@ -129,6 +131,14 @@ pub trait TypedTool: Send + Sync + 'static {
 ```
 
 `AgentToolManager::register_typed_tool()` 会把它包装成 `TypedToolHandle<T>`，对外实现底层 `AgentTool` trait。
+
+结果三件套的分工（[协议](agent_tool_result_protocol.md)“明确渲染压缩字段”与“单结果预算与截断提示”）：
+
+- `build_output`：模型要读的正文，即 `AgentToolResult.output`：预览、diff、列表、匹配内容。截断时在末尾写明还剩多少、下一页的具体参数（`range=…`、`offset=…`）。两种 loop 的 Full 正文都优先取它。
+- `build_summary`：几行能独立读懂的话：做了什么、结果如何、关键数字、是否截断。不带代码块，不超过 3 行。历史压缩时它就是这条结果的样子。
+- `build_hints`：通用用法的渐进式披露，通常带 `once` 键（例如第一次截断时说明分页写法，`read.paging`）。
+
+`Output` 整体序列化为 `detail`，供 CLI、宿主和测试读取；只有没有 `output`、`summary`、`title` 时它才以紧凑 JSON 进入 prompt。结构化结果确实要给模型看时，在 `build_output` 里写成紧凑文本或紧凑 JSON。
 
 ### 3.2 底层接口：`AgentTool`
 
@@ -318,9 +328,12 @@ CLI 默认输出一行 JSON。结构定义见 `src/frame/agent_tool/src/lib.rs::
   "cmd_args": "demo.txt 1-20",
   "status": "success",
   "title": "read_file demo.txt 1-20 => success",
-  "summary": "succeeded, read 128 bytes across 20 lines",
+  "summary": "demo.txt: shown lines 1–20 of 350 (128 bytes read)",
+  "output": "1: hello\n...",
   "detail": {
-    "content": "hello"
+    "path": "/abs/demo.txt",
+    "content": "hello\n...",
+    "total_lines": 350
   }
 }
 ```
@@ -329,12 +342,12 @@ CLI 默认输出一行 JSON。结构定义见 `src/frame/agent_tool/src/lib.rs::
 
 - `agent_tool_protocol` 必须是字符串 `"1"`，反序列化只接受当前协议版本。
 - `status` 取值为 `success` / `error` / `pending`。
-- `title` / `summary` 是 prompt / history 压缩字段。
-- `detail` 是内置工具结构化返回体；`output` 用于普通 bash 或明确需要终端文本输出的场景。
+- `title` / `summary` 是 prompt / history 压缩字段；`summary` 不含正文。
+- `output` 是模型读的正文（普通 bash 的终端输出、typed tool 的 `build_output`）；`detail` 是结构化返回体，只在没有文本字段时进入 prompt。
 - `cmd_name` / `cmd_args` 表示 bash 风格命令形态。
 - `return_code` 是进程或 bash 命令退出码。
 
-`TypedToolHandle` 会把 typed output 序列化成 `detail`，再通过 `build_builtin_tool_result()` 生成 `cmd_name` / `cmd_args` / `summary` / 默认 `title`。
+`TypedToolHandle` 会把 typed output 序列化成 `detail`，再通过 `build_builtin_tool_result()` 生成 `cmd_name` / `cmd_args` / `summary` / 默认 `title`，并填上 `build_output` / `build_hints` 的结果。
 
 ### 5.5 exit code
 
@@ -504,7 +517,7 @@ Agent RootFS 布局以 [Agent RootFS](<../../opendan/Agent RootFS.md>) 为准。
 1. 在 `src/frame/agent_tool/src/` 中实现，优先 `TypedTool`：
    - 定义 `Args: Deserialize + JsonSchema`、`Output: Serialize + JsonSchema`
    - 实现 `name()` / `description()` / `calling()` / `execute()`
-   - 必要时实现 `usage()` / `build_cmd_line()` / `build_summary()` / `parse_bash_args()` / `parse_cli_args()`
+   - 必要时实现 `usage()` / `build_cmd_line()` / `build_summary()` / `build_output()` / `build_hints()` / `parse_bash_args()` / `parse_cli_args()`
 2. 按第 4 节决定 `cancellable()`、`idempotent()`，以及工作是否可能超出调用内等待预算、需要交给 task。
 3. 需要 backend 能力时优先复用现有 backend trait，在构造时注入。
 4. 宿主用 `XllmDeps::with_host_tool` 注册，`.llm_context` 的 `tools.tools` / `tools.actions` 里以 `- name: <tool>` 引用。

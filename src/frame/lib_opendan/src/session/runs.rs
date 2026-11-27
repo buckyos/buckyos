@@ -19,6 +19,7 @@ use agent_tool::xllm::{FileLock as RunLockFile, RunRecord, RunStatus, RunStore};
 use llm_context::state::LLMContextSnapshot;
 
 use crate::error::{OpenDanError, RecoveryBlocked, Result};
+use crate::protocol::ResultMeta;
 
 #[derive(Debug, Clone)]
 pub struct SessionRuns {
@@ -198,6 +199,19 @@ impl std::fmt::Debug for RunHandle {
     }
 }
 
+/// run.json `host.extra` key of [`RunHandle::results`].
+pub const EXTRA_RESULTS: &str = "results";
+
+/// [`RunHandle::results`] of a record.
+pub fn run_results(record: &RunRecord) -> std::collections::BTreeMap<String, ResultMeta> {
+    record
+        .host
+        .as_ref()
+        .and_then(|h| h.extra.get(EXTRA_RESULTS))
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
 impl RunHandle {
     pub fn new(store: RunStore, record: RunRecord, lock: RunLockFile) -> Self {
         Self {
@@ -234,6 +248,39 @@ impl RunHandle {
     /// Persist the record as is (e.g. first write of a new run).
     pub fn write(&self) -> Result<()> {
         self.update(|_| {})
+    }
+
+    /// The envelope meta of the results this run's context shows in full
+    /// (`host.extra.results`, by call id): the seeds its history brought
+    /// (keys only) and its own results. Changed in memory; the next record
+    /// write (every checkpoint) persists it with the snapshot that holds the
+    /// result.
+    pub fn results(&self) -> std::collections::BTreeMap<String, ResultMeta> {
+        run_results(&self.record())
+    }
+
+    pub fn note_result(&self, call_id: &str, meta: ResultMeta) {
+        let mut rec = self.record.lock().expect("run record lock");
+        if let Some(h) = rec.host.as_mut() {
+            if !h.extra.is_object() {
+                h.extra = serde_json::json!({});
+            }
+            if !h.extra[EXTRA_RESULTS].is_object() {
+                h.extra[EXTRA_RESULTS] = serde_json::json!({});
+            }
+            h.extra[EXTRA_RESULTS][call_id] = serde_json::to_value(meta).unwrap_or_default();
+        }
+    }
+
+    /// A rewritten context: what its history shows in full replaces it all.
+    pub fn set_results(&self, results: &std::collections::BTreeMap<String, ResultMeta>) {
+        let mut rec = self.record.lock().expect("run record lock");
+        if let Some(h) = rec.host.as_mut() {
+            if !h.extra.is_object() {
+                h.extra = serde_json::json!({});
+            }
+            h.extra[EXTRA_RESULTS] = serde_json::to_value(results).unwrap_or_default();
+        }
     }
 
     /// § 8.3 ①②: snapshot (fsync) then run.json publishing the pointer and

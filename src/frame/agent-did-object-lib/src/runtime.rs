@@ -1,10 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use crate::extensions::{self, Destination, Resolved};
 use std::sync::Arc;
 
 use agent_tool::{AgentToolResult, AgentToolStatus, AGENT_TOOL_PROTOCOL_VERSION};
 use buckyos_api::KEventClient;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -17,11 +16,9 @@ use crate::error::AgentDIDObjectError;
 use crate::event_bridge::EventBridgeManager;
 use crate::router::{ObjectRouter, RouteMethod};
 use crate::types::{
-    apply_line_range, cmd_args_value, limit_chars, EventBridgeSubscription, ObjectRef, ReadInput,
+    apply_line_range, cmd_args_value, EventBridgeSubscription, ObjectRef, ReadInput,
     SubscribeEventInput, UnsubscribeEventInput, XCallInput,
 };
-
-const READ_UNCHANGED_MESSAGE: &str = "和上一次read相比没有变化";
 
 pub struct AgentDIDObjectRuntime {
     router: ObjectRouter,
@@ -329,56 +326,21 @@ pub(crate) fn read_response_to_tool_result(
     response: AdapterReadResponse,
 ) -> AgentToolResult {
     let content_hash = hash_text(response.content.as_deref().unwrap_or_default());
-    let unchanged = detect_and_update_read_state(input, &response, &content_hash).unwrap_or(false);
-    if unchanged {
-        return AgentToolResult {
-            agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-            hints: Vec::new(),
-            dedup: None,
-            tool: None,
-            cmd_name: Some("read".to_string()),
-            status: AgentToolStatus::Success,
-            task_id: None,
-            pending_reason: None,
-            check_after: None,
-            estimated_wait: None,
-            title: response
-                .meta
-                .title
-                .clone()
-                .unwrap_or_else(|| format!("Read {}", input.object)),
-            summary: READ_UNCHANGED_MESSAGE.to_string(),
-            details: read_details(input, &response, true, &content_hash),
-            cmd_args: Some(format!(
-                "{}{}",
-                input.object,
-                if input.content_only {
-                    " --content-only"
-                } else {
-                    ""
-                }
-            )),
-            return_code: Some(0),
-            partial_output: None,
-            output: Some(READ_UNCHANGED_MESSAGE.to_string()),
-            images: Vec::new(),
-        };
-    }
-
     let mut content = response.content.clone().unwrap_or_default();
     if let Some(range) = &input.range {
         content = apply_line_range(&content, range);
     }
-    content = limit_chars(
-        content,
-        input.max_tokens.map(|tokens| tokens.saturating_mul(4)),
-    );
+    if let Some(max) = input.max_tokens.map(|tokens| tokens.saturating_mul(4)) {
+        let first_line = input.range.as_ref().map_or(1, |r| r.offset.max(1));
+        content = limit_read_text(content, max, first_line);
+    }
 
     let output = if input.content_only {
         content
     } else {
         render_read_sections(&content, &response)
     };
+    let dedup_key = read_dedup_key(input, &response, &output);
 
     AgentToolResult {
         agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
@@ -386,11 +348,7 @@ pub(crate) fn read_response_to_tool_result(
         dedup: None,
         tool: None,
         cmd_name: Some("read".to_string()),
-        status: if response.errors.is_empty() {
-            AgentToolStatus::Success
-        } else {
-            AgentToolStatus::Success
-        },
+        status: AgentToolStatus::Success,
         task_id: None,
         pending_reason: None,
         check_after: None,
@@ -401,7 +359,7 @@ pub(crate) fn read_response_to_tool_result(
             .clone()
             .unwrap_or_else(|| format!("Read {}", input.object)),
         summary: render_read_summary(&response),
-        details: read_details(input, &response, false, &content_hash),
+        details: read_details(input, &response, &content_hash),
         cmd_args: Some(format!(
             "{}{}",
             input.object,
@@ -416,109 +374,62 @@ pub(crate) fn read_response_to_tool_result(
         output: Some(output),
         images: Vec::new(),
     }
+    .with_dedup(dedup_key, format!("`{}` is unchanged", input.object))
 }
 
-#[derive(Debug)]
-struct ReadStateKey {
-    object: String,
-    cache_key: Option<String>,
-    range: Option<crate::types::ReadLineRange>,
-    content_only: bool,
-    max_tokens: Option<usize>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct ReadStateRecord {
-    object: String,
-    cache_key: Option<String>,
-    version: Option<String>,
-    range: Option<crate::types::ReadLineRange>,
-    content_only: bool,
-    max_tokens: Option<usize>,
-    content_hash: String,
-}
-
-fn detect_and_update_read_state(
-    input: &ReadInput,
-    response: &AdapterReadResponse,
-    content_hash: &str,
-) -> Result<bool, AgentDIDObjectError> {
-    let Some(session_id) = input
-        .session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(false);
-    };
-
-    let key = ReadStateKey {
-        object: input.object.clone(),
-        cache_key: response.cache_key.clone(),
-        range: input.range.clone(),
-        content_only: input.content_only,
-        max_tokens: input.max_tokens,
-    };
-    let state_path = read_state_path(session_id, &key);
-    let previous = std::fs::read(&state_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<ReadStateRecord>(&bytes).ok());
-    let unchanged = previous.as_ref().is_some_and(|record| {
-        record.object == key.object
-            && record.cache_key == key.cache_key
-            && record.version == response.version
-            && record.range == key.range
-            && record.content_only == key.content_only
-            && record.max_tokens == key.max_tokens
-            && record.content_hash == content_hash
-    });
-
-    let record = ReadStateRecord {
-        object: key.object.clone(),
-        cache_key: key.cache_key.clone(),
-        version: response.version.clone(),
-        range: key.range.clone(),
-        content_only: key.content_only,
-        max_tokens: key.max_tokens,
-        content_hash: content_hash.to_string(),
-    };
-    if let Some(parent) = state_path.parent() {
-        std::fs::create_dir_all(parent)?;
+/// `text` (lines from `first_line` on) within `max` characters, cut at a
+/// line boundary when one is near: the marker says how much is left and
+/// where the next read starts (prompt mechanics TODO B2).
+fn limit_read_text(text: String, max: usize, first_line: usize) -> String {
+    let total = text.chars().count();
+    if total <= max {
+        return text;
     }
-    let data = serde_json::to_vec(&record)
-        .map_err(|err| AgentDIDObjectError::ProtocolError(err.to_string()))?;
-    let tmp_path = state_path.with_extension("tmp");
-    std::fs::write(&tmp_path, data)?;
-    std::fs::rename(&tmp_path, &state_path)?;
-    Ok(unchanged)
+    let mut end = text.char_indices().nth(max).map_or(text.len(), |(i, _)| i);
+    let at_line_end = match text[..end].rfind('\n').filter(|nl| *nl > end / 2) {
+        Some(nl) => {
+            end = nl;
+            true
+        }
+        None => false,
+    };
+    let shown = &text[..end];
+    // A line cut in the middle is read again from its start.
+    let next = first_line + shown.matches('\n').count() + usize::from(at_line_end);
+    format!(
+        "{shown}\n[truncated: {} more characters; continue with offset={next}]",
+        total - shown.chars().count()
+    )
 }
 
-fn read_state_path(session_id: &str, key: &ReadStateKey) -> PathBuf {
-    let key_text = serde_json::to_string(&json!({
-        "object": key.object,
-        "cache_key": key.cache_key,
-        "range": key.range,
-        "content_only": key.content_only,
-    }))
-    .unwrap_or_default();
-    std::env::temp_dir()
-        .join("buckyos_agent_did_object")
-        .join("read_state")
-        .join(hash_text(session_id))
-        .join(format!("{}.json", hash_text(&key_text)))
+/// What a read showed (prompt mechanics TODO D5): the canonical object
+/// (the adapter's `cache_key`), its version, the window (range, properties,
+/// content only) and a digest of the text shown. The runtime that
+/// dispatches the result answers a repeat with one line.
+fn read_dedup_key(input: &ReadInput, response: &AdapterReadResponse, shown: &str) -> String {
+    let what = response
+        .cache_key
+        .as_deref()
+        .filter(|k| !k.is_empty())
+        .unwrap_or(&response.object);
+    let window = json!({
+        "range": input.range,
+        "properties": input.options.get("properties"),
+        "content_only": input.content_only,
+    });
+    format!(
+        "read:{what}#{}:{}:{}",
+        hash_text(&window.to_string()).get(..16).unwrap_or_default(),
+        response.version.as_deref().unwrap_or(""),
+        hash_text(shown).get(..16).unwrap_or_default()
+    )
 }
 
-fn read_details(
-    input: &ReadInput,
-    response: &AdapterReadResponse,
-    unchanged: bool,
-    content_hash: &str,
-) -> Value {
+fn read_details(input: &ReadInput, response: &AdapterReadResponse, content_hash: &str) -> Value {
     json!({
         "object": input.object,
         "content_only": input.content_only,
         "range": input.range,
-        "unchanged": unchanged,
         "cache_key": response.cache_key,
         "version": response.version,
         "content_hash": content_hash,
@@ -632,6 +543,63 @@ mod tests {
     use crate::types::ReadMeta;
 
     use super::*;
+
+    fn read_input(object: &str, property: Option<&str>) -> ReadInput {
+        ReadInput {
+            object: object.into(),
+            purpose: None,
+            session_id: Some("s1".into()),
+            content_only: true,
+            range: None,
+            max_tokens: None,
+            options: property.map_or(json!({}), |p| json!({"properties": [p]})),
+        }
+    }
+
+    fn response(content: &str, version: Option<&str>) -> AdapterReadResponse {
+        let mut r = AdapterReadResponse::text(
+            "obj://svc/x".into(),
+            content.into(),
+            crate::router::RouteTrace {
+                route_id: "r".into(),
+                adapter: "fake".into(),
+                method: crate::router::RouteMethod::Read,
+            },
+        );
+        r.version = version.map(str::to_string);
+        r
+    }
+
+    #[test]
+    fn a_cut_read_says_where_the_next_one_starts() {
+        let text = (1..=100).map(|i| format!("row {i}")).collect::<Vec<_>>().join("\n");
+        let out = limit_read_text(text, 60, 11);
+        assert!(out.ends_with("more characters; continue with offset=20]"), "{out}");
+        assert!(out.contains("row 9\n[truncated"), "{out}");
+    }
+
+    #[test]
+    fn a_read_names_what_it_showed_and_the_runtime_answers_a_repeat_in_one_line() {
+        let key = |input: &ReadInput, r: AdapterReadResponse| {
+            read_response_to_tool_result(input, r).dedup.expect("dedup").key
+        };
+        let a = key(&read_input("obj://svc/x", None), response("body", Some("1")));
+        assert_eq!(a, key(&read_input("obj://svc/x", None), response("body", Some("1"))));
+        assert_ne!(a, key(&read_input("obj://svc/x", Some("p")), response("body", Some("1"))));
+        assert_ne!(a, key(&read_input("obj://svc/x", None), response("body", Some("2"))));
+        assert_ne!(a, key(&read_input("obj://svc/x", None), response("changed", Some("1"))));
+
+        let ledger = agent_tool::MemoryHintLedger::new();
+        let mut first = read_response_to_tool_result(&read_input("obj://svc/x", None), response("body", None));
+        agent_tool::apply_hints(&mut first, ledger.as_ref(), "c1");
+        assert_eq!(first.output.as_deref(), Some("body"));
+        let mut again = read_response_to_tool_result(&read_input("obj://svc/x", None), response("body", None));
+        agent_tool::apply_hints(&mut again, ledger.as_ref(), "c2");
+        assert_eq!(
+            again.output.as_deref(),
+            Some("`obj://svc/x` is unchanged; same as the result of call c1 above.")
+        );
+    }
 
     struct FakeAdapter;
 

@@ -1052,6 +1052,7 @@ impl NodeCommandHandle {
             self.started.elapsed(),
             REMOTE_NODE_KIND,
             self.cwd.clone(),
+            None,
         );
         let remote_truncated = result
             .as_ref()

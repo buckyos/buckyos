@@ -12,11 +12,11 @@
 
 Behavior Loop 在下一个 Step 的 prompt 中消费的不是孤立的工具 stdout，而是 `StepRecord`：一个 Step 的决策（Step 内可能经过多次推理 Round）加上 dispatcher 执行后的 action results。标准 function call loop 没有 Step，工具结果以按 `call_id` 配对的 tool result 消息回灌（见“调用身份、结果归属与 task”）。
 
-`AgentToolResult` 的核心设计目标是让同一个工具结果可以按 StepRecord 所处位置稳定渲染：
+`AgentToolResult` 的核心设计目标是让同一个工具结果可以按它在历史里的位置稳定渲染：
 
-- hot tail / 最近 step：保留完整命令表达和完整主返回体
-- compact history：保留可独立理解的多行摘要
-- digest / list：保留一行标题
+- 一个 run 之内：已经发给模型的结果永远不改写，都是 Full（provider 的前缀缓存靠它）
+- 压缩历史时，或新 run 从 worklog 重建历史而 provider 的缓存大概率已经失效时（libopendan：距上一个 run 超过 `prompt_cache_idle`）：最近若干轮用 Full，再往前用 `summary`，更早的用 `title`，并说明怎么找回原文（见“历史里的分级”）
+- 跨 behavior 继承的 step：用 `summary`（为空时 `title`）
 - history summary：不再保留单个工具结果，只保留跨 step 的任务语义
 
 因此协议同时提供：
@@ -104,6 +104,13 @@ Behavior Loop 在下一个 Step 的 prompt 中消费的不是孤立的工具 std
 
 `return_code`、`task_id`、`partial_output` 等控制字段独立于主返回体存在，不参与 `output` / `detail` 的选择。
 
+Full 正文由一个函数决定（`agent_tool::result_view::full_text`，`AgentToolResult::observation_text` 与 `ToolResultView::full_text` 都调用它，TS 端口是 `fullText`），两种 loop 同形：
+
+- `success` / `pending`：`output` → 字符串 `detail` → `summary` → `title` → object / array `detail` 的紧凑 JSON（受单结果预算约束）→ `Success`
+- `error`：`summary` 与 `output` 各一行段拼在一起；都为空时依次取字符串 `detail`、`title`、紧凑 JSON、`tool error`
+
+所以 object / array `detail` 只在没有任何文本字段时才进入 prompt。主结果要给模型看，就放进 `output`（typed tool 用 `build_output`）。
+
 ### 5. 明确渲染压缩字段：`title` / `summary`
 
 和 prompt/history 压缩渲染有关的专用字段是：
@@ -124,6 +131,7 @@ Behavior Loop 在下一个 Step 的 prompt 中消费的不是孤立的工具 std
 - `summary` 可以重复 `title` 中的信息，不需要为了避免重叠而牺牲可读性
 - consumer 不应从 `title` / `summary` 中 parse 控制语义
 - `title` / `summary` 可以包含人类可读的状态、退出码、task id 等冗余描述，但 Runtime 判断状态时必须读取 `status` / `return_code` / `task_id` 等控制字段
+- **`summary` 不得包含正文块**：不带代码块（```` ``` ````），不超过 3 行；预览、diff、文件列表、匹配内容都放进 `output`。否则 Medium 视图并不比 Full 短
 
 ## StepRecord 渲染规则
 
@@ -149,7 +157,7 @@ user: behavior init / on_behavior_switch UserMessage
 
 - `step_history` 是一条 user message，承载已经沉淀的 StepRecord 历史。
 - hot tail 是最近若干个完整 `(assistant, user)` step pair。
-- 当 context 不够时，hot tail 中较旧的一部分会合并进 `step_history`，并在 `step_history` 内压缩或裁剪。
+- run 之内不改写已经发出的 step；context 不够时由宿主重写历史（压缩、按位置分级），再以新的历史开始。
 - `step_history` 是可选的；Behavior 刚开始且没有历史时，可以单独给一条 behavior init user message。
 - 如果既有 `step_history` 又需要注入 behavior init / on_behavior_switch UserMessage，应先渲染 `step_history`，再追加该 UserMessage，保证沉淀历史在时间顺序上更早。
 
@@ -184,7 +192,7 @@ AgentToolResult.output | AgentToolResult.detail
 - `step` 来自 `step.meta.step_index`。
 - `step.actions[i]` 与 `step.action_results[i]` 按 index 配对渲染。
 - 如果存在未配对的 `action_results`，以 `Step result` / `Step error` 形式渲染。
-- Full step 对应 `AgentToolResult.Full`，应展示原始命令表达和完整主返回体：`cmd_name + cmd_args + output/detail`。
+- Full step 对应 `AgentToolResult.Full`：标题是 `title`（为空时是命令表达），正文是 `full_text`。
 
 ### Action 标题
 
@@ -208,15 +216,9 @@ Run <command>
 
 ### Action Result Body
 
-当 action result 是合法 `AgentToolResult` 时，body 按展示级别选择：
+当 action result 是合法 `AgentToolResult` 时，Full body 是上面的 `full_text`；继承记录用 `summary`（为空时 `title`）。
 
-| Level | Body |
-| --- | --- |
-| `Full` | `output` 或 `detail` |
-| `Medium` | `summary` |
-| `Min` | `title` |
-
-`Observation` 的 `Success` / `Error` 在 `host` 里不透明地携带 `AgentToolResult` 信封（llm_context 不读它），渲染器用 `agent_tool::result_view::ToolResultView::from_host` 读出后按上表渲染。没有信封的结果按 `Observation` 降级映射：
+`Observation` 的 `Success` / `Error` 在 `host` 里不透明地携带 `AgentToolResult` 信封（llm_context 不读它），渲染器用 `agent_tool::result_view::ToolResultView::from_host` 读出后渲染。没有信封的结果按 `Observation` 降级映射：
 
 | Observation | Full body |
 | --- | --- |
@@ -225,30 +227,23 @@ Run <command>
 | `Cancelled` | `Cancelled: <reason>`，效果未知时为 `Cancelled (result unknown): <reason>` |
 | `Unresolved` | `Unresolved (result unknown, side effects unconfirmed): <reason>`，未执行时为 `Not executed: <reason>` |
 
-如果结果被截断，在 body 末尾追加：
-
-```text
-[truncated]
-```
-
-当前 full step 中 success body 仍有保护性上限，默认最多渲染 4096 字符。这个上限属于实现参数，不是协议字段。
+渲染器不做第二次截断：派发器已经保证每个结果不超过单结果预算，`XmlStepRenderer.max_result_chars` 默认就是这个预算（16K token 约 64K 字符），只是兜底。万一截断，body 末尾写明 `…[N characters omitted by the renderer]`。宿主要更小的结果，应调小派发器的预算（`XllmToolManager::set_result_budget`），那样被截的结果不会登记为“已完整显示”。
 
 ### Step History
 
-`StepRecord` 进入历史后按当前 behavior 和新旧程度分级渲染：
+一个 run 之内，当前 behavior 的 step 都按 Full Step 渲染，追加而不改写；分级只在压缩或重建历史时发生（见“历史里的分级”）。
 
 | 场景 | 渲染形态 |
 | --- | --- |
-| 当前 behavior 的最近 step | 与 Full Step 相同 |
-| 当前 behavior 的较旧 step | 仍渲染 `(assistant, user)` pair，但 assistant text 和 action result body 会截断 |
-| 跨 behavior 继承的 step | 渲染进 `step_history`，不再作为 hot tail pair |
+| 当前 behavior 的 step | 与 Full Step 相同 |
+| 跨 behavior 继承的 step | 渲染进 `step_history`，action result 用 `summary` / `title` |
 | History summary | 渲染进 `step_history`，只保留跨 step 摘要语义 |
 
-`step_history` 是一条 user message，推荐外层形态：
+`step_history` 是一条 user message：
 
 ````xml
 <<step_history>>
-<step_record behavior="<behavior_name>" index="<step_index>" started_at_ms="<started_at_ms>" ended_at_ms="<ended_at_ms>" compression="<full|compact|summary>">
+<step_record behavior="<behavior_name>" index="<step_index>" started_at_ms="<started_at_ms>" ended_at_ms="<ended_at_ms>">
 <observation>...</observation>
 <intent>...</intent>
 <actions>
@@ -263,13 +258,20 @@ AgentToolResult.summary | AgentToolResult.title
 <</step_history>>
 ````
 
-较旧 step 的 compact action result 仍可以使用 `<<last_step_action_results>>` wrapper，但 body 更短：
-
-- compact history step 优先展示 `AgentToolResult.summary`。
-- inherited step record 可以展示 `summary` 或 `title`。
-- success body 截断后如果为空，显示 `Success`。
-- error / cancelled body 按 compact 上限截断。
+- 宿主要求前缀逐字节稳定时（Agent Session），时间戳属性不渲染。
+- success body 为空时显示 `Success`；error / cancelled body 按 compact 上限截断。
 - 信封 `status` 为 `pending` 时显示 `summary`（为空时 `Pending`）及 `task_id` / `pending_reason` / `check_after`。
+
+### 历史里的分级
+
+libopendan 从 worklog 重建历史（`runner::history`，渲染器 `libopendan.history/5`）。worklog 的 `action_result` 条目除了模型当时看到的文本，还存信封的 `title`、`summary`、`dedup_key`、`hint_once_keys`，被 dedup 替换的结果另记 `dedup_of: <call_id>`。
+
+- 平时（provider 缓存还在、历史装得下）：照原样重建。
+- 压缩时（mid-run rewrite、run 结束后的 `maybe_compact`），以及新 run 重建历史而距上一个 run 已超过 `prompt_cache_idle` 时：按位置分级（`Tiering::ByPosition`）：最近 `FULL_ROUNDS`（8）轮 Full，再往前 `SUMMARY_ROUNDS`（16）轮用 `summary`，更早的用 `title`；降级后的结果末尾写 `[shortened; the full result: \`agent-session read-session <sid> --turn <n>\`]`（node runtime 上写“call again”）。降级后装得下就不调用摘要模型，仍超出预算才做摘要。
+- 一个 dedup 结果所指的原结果不再完整显示时，重建的历史在 dedup 的位置显示原结果；原结果已不在历史里时，提示重新调用。
+- 同一份 worklog 在同样条件下重建，结果逐字节相同。
+
+xllm 自身没有 worklog，它的压缩走 `llm_compress`，不做按位置分级。
 
 跨 behavior 继承的 step 不应继续作为新 behavior 的完整 assistant/user hot tail 出现，否则新 behavior 会在错误的 system prompt 和 action view 下读取旧 intent。
 
@@ -507,7 +509,7 @@ Agent Tool 内部的完整返回。
 
 ### `hints`
 
-可选，`[{ "text": "…", "once": "<tool>.<topic>[:<version>]" }]`：给模型的指引（渐进式披露），与 `output` 分开渲染，不得混进输出。带 `once` 的 hint 每个 session 只显示一次（键由工具定，版本号变了就再显示一次）；不带 `once` 的每次显示。
+可选，`[{ "text": "…", "once": "<tool>.<topic>[:<version>]" }]`：给模型的指引（渐进式披露），与 `output` 分开渲染，不得混进输出。带 `once` 的 hint 只在当前上下文里还没有显示过时显示（键由工具定，版本号变了就再显示一次）；不带 `once` 的每次显示。这次结果的具体参数（下一页的 range、offset）写在 `output` 里，不走 hint；hint 讲通用用法。
 
 处理全在 agent_tool 的派发器（`XllmToolManager::call_tool`，llm_context 看不见信封字段）：先按宿主的账本（`agent_tool::hints::HintLedger`）筛掉已显示过的 `once` hint，留下的写回信封并记账，然后渲染成固定结构，两种 loop 同形：
 
@@ -522,13 +524,20 @@ Agent Tool 内部的完整返回。
 
 没有要显示的 hint 时结果文本不变（不加 `<output>` 包装）。function call 模式下这是 tool result 的文本；behavior 模式由 `XmlStepRenderer` 在 action 结果的 ```` ```output ```` 块之后输出同样的 `<runtime_hints>` 块（读信封里留下的 `hints`）。
 
-账本是宿主依赖（`XllmDeps.hint_ledger`，缺省每个工具集一份内存账本）：命名空间 `once` 按 session 存（xllm 写 run.json `hints_once`，libopendan 写 `SessionState.hints_once`），`dedup` 随 run，历史被重写（压缩、新 context）时清空。都不进 llm_context 快照。
+账本是宿主依赖（`XllmDeps.hint_ledger`，缺省每个工具集一份内存账本），记的是“当前上下文里还看得见的结果”：`dedup` 键记着是哪次调用显示的，`once` 键记着显示过哪些 hint。
 
-现有用法：`shell` 转 task 时的跟进说明（`once: "shell.task_followup"`）。
+- libopendan 不另存账本：每次构造 context（新 run 的历史、rewrite 之后、恢复 run、fork）都按新上下文里以 Full 形态出现的结果重建它（`SessionHintLedger::reset`）。来源是 worklog 的 `dedup_key` / `hint_once_keys`，以及 run.json `host.extra.results`（这个 context 里完整显示的结果的键，和这个 run 自己的结果的 meta）。被压缩、降级、裁剪掉的结果不登记，所以它们的内容和 hint 会再次给出。`once` 的集合随 state 提交（`SessionState.hints_once`）。
+- xllm 把 `once` 写进 run.json `hints_once`；`dedup` 在内存，压缩时清空。
+
+现有用法：`shell` 转 task 时的跟进说明（`once: "shell.task_followup"`）；第一次截断时的分页说明（`read.paging`、`glob.paging`、`grep.paging`）。
 
 ### `dedup`
 
-可选，`{ "key": "…", "hint": "…" }`：同一个 run 里已经显示过同 `key` 的结果时，派发器把 `output` / `summary` 换成 `hint`、`detail` 换成 `{"dedup": key}`，模型只看到一句话。`key` 由工具定，应覆盖“内容相同”的全部条件。`read` / `read_file` 用 `read:<path>#<窗口参数>:<内容摘要>`：同一窗口内容未变时第二次只回“unchanged since you read it earlier in this run”。
+可选，`{ "key": "…", "hint": "…" }`：当前上下文里已经完整显示过同 `key` 的结果时，派发器把 `output` / `summary` 换成一句话、`detail` 换成 `{"dedup": key, "dedup_of": "<call_id>"}`。这句话是 `hint` 加上它重复的那次调用：`` `a.rs` is unchanged; same as the result of call <call_id> above. ``（`agent_tool::hints::dedup_text`）；所以 `hint` 只写“什么没变”。`key` 由工具定，应覆盖“内容相同”的全部条件。
+
+- `read` / `read_file`：`read:<规范名>#<首行>-<末行>[#<property>]:<version>:<内容摘要>`。规范名是解析后的绝对路径（对象 URL 用结果里的 canonical object），所以 `a.rs`、`./a.rs`、绝对路径、`file://…` 是同一个键；只有窗口完全相同才算重复。`shell` 里的 `cat` / `sed` 不算。
+- 对象库（`agent-did-object-lib`）的读取返回 `dedup`，键由 `cache_key`、`version`、窗口（range、properties、content_only）和内容摘要组成；不论是 `AgentDIDObjectReadTool` 还是经 `shell` 调用的 CLI（`shell` 原样转发内层 AgentToolResult），都由派发器去重。
+- 被单结果预算截断的结果不是完整显示，派发器去掉它的 `dedup`，下次照样给全文。
 
 ## 单个 AgentToolResult 渲染规则
 
@@ -537,39 +546,31 @@ Agent Tool 内部的完整返回。
 | Level | 使用字段 | 说明 |
 | --- | --- | --- |
 | `Min` | `title` | 一行压缩视图 |
-| `Medium` | `summary` | 多行压缩视图；不需要再拼 `title` |
-| `Full` | `cmd_name + cmd_args + output/detail` | 不压缩展示命令和完整返回体 |
+| `Medium` | `summary` | 几行能独立读懂的话，不含正文 |
+| `Full` | `full_text`（见上：`output` 优先） | 两种 loop 同一个函数 |
 
-要点：
+- `Min` 不读取 `summary`；`Medium` 只读取 `summary`；某个字段为空时渲染器降级展示，但工具开发者不应依赖降级逻辑。
+- Full 不再把 object `detail` 渲染成 pretty JSON：要给模型看的内容放进 `output`。
 
-- `Min` 不读取 `summary`
-- `Medium` 只读取 `summary`
-- `Full` 不依赖 `title` / `summary`，而是展示原始命令表达和完整返回体
-- 如果某个字段为空，渲染器可以做降级展示，但工具开发者不应依赖降级逻辑
+## 单结果预算与截断提示
 
-具体字符截断长度、`output` 取头还是取尾、代码块格式、空字段降级策略等属于实现细节，不在本协议范围内。协议只约束各展示级别的主要信息来源。
+**预算。** 一个结果最多占 16K token（`agent_tool::text_budget::RESULT_BUDGET_TOKENS`，按 llm_context 的默认估算 4 字节一个 token，约 64 KiB）。派发器（`XllmToolManager::call_tool`）在映射成 Observation 之前统一兜底：超出时保留头尾，中间写 `…[N bytes omitted; narrow the call (a range, a filter, less output) to see the rest]…`，`summary` 最多占四分之一，并去掉 `dedup`。各工具自己的上限更小：
 
-推荐 Full 展示形态：
+- `read_file` / `read`：预览最多 200 行，且不超过 `SessionRuntimeContext.read_token_limit`（默认就是 16K token，可配置；派发器兜底用同一个值）；单行超长时截断那一行本身。
+- `shell`：stdout 与 stderr 合计最多 60 KiB（`SHELL_OUTPUT_BYTES`），能放下的流全保留，其余按头 1/4、尾 3/4 保留。
+- 模板里的值（对象回退的 JSON、`<process_result>` 的 submission、对象属性）同样受这个预算约束。
 
-普通 bash：
+**截断提示。** 每个截断标记都写清还剩多少、下一步具体怎么读，写在 `output` 里：
 
-````text
-$ cargo test
-```output
-...
-```
-````
+| 来源 | 提示 |
+| --- | --- |
+| `shell` | `…[N bytes omitted; full stdout: <path>]…`；remote_ssh 写远端执行目录里的路径（`…[output cut at N bytes; full output: <path>]…`）；没有执行目录时不写路径 |
+| `read_file` / `read` | `summary` 写 `shown lines a–b of T`；预览被截时 `output` 末尾写 `[lines b+1–e not shown: read again with range=b+1-…]`；单行被截时写它有多少字节、显示了多少，本地文件给出 `sed -n 'Np' <path> \| cut -b …` |
+| `glob` | `[a–b of T files listed: the next page is offset=b]` |
+| `grep` | `[a–b of T lines/files shown: the next page is offset=b head_limit=n]` |
+| 渲染器 | 不应再截；万一截，写 `…[N characters omitted by the renderer]` |
 
-结构化 Agent Tool：
-
-````text
-read_file demo.txt range=1-20
-```json
-{
-  "content": "..."
-}
-```
-````
+第一次截断时附一条 once hint 讲通用写法（`read.paging` / `glob.paging` / `grep.paging`）。
 
 ## `shell` 约定
 
@@ -595,7 +596,7 @@ read_file demo.txt range=1-20
 规则：
 
 - 退出码为 0 且未超时是 `success`，否则 `error`；`return_code` 是命令退出码
-- `output` 是 stdout + stderr 的混合文本，过长时保留头 1/4、尾 3/4
+- `output` 是 stdout + stderr 的混合文本，合计最多 60 KiB（见“单结果预算与截断提示”）：放得下的流全保留，过长的流保留头 1/4、尾 3/4，中间写明省略了多少字节、全文在哪个文件
 - 命令还在运行时的返回（超出等待预算转 task、被打断）见下面的“长任务与 Pending 结果”和[调用身份、结果归属与 task](#调用身份结果归属与-task)
 
 转发内部 AgentToolResult：命令是一条不含 shell 操作符（管道、`;`、`&&`、重定向等）的简单命令，且 stdout 整体是带合法 `agent_tool_protocol` 的 AgentToolResult 时，`shell` 直接返回这个结果，缺少 `return_code` 时补上命令退出码。内部结果是 `pending` 但没有 `task_id` 时不转发，退回普通 shell 结果。
@@ -613,11 +614,12 @@ Agent Tool 的推荐输出：
   "cmd_name": "read_file",
   "cmd_args": "demo.txt range=1-20",
   "title": "read_file demo.txt range=1-20 => success",
-  "summary": "Read 20 lines from demo.txt.",
+  "summary": "demo.txt: shown lines 1–20 of 350 (612 bytes read)",
+  "output": "1: line 1\n2: line 2\n...",
   "detail": {
-    "path": "demo.txt",
-    "range": "1-20",
-    "content": "..."
+    "path": "/abs/demo.txt",
+    "content": "...",
+    "total_lines": 350
   }
 }
 ```
@@ -626,26 +628,9 @@ Agent Tool 的推荐输出：
 
 - 必须填写 `status`
 - 应填写 `cmd_name` / `cmd_args`
-- 应填写 `title` / `summary`
-- 主结果是结构化 JSON 时填写 object / array `detail`
-- 主结果是文本时，可以填写 `output`，也可以填写字符串 `detail`
-- 不要同时把同一份主结果塞进 `output` 和 `detail`
-
-文本型 Agent Tool 也可以这样返回：
-
-```json
-{
-  "agent_tool_protocol": "1",
-  "status": "success",
-  "cmd_name": "read_file",
-  "cmd_args": "demo.txt range=1-20",
-  "title": "read_file demo.txt range=1-20 => success",
-  "summary": "Read 20 lines from demo.txt.",
-  "detail": "line 1\nline 2\n..."
-}
-```
-
-等价地，也可以选择把完整文本放在 `output` 中；关键约束是不要两边都有同一份主结果。
+- 应填写 `title` / `summary`；`summary` 不含正文
+- 模型要看的内容放 `output`（typed tool 用 `build_output`），可以附结构化的 `detail` 供 CLI、测试和宿主读取
+- 只有结构化数据、没有要给模型看的文本时，才只填 object / array `detail`（Full 时渲染为紧凑 JSON）
 
 ## 长任务与 Pending 结果
 
@@ -699,7 +684,7 @@ xllm 和 libopendan 共用的派发器 `agent_tool::xllm::XllmToolManager` 把�
 
 | 工具返回 | Observation |
 | --- | --- |
-| `status = success` | `Success`，模型看到的文本依次取 `output`、`summary`、`detail` JSON 中第一个非空的 |
+| `status = success` | `Success`，模型看到的文本是 `full_text`（`output` → 字符串 `detail` → `summary` → `title` → 紧凑 JSON），不超过单结果预算 |
 | `status = error` | `Error`，文本是 `summary` 加 `output` |
 | `status = pending` 且有 `task_id` | 派发器在调用内等 task，结果是 task 当时的状态，见下面的“pending 的处理：调用内等待” |
 | `status = pending` 但没有 `task_id` | `Error`（违约） |

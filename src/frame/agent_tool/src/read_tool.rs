@@ -399,7 +399,7 @@ impl AgentTool for ReadTool {
                 (self.object_cfg(text), url)
             }
         };
-        let window = read_args.get("range").map(|r| r.to_string()).unwrap_or_default();
+        let is_object = object.is_some();
         read_args.insert("path".into(), Json::String(path));
         let mut result = TypedToolHandle::new(ReadFileTool::new(cfg))
             .call(ctx, Json::Object(read_args))
@@ -407,7 +407,14 @@ impl AgentTool for ReadTool {
         if let (Some(object), Json::Object(details)) = (object, &mut result.details) {
             details.insert("object".into(), object);
         }
-        Ok(with_read_dedup(result, &uri, &window))
+        if is_object {
+            for h in &mut result.hints {
+                if h.once.as_deref() == Some(crate::file_tools::READ_PAGING_HINT_KEY) {
+                    h.text.push_str(" Give the same uri (and property) with it; property reads one property the object declares.");
+                }
+            }
+        }
+        Ok(with_read_dedup(result, &uri, property))
     }
 }
 
@@ -421,20 +428,37 @@ impl ReadTool {
     }
 }
 
-/// The same window of `what` with the same content read again in this
-/// run: the tool manager answers with one line instead of the content
-/// (`dedup`, see [`crate::hints`]).
-pub fn with_read_dedup(result: AgentToolResult, what: &str, window: &str) -> AgentToolResult {
+/// A read of the same thing, window and content as one shown in full
+/// before: the tool manager answers with one line instead of the content
+/// (`dedup`, see [`crate::hints`]). What was read is named by what it
+/// resolved to (the absolute path, the canonical object), so the spellings
+/// of one file are one key; `shown_as` is how this call named it.
+pub fn with_read_dedup(
+    result: AgentToolResult,
+    shown_as: &str,
+    property: Option<&str>,
+) -> AgentToolResult {
     if result.status != crate::AgentToolStatus::Success {
         return result;
     }
+    let d = &result.details;
+    let what = d
+        .pointer("/object/object")
+        .or_else(|| d.get("path"))
+        .and_then(Json::as_str)
+        .unwrap_or(shown_as)
+        .to_string();
+    let line = |k: &str| d.get(k).and_then(Json::as_u64).map(|n| n.to_string()).unwrap_or_default();
+    let window = format!(
+        "{}-{}{}",
+        line("start_line"),
+        line("end_line"),
+        property.map(|p| format!("#{p}")).unwrap_or_default()
+    );
     let digest = blake3::hash(result.observation_text().as_bytes()).to_hex();
-    let version = result.details.pointer("/object/version").and_then(Json::as_str).unwrap_or("");
+    let version = d.pointer("/object/version").and_then(Json::as_str).unwrap_or("");
     let key = format!("read:{what}#{window}:{version}:{}", &digest[..16]);
-    result.with_dedup(
-        key,
-        format!("`{what}` is unchanged since you read it earlier in this run; use that content."),
-    )
+    result.with_dedup(key, format!("`{shown_as}` is unchanged"))
 }
 
 /// `read_file` of the `bash` group with `read`'s dedup key.
@@ -477,12 +501,8 @@ impl AgentTool for DedupReadFile {
             .unwrap_or_default()
             .trim()
             .to_string();
-        let mut window = args.clone();
-        if let Some(m) = window.as_object_mut() {
-            m.remove("path");
-        }
         let result = self.inner.call(ctx, args).await?;
-        Ok(with_read_dedup(result, &what, &window.to_string()))
+        Ok(with_read_dedup(result, &what, None))
     }
 }
 

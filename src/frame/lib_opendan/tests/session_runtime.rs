@@ -336,8 +336,12 @@ async fn a_session_works_in_its_own_directory_and_is_told_where_the_workspace_is
     assert_eq!(Path::new(here.trim()), sd.path().canonicalize().unwrap());
     let first = llm.requests.lock().unwrap()[0].clone();
     let text = serde_json::to_string(&first.messages).unwrap();
-    assert!(text.contains("\\\"workspace\\\"") && text.contains("same_runtime"), "{text}");
-    assert!(text.contains(&directory.canonicalize().unwrap().display().to_string()));
+    let line = format!(
+        "- workspace {} at {} on runtime private (on this runtime: cd there or use absolute paths)",
+        sd.config().unwrap().workspace.unwrap().workspace_id,
+        directory.canonicalize().unwrap().display()
+    );
+    assert!(text.contains(&line), "{text}");
 }
 
 #[tokio::test]

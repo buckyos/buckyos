@@ -1,19 +1,24 @@
-//! The session's `HintLedger` (simple Work Session TODO §3.8, B13): hints
-//! a result shows once per session are remembered in the session state
-//! (`hints_once`, written with every commit); dedup keys live with the
-//! drive and are forgotten when the history is rewritten.
+//! The session's `HintLedger` (simple Work Session TODO §3.8, B13; prompt
+//! mechanics TODO D1, D4): it holds what the current context shows in full —
+//! the dedup keys of the results it shows (with the call that showed each)
+//! and the `once` hints shown with them. Whenever a context is built (a new
+//! run's history, a rewrite, a run resumed) it is rebuilt from the results
+//! that context still shows in full ([`SessionHintLedger::reset`]); results
+//! the history no longer shows in full are not in it, so their content and
+//! their hints are shown again. The `once` set is kept in the session state
+//! (`hints_once`, written with every commit).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use agent_tool::{HintLedger, HINT_NS_DEDUP, HINT_NS_ONCE};
 
-use crate::protocol::SessionState;
+use crate::protocol::{ResultMeta, SessionState};
 
 #[derive(Debug, Default)]
 pub struct SessionHintLedger {
     once: Mutex<BTreeSet<String>>,
-    dedup: Mutex<BTreeSet<String>>,
+    dedup: Mutex<BTreeMap<String, String>>,
 }
 
 impl SessionHintLedger {
@@ -21,7 +26,7 @@ impl SessionHintLedger {
     pub fn of(state: &SessionState) -> Self {
         Self {
             once: Mutex::new(state.hints_once.clone()),
-            dedup: Mutex::new(BTreeSet::new()),
+            dedup: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -33,41 +38,72 @@ impl SessionHintLedger {
         }
     }
 
-    /// The history was rewritten, or a new context starts.
-    pub fn clear_dedup(&self) {
-        self.dedup.lock().expect("hints").clear();
+    /// A context was built: it shows `results` (by call id) in full.
+    pub fn reset(&self, results: &BTreeMap<String, ResultMeta>) {
+        let mut dedup = BTreeMap::new();
+        let mut once = BTreeSet::new();
+        for (call_id, meta) in results {
+            if meta.dedup_of.is_some() {
+                continue;
+            }
+            if let Some(key) = &meta.dedup_key {
+                dedup.entry(key.clone()).or_insert_with(|| call_id.clone());
+            }
+            once.extend(meta.hint_once_keys.iter().cloned());
+        }
+        *self.dedup.lock().expect("hints") = dedup;
+        *self.once.lock().expect("hints") = once;
     }
 
-    fn set(&self, ns: &str) -> Option<&Mutex<BTreeSet<String>>> {
+    fn set(&self, ns: &str) -> Option<Ns<'_>> {
         match ns {
-            HINT_NS_ONCE => Some(&self.once),
-            HINT_NS_DEDUP => Some(&self.dedup),
+            HINT_NS_ONCE => Some(Ns::Once(&self.once)),
+            HINT_NS_DEDUP => Some(Ns::Dedup(&self.dedup)),
             _ => None,
         }
     }
 }
 
+enum Ns<'a> {
+    Once(&'a Mutex<BTreeSet<String>>),
+    Dedup(&'a Mutex<BTreeMap<String, String>>),
+}
+
 impl HintLedger for SessionHintLedger {
-    fn seen(&self, ns: &str, key: &str) -> bool {
-        self.set(ns)
-            .is_some_and(|s| s.lock().expect("hints").contains(key))
+    fn origin(&self, ns: &str, key: &str) -> Option<String> {
+        match self.set(ns)? {
+            Ns::Once(s) => s.lock().expect("hints").contains(key).then(String::new),
+            Ns::Dedup(m) => m.lock().expect("hints").get(key).cloned(),
+        }
     }
 
-    fn mark(&self, ns: &str, key: &str) {
-        if let Some(s) = self.set(ns) {
-            s.lock().expect("hints").insert(key.to_string());
+    fn mark(&self, ns: &str, key: &str, origin: &str) {
+        match self.set(ns) {
+            Some(Ns::Once(s)) => {
+                s.lock().expect("hints").insert(key.to_string());
+            }
+            Some(Ns::Dedup(m)) => {
+                m.lock()
+                    .expect("hints")
+                    .insert(key.to_string(), origin.to_string());
+            }
+            None => {}
         }
     }
 
     fn clear(&self, ns: &str) {
-        if let Some(s) = self.set(ns) {
-            s.lock().expect("hints").clear();
+        match self.set(ns) {
+            Some(Ns::Once(s)) => s.lock().expect("hints").clear(),
+            Some(Ns::Dedup(m)) => m.lock().expect("hints").clear(),
+            None => {}
         }
     }
 
     fn keys(&self, ns: &str) -> Vec<String> {
-        self.set(ns)
-            .map(|s| s.lock().expect("hints").iter().cloned().collect())
-            .unwrap_or_default()
+        match self.set(ns) {
+            Some(Ns::Once(s)) => s.lock().expect("hints").iter().cloned().collect(),
+            Some(Ns::Dedup(m)) => m.lock().expect("hints").keys().cloned().collect(),
+            None => Vec::new(),
+        }
     }
 }

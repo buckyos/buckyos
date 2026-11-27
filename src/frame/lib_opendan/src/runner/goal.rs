@@ -1015,7 +1015,7 @@ pub(super) async fn opening(
                 reasons,
                 text: builtin.clone(),
             };
-            super::assembler::render_template(tpl, json!({ "goal": view })).await?
+            super::assembler::render_template("goal_activation", tpl, json!({ "goal": view })).await?
         }
         None => builtin,
     };

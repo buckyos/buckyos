@@ -908,9 +908,15 @@ async fn a_rewrite_fills_the_history_budget_with_head_summary_and_raw_tail() {
     assert!(head_end > 0 && head_end < start, "{:?}", compacted[0]);
     assert!(sd.summary_opt().unwrap().is_some());
     let completed = events_named(&events, "opendan.context.rewrite.completed");
-    assert_eq!(completed[0].body["summarized"], true);
-    assert_eq!(completed[0].body["summary_calls"], 1);
-    assert!(completed[0].body["summary_tokens"].as_u64().unwrap() >= 5_000);
+    // Prompt mechanics TODO C1: the first rewrite fits once older results
+    // are shown by position, without a summary; a later one summarizes.
+    assert_eq!(completed[0].body["summarized"], false, "{:?}", completed[0]);
+    let summarized = completed
+        .iter()
+        .find(|e| e.body["summarized"] == true)
+        .expect("a summarized rewrite");
+    assert_eq!(summarized.body["summary_calls"], 1);
+    assert!(summarized.body["summary_tokens"].as_u64().unwrap() >= 5_000);
 }
 
 #[tokio::test]

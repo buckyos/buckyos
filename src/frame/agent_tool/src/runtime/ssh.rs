@@ -811,6 +811,7 @@ impl SshCommand {
                 true,
             )
             .await?;
+        let (out_path, err_path) = (format!("{}/stdout", self.dir), format!("{}/stderr", self.dir));
         Ok(super::output(
             exit_code,
             &stdout,
@@ -820,6 +821,7 @@ impl SshCommand {
             self.started.elapsed(),
             "remote_ssh",
             self.cwd.clone(),
+            Some((&out_path, &err_path)),
         ))
     }
 }

@@ -1032,7 +1032,7 @@ pub(super) async fn commit_kept(
     let mut bodies = Vec::new();
     if let Some(live) = s.state.live_run.clone().filter(|l| l.run_id == run_id) {
         let (history, marks) =
-            run_history_entries(&run_id, snapshot, behavior, FlushMarks::of(&live), turn);
+            run_history_entries(&run_id, snapshot, behavior, FlushMarks::of(&live), turn, &run.results());
         bodies = history;
         bodies.push(WorklogBody::Outcome {
             run_id: run_id.clone(),
@@ -1328,7 +1328,7 @@ async fn commit_run_end(
         .map(FlushMarks::of)
         .unwrap_or_default();
     let turn = s.state.current_turn();
-    let (mut bodies, _) = run_history_entries(&run_id, snapshot, behavior, marks, turn);
+    let (mut bodies, _) = run_history_entries(&run_id, snapshot, behavior, marks, turn, &run.results());
     if let Some(report) = &next.report {
         if next.kind != FinishKind::ProcessDone {
             if !report.is_reply() {

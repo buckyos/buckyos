@@ -171,6 +171,10 @@ impl TypedTool for ExecutorListTool {
     fn description(&self) -> &str {
         "List authorized online executors with their current generation, profiles, ledger and actual capabilities. Offline devices are unavailable."
     }
+    fn build_output(&self, output: &Self::Output) -> Option<String> {
+        Some(output.to_string())
+    }
+
     async fn execute(
         &self,
         _ctx: &ToolCtx<'_>,
@@ -240,6 +244,10 @@ impl TypedTool for ExecutorCallTool {
     fn description(&self) -> &str {
         "Execute a command or file operation on an explicit online executor without moving this Agent session. Persist operation locators before dispatch. Query/cancel use operation_call_id from the result; after reconnection select the new generation and retain the original store_id. Unknown outcomes are never replayed. Linux UI is unsupported."
     }
+    fn build_output(&self, output: &Self::Output) -> Option<String> {
+        Some(output.to_string())
+    }
+
     async fn execute(&self, _ctx: &ToolCtx<'_>, args: Self::Args) -> Result<Value, AgentToolError> {
         let fail = |e: buckyos_api::ExecutorError| AgentToolError::Transport {
             message: e.message,

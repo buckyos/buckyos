@@ -242,7 +242,7 @@ assistant/tool: 进行中 Step 的 inner transcript(Step 内原生工具 loop �
 
 ````xml
 <<step_history>>
-<step_record behavior="plan" index="1" started_at_ms="..." ended_at_ms="..." compression="full">
+<step_record behavior="plan" index="1" started_at_ms="..." ended_at_ms="...">
 <observation>Todos were created successfully.</observation>
 <intent>The plan is ready, so execution should start.</intent>
 <actions>
@@ -290,7 +290,6 @@ AgentToolResult.output | AgentToolResult.detail
 behavior_name
 step_index
 started_at / ended_at(可关闭)
-compression_level
 ```
 
 随后推理产生子 context 的第一个 Step 决策(`step_index` 接着调用方编号,不从 0 开始);系统执行它的 actions 后得到 Action Results,这个 Step 成为当前 behavior 的 hot tail。它如果再被别的 behavior 继承,也只会以 `step_record` 或 summary 的形式出现,而不是继续作为新 Behavior 的完整 assistant/user pair。
@@ -526,14 +525,14 @@ user:
 
 user:
   <<step_history>>
-  <step_record behavior="plan" index="0" compression="full">
+  <step_record behavior="plan" index="0">
   <observation></observation>
   <intent>The task should be split into doc inspection, edit, and verification.</intent>
   <actions>
   - …(compact action result)
   </actions>
   </step_record>
-  <step_record behavior="plan" index="1" compression="full">
+  <step_record behavior="plan" index="1">
   <observation>The edit scope is one Markdown document.</observation>
   <intent>The plan phase is complete; execution should start.</intent>
   <actions>

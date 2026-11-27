@@ -108,7 +108,15 @@ fn action_entries(calls: &[buckyos_api::AiToolCall]) -> Vec<ActionEntry> {
         .collect()
 }
 
-fn native_message_entries(run_id: &str, turn: u64, m: &buckyos_api::AiMessage) -> Vec<WorklogBody> {
+/// Envelope meta of a run's results by call id ([`crate::session::runs::RunHandle::results`]).
+pub type ResultMetas = BTreeMap<String, ResultMeta>;
+
+fn native_message_entries(
+    run_id: &str,
+    turn: u64,
+    m: &buckyos_api::AiMessage,
+    results: &ResultMetas,
+) -> Vec<WorklogBody> {
     let mut out = Vec::new();
     match m.role {
         AiRole::Assistant => {
@@ -149,6 +157,7 @@ fn native_message_entries(run_id: &str, turn: u64, m: &buckyos_api::AiMessage) -
                         call_id: call_id.clone(),
                         status: status.to_string(),
                         result: text,
+                        meta: results.get(call_id).cloned().unwrap_or_default(),
                     });
                 }
             }
@@ -213,6 +222,7 @@ fn step_entries(
     run_id: &str,
     turn: u64,
     step: &llm_context::behavior_loop::StepRecord,
+    results: &ResultMetas,
 ) -> Vec<WorklogBody> {
     let mut out = vec![WorklogBody::Step {
         run_id: run_id.to_string(),
@@ -234,12 +244,23 @@ fn step_entries(
             .get(idx)
             .map(|a| a.call_id.clone())
             .unwrap_or_else(|| o.call_id().to_string());
+        let meta = results
+            .get(&call_id)
+            .cloned()
+            .or_else(|| match o {
+                Observation::Success { host, .. } | Observation::Error { host, .. } => {
+                    ResultMeta::of_host(host)
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
         out.push(WorklogBody::ActionResult {
             run_id: run_id.to_string(),
             turn,
             call_id,
             status,
             result,
+            meta,
         });
     }
     out
@@ -253,6 +274,7 @@ pub fn run_history_entries(
     behavior: bool,
     marks: FlushMarks,
     default_turn: u64,
+    results: &ResultMetas,
 ) -> (Vec<WorklogBody>, FlushMarks) {
     let meta = snapshot_host_meta(snapshot);
     let mut out = Vec::new();
@@ -327,7 +349,7 @@ pub fn run_history_entries(
                         brief: None,
                     }),
                 },
-                _ => out.extend(native_message_entries(run_id, turn, m)),
+                _ => out.extend(native_message_entries(run_id, turn, m, results)),
             }
         }
         return (
@@ -383,10 +405,10 @@ pub fn run_history_entries(
                     continue;
                 }
                 for message in step.native_messages.iter().skip(native_flushed as usize) {
-                    out.extend(native_message_entries(run_id, turn, message));
+                    out.extend(native_message_entries(run_id, turn, message, results));
                 }
                 native_flushed = native_flushed.saturating_sub(step.native_messages.len() as u64);
-                out.extend(step_entries(run_id, turn, step));
+                out.extend(step_entries(run_id, turn, step, results));
             }
         }
     }
@@ -407,7 +429,7 @@ pub fn run_history_entries(
         )
         .collect();
     for message in unfinished_native.iter().skip(native_flushed as usize) {
-        out.extend(native_message_entries(run_id, turn, message));
+        out.extend(native_message_entries(run_id, turn, message, results));
     }
     (
         out,
@@ -456,7 +478,7 @@ mod tests {
             )],
         );
         snapshot.state.accumulated.push(call.clone());
-        let (first, marks) = run_history_entries("run", &snapshot, true, FlushMarks::default(), 1);
+        let (first, marks) = run_history_entries("run", &snapshot, true, FlushMarks::default(), 1, &ResultMetas::new());
         assert_eq!(first.len(), 1);
         assert!(
             matches!(&first[0], WorklogBody::AssistantMessage { tool_calls, .. } if tool_calls[0].call_id == "report-call")
@@ -471,14 +493,14 @@ mod tests {
             native_messages: vec![call, result],
             ..Default::default()
         });
-        let (completed, marks) = run_history_entries("run", &snapshot, true, marks, 1);
+        let (completed, marks) = run_history_entries("run", &snapshot, true, marks, 1, &ResultMetas::new());
         assert_eq!(completed.len(), 2);
         assert!(
             matches!(&completed[0], WorklogBody::ActionResult { call_id, status, .. } if call_id == "report-call" && status == "ok")
         );
         assert!(matches!(&completed[1], WorklogBody::Step { .. }));
         assert_eq!(marks.messages, 0);
-        assert!(run_history_entries("run", &snapshot, true, marks, 1)
+        assert!(run_history_entries("run", &snapshot, true, marks, 1, &ResultMetas::new())
             .0
             .is_empty());
         snapshot.state.host = Some(super::super::receipts::with_host_meta(
@@ -489,7 +511,7 @@ mod tests {
             },
         ));
         assert!(
-            run_history_entries("child", &snapshot, true, FlushMarks::default(), 1)
+            run_history_entries("child", &snapshot, true, FlushMarks::default(), 1, &ResultMetas::new())
                 .0
                 .is_empty()
         );

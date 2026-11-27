@@ -38,19 +38,19 @@
           "kind": "path",
           "ref": "ws:snake/src/",
           "mode": "write",
-          "since_ms": 1794290474526
+          "since_ms": 1795768551713
         }
       ],
-      "heartbeat_ms": 1794290474526
+      "heartbeat_ms": 1795768551713
     },
     "last_runner": {
-      "runner_id": "rn-77f695d00302489a",
+      "runner_id": "rn-7a2a6ef8900346de",
       "host": "${FIXTURE_HOST}",
-      "pid": 2055320,
+      "pid": 2692182,
       "lock_epoch": 1,
-      "at_ms": 1794290474527
+      "at_ms": 1795768551715
     },
-    "updated_at_ms": 1794290474526
+    "updated_at_ms": 1795768551713
   },
   "location_rev": 0
 }

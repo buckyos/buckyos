@@ -236,6 +236,11 @@ impl TypedTool for DcrontabTool {
         output.summary.clone()
     }
 
+    fn build_output(&self, output: &Self::Output) -> Option<String> {
+        matches!(output.command.as_str(), "list" | "show")
+            .then(|| Json::Object(output.detail.clone()).to_string())
+    }
+
     fn build_title(&self, output: &Self::Output) -> Option<String> {
         Some(format!("dcrontab {} => success", output.command))
     }

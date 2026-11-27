@@ -528,6 +528,40 @@ async fn a_conversation_back_after_a_long_pause_takes_a_changed_prompt() {
     assert_eq!(sd.state().unwrap().turns_completed, 4);
 }
 
+/// Prompt mechanics TODO D1: a conversation's next Turn is a new run whose
+/// history is the previous run's messages; a read they still show in full
+/// is one line, also from another host process.
+#[tokio::test]
+async fn a_read_the_conversation_still_shows_is_one_line_in_the_next_turn() {
+    let env = Env::new();
+    let agent = env.agent();
+    let sd = env.create_work(ui()).await;
+    let workdir = libopendan::runtime::resolve_workdir(&sd).unwrap();
+    std::fs::write(workdir.join("notes.txt"), "alpha\nbeta\n").unwrap();
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => tool_call("r1", "read", json!({ "uri": "notes.txt" })),
+        1 => {
+            assert!(has_tool_result(req, "r1").unwrap().contains("beta"));
+            text("read it")
+        }
+        2 => tool_call("r2", "read", json!({ "uri": "./notes.txt" })),
+        3 => {
+            assert_eq!(
+                has_tool_result(req, "r2").unwrap(),
+                "`./notes.txt` is unchanged; same as the result of call r1 above."
+            );
+            text("same")
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    for text in ["read the notes", "read them again"] {
+        agent.sessions().post_input(sd.sid(), &msg(text)).await.unwrap();
+        drive(&sd, &env.deps(llm.clone()), StopWhen::Idle).await;
+    }
+    assert_eq!(llm.count(), 4);
+    assert_eq!(sd.state().unwrap().turns_completed, 2);
+}
+
 /// A conversation given a manual of its own (the Agent browser's
 /// conversation and `browser`) has it besides its class's, also when its
 /// prompt is frozen again; another conversation does not.

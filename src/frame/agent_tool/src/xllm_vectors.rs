@@ -1630,7 +1630,6 @@ fn plan_steps() -> Vec<StepRecord> {
             step_index: index,
             started_at_ms: started,
             ended_at_ms: Some(ended),
-            compression_level: Default::default(),
         },
         assistant_text: text.into(),
         thought: Some(thought.into()),
@@ -2624,7 +2623,7 @@ fn hints_case(name: &str, steps: Vec<HintStep>) -> Value {
             HintStep::Result(result) => {
                 let input = serde_json::to_value(&result).unwrap();
                 let mut res = result;
-                let shown = apply_hints(&mut res, ledger.as_ref());
+                let shown = apply_hints(&mut res, ledger.as_ref(), &format!("c{i}"));
                 let expect =
                     match map_result_to_observation_with_hints(format!("c{i}"), res, &shown) {
                         Observation::Success { content, .. } => {
@@ -2664,11 +2663,11 @@ fn hints_cases() -> Vec<Value> {
         hints_case(
             "dedup_repeat_and_clear",
             vec![
-                HintStep::Result(deduped(body(), "read:/a:1", "unchanged since you read it")),
-                HintStep::Result(deduped(body(), "read:/a:1", "unchanged since you read it")),
-                HintStep::Result(deduped(body(), "read:/b:1", "unchanged since you read it")),
+                HintStep::Result(deduped(body(), "read:/a:1", "`a` is unchanged")),
+                HintStep::Result(deduped(body(), "read:/a:1", "`a` is unchanged")),
+                HintStep::Result(deduped(body(), "read:/b:1", "`b` is unchanged")),
                 HintStep::ClearDedup,
-                HintStep::Result(deduped(body(), "read:/a:1", "unchanged since you read it")),
+                HintStep::Result(deduped(body(), "read:/a:1", "`a` is unchanged")),
             ],
         ),
         hints_case(

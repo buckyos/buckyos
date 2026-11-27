@@ -745,7 +745,7 @@ async fn gen(out: &Path) -> R<()> {
         write("rendering/on_input_builtin.txt", builtin.as_bytes());
         for (name, tpl) in input_fixture::TEMPLATES {
             write(&format!("rendering/templates/{name}.tpl"), tpl.as_bytes());
-            let out = render_template(tpl, vars.clone()).await?;
+            let out = render_template(name, tpl, vars.clone()).await?;
             write(&format!("rendering/templates/{name}.out"), out.as_bytes());
         }
         for (name, media) in [

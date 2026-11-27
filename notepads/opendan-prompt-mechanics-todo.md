@@ -1,6 +1,6 @@
 # OpenDAN 提示词机械构造整改 TODO（工具结果渲染、模板里的对象）
 
-> 状态：待实施。方向由 owner 于 2026-11-26 确定（§1），同日 owner 裁决了 Q1–Q9（§10），裁决已写进各条目，可以交给 CodeAgent 实施。Q1 有 owner 的补充；Q6、Q7 按起草人的理解实施，owner 已确认。现状核实于 2026-11-26，基线是 buckyos `f19441731`（工作区干净），下文行号以它为准，实施时请重新定位。
+> 状态：2026-11-26 已实施，未提交（实施记录与偏差见 §12）。方向由 owner 于 2026-11-26 确定（§1），同日 owner 裁决了 Q1–Q9（§10），裁决已写进各条目。Q1 有 owner 的补充；Q6、Q7 按起草人的理解实施，owner 已确认。现状核实于 2026-11-26，基线是 buckyos `f19441731`（工作区干净），下文行号以它为准，实施时请重新定位。
 >
 > 范围：工具结果怎样进入 prompt（长度、分级、提示、去重），以及模板和内置输入块里的"对象"怎样呈现。
 >
@@ -558,3 +558,77 @@ owner 的补充与确认（2026-11-26）：
   - `<runtime>` 是否已是可读行。
   - 空闲前后历史的形态：空闲前不降级，空闲后才降级。
   - token 数的变化。
+
+## 12. 实施记录（2026-11-26，未提交）
+
+基线 buckyos `29bfd720b`、websdk `2a48fae`。A–D、F 在主检出里做；E 由并行的子 agent 在独立 clone 里做，合并后一起验证（E 的记录见 §12.5）。
+
+### 12.1 落点
+
+| 条目 | 落点 |
+| --- | --- |
+| A1 | `at/tool.rs`：`TypedTool::build_output` / `build_hints`，`finalize_typed_result` 填 `output` / `hints`。read_file、edit_file、glob、grep 的正文移进 `output`；get_session、executor 两个工具、dcrontab（list / show）用 `build_output` 给出紧凑 JSON（否则 Full 只剩 `ok`） |
+| A2 | `at/result_view.rs::full_text`（`observation_text` 与 `ToolResultView::full_text` 都调它），`step_record.rs` 用它；TS `fullText`（`tool_result.ts`、`step_renderer.ts`） |
+| A3 | `lo/protocol/worklog.rs`：`ResultMeta`（`#[serde(flatten)]` 进 `ActionResult`）；`lo/runner/tools.rs` 在调用时 `RunHandle::note_result`（run.json `host.extra.results`，内存里改、下一次 checkpoint 落盘）；`flush.rs` 按 call_id 取，behavior step 也可从 Observation.host 取；`HISTORY_RENDERER = /5` |
+| B1 | `at/text_budget.rs`（`RESULT_BUDGET_TOKENS`、`clip_to_budget`，与 E 共用）；`xllm.rs::fit_result_budget`（派发器兜底，`set_result_budget`）；`DEFAULT_READ_TOKEN_LIMIT = 16K`；read_file 预览按行数 + 字节（`read_token_limit × 4 − 2 KiB`），单行超长截断那一行；shell 合计 `SHELL_OUTPUT_BYTES = 60 KiB`（`stream_shares`） |
+| B2 | read_file 的 `summary` / 末尾 `[lines … not shown: read again with range=…]` / 单行的 `sed -n … \| cut -b …`；shell `…[N bytes omitted; full stdout: <path>]…`（remote_ssh 写远端路径，node 与临时执行目录不写路径）；glob 新增 `offset` 参数与 `totalFiles`；grep 新增 `total` 与 `[a–b of T …: the next page is offset=… head_limit=…]`；渲染器截断写字符数；对象库自己的 read 截断写 `continue with offset=N` |
+| B3 | `read.paging`、`glob.paging`、`grep.paging` 三条 once hint；`read` 读对象 URL 时追加 property 的说明 |
+| C1 | `lo/runner/history.rs`：`Tiering::ByPosition`、`FULL_ROUNDS = 8`、`SUMMARY_ROUNDS = 16`、`TierCtx`；`build` / `maybe_compact` 先降级、装不下才摘要；`compact_for_limit` 总是降级；`build_chat_history` / `build_history_for` 的 `cold` 由 `drive.rs::idle_since` + `cache_gone`（与 `refresh_frozen` 共用）判断 |
+| C2 | 删 `StepMeta.compression_level` / `StepCompressionLevel`（llm_context）、`XmlStepRenderer.summary_chars` 和继承记录上的 `compression` 属性；TS 同步 |
+| D1 | `lo/runner/hints.rs::SessionHintLedger::reset`；`live.rs` 在新 run（种子写进新 run 的 `host.extra.results`）、rewrite（`run.set_results`）、`resume_live_run`、fork 时重建；去掉原来的 `clear_dedup` |
+| D2 | `read_tool.rs::with_read_dedup`：规范名（`details.object.object` 或 read_file 新增的 `detail.path`）+ 首末行 + property + version + 摘要 |
+| D3 | `XmlStepRenderer.max_result_chars` 默认 = 预算字符数；派发器截过的结果去掉 `dedup` |
+| D4 | `HintLedger` 记 origin（`mark(ns, key, origin)` / `origin()`），`apply_hints(result, ledger, call_id)`，`dedup_text`：`` `x` is unchanged; same as the result of call <id> above. ``；detail 写 `dedup_of` |
+| D5 | `obj/runtime.rs`：删 `detect_and_update_read_state` 与 `READ_UNCHANGED_MESSAGE`，`read_dedup_key`（cache_key、version、窗口、摘要） |
+| F | `agent_tool_result_protocol.md`（重写 Full 正文、StepRecord 渲染、历史分级、hints / dedup、单结果预算与截断提示、内置工具约定）、`OpenDAN AgentTool 开发指南.md`、`builtin_agent_tools.md`、`xllm_ts_runtime.md`、`Session Directory Protocol.md`（worklog 字段、renderer /5）、`readme.md`、`LLM Compress.md`、`why behavior loop.md`、`NewOpenDANRuntime.md` |
+
+### 12.2 与 TODO 的偏差和替 owner 做的取舍
+
+1. **fc 模式的信封从哪来（A3）**：function call 的工具结果在快照里只有文本，没有信封。没有改 waist，而是由 `SessionToolManager` 在调用时把信封的 meta 记进 run.json `host.extra.results`（按 call_id），flush 时取用。同一个字段也承载 D1 的“当前上下文完整显示的结果”：新 run 的种子只留键（`ResultMeta::keys`），本 run 自己的结果留全。它不是独立的持久账本，而是 run 的一部分；run.json 每次 checkpoint 都会带上它。
+2. **D1 的恢复来源**：TODO 说用 A3 落盘的 `dedup_key`；worklog 只有已 flush 的部分，run 中途崩溃后未 flush 的结果找不到。所以恢复时读的是 run.json 的 `results`（与快照同时落盘），新 run 的种子来自重建历史时实际以 Full 出现的结果（或复用上一个 run 快照时它的 `results`）。
+3. **xllm 不做按位置降级（C1）**：xllm 没有 worklog，快照里的 fc 结果也没有信封，压缩只走 `llm_compress`。它的 dedup 仍是内存账本、压缩时清空。TODO 写的“xllm 用同一规则”没有做。
+4. **分级常数**：`FULL_ROUNDS = 8`、`SUMMARY_ROUNDS = 16`（30 轮的验收例子正好覆盖三档）。降级只作用于工具结果；降级后的文本不比原文短就保留原文。恢复命令沿用 `compressed_note` 的条件（node runtime 不写 `agent-session`）。
+5. **dedup 与降级的配合**：被 dedup 替换的结果所指的原结果不再以 Full 出现时，重建的历史在 dedup 的位置显示原结果；原结果已不在历史里时，提示重新调用。
+6. **D3**：没有做“渲染器截了就撤销登记”，改为渲染器默认不截（上限 = 预算），宿主要更小的结果就调小派发器的预算（`set_result_budget`），派发器截过的结果不登记。没有宿主配置更小的渲染器上限。
+7. **派发器兜底的“怎么继续”**：通用兜底无从知道工具的分页参数，提示写 `narrow the call (a range, a filter, less output) to see the rest`；具体参数由各工具自己的截断标记给出。
+8. **glob 加了 `offset` 参数**（原来没有分页），grep 结果多了 `total`，read_file 的 detail 多了 `path`、`total_lines`；`B2` 表里 shell remote 的写法按现有 runtime 改成了 `…[output cut at N bytes; full output: <path>]…`（远端只取头部）。
+9. **D5 的 adapter 版本**：cyfs adapter 读本机文件时填 `<size>:<mtime>`（同 filesystem adapter）；did_object adapter 原来把卡片的 `iat` 当版本，而 provider 每次请求都重新签发卡片，内容不变版本也变，dedup 永远不命中（DV 场景 2 发现），改为 `None`，只靠内容摘要。`AdapterReadResponse::text` 没有版本可给，仍为 `None`。
+10. **websdk 的向量副本**：TS 测试直接读 buckyos 的 `src/frame/llm_context/tests/vectors/`，`ws/tests/fixtures/xllm/` 下没有这些文件，没有复制。TS 端口同步了 `fullText`、`applyHints`（origin）、渲染器、单结果预算兜底（`fitResultBudget`，接在 `native_runtime.ts`、`site_manager.ts`），以及 Deno 宿主的 read_file / edit_file / shell（`hosts/deno/native_tools.ts`，与 Rust 文本一致）。
+11. **read 窗口之后还有内容（DV 发现）**：严格 schema 的模型会把 `offset` / `limit` 都填上（例如 `limit=200`），读到的窗口完整显示、没有截断标记，模型不知道文件还有多少行。窗口完整显示但文件没完时，`output` 末尾加 `[shown lines a–b of T; the next lines: range=b+1-…]`，同样附 `read.paging` hint。TS 端口同步。
+12. **`full stdout: <path>` 的有效期（DV 发现，未改）**：执行目录在 run 目录下；UI 会话的 run 在 Turn 结束、没有后台任务时会被删除，所以这个路径只在当前 run 里有效，下一个 Turn 再引用就不存在了（Work Session 的 run 跨 Turn 保留，不受影响）。要不要在标记里说明、或把执行目录挪出 run 目录，请 owner 定。
+
+### 12.3 测试
+
+- 新增：agent_tool `a_huge_stdout_stays_within_the_budget_and_names_its_file`、`a_one_megabyte_line_is_cut_and_says_how_to_read_on`、`a_big_object_stays_within_the_budget_and_pages_by_range`（B1 三例）、`truncation_markers_say_what_comes_next_and_the_paging_hint_shows_once`（B2 / B3）、`summaries_of_the_builtin_tools_read_on_their_own`（A1）、`four_spellings_of_one_file_are_one_read`（D2）、`a_result_cut_by_the_budget_is_no_dedup_source`（D3）、`a_command_that_returns_dedup_is_answered_in_one_line_the_second_time`（D5 经 shell）、`a_result_reads_the_same_in_both_loops`（A2）；agent-did-object-lib `a_read_names_what_it_showed_…`、`a_cut_read_says_where_the_next_one_starts`；libopendan `older_results_are_shown_by_position_only_when_the_cache_is_gone_or_it_is_compressed`（C1 / D1，30 轮）、`a_read_shown_in_an_earlier_turn_is_one_line_after_a_restart`（多 Turn Work Session、换宿主进程）、`a_read_the_conversation_still_shows_is_one_line_in_the_next_turn`（UI 会话复用快照）。
+- 改写：`protocol_tool_result_full_shows_structured_detail_only_without_text`（原 `…renders_structured_detail_as_json`）、`a_rewrite_fills_the_history_budget_with_head_summary_and_raw_tail`（第一次 rewrite 现在靠降级装下、不摘要）、dedup 文案相关的四处。
+- 向量：`hints.json`、`loop_scripts.json` 重新生成并逐项审过（dedup 文案、`compression` 属性与 `compression_level` 消失、behavior 模式的 error 结果改为 `summary` + `output`，与 function_call 一致）。websdk `pnpm test:xllm` 294 过、`tsc -p tsconfig.build.json` 通过。
+- 基线（HEAD，并行跑）就失败的：agent_tool 三个 grep 用例（测试环境 PATH 上没有 `rg`，补上 `rg` 后通过）；libopendan `fixtures` 的 f04 / f06 / f07 / f12 / f15（仓库里的 fixtures 是 11-09 生成的，已经过时）；plan_simple_async、plan_wait、runtimes、session_runtime、turn_task、goal_session、memory_replay 的一些用例在并行负载下失败，串行重跑通过；opendan 的 browser / loader 用例依赖本机浏览器与环境。`state::registry::id_tests::concurrent_reservations_…` 是锁计时用例，单独跑也时过时不过。
+
+### 12.4 本机 Zone DV（真实模型，2026-11-27）
+
+做法：`./debug_jarvis.sh` 要交互式 sudo（收回 Agent 目录属主），不能在这里跑；改用 `./build_aios --local-test` + `uv run start.py --skip-update`，Agent `jarvis.test.buckyos.io@devtest` 跑在新镜像里，消息用 `test/test_opendan/test_agent_loader.ts` 发，结果从会话目录的 worklog、run 快照和容器日志里读。场景 5 需要短的 `prompt_cache_idle`：只在那次镜像里临时改成 120 秒（源码已改回 3600）。最后一次镜像不含这个改动。UI 会话 `ui-20261127-1`。
+
+| 场景 | 结果 |
+| --- | --- |
+| 1 两个 Turn 读同一文件 | UI 会话（每个 Turn 一个新 run，第二个 Turn 走“复用上一个 run 快照”的路径）：第二次 `read ./dv_notes.txt` 只回 `` `./dv_notes.txt` is unchanged; same as the result of call call_G57… above. ``，worklog 记 `dedup_of`。第一次读时模型自己填了 `limit=200`，结果没有截断标记、看不出文件有 500 行 → 加了 §12.2 第 11 条 |
+| 2 同一对象经 read 与经 shell 里的 CLI 各读两次 | 第一轮四次都是全文：内容逐字相同，键只差 `version`（卡片 `iat`）→ §12.2 第 9 条修正。重新部署后复测：`read obj://jarvis.test.buckyos.io/sessions` 第二次只回 `` `obj://…/sessions` is unchanged; same as the result of call call_794k… above. ``；`shell` 里 `agent_tool read obj://…/workspaces` 第二次同样一句话（shell 转发内层 AgentToolResult，派发器去重）。集合每个 session 一行（E5） |
+| 3 超长 shell 输出 | `seq 1 300000`：结果 61,658 字节（约 15.4K token），标记 `…[1927455 bytes omitted; full stdout: …/exec/call_…/stdout]…`，尾部保留到 `300000`；模型接着用 `read` 读那个文件的第 150000 行，答对 |
+| 4 plan_simple 的 on_init | 让 Jarvis 把四步任务交给计划（`work-20261127-2`，behavior `plan_simple`，4 个 work_simple 子会话都完成）。on_init 的 `<session_input>` 里 `<runtime>` 是一行可读文字（`your private runtime \`private\` (linux): commands run here on …, cwd …, shell bash, extended environment; …`），`<runtimes>` 一行，没有 JSON、没有 `current_time` |
+| 5 空闲超过 `prompt_cache_idle` 后再发消息 | 空闲 30 秒的 Turn 复用快照（不降级）；超过 120 秒的 Turn 日志 `cache_cold: true`、`skip_reason: degraded_within_budget`、没有摘要调用。13 轮时历史 21,535 → 5,793 token：61 KB 的 shell 结果变成 `exit=0 in 7ms` + `[shortened; the full result: \`agent-session read-session ui-20261127-1 --turn 3\`]`，500 行的读取变成它的 summary，dedup 那条随原结果显示 summary，最近 8 轮原样 |
+
+### 12.5 E（模板里的对象）
+
+由子 agent 在独立 clone 里完成，补丁合进主检出后统一编译、测试、重新生成 fixtures。
+
+- **E1**：`prompt_engine.rs` 有了自己的 upon 默认 formatter，`{{ map }}` 不再失败；`{{ x }}`、`__ENV`、`xml` / `attr` / `truncate` / `oneline` / `quote` / `join` 对对象与数组走同一规则。宿主格式用 `RenderExtensions::with_default_format(name, matcher)` 登记（libopendan 登记了 `input.xml`、`message.xml`、`event.xml`、非空 `attachments.list`）。取不到可读字段时回退紧凑 JSON（预算内）、`warn!` 写出模板名与变量路径、计入 `RenderStats.json_fallback`；`| json` 不记。模板名来自新增的 `EngineConfig.name`（`render_template` 多了一个 name 参数：`<behavior>.<hook>`、`<behavior>.system`、`goal_activation`）。
+- **E2**：`runtime.status` 是 `<runtime>` 的那几行，原始数据在 `runtime.raw`；`handover.process_result.submission` 是预算内的 JSON 文本；`background` 是行文本数组。每个变量的默认渲染写在 `Render_Prompt_Template_Variables.md` §8。`vars.json` 是手写的子集，没有这三项，未改。
+- **E3**：`<runtime>` 改成可读行，与 `background.rs` 共用 `commands_line` / `runtime_head` / `workspace_line`；去掉 `current_time`；plan 视图保留 `<runtimes>` 行、去掉 `all`。02 号 fixture 的 `<runtime>` 从 481 字节（约 121 token）降到 185 字节（约 47 token），带 workspace 的 10 号约 650 → 328 字节。背景行逐字节不变，只有只读 workspace 现在会说明只读。
+- **E4**：`<process_result>` 的 submission 保持 JSON、受 16K 预算约束；截断时提示 `whole submission: agent-session read-session <sid> --turn <n>`（只在非 node runtime、有打开的 Turn 时给出）。
+- **E5**：每个集合声明自己显示的字段（sessions：`kind`、`status`（取自 `status.run_state`）、`title`、`objective`；workspaces：`name`、`lifecycle`、`availability`、`description`；goals：`title`、`status`、`lifecycle`；artifacts：`head`、`rev`、`workspace`），`cells` 只带这些；adapter 每行渲染为 `- <url> — k: v · …`（值单行、最长 160 字符），空集合显示 `(none)`；Summary 段的属性值按 E1 规则；显式读属性是预算内的紧凑 JSON。新增端到端用例：10 个 session 读出 10 行。
+- 子 agent 替 owner 定的：第一行（title / name / subject）不带标签，第二行写 `字段: 值`；数组里的对象写成 `a — b`；数组里只要有一个元素不可读，整个数组回退 JSON；空的 `__ENV` 值输出空串而不是“not found”；cells 按字母序输出（serde_json 没开 preserve_order）。
+- 文档：`prompt_render_engine.md`、`Render_Prompt_Template_Variables.md`（引擎路径、§2、§8），主线程补了 `Session Input Protocol.md` §6.2 / §6.3 / §6.5。
+- 测试：prompt_engine 31 条、text_budget 2 条通过；新增 `xagent_lib` 一条、`obj_provider` 一条，`session_runtime` 一条断言随 workspace 行更新。
+
+复测部署的是最后一版镜像（不含临时的 `prompt_cache_idle`）。本机 Zone 现在跑的是这次未提交代码构建的 `local/aios-test`（覆盖了原来 33 小时前的那个 tag）；DV 留下的会话：`ui-20261127-1`、`work-20261127-2` 到 `-6`。
+
+截断提示能否照做：场景 3 模型按标记里的路径读到了指定行；读文件窗口的提示在复测里显示为 `[shown lines 1–200 of 500; the next lines: range=201-400]`。token 变化：`<runtime>` 约 121 → 47 token（02 号 fixture）；空闲后重建的 UI 历史 21,535 → 5,793 token；重复读取从约 400–600 token 降到约 30 token 一条。

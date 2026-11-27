@@ -22,7 +22,7 @@ pub mod suspension;
 
 pub use behavior_loop::{
     DecisionVerdict, HistorySummaryRecord, LLMBehaviorResult, LLMResultParser,
-    StepCompressionLevel, StepDecision, StepMeta, StepRecord, StepRenderer,
+    StepDecision, StepMeta, StepRecord, StepRenderer,
 };
 pub use context_derive::{
     derive_child, fork_snapshot, DeriveError, DerivedContext, ForkOptions, ForkPoint,

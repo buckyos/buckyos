@@ -270,6 +270,12 @@ impl ToolManager for SessionToolManager {
             return result;
         }
         if let Ok(Observation::Success { host, .. } | Observation::Error { host, .. }) = &result {
+            // Kept for the worklog entry of the result (prompt mechanics A3).
+            if let Some(meta) = crate::protocol::ResultMeta::of_host(host) {
+                self.run.note_result(&call.call_id, meta);
+            }
+        }
+        if let Ok(Observation::Success { host, .. } | Observation::Error { host, .. }) = &result {
             if let Some(t) = ToolResultView::from_host(host) {
                 let Some(task_id) = t.task_id.as_deref() else {
                     return result;

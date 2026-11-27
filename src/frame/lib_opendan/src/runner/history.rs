@@ -1,21 +1,29 @@
 //! The history part of the next llm_context (§4.4).
 //!
-//! The history is the worklog rebuilt as messages, nothing truncated
-//! (renderer `libopendan.history/4`): assistant responses with their tool
-//! calls, tool results, user input, the final report delivery. A history
-//! over its budget is compressed by `agent_tool::llm_compress` — the only
-//! compression — into `head + [summary] + keep_exact + raw tail`; summary.json
-//! keeps the summary block and where the head ends and the raw records start.
-//! When the summarizer fails, a history that fits once the older tool
-//! results are clipped (`llm_compress::trim_tool_results`) is used for this
-//! context only; summary.json is not touched.
+//! The history is the worklog rebuilt as messages (renderer
+//! `libopendan.history/5`): assistant responses with their tool calls, tool
+//! results, user input, the final report delivery. Tool results are shown as
+//! the model saw them, except when the history is compressed or the
+//! provider's prompt cache is gone (`prompt_cache_idle` since the last run):
+//! then the older ones are shown by position ([`Tiering::ByPosition`]) — the
+//! latest [`FULL_ROUNDS`] rounds in full, the [`SUMMARY_ROUNDS`] before them
+//! by their summary, older ones by their title, each with how to read the
+//! original again. A history still over its budget is compressed by
+//! `agent_tool::llm_compress` into `head + [summary] + keep_exact + raw
+//! tail`; summary.json keeps the summary block and where the head ends and
+//! the raw records start. When the summarizer fails, a history that fits
+//! once the older tool results are clipped (`llm_compress::trim_tool_results`)
+//! is used for this context only; summary.json is not touched.
+//!
+//! What a history shows in full ([`Built::shown`]) seeds the context's
+//! result meta and its hint ledger (prompt mechanics TODO D1, D4).
 //!
 //! A rebuild reads the head (`[0, head_end_offset)`), the summary block, then
 //! the worklog **backwards** from the committed end down to `start_offset`,
 //! stopping early when the budget runs out (the range is then read once more
 //! in full and compressed). The worklog is never rewritten.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -112,6 +120,179 @@ pub enum HistoryShape {
     Text,
 }
 
+/// How a rebuilt history shows older tool results (prompt mechanics TODO C1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tiering {
+    /// Every result as the model saw it.
+    #[default]
+    Full,
+    /// By distance from the end (see the module doc).
+    ByPosition,
+}
+
+/// Rounds at the end whose results a [`Tiering::ByPosition`] history shows
+/// in full.
+pub const FULL_ROUNDS: u64 = 8;
+/// Rounds before them whose results it shows by their summary; older ones
+/// by their title.
+pub const SUMMARY_ROUNDS: u64 = 16;
+/// What a result without a summary keeps in the summary tier.
+const SUMMARY_TIER_CHARS: usize = 600;
+/// What a result without a title keeps in the title tier.
+const TITLE_TIER_CHARS: usize = 160;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tier {
+    Full,
+    Summary,
+    Title,
+}
+
+/// A history built for a new context, and what it shows in full: the keys
+/// of each result it shows as the model saw it (`ResultMeta::keys`), by
+/// call id.
+#[derive(Debug, Clone, Default)]
+pub struct Built {
+    pub messages: Vec<AiMessage>,
+    pub report: Option<CompressReport>,
+    pub shown: BTreeMap<String, ResultMeta>,
+}
+
+/// A result shown in full: the message it is in, its call and keys.
+#[derive(Debug, Clone)]
+struct Shown {
+    message: usize,
+    call_id: String,
+    keys: ResultMeta,
+}
+
+fn shown_map<'a>(shown: impl Iterator<Item = &'a Shown>) -> BTreeMap<String, ResultMeta> {
+    shown
+        .filter(|s| s.keys.has_keys())
+        .map(|s| (s.call_id.clone(), s.keys.clone()))
+        .collect()
+}
+
+/// The rounds and results of the entries a history is rendered from.
+struct TierCtx {
+    tiering: Tiering,
+    rounds: u64,
+    round_of: HashMap<String, u64>,
+    results: HashMap<String, (String, ResultMeta, u64)>,
+    /// The command that reads a Turn's original messages again.
+    recover: Option<String>,
+}
+
+impl TierCtx {
+    fn new<'a>(
+        bodies: impl Iterator<Item = &'a WorklogBody>,
+        tiering: Tiering,
+        recover: Option<String>,
+    ) -> Self {
+        let mut ctx = Self {
+            tiering,
+            rounds: 0,
+            round_of: HashMap::new(),
+            results: HashMap::new(),
+            recover,
+        };
+        for body in bodies {
+            match body {
+                WorklogBody::AssistantMessage { tool_calls, .. } if !tool_calls.is_empty() => {
+                    ctx.rounds += 1
+                }
+                WorklogBody::Step { .. } => ctx.rounds += 1,
+                WorklogBody::ActionResult {
+                    call_id,
+                    result,
+                    meta,
+                    turn,
+                    ..
+                } => {
+                    ctx.round_of.insert(call_id.clone(), ctx.rounds);
+                    ctx.results
+                        .insert(call_id.clone(), (result.clone(), meta.clone(), *turn));
+                }
+                _ => {}
+            }
+        }
+        ctx
+    }
+
+    fn tier(&self, call_id: &str) -> Tier {
+        if self.tiering == Tiering::Full {
+            return Tier::Full;
+        }
+        let Some(round) = self.round_of.get(call_id) else {
+            return Tier::Full;
+        };
+        let distance = self.rounds.saturating_sub(*round);
+        if distance < FULL_ROUNDS {
+            Tier::Full
+        } else if distance < FULL_ROUNDS + SUMMARY_ROUNDS {
+            Tier::Summary
+        } else {
+            Tier::Title
+        }
+    }
+
+    /// The text result `call_id` shows, and its keys when it is the one the
+    /// model saw. A dedup hint whose earlier result is not shown in full
+    /// shows that result instead.
+    fn show(
+        &self,
+        call_id: &str,
+        result: &str,
+        meta: &ResultMeta,
+        turn: u64,
+    ) -> (String, Option<ResultMeta>) {
+        let (result, meta, turn) = match &meta.dedup_of {
+            Some(of) => match self.results.get(of) {
+                Some(_) if self.tier(of) == Tier::Full => return (result.to_string(), None),
+                Some((r, m, t)) => (r.as_str(), m, *t),
+                None => {
+                    return (
+                        format!("{result} That result is no longer in this history: call again if you need it."),
+                        None,
+                    )
+                }
+            },
+            None => (result, meta, turn),
+        };
+        let tier = self.tier(call_id);
+        if tier != Tier::Full {
+            let short = self.shorten(tier, result, meta, turn);
+            if short.len() < result.len() {
+                return (short, None);
+            }
+        }
+        (result.to_string(), Some(meta.keys()))
+    }
+
+    fn shorten(&self, tier: Tier, result: &str, meta: &ResultMeta, turn: u64) -> String {
+        let clip = |s: &str, n: usize| -> String {
+            let mut out: String = s.chars().take(n).collect();
+            if out.len() < s.len() {
+                out.push('…');
+            }
+            out
+        };
+        let nonempty = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_string());
+        let body = match tier {
+            Tier::Summary => nonempty(&meta.summary)
+                .or_else(|| nonempty(&meta.title))
+                .unwrap_or_else(|| clip(result.trim(), SUMMARY_TIER_CHARS)),
+            _ => nonempty(&meta.title)
+                .or_else(|| meta.summary.lines().next().and_then(nonempty))
+                .unwrap_or_else(|| clip(result.trim(), TITLE_TIER_CHARS)),
+        };
+        match &self.recover {
+            Some(cmd) => format!("{body}\n[shortened; the full result: `{cmd} --turn {turn}`]"),
+            None => format!("{body}\n[shortened: call again if you need it in full]"),
+        }
+    }
+}
+
 /// What history compression summarizes with.
 #[derive(Clone)]
 pub struct Summarizer {
@@ -179,7 +360,8 @@ impl HistoryLine {
 }
 
 /// The history of a chat's next run: the previous run's messages as they
-/// were while they fit (the provider's prefix cache holds), else rebuilt.
+/// were while they fit and the provider's prompt cache holds them, else
+/// rebuilt (`cold`: the cache is gone, older results are shown by position).
 /// What a compression replaced is not in them: the previous run ended after
 /// it. `rebuild`: the context starts anew, its history brought to the target.
 pub(super) async fn build_chat_history(
@@ -188,42 +370,59 @@ pub(super) async fn build_chat_history(
     summarizer: &Summarizer,
     line: HistoryLine,
     rebuild: bool,
-) -> Result<Vec<AiMessage>> {
+    cold: bool,
+) -> Result<Built> {
     let sm = session.summary()?;
     let fits = if rebuild { line.target } else { line.trigger };
-    {
-        if let Some(run_id) = session.state.last_run.as_deref() {
-            let (record, snapshot) = session.dir.runs().load_checked(run_id)?;
-            let ended_turn = crate::session::runs::finish_info(&record)
-                .is_some_and(|f| !f["turn_end"].is_null());
-            let current = sm.updated_at_ms <= record.updated_at_ms;
-            if record.config.loop_model == agent_tool::xllm::LoopModel::FunctionCall && ended_turn && current {
-                let snapshot = snapshot.ok_or_else(|| {
-                    OpenDanError::blocked("the previous chat run has no snapshot", Some(run_id))
-                })?;
-                if super::receipts::snapshot_host_meta(&snapshot).process_entry
-                    == session.state.process_entry
-                {
-                    let messages: Vec<_> = snapshot
-                        .state
-                        .accumulated
-                        .into_iter()
-                        .skip_while(|m| m.role == AiRole::System)
-                        // A budget line spoke of that run's budget only.
-                        .filter(|m| {
-                            m.role != AiRole::User
-                                || !super::budget::is_budget_line(&m.text_content())
+    if let Some(run_id) = session.state.last_run.as_deref().filter(|_| !cold) {
+        let (record, snapshot) = session.dir.runs().load_checked(run_id)?;
+        let ended_turn = crate::session::runs::finish_info(&record)
+            .is_some_and(|f| !f["turn_end"].is_null());
+        let current = sm.updated_at_ms <= record.updated_at_ms;
+        if record.config.loop_model == agent_tool::xllm::LoopModel::FunctionCall && ended_turn && current {
+            let snapshot = snapshot.ok_or_else(|| {
+                OpenDanError::blocked("the previous chat run has no snapshot", Some(run_id))
+            })?;
+            if super::receipts::snapshot_host_meta(&snapshot).process_entry
+                == session.state.process_entry
+            {
+                let messages: Vec<_> = snapshot
+                    .state
+                    .accumulated
+                    .into_iter()
+                    .skip_while(|m| m.role == AiRole::System)
+                    // A budget line spoke of that run's budget only.
+                    .filter(|m| {
+                        m.role != AiRole::User
+                            || !super::budget::is_budget_line(&m.text_content())
+                    })
+                    .collect();
+                if estimate(&messages) <= u64::from(fits) {
+                    // The same messages: what that run showed in full.
+                    let calls: HashSet<&str> = messages
+                        .iter()
+                        .flat_map(|m| m.content.iter())
+                        .filter_map(|c| match c {
+                            AiContent::ToolResult { call_id, .. } => Some(call_id.as_str()),
+                            _ => None,
                         })
                         .collect();
-                    if estimate(&messages) <= u64::from(fits) {
-                        return Ok(messages);
-                    }
+                    let shown = crate::session::runs::run_results(&record)
+                        .into_iter()
+                        .filter(|(c, m)| calls.contains(c.as_str()) && m.has_keys())
+                        .map(|(c, m)| (c, m.keys()))
+                        .collect();
+                    return Ok(Built {
+                        messages,
+                        report: None,
+                        shown,
+                    });
                 }
             }
         }
     }
     let made_by = if rebuild { "prompt_refrozen" } else { "context_limit" };
-    Ok(build(
+    build(
         session,
         lease,
         Some(summarizer),
@@ -231,9 +430,9 @@ pub(super) async fn build_chat_history(
         HistoryLine { trigger: fits, ..line },
         made_by,
         None,
+        cold,
     )
-    .await?
-    .0)
+    .await
 }
 
 /// Rough token estimate (bytes / 4), same heuristic as the waist.
@@ -320,6 +519,10 @@ type Pos = (u64, u64);
 struct Render<'a> {
     shape: HistoryShape,
     children: &'a ReturnedChildren,
+    tiers: &'a TierCtx,
+    /// Results shown in full (the text shape's wait for their message).
+    shown: Vec<Shown>,
+    results_shown: Vec<(String, ResultMeta)>,
     messages: Vec<AiMessage>,
     positions: Vec<Option<Pos>>,
     /// Native: calls of the last assistant message without a result yet.
@@ -333,10 +536,13 @@ struct Render<'a> {
 }
 
 impl<'a> Render<'a> {
-    fn new(shape: HistoryShape, children: &'a ReturnedChildren) -> Self {
+    fn new(shape: HistoryShape, children: &'a ReturnedChildren, tiers: &'a TierCtx) -> Self {
         Self {
             shape,
             children,
+            tiers,
+            shown: Vec::new(),
+            results_shown: Vec::new(),
             messages: Vec::new(),
             positions: Vec::new(),
             open: Vec::new(),
@@ -363,6 +569,14 @@ impl<'a> Render<'a> {
 
     fn flush_results(&mut self) {
         if let Some((pos, body)) = self.results.take() {
+            let message = self.messages.len();
+            for (call_id, keys) in std::mem::take(&mut self.results_shown) {
+                self.shown.push(Shown {
+                    message,
+                    call_id,
+                    keys,
+                });
+            }
             self.push(
                 Some(pos),
                 AiMessage::text(
@@ -423,18 +637,28 @@ impl<'a> Render<'a> {
             call_id,
             status,
             result,
+            meta,
+            turn,
             ..
         } = body
         {
+            let (result, keys) = self.tiers.show(call_id, result, meta, *turn);
             if let Some(i) = self.open.iter().position(|c| c == call_id) {
                 self.open.remove(i);
+                if let Some(keys) = keys {
+                    self.shown.push(Shown {
+                        message: self.messages.len(),
+                        call_id: call_id.clone(),
+                        keys,
+                    });
+                }
                 self.push(
                     Some(pos),
                     AiMessage::new(
                         AiRole::Tool,
                         vec![AiContent::tool_result_text(
                             call_id.clone(),
-                            result.clone(),
+                            result,
                             status == "error",
                         )],
                     ),
@@ -443,6 +667,9 @@ impl<'a> Render<'a> {
                     self.close_calls();
                 }
             } else {
+                if let Some(keys) = keys {
+                    self.results_shown.push((call_id.clone(), keys));
+                }
                 let body = self.results.get_or_insert_with(|| (pos, String::new()));
                 body.1.push_str(&format!(
                     "- #{call_id} {status}\n```output\n{result}\n```\n"
@@ -616,12 +843,16 @@ impl<'a> Render<'a> {
         }
     }
 
-    fn finish(mut self) -> (Vec<AiMessage>, Vec<Option<Pos>>) {
+    fn finish(mut self) -> Rendered {
         self.flush_results();
         self.close_calls();
         self.flush_notes();
         self.close_calls();
-        (self.messages, self.positions)
+        Rendered {
+            messages: self.messages,
+            positions: self.positions,
+            shown: self.shown,
+        }
     }
 }
 
@@ -662,16 +893,30 @@ fn input_list(inputs: &[InputRef], events: &[String]) -> String {
     )
 }
 
+struct Rendered {
+    messages: Vec<AiMessage>,
+    positions: Vec<Option<Pos>>,
+    shown: Vec<Shown>,
+}
+
 fn render(
     entries: &[(u64, WorklogEntry)],
     shape: HistoryShape,
     children: &ReturnedChildren,
-) -> (Vec<AiMessage>, Vec<Option<Pos>>) {
-    let mut r = Render::new(shape, children);
+    tiers: &TierCtx,
+) -> Rendered {
+    let mut r = Render::new(shape, children, tiers);
     for (offset, e) in entries {
         r.entry((*offset, e.seq), &e.body);
     }
     r.finish()
+}
+
+/// The command that reads a Turn of `session` again (`None` on a node
+/// runtime, which has no `agent-session`).
+fn recover_command(session: &Session) -> Option<String> {
+    (!session.config.runtime.is_node())
+        .then(|| format!("agent-session read-session {}", session.sid()))
 }
 
 /// Upper estimate of what an entry renders to (the early stop of a
@@ -714,6 +959,39 @@ pub fn read_window(
     shape: HistoryShape,
     budget: Option<u64>,
 ) -> Result<HistoryWindow> {
+    let w = window_entries(session, summary, budget)?;
+    let tiers = TierCtx::new(w.entries.iter().map(|(_, e)| &e.body), Tiering::Full, None);
+    let r = render(&w.entries, shape, &w.children, &tiers);
+    Ok(w.into_window(r))
+}
+
+/// The raw records a window reads (oldest first).
+struct WindowEntries {
+    entries: Vec<(u64, WorklogEntry)>,
+    children: ReturnedChildren,
+    reached_start: bool,
+    bytes_read: u64,
+}
+
+impl WindowEntries {
+    fn into_window(self, r: Rendered) -> HistoryWindow {
+        HistoryWindow {
+            tokens: estimate(&r.messages),
+            messages: r.messages,
+            positions: r.positions,
+            reached_start: self.reached_start,
+            oldest_offset: self.entries.first().map(|(o, _)| *o),
+            oldest_seq: self.entries.first().map(|(_, e)| e.seq),
+            bytes_read: self.bytes_read,
+        }
+    }
+}
+
+fn window_entries(
+    session: &Session,
+    summary: &SessionSummary,
+    budget: Option<u64>,
+) -> Result<WindowEntries> {
     let wl = session.dir.worklog();
     let end = session.state.worklog.committed_bytes;
     let mut r = wl.reverse(end, summary.start_offset)?;
@@ -736,14 +1014,10 @@ pub fn read_window(
         rev.push((offset, e));
     }
     rev.reverse();
-    let (messages, positions) = render(&rev, shape, &children);
-    Ok(HistoryWindow {
-        tokens: estimate(&messages),
-        messages,
-        positions,
+    Ok(WindowEntries {
+        entries: rev,
+        children,
         reached_start,
-        oldest_offset: rev.first().map(|(o, _)| *o),
-        oldest_seq: rev.first().map(|(_, e)| e.seq),
         bytes_read: r.bytes_read,
     })
 }
@@ -782,6 +1056,7 @@ fn current_summary(session: &Session) -> Result<SessionSummary> {
 struct Assembled {
     messages: Vec<AiMessage>,
     positions: Vec<Option<Pos>>,
+    shown: Vec<Shown>,
     tokens: u64,
     /// Read to the start point and within the budget.
     complete: bool,
@@ -792,10 +1067,14 @@ fn assemble(
     sm: &SessionSummary,
     shape: HistoryShape,
     budget: Option<u64>,
+    tiering: Tiering,
 ) -> Result<Assembled> {
     let floor = activation_floor(session);
     let mut messages = Vec::new();
     let mut positions = Vec::new();
+    let mut shown = Vec::new();
+    let mut head = Vec::new();
+    let mut head_children = ReturnedChildren::default();
     if sm.head_end_offset > floor.unwrap_or(0) {
         let entries: Vec<(u64, WorklogEntry)> = session
             .dir
@@ -804,30 +1083,57 @@ fn assemble(
             .into_iter()
             .filter(|(_, e)| !dropped(session, &e.body))
             .collect();
-        let mut children = ReturnedChildren::default();
         for (_, e) in &entries {
-            children.note(&e.body);
+            head_children.note(&e.body);
         }
-        let entries: Vec<_> = entries
+        head = entries
             .into_iter()
-            .filter(|(_, e)| !children.hides(&e.body))
+            .filter(|(_, e)| !head_children.hides(&e.body))
             .collect();
-        let (m, p) = render(&entries, shape, &children);
-        messages.extend(m);
-        positions.extend(p);
     }
-    if !sm.history_summary.trim().is_empty() {
-        messages.push(llm_compress::summary_message(
+    let summary = (!sm.history_summary.trim().is_empty()).then(|| {
+        llm_compress::summary_message(
             &CompressedSummary {
                 summary: sm.history_summary.clone(),
                 keep_exact: sm.keep_exact.clone(),
             },
             Some(&compressed_note(session, &sm.perceptions)),
-        ));
+        )
+    });
+    // Shown in full, the head is what it is whatever follows it (a repeat
+    // only names an earlier result).
+    let head_full = (tiering == Tiering::Full).then(|| {
+        let tiers = TierCtx::new(head.iter().map(|(_, e)| &e.body), tiering, None);
+        render(&head, shape, &head_children, &tiers)
+    });
+    let fixed = head_full.as_ref().map_or(0, |r| estimate(&r.messages)) + estimate(summary.as_slice());
+    // The raw records: within what the budget leaves, unless they are shown
+    // by position (then all of them, they are shortened afterwards).
+    let window_budget = match tiering {
+        Tiering::Full => budget.map(|b| b.saturating_sub(fixed)),
+        Tiering::ByPosition => None,
+    };
+    let window = window_entries(session, sm, window_budget)?;
+    let tiers = TierCtx::new(
+        head.iter().chain(window.entries.iter()).map(|(_, e)| &e.body),
+        tiering,
+        recover_command(session),
+    );
+    let head = head_full.unwrap_or_else(|| render(&head, shape, &head_children, &tiers));
+    messages.extend(head.messages);
+    positions.extend(head.positions);
+    shown.extend(head.shown);
+    if let Some(summary) = summary {
+        messages.push(summary);
         positions.push(None);
     }
-    let fixed = estimate(&messages);
-    let window = read_window(session, sm, shape, budget.map(|b| b.saturating_sub(fixed)))?;
+    let base = messages.len();
+    let r = render(&window.entries, shape, &window.children, &tiers);
+    shown.extend(r.shown.iter().cloned().map(|mut s| {
+        s.message += base;
+        s
+    }));
+    let window = window.into_window(r);
     messages.extend(window.messages);
     positions.extend(window.positions);
     let tokens = estimate(&messages);
@@ -835,8 +1141,19 @@ fn assemble(
         complete: window.reached_start && budget.map_or(true, |b| tokens <= b),
         messages,
         positions,
+        shown,
         tokens,
     })
+}
+
+impl Assembled {
+    fn built(self, report: Option<CompressReport>) -> Built {
+        Built {
+            shown: shown_map(self.shown.iter()),
+            messages: self.messages,
+            report,
+        }
+    }
 }
 
 struct NoTools;
@@ -868,7 +1185,7 @@ async fn compact(
     full: Assembled,
     target: u32,
     made_by: &str,
-) -> Result<(Vec<AiMessage>, CompressReport)> {
+) -> Result<Built> {
     let started = Instant::now();
     let mut event = json!({
         "session_id": session.sid(),
@@ -906,7 +1223,15 @@ async fn compact(
                         "trimmed_results": trimmed.report.trimmed_results,
                     })
                 );
-                return Ok((trimmed.messages, trimmed.report));
+                // What was clipped is not shown in full any more.
+                let shown = shown_map(full.shown.iter().filter(|r| {
+                    full.messages.get(r.message) == trimmed.messages.get(r.message)
+                }));
+                return Ok(Built {
+                    messages: trimmed.messages,
+                    report: Some(trimmed.report),
+                    shown,
+                });
             }
             return Err(OpenDanError::Llm(format!("compress history: {error}")));
         }
@@ -917,7 +1242,11 @@ async fn compact(
     let Some(summary) = out.summary.clone() else {
         event["elapsed_ms"] = json!(started.elapsed().as_millis());
         log::warn!("opendan.context.compaction.skipped {}", event);
-        return Ok((out.messages, out.report));
+        return Ok(Built {
+            messages: out.messages,
+            report: Some(out.report),
+            shown: shown_map(full.shown.iter()),
+        });
     };
     let committed_end = (
         session.state.worklog.committed_bytes,
@@ -977,7 +1306,17 @@ async fn compact(
             return Err(error);
         }
     }
-    Ok((out.messages, out.report))
+    // The summary replaced the results between the head and the raw tail.
+    let shown = shown_map(
+        full.shown
+            .iter()
+            .filter(|r| r.message < out.head_end || r.message >= out.tail_start),
+    );
+    Ok(Built {
+        messages: out.messages,
+        report: Some(out.report),
+        shown,
+    })
 }
 
 /// History messages for a new llm_context within `budget` tokens:
@@ -989,7 +1328,22 @@ pub async fn build_history(
     shape: HistoryShape,
     budget: u32,
 ) -> Result<Vec<AiMessage>> {
-    Ok(build(
+    Ok(build_history_for(session, lease, summarizer, shape, budget, false)
+        .await?
+        .messages)
+}
+
+/// [`build_history`] with what it shows in full. `cold`: the provider's
+/// prompt cache is gone, older results are shown by position anyway.
+pub async fn build_history_for(
+    session: &mut Session,
+    lease: &Lease,
+    summarizer: Option<&Summarizer>,
+    shape: HistoryShape,
+    budget: u32,
+    cold: bool,
+) -> Result<Built> {
+    build(
         session,
         lease,
         summarizer,
@@ -997,11 +1351,14 @@ pub async fn build_history(
         HistoryLine::fixed(budget),
         "context_limit",
         None,
+        cold,
     )
-    .await?
-    .0)
+    .await
 }
 
+/// The history within `lines`: as the model saw it while it fits and the
+/// cache is warm; else older results by position first (no summary call when
+/// that fits); else compressed.
 async fn build(
     session: &mut Session,
     lease: &Lease,
@@ -1010,10 +1367,11 @@ async fn build(
     lines: HistoryLine,
     made_by: &str,
     line: Option<&LimitLine>,
-) -> Result<(Vec<AiMessage>, Option<CompressReport>)> {
+    cold: bool,
+) -> Result<Built> {
     let budget = lines.trigger;
     let sm = current_summary(session)?;
-    let window = assemble(session, &sm, shape, Some(u64::from(budget)))?;
+    let window = assemble(session, &sm, shape, Some(u64::from(budget)), Tiering::Full)?;
     let mut event = json!({
         "session_id": session.sid(),
         "phase": if line.is_some() { "context_limit" } else { "build_history" },
@@ -1023,20 +1381,28 @@ async fn build(
         "summary_tokens": tokens(&sm.history_summary),
         "history_tokens": window.tokens,
         "history_tokens_lower_bound": !window.complete,
+        "cache_cold": cold,
     });
     if let Some(line) = line {
         event["window_tokens"] = json!(line.window_tokens);
         event["target_tokens"] = json!(line.target_tokens);
         event["prefix_tokens"] = json!(line.prefix_tokens);
     }
-    if window.complete {
+    if window.complete && !cold {
         event["skip_reason"] = json!("within_history_budget");
         if line.is_some() {
             log::info!("opendan.context.compaction.skipped {}", event);
         } else {
             log::debug!("opendan.context.compaction.skipped {}", event);
         }
-        return Ok((window.messages, None));
+        return Ok(window.built(None));
+    }
+    let degraded = assemble(session, &sm, shape, None, Tiering::ByPosition)?;
+    event["degraded_tokens"] = json!(degraded.tokens);
+    if degraded.tokens <= u64::from(budget) {
+        event["skip_reason"] = json!("degraded_within_budget");
+        log::info!("opendan.context.compaction.skipped {}", event);
+        return Ok(degraded.built(None));
     }
     log::info!("opendan.context.compaction.triggered {}", event);
     let Some(s) = summarizer else {
@@ -1046,9 +1412,8 @@ async fn build(
             "history exceeds the budget and no summarizer is configured".into(),
         ));
     };
-    let full = assemble(session, &sm, shape, None)?;
-    let (messages, report) = compact(session, lease, s, &sm, full, lines.target, made_by).await?;
-    if !report.reached_target {
+    let built = compact(session, lease, s, &sm, degraded, lines.target, made_by).await?;
+    if let Some(report) = built.report.as_ref().filter(|r| !r.reached_target) {
         log::warn!(
             "opendan.context.compaction.budget_exceeded {}",
             json!({
@@ -1059,7 +1424,7 @@ async fn build(
             })
         );
     }
-    Ok((messages, Some(report)))
+    Ok(built)
 }
 
 /// Where a mid-run rewrite at the context limit brings the request back to
@@ -1106,7 +1471,8 @@ pub async fn compact_for_limit(
     shape: HistoryShape,
     line: &LimitLine,
     budget: u32,
-) -> Result<(Vec<AiMessage>, Option<CompressReport>)> {
+) -> Result<Built> {
+    // A rewrite renews the prompt: older results are shown by position.
     build(
         session,
         lease,
@@ -1115,6 +1481,7 @@ pub async fn compact_for_limit(
         HistoryLine::fixed(budget),
         "context_limit",
         Some(line),
+        true,
     )
     .await
 }
@@ -1140,7 +1507,13 @@ pub async fn maybe_compact(
         return Ok(false);
     };
     let sm = current_summary(session)?;
-    let window = assemble(session, &sm, HistoryShape::Native, Some(u64::from(line.trigger)))?;
+    let window = assemble(
+        session,
+        &sm,
+        HistoryShape::Native,
+        Some(u64::from(line.trigger)),
+        Tiering::Full,
+    )?;
     event["history_tokens"] = json!(window.tokens);
     event["history_tokens_lower_bound"] = json!(!window.complete);
     if window.complete {
@@ -1148,8 +1521,16 @@ pub async fn maybe_compact(
         log::debug!("opendan.context.compaction.skipped {}", event);
         return Ok(false);
     }
+    // Older results by position first: when that fits, no summary is made
+    // (the next history is built the same way).
+    let degraded = assemble(session, &sm, HistoryShape::Native, None, Tiering::ByPosition)?;
+    event["degraded_tokens"] = json!(degraded.tokens);
+    if degraded.tokens <= u64::from(line.trigger) {
+        event["skip_reason"] = json!("degraded_below_threshold");
+        log::info!("opendan.context.compaction.skipped {}", event);
+        return Ok(false);
+    }
     log::info!("opendan.context.compaction.triggered {}", event);
-    let full = assemble(session, &sm, HistoryShape::Native, None)?;
-    let (_, report) = compact(session, lease, s, &sm, full, line.target, "ratio").await?;
-    Ok(report.strategy == "llm")
+    let built = compact(session, lease, s, &sm, degraded, line.target, "ratio").await?;
+    Ok(built.report.is_some_and(|r| r.strategy == "llm"))
 }

@@ -5,9 +5,10 @@
 //! the engine itself has no knowledge of session, workspace, database, etc.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -15,6 +16,8 @@ use log::warn;
 use serde_json::{Map, Value as Json};
 use tokio::fs;
 use upon::Engine;
+
+use crate::text_budget::clip_to_default_budget;
 
 const ESCAPED_OPEN_SENTINEL: &str = "\u{001f}ESCAPED_OPEN_BRACE\u{001f}";
 const ESCAPED_CLOSE_SENTINEL: &str = "\u{001f}ESCAPED_CLOSE_BRACE\u{001f}";
@@ -100,8 +103,11 @@ pub struct EngineConfig {
     pub include_roots: Vec<PathBuf>,
     /// Max recursion depth for `__INCLUDE__`-nested templates. Default 8.
     pub max_recursion_depth: u8,
-    /// Host-registered named formats (`render_format`) and extra filters.
+    /// Host-registered named formats (`render_format`), default formats and
+    /// extra filters.
     pub extensions: RenderExtensions,
+    /// The template's name in warnings.
+    pub name: String,
 }
 
 impl Default for EngineConfig {
@@ -117,6 +123,7 @@ impl Default for EngineConfig {
             include_roots: Vec::new(),
             max_recursion_depth: 8,
             extensions: RenderExtensions::default(),
+            name: String::new(),
         }
     }
 }
@@ -124,14 +131,19 @@ impl Default for EngineConfig {
 /// A pure function over a template value: no queue, network or state access.
 pub type RenderValueFn = Arc<dyn Fn(&Json) -> Result<String, String> + Send + Sync>;
 
+/// Which values a named format is the default rendering of.
+pub type RenderMatchFn = Arc<dyn Fn(&Json) -> bool + Send + Sync>;
+
 /// What a host adds to the template engine: named formats used through
-/// `{{ value | render_format: "name" }}` and extra one-argument filters
+/// `{{ value | render_format: "name" }}`, the formats that are the default
+/// rendering of the values they recognize, and extra one-argument filters
 /// (`{{ value | name }}`). The engine itself registers `render_format` and
 /// the generic filters (`xml`, `attr`, `json`, `truncate`, `oneline`,
 /// `default`, `join`, `quote`, `time`) and knows no host vocabulary.
 #[derive(Clone, Default)]
 pub struct RenderExtensions {
     formats: HashMap<String, RenderValueFn>,
+    defaults: Vec<(String, RenderMatchFn)>,
     filters: HashMap<String, RenderValueFn>,
 }
 
@@ -139,10 +151,12 @@ impl std::fmt::Debug for RenderExtensions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut formats: Vec<&String> = self.formats.keys().collect();
         formats.sort();
+        let defaults: Vec<&String> = self.defaults.iter().map(|(name, _)| name).collect();
         let mut filters: Vec<&String> = self.filters.keys().collect();
         filters.sort();
         f.debug_struct("RenderExtensions")
             .field("formats", &formats)
+            .field("defaults", &defaults)
             .field("filters", &filters)
             .finish()
     }
@@ -159,6 +173,16 @@ impl RenderExtensions {
         F: Fn(&Json) -> Result<String, String> + Send + Sync + 'static,
     {
         self.formats.insert(name.into(), Arc::new(f));
+        self
+    }
+
+    /// Make the named format the default rendering of the values `matches`
+    /// accepts (`{{ x }}`, `__ENV`, the text filters). The first match wins.
+    pub fn with_default_format<F>(mut self, name: impl Into<String>, matches: F) -> Self
+    where
+        F: Fn(&Json) -> bool + Send + Sync + 'static,
+    {
+        self.defaults.push((name.into(), Arc::new(matches)));
         self
     }
 
@@ -181,6 +205,80 @@ impl RenderExtensions {
             Some(f) => f(value).map_err(|e| format!("render_format `{name}`: {e}")),
             None => Err(format!("render_format: unknown format `{name}`")),
         }
+    }
+
+    /// The text a template shows for `value` without `| json` (prompt
+    /// mechanics TODO E1). An object or array a registered default format
+    /// recognizes is that format's output; any other object is at most two
+    /// lines of its own fields: the first of `title` / `name` / `subject`,
+    /// then the first of `summary` / `description` / `status` as
+    /// `<field>: <value>`; an array is one line per element. `true` when
+    /// nothing readable was found and the text is compact JSON. Both stay
+    /// within the per-result budget.
+    pub fn value_text(&self, value: &Json) -> (String, bool) {
+        match value {
+            Json::Null => (String::new(), false),
+            Json::String(s) => (s.clone(), false),
+            Json::Bool(_) | Json::Number(_) => (value.to_string(), false),
+            _ => match self.readable(value, false) {
+                Some(text) => (clip_to_default_budget(&text, None).0, false),
+                None => (clip_to_default_budget(&value.to_string(), None).0, true),
+            },
+        }
+    }
+
+    fn readable(&self, value: &Json, one_line: bool) -> Option<String> {
+        if let Some(text) = self
+            .defaults
+            .iter()
+            .find(|(_, matches)| matches(value))
+            .and_then(|(name, _)| self.render_format(value, name).ok())
+        {
+            return Some(text);
+        }
+        match value {
+            Json::Object(map) => {
+                let first = |keys: [&'static str; 3]| {
+                    keys.into_iter()
+                        .find_map(|k| map.get(k).and_then(field_text).map(|t| (k, t)))
+                };
+                let lines: Vec<String> = first(["title", "name", "subject"])
+                    .map(|(_, t)| t)
+                    .into_iter()
+                    .chain(first(["summary", "description", "status"]).map(|(k, t)| format!("{k}: {t}")))
+                    .collect();
+                (!lines.is_empty()).then(|| lines.join(if one_line { " — " } else { "\n" }))
+            }
+            Json::Array(items) => items
+                .iter()
+                .filter(|v| !v.is_null())
+                .map(|v| match v {
+                    Json::String(s) => Some(collapse_whitespace(s)),
+                    Json::Bool(_) | Json::Number(_) => Some(v.to_string()),
+                    other => self.readable(other, true),
+                })
+                .collect::<Option<Vec<_>>>()
+                .map(|lines| lines.join(if one_line { ", " } else { "\n" })),
+            _ => None,
+        }
+    }
+}
+
+/// [`RenderExtensions::value_text`] without host formats.
+pub fn value_text(value: &Json) -> (String, bool) {
+    RenderExtensions::default().value_text(value)
+}
+
+fn collapse_whitespace(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A field that has a value: a non-empty string (on one line), a number or a bool.
+fn field_text(v: &Json) -> Option<String> {
+    match v {
+        Json::String(s) => Some(collapse_whitespace(s)).filter(|t| !t.is_empty()),
+        Json::Bool(_) | Json::Number(_) => Some(v.to_string()),
+        _ => None,
     }
 }
 
@@ -212,17 +310,57 @@ fn upon_to_json(v: &upon::Value) -> Json {
     }
 }
 
-/// Text of a template value: strings as they are, `None` as the empty
-/// string, anything else as compact JSON.
-fn upon_text(v: &upon::Value) -> String {
-    match v {
-        upon::Value::None => String::new(),
-        upon::Value::String(s) => s.clone(),
-        upon::Value::Bool(b) => b.to_string(),
-        upon::Value::Integer(i) => i.to_string(),
-        upon::Value::Float(f) => f.to_string(),
-        other => upon_to_json(other).to_string(),
+/// Text of template values in the upon phase (`{{ x }}` and the text
+/// filters): strings as they are, `None` as the empty string, objects and
+/// arrays by [`RenderExtensions::value_text`]. The values that could only be
+/// shown as JSON are kept for the warnings.
+#[derive(Clone)]
+struct UponText {
+    ext: RenderExtensions,
+    as_json: Arc<Mutex<Vec<Json>>>,
+}
+
+impl UponText {
+    fn text(&self, v: &upon::Value) -> String {
+        match v {
+            upon::Value::None => String::new(),
+            upon::Value::String(s) => s.clone(),
+            upon::Value::Bool(b) => b.to_string(),
+            upon::Value::Integer(i) => i.to_string(),
+            upon::Value::Float(f) => f.to_string(),
+            other => {
+                let json = upon_to_json(other);
+                let (text, as_json) = self.ext.value_text(&json);
+                if as_json {
+                    if let Ok(mut seen) = self.as_json.lock() {
+                        seen.push(json);
+                    }
+                }
+                text
+            }
+        }
     }
+}
+
+fn warn_as_json(template: &str, path: &str) {
+    warn!(
+        "prompt template `{template}`: `{path}` has none of title / name / subject / summary / description / status, shown as JSON (write `| json` when JSON is meant)"
+    );
+}
+
+/// Where `target` is in the render context (`a.b.0`), for the warnings.
+fn value_path(ctx: &Map<String, Json>, target: &Json) -> Option<String> {
+    fn find(path: String, v: &Json, target: &Json) -> Option<String> {
+        if v == target {
+            return Some(path);
+        }
+        match v {
+            Json::Object(m) => m.iter().find_map(|(k, c)| find(format!("{path}.{k}"), c, target)),
+            Json::Array(a) => a.iter().enumerate().find_map(|(i, c)| find(format!("{path}.{i}"), c, target)),
+            _ => None,
+        }
+    }
+    ctx.iter().find_map(|(k, v)| find(k.clone(), v, target))
 }
 
 fn upon_is_empty(v: &upon::Value) -> bool {
@@ -259,17 +397,20 @@ fn format_time_utc(v: &upon::Value, fmt: &str) -> Result<String, String> {
     Ok(t.format_with_items(items.iter()).to_string())
 }
 
-fn register_filters(engine: &mut Engine<'_>, ext: &RenderExtensions) {
-    engine.add_function("xml", |v: upon::Value| escape_xml_text(&upon_text(&v)));
-    engine.add_function("attr", |v: upon::Value| escape_xml_attr(&upon_text(&v)));
+fn register_filters(engine: &mut Engine<'_>, text: &UponText) {
+    let t = text.clone();
+    engine.add_function("xml", move |v: upon::Value| escape_xml_text(&t.text(&v)));
+    let t = text.clone();
+    engine.add_function("attr", move |v: upon::Value| escape_xml_attr(&t.text(&v)));
     engine.add_function("json", |v: upon::Value| upon_to_json(&v).to_string());
+    let t = text.clone();
     engine.add_function(
         "truncate",
-        |v: upon::Value, n: i64| -> Result<String, String> {
+        move |v: upon::Value, n: i64| -> Result<String, String> {
             if n < 0 {
                 return Err("truncate: length must not be negative".to_string());
             }
-            let text = upon_text(&v);
+            let text = t.text(&v);
             let n = n as usize;
             if text.chars().count() <= n {
                 return Ok(text);
@@ -279,9 +420,8 @@ fn register_filters(engine: &mut Engine<'_>, ext: &RenderExtensions) {
             Ok(out)
         },
     );
-    engine.add_function("oneline", |v: upon::Value| {
-        upon_text(&v).split_whitespace().collect::<Vec<_>>().join(" ")
-    });
+    let t = text.clone();
+    engine.add_function("oneline", move |v: upon::Value| collapse_whitespace(&t.text(&v)));
     engine.add_function("default", |v: upon::Value, d: upon::Value| {
         if upon_is_empty(&v) {
             d
@@ -289,12 +429,13 @@ fn register_filters(engine: &mut Engine<'_>, ext: &RenderExtensions) {
             v
         }
     });
+    let t = text.clone();
     engine.add_function(
         "join",
-        |v: upon::Value, sep: String| -> Result<String, String> {
+        move |v: upon::Value, sep: String| -> Result<String, String> {
             match v {
                 upon::Value::None => Ok(String::new()),
-                upon::Value::List(l) => Ok(l.iter().map(upon_text).collect::<Vec<_>>().join(&sep)),
+                upon::Value::List(l) => Ok(l.iter().map(|v| t.text(v)).collect::<Vec<_>>().join(&sep)),
                 other => Err(format!(
                     "join: expected a list, got {}",
                     upon_to_json(&other)
@@ -302,8 +443,9 @@ fn register_filters(engine: &mut Engine<'_>, ext: &RenderExtensions) {
             }
         },
     );
-    engine.add_function("quote", |v: upon::Value| {
-        upon_text(&v)
+    let t = text.clone();
+    engine.add_function("quote", move |v: upon::Value| {
+        t.text(&v)
             .lines()
             .map(|l| if l.is_empty() { ">".to_string() } else { format!("> {l}") })
             .collect::<Vec<_>>()
@@ -313,14 +455,14 @@ fn register_filters(engine: &mut Engine<'_>, ext: &RenderExtensions) {
         "time",
         |v: upon::Value, fmt: String| -> Result<String, String> { format_time_utc(&v, &fmt) },
     );
-    let formats = ext.clone();
+    let formats = text.ext.clone();
     engine.add_function(
         "render_format",
         move |v: upon::Value, name: String| -> Result<String, String> {
             formats.render_format(&upon_to_json(&v), &name)
         },
     );
-    for (name, f) in &ext.filters {
+    for (name, f) in &text.ext.filters {
         let f = f.clone();
         engine.add_function(
             name.clone(),
@@ -339,6 +481,8 @@ pub struct RenderStats {
     pub exec_failed: u32,
     pub var_registered: u32,
     pub var_failed: u32,
+    /// Objects / arrays shown as compact JSON: none of their fields was readable.
+    pub json_fallback: u32,
 }
 
 #[derive(Debug)]
@@ -419,8 +563,18 @@ impl PromptRenderEngine {
         }
 
         let escaped = escape_template_literals(&preprocessed);
+        let text = UponText {
+            ext: self.config.extensions.clone(),
+            as_json: Arc::default(),
+        };
+        let default_text = text.clone();
+        let formatter = move |f: &mut upon::fmt::Formatter<'_>, v: &upon::Value| -> upon::fmt::Result {
+            f.write_str(&default_text.text(v))?;
+            Ok(())
+        };
         let mut engine = Engine::new();
-        register_filters(&mut engine, &self.config.extensions);
+        engine.set_default_formatter(&formatter);
+        register_filters(&mut engine, &text);
         engine
             .add_template("text_template", &escaped)
             .map_err(|err| RenderError::Syntax(format!("add text template failed: {err}")))?;
@@ -430,6 +584,11 @@ impl PromptRenderEngine {
             .render(&render_ctx)
             .to_string()
             .map_err(|err| RenderError::Syntax(format!("render failed: {err}")))?;
+        let as_json = text.as_json.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default();
+        for v in &as_json {
+            warn_as_json(&self.config.name, value_path(&render_ctx, v).as_deref().unwrap_or("(an expression)"));
+        }
+        stats.json_fallback = stats.json_fallback.saturating_add(as_json.len() as u32);
         let unescaped = unescape_template_literals(&rendered_raw);
         let truncated = unescaped.len() > self.config.max_total_bytes;
         let rendered = truncate_utf8(&unescaped, self.config.max_total_bytes);
@@ -555,12 +714,18 @@ impl PromptRenderEngine {
                     } else {
                         stats.env_not_found = stats.env_not_found.saturating_add(1);
                     }
-                    output.push_str(
-                        &value
-                            .as_ref()
-                            .and_then(json_value_to_compact_text)
-                            .unwrap_or_else(|| failed_marker("env", "not found")),
-                    );
+                    let text = match &value {
+                        Some(v @ (Json::Object(_) | Json::Array(_))) => {
+                            let (text, as_json) = self.config.extensions.value_text(v);
+                            if as_json {
+                                stats.json_fallback = stats.json_fallback.saturating_add(1);
+                                warn_as_json(&self.config.name, raw_arg.trim_start_matches('$'));
+                            }
+                            Some(text)
+                        }
+                        other => other.as_ref().and_then(json_value_to_compact_text),
+                    };
+                    output.push_str(&text.unwrap_or_else(|| failed_marker("env", "not found")));
                 }
                 "include" => {
                     match self
@@ -1332,6 +1497,128 @@ mod tests {
             .render("{{ s | render_format: \"todo.summary_xml\" }}", &vars, &NullValueLoader)
             .await
             .is_err());
+    }
+
+    static WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    struct CaptureWarnings;
+
+    impl log::Log for CaptureWarnings {
+        fn enabled(&self, m: &log::Metadata) -> bool {
+            m.level() <= log::Level::Warn
+        }
+        fn log(&self, r: &log::Record) {
+            if self.enabled(r.metadata()) {
+                WARNINGS.lock().unwrap().push(r.args().to_string());
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    /// The warnings logged so far that name `template`.
+    fn warnings_of(template: &str) -> Vec<String> {
+        let _ = log::set_logger(&CaptureWarnings);
+        log::set_max_level(log::LevelFilter::Warn);
+        let tag = format!("`{template}`");
+        WARNINGS.lock().unwrap().iter().filter(|w| w.contains(&tag)).cloned().collect()
+    }
+
+    fn named(name: &str, extensions: RenderExtensions) -> PromptRenderEngine {
+        warnings_of(name);
+        PromptRenderEngine::new(EngineConfig { name: name.into(), extensions, ..EngineConfig::default() })
+    }
+
+    #[tokio::test]
+    async fn an_object_shows_two_lines_of_its_own_fields() {
+        let engine = named("t.readable", RenderExtensions::new());
+        let mut vars = RenderVars::new()
+            .with_var("goal", json!({"goal_id": "g-1", "title": "Weekly <report>", "status": "active", "objective": "x"}))
+            .with_var("ws", json!({"name": "site", "description": "the\n  blog"}))
+            .with_var("mail", json!({"subject": "Hi", "summary": "", "description": "lunch"}));
+        vars.env.insert("goal".into(), vars.vars["goal"].clone());
+        let r = engine
+            .render(
+                "{{ goal }}|{{ ws }}|{{ mail }}|{{ goal | xml }}|{{ goal | oneline }}|{{ goal | truncate: 8 }}|__ENV($goal)__",
+                &vars,
+                &NullValueLoader,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            r.rendered,
+            "Weekly <report>\nstatus: active|site\ndescription: the blog|Hi\ndescription: lunch|Weekly &lt;report&gt;\nstatus: active|Weekly <report> status: active|Weekly …|Weekly <report>\nstatus: active"
+        );
+        assert_eq!(r.stats.json_fallback, 0);
+        assert!(warnings_of("t.readable").is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_object_without_readable_fields_is_json_logged_and_counted() {
+        let engine = named("t.fallback", RenderExtensions::new());
+        let vars = RenderVars::new().with_var("cfg", json!({"inner": {"k": 1}, "list": [{"k": 2}]}));
+        let r = engine
+            .render("{{ cfg.inner }}|{{ cfg.list | xml }}|__ENV($cfg.inner)__", &vars, &NullValueLoader)
+            .await
+            .unwrap();
+        assert_eq!(r.rendered, "{\"k\":1}|[{\"k\":2}]|{\"k\":1}");
+        assert_eq!(r.stats.json_fallback, 3);
+        let warnings = warnings_of("t.fallback");
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(warnings.iter().filter(|w| w.contains("`cfg.inner`")).count() == 2, "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.contains("`cfg.list`")), "{warnings:?}");
+        // Too large for the budget: head and tail of the JSON.
+        let big = RenderVars::new().with_var("blob", json!({"data": "x".repeat(200 * 1024)}));
+        let r = engine.render("{{ blob }}", &big, &NullValueLoader).await.unwrap();
+        assert!(r.rendered.len() < 70 * 1024 && r.rendered.contains("bytes omitted"), "{}", r.rendered.len());
+    }
+
+    #[tokio::test]
+    async fn an_array_is_one_line_per_element() {
+        let engine = named("t.array", RenderExtensions::new());
+        let vars = RenderVars::new()
+            .with_var("tags", json!(["a", "b\n c", 3, null]))
+            .with_var("goals", json!([{"title": "x", "status": "active"}, {"name": "y"}, ["p", "q"]]))
+            .with_var("empty", json!([]));
+        let r = engine
+            .render("{{ tags }}|{{ goals }}|{{ empty }}|{{ goals | join: \"; \" }}", &vars, &NullValueLoader)
+            .await
+            .unwrap();
+        assert_eq!(r.rendered, "a\nb c\n3|x — status: active\ny\np, q||x\nstatus: active; y; p\nq");
+        assert_eq!(r.stats.json_fallback, 0);
+    }
+
+    #[tokio::test]
+    async fn json_filter_is_explicit_and_not_logged() {
+        let engine = named("t.json", RenderExtensions::new());
+        let vars = RenderVars::new().with_var("o", json!({"k": [1, 2]}));
+        let r = engine.render("{{ o | json }}", &vars, &NullValueLoader).await.unwrap();
+        assert_eq!(r.rendered, "{\"k\":[1,2]}");
+        assert_eq!(r.stats.json_fallback, 0);
+        assert!(warnings_of("t.json").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_registered_default_format_renders_its_objects() {
+        let ext = RenderExtensions::new()
+            .with_format("todo.line", |v| Ok(format!("[{}] {}", v["todo_id"].as_str().unwrap_or_default(), v["title"].as_str().unwrap_or_default())))
+            .with_default_format("todo.line", |v| v.get("todo_id").is_some());
+        let engine = named("t.registered", ext);
+        let vars = RenderVars::new()
+            .with_var("todo", json!({"todo_id": "T1", "title": "fix"}))
+            .with_var("todos", json!([{"todo_id": "T1", "title": "fix"}, {"todo_id": "T2", "title": "test"}]));
+        let r = engine.render("{{ todo }}|{{ todos }}|{{ todo | json }}", &vars, &NullValueLoader).await.unwrap();
+        assert_eq!(r.rendered, "[T1] fix|[T1] fix\n[T2] test|{\"title\":\"fix\",\"todo_id\":\"T1\"}");
+    }
+
+    #[tokio::test]
+    async fn a_handover_process_result_renders() {
+        let engine = named("t.handover", RenderExtensions::new());
+        let vars = RenderVars::new().with_var(
+            "handover",
+            json!({"to": "plan", "process_result": {"behavior": "check", "status": "ok", "result": "done", "submission": "{\"n\":1}"}}),
+        );
+        let r = engine.render("{{ handover.process_result }}", &vars, &NullValueLoader).await.unwrap();
+        assert_eq!(r.rendered, "status: ok");
     }
 
     #[tokio::test]

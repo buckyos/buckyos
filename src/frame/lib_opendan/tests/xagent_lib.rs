@@ -1627,3 +1627,49 @@ async fn work_sessions_take_the_cmd_skills_chosen_at_creation() {
     let w7 = create("w7", w5.sid().into(), None).await.unwrap();
     assert_eq!(skill_names(&w7), ["admin"]);
 }
+
+/// What a prompt shows of objects (prompt mechanics TODO E1–E4): `<runtime>` is readable lines (no time, no probe
+/// fields), a plan keeps its `<runtimes>` table, and template variables placed whole render as text.
+#[tokio::test]
+async fn the_runtime_block_and_template_objects_read_as_text() {
+    use libopendan::runner::{DefaultAssembler, InputMaterial, SessionAssembler};
+    let env = Env::new();
+    let sd = env.create_work(work_spec("readable objects")).await;
+    let cfg = sd.config().unwrap();
+    let mut state = sd.state().unwrap();
+    let status = json!({
+        "id": "rt-native", "kind": "native", "os": "linux", "arch": "x86_64", "platform": "linux",
+        "hostname": "pve", "cwd": "/s", "shell": "/usr/bin/bash", "shell_kind": "bash", "baseline": "standard",
+        "tools": ["bash"], "current_time": "2026-11-26T10:00:00-1000", "timezone": "HST",
+        "workspace": { "workspace_id": "ws-1", "runtime_id": "host", "directory": "/w", "access": "read_only", "same_runtime": true },
+        "runtimes": {
+            "view": "all", "working": "host",
+            "private": { "id": "private", "os": "linux", "available": true, "computer": "none", "desc": "the agent's own container" },
+            "lines": ["- host: Owner PC — native; macos; standard; available; computer: none [owner default]"],
+        },
+    });
+    let mut material = InputMaterial { hook: HOOK_ON_INIT.into(), runtime_status: status, ..Default::default() };
+    let assembler = DefaultAssembler::default();
+    let text = assembler.render_input(&cfg, &state, &InputTemplates::default(), &material).await.unwrap().unwrap();
+    assert!(text.contains(concat!(
+        "<runtime>\n",
+        "- your working runtime `host` (linux): commands run here on pve, cwd /s, shell bash, standard environment\n",
+        "- your private runtime `private` (linux, available): the agent's own container\n",
+        "- workspace ws-1 at /w on runtime host (read only; on this runtime: cd there or use absolute paths)\n",
+        "</runtime>\n<runtimes>\n- host: Owner PC — native; macos; standard; available; computer: none [owner default]\n</runtimes>\n",
+    )), "{text}");
+    assert!(!text.contains("current_time") && !text.contains("x86_64") && !text.contains('{'), "{text}");
+
+    // A hand-over: the submission stays JSON; objects placed whole read as text.
+    state.internal_continuation = Some("plan".into());
+    state.process_result = Some(json!({ "behavior": "check", "status": "ok", "result": "done", "submission": { "answer": 42 } }));
+    material.hook = HOOK_ON_CONTEXT_SWITCH.into();
+    let templates = InputTemplates {
+        on_context_switch: Some("{{ handover.process_result }}|{{ handover.process_result.submission }}|{{ input }}\n{{ runtime.status }}".into()),
+        ..Default::default()
+    };
+    let text = assembler.render_input(&cfg, &state, &templates, &material).await.unwrap().unwrap();
+    assert!(text.starts_with("status: ok|{\"answer\":42}|\n- your working runtime `host` (linux)"), "{text}");
+    let builtin = assembler.render_input(&cfg, &state, &InputTemplates::default(), &material).await.unwrap().unwrap();
+    assert!(builtin.contains("<process_result behavior=\"check\" status=\"ok\">{\"answer\":42}</process_result>"), "{builtin}");
+}

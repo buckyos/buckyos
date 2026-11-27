@@ -21,6 +21,14 @@ pub const TOOL_READ_FILE: &str = "read_file";
 
 const CMD_PARAM_PREVIEW_KEEP_CHARS: usize = 32;
 const READ_FILE_PREVIEW_MAX_LINES: usize = 200;
+/// What the hints and the trailer of a read may add after its lines.
+const READ_FILE_PREVIEW_RESERVE_BYTES: usize = 2048;
+/// Bytes the preview takes at most at the default read limit.
+const READ_FILE_PREVIEW_DEFAULT_BYTES: usize =
+    crate::DEFAULT_READ_TOKEN_LIMIT as usize * 4 - READ_FILE_PREVIEW_RESERVE_BYTES;
+/// Key of the once hint on reading a file (or an object) part by part.
+pub const READ_PAGING_HINT_KEY: &str = "read.paging";
+const READ_PAGING_HINT: &str = "`range` reads any part: \"201-400\", \"201:+200\" (200 lines from 201), \"-50:$\" (the last 50). Line numbers are those of the whole text.";
 /// Leading bytes looked at for a NUL (git's binary test).
 const BINARY_PROBE_BYTES: usize = 8192;
 
@@ -207,19 +215,19 @@ impl TypedTool for EditFileTool {
                 .line_no
                 .map(|line| format!(" at line {line}"))
                 .unwrap_or_default();
-            build_summary_with_optional_block(
-                format!(
-                    "edited {} with {}{line_text}",
-                    output.file_path, output.operation
-                ),
-                "diff",
-                &output.diff,
+            format!(
+                "edited {} with {}{line_text}",
+                output.file_path, output.operation
             )
         } else if !output.matched {
             format!("edit {} skipped, old_string not found", output.file_path)
         } else {
             format!("edit {} made no change", output.file_path)
         }
+    }
+
+    fn build_output(&self, output: &Self::Output) -> Option<String> {
+        (output.changed && !output.diff.trim().is_empty()).then(|| output.diff.clone())
     }
 
     fn build_title(&self, output: &Self::Output) -> Option<String> {
@@ -681,6 +689,8 @@ pub struct ReadFileArgs {
 
 #[derive(Serialize, JsonSchema)]
 pub struct ReadFileOutput {
+    /// What was read, resolved: the absolute path (an object's id or URL).
+    pub path: String,
     /// The Zone file this is (`cyfs:///…`), when it is one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cyfs_url: Option<String>,
@@ -689,15 +699,52 @@ pub struct ReadFileOutput {
     pub line_range: String,
     pub bytes: usize,
     pub line_count: usize,
+    /// Lines of the whole file.
+    pub total_lines: usize,
     pub start_line: Option<usize>,
     pub end_line: Option<usize>,
     pub preview_truncated: bool,
     #[serde(skip)]
     pub file_path: String,
     #[serde(skip)]
-    pub preview: String,
+    pub preview: ReadPreview,
+    #[serde(skip)]
+    pub first_chunk: bool,
     #[serde(skip)]
     pub cmd_line: String,
+}
+
+/// The numbered lines of a read the model is shown.
+#[derive(Debug, Default)]
+pub struct ReadPreview {
+    pub text: String,
+    /// Lines shown (a cut line counts).
+    pub shown: usize,
+    /// A line longer than the room left: (line number, bytes shown, bytes).
+    pub cut: Option<(usize, usize, usize)>,
+}
+
+impl ReadFileOutput {
+    fn last_shown(&self) -> Option<usize> {
+        self.start_line
+            .filter(|_| self.preview.shown > 0)
+            .map(|start| start + self.preview.shown - 1)
+    }
+
+    /// Lines of the read that are not shown (`(first, last)`).
+    fn not_shown(&self) -> Option<(usize, usize)> {
+        let end = self.end_line?;
+        let next = self.last_shown().map_or(self.start_line?, |last| last + 1);
+        (next <= end).then_some((next, end))
+    }
+
+    /// The read is shown in full but the file goes on after it: the last
+    /// line shown.
+    fn file_goes_on(&self) -> Option<usize> {
+        let last = self.last_shown()?;
+        (self.not_shown().is_none() && self.preview.cut.is_none() && last < self.total_lines)
+            .then_some(last)
+    }
 }
 
 #[async_trait]
@@ -763,23 +810,84 @@ impl TypedTool for ReadFileTool {
     }
 
     fn build_summary(&self, output: &Self::Output) -> String {
-        if output.matched {
-            let lines_text = match (output.start_line, output.end_line) {
-                (Some(start), Some(end)) if start == end => format!("1 line at {start}"),
-                (Some(start), Some(end)) => {
-                    format!("{} lines at {start}-{end}", output.line_count)
-                }
-                _ => "0 lines".to_string(),
-            };
-            let base = format!("succeeded, read {} bytes across {lines_text}", output.bytes);
-            if output.preview.is_empty() {
-                base
-            } else {
-                format!("{base}\n```content\n{}\n```", output.preview)
-            }
-        } else {
-            "succeeded, first_chunk was not found, read 0 bytes across 0 lines".to_string()
+        if !output.matched {
+            return format!(
+                "first_chunk was not found in {}: nothing read",
+                output.file_path
+            );
         }
+        let Some(last) = output.last_shown() else {
+            return format!(
+                "{}: read 0 lines (the file has {})",
+                output.file_path,
+                describe_line_count(output.total_lines)
+            );
+        };
+        let first = output.start_line.unwrap_or(last);
+        let mut summary = format!(
+            "{}: shown lines {first}–{last} of {} ({} bytes read)",
+            output.file_path, output.total_lines, output.bytes
+        );
+        if let Some((line, shown, bytes)) = output.preview.cut {
+            summary.push_str(&format!("; line {line} cut at {shown} of {bytes} bytes"));
+        }
+        if let Some((next, end)) = output.not_shown() {
+            summary.push_str(&format!("; lines {next}–{end} not shown"));
+        }
+        summary
+    }
+
+    fn build_output(&self, output: &Self::Output) -> Option<String> {
+        if output.preview.text.is_empty() {
+            return None;
+        }
+        let mut text = output.preview.text.clone();
+        if let Some((line, shown, bytes)) = output.preview.cut {
+            text.push_str(&format!("\n[line {line} has {bytes} bytes, the first {shown} are shown"));
+            if Path::new(&output.path).is_absolute() {
+                text.push_str(&format!(
+                    "; read the rest with a command such as `sed -n '{line}p' {} | cut -b {}-{}`",
+                    output.path,
+                    shown + 1,
+                    shown + READ_FILE_PREVIEW_DEFAULT_BYTES
+                ));
+            }
+            text.push(']');
+        }
+        let without_chunk = if output.first_chunk {
+            " and without first_chunk (these are lines of the whole file)"
+        } else {
+            ""
+        };
+        let page = output.preview.shown.max(1);
+        if let Some((next, end)) = output.not_shown() {
+            text.push_str(&format!(
+                "\n[lines {next}–{end} not shown: read again with range={next}-{}{without_chunk}]",
+                end.min(next + page - 1),
+            ));
+        } else if let Some(last) = output.file_goes_on() {
+            text.push_str(&format!(
+                "\n[shown lines {}–{last} of {}; the next lines: range={}-{}{without_chunk}]",
+                output.start_line.unwrap_or(last),
+                output.total_lines,
+                last + 1,
+                output.total_lines.min(last + page),
+            ));
+        }
+        Some(text)
+    }
+
+    fn build_hints(&self, output: &Self::Output) -> Vec<crate::ResultHint> {
+        if output.not_shown().is_none()
+            && output.preview.cut.is_none()
+            && output.file_goes_on().is_none()
+        {
+            return Vec::new();
+        }
+        vec![crate::ResultHint {
+            text: READ_PAGING_HINT.to_string(),
+            once: Some(READ_PAGING_HINT_KEY.to_string()),
+        }]
     }
 
     fn build_title(&self, output: &Self::Output) -> Option<String> {
@@ -796,7 +904,7 @@ impl TypedTool for ReadFileTool {
 
     async fn execute(
         &self,
-        _ctx: &ToolCtx<'_>,
+        ctx: &ToolCtx<'_>,
         args: Self::Args,
     ) -> Result<Self::Output, AgentToolError> {
         let file_path = args.path.trim().to_string();
@@ -805,6 +913,10 @@ impl TypedTool for ReadFileTool {
                 "missing required arg `path`".to_string(),
             ));
         }
+        let preview_bytes = (ctx.session().effective_read_token_limit() as usize)
+            .saturating_mul(4)
+            .saturating_sub(READ_FILE_PREVIEW_RESERVE_BYTES)
+            .max(1024);
         let abs_path = self
             .cfg
             .backend
@@ -860,23 +972,26 @@ impl TypedTool for ReadFileTool {
             Some(chunk_start_line + selected_start_idx)
         };
         let end_line = start_line.map(|start| start + read_line_count.saturating_sub(1));
-        let preview = build_read_file_output_preview(start_line, &selected_lines);
-        let preview_truncated = read_line_count > READ_FILE_PREVIEW_MAX_LINES;
+        let preview = build_read_file_output_preview(start_line, &selected_lines, preview_bytes);
+        let preview_truncated = preview.shown < read_line_count || preview.cut.is_some();
         let bytes = content.len();
         let cmd_line =
             build_read_result_cmd_line(&file_path, first_chunk.as_deref(), args.range.as_ref());
         Ok(ReadFileOutput {
+            path: abs_path.to_string_lossy().to_string(),
             cyfs_url: self.cfg.cyfs_url(&abs_path),
             content,
             matched,
             line_range: line_range_label,
             bytes,
             line_count: read_line_count,
+            total_lines: count_content_lines(&full_content),
             start_line,
             end_line,
             preview_truncated,
             file_path,
             preview,
+            first_chunk: first_chunk.is_some(),
             cmd_line,
         })
     }
@@ -1374,30 +1489,45 @@ fn split_lines_preserve_ending(content: &str) -> Vec<String> {
         .collect()
 }
 
-fn build_read_file_output_preview(start_line: Option<usize>, selected_lines: &[String]) -> String {
+fn build_read_file_output_preview(
+    start_line: Option<usize>,
+    selected_lines: &[String],
+    max_bytes: usize,
+) -> ReadPreview {
+    let mut preview = ReadPreview::default();
     let Some(start_line) = start_line else {
-        return String::new();
+        return preview;
     };
-
-    let mut out = String::new();
     for (idx, line) in selected_lines
         .iter()
         .take(READ_FILE_PREVIEW_MAX_LINES)
         .enumerate()
     {
-        if idx > 0 {
-            out.push('\n');
-        }
         let line_no = start_line + idx;
-        out.push_str(format!("{line_no}: {}", line.trim_end_matches(['\r', '\n'])).as_str());
-    }
-    if selected_lines.len() > READ_FILE_PREVIEW_MAX_LINES {
-        if !out.is_empty() {
-            out.push('\n');
+        let body = line.trim_end_matches(['\r', '\n']);
+        let prefix = format!("{line_no}: ");
+        let sep = usize::from(idx > 0);
+        if preview.text.len() + sep + prefix.len() + body.len() > max_bytes {
+            if idx == 0 {
+                let mut keep = max_bytes.saturating_sub(prefix.len()).min(body.len());
+                while !body.is_char_boundary(keep) {
+                    keep -= 1;
+                }
+                preview.text.push_str(&prefix);
+                preview.text.push_str(&body[..keep]);
+                preview.shown = 1;
+                preview.cut = Some((line_no, keep, body.len()));
+            }
+            break;
         }
-        out.push_str(format!("... truncated to {} lines", READ_FILE_PREVIEW_MAX_LINES).as_str());
+        if sep == 1 {
+            preview.text.push('\n');
+        }
+        preview.text.push_str(&prefix);
+        preview.text.push_str(body);
+        preview.shown += 1;
     }
-    out
+    preview
 }
 
 fn count_content_lines(content: &str) -> usize {
@@ -1435,14 +1565,6 @@ fn build_content_preview(content: &str) -> String {
         out.push_str(format!("... truncated to {} lines", READ_FILE_PREVIEW_MAX_LINES).as_str());
     }
     out
-}
-
-fn build_summary_with_optional_block(base: String, fence: &str, block: &str) -> String {
-    if block.trim().is_empty() {
-        base
-    } else {
-        format!("{base}\n```{fence}\n{block}\n```")
-    }
 }
 
 fn build_simple_diff(

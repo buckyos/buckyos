@@ -992,6 +992,10 @@ impl ValueLoader for RuntimeValueLoader {
     }
 }
 
+/// A remote command's result from the head of each stream (`stdout` /
+/// `stderr` hold at most `max + 1` bytes of it): `max` bytes of both
+/// together are shown, a cut stream says where it was cut and, with
+/// `sources`, which remote files hold it all.
 pub(crate) fn output(
     exit_code: i32,
     stdout: &[u8],
@@ -1001,21 +1005,35 @@ pub(crate) fn output(
     elapsed: std::time::Duration,
     engine: &str,
     cwd: PathBuf,
+    sources: Option<(&str, &str)>,
 ) -> BashRunOutput {
-    let mut combined = stdout.to_vec();
-    if !stderr.is_empty() {
-        if !combined.is_empty() && !combined.ends_with(b"\n") {
-            combined.push(b'\n');
+    let (out_max, err_max) = crate::llm_bash::stream_shares(stdout.len(), stderr.len(), max);
+    let cut = |bytes: &[u8], keep: usize, source: Option<&str>| -> (String, bool) {
+        if bytes.len() <= keep {
+            return (String::from_utf8_lossy(bytes).to_string(), false);
         }
-        combined.extend_from_slice(stderr);
+        let mut text = String::from_utf8_lossy(&bytes[..keep]).to_string();
+        text.push_str(&match source {
+            Some(path) => format!("\n…[output cut at {keep} bytes; full output: {path}]…"),
+            None => format!("\n…[output cut at {keep} bytes]…"),
+        });
+        (text, true)
+    };
+    let (out, out_cut) = cut(stdout, out_max, sources.map(|s| s.0));
+    let (err, err_cut) = cut(stderr, err_max, sources.map(|s| s.1));
+    let mut combined = out.clone();
+    if !err.is_empty() {
+        if !combined.is_empty() && !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+        combined.push_str(&err);
     }
-    let text = |bytes: &[u8]| String::from_utf8_lossy(&bytes[..bytes.len().min(max)]).to_string();
     BashRunOutput {
         exit_code,
-        stdout: text(stdout),
-        stderr: text(stderr),
-        output: text(&combined),
-        output_truncated: combined.len() > max,
+        stdout: out,
+        stderr: err,
+        output: combined,
+        output_truncated: out_cut || err_cut,
         timed_out,
         duration_ms: elapsed.as_millis() as u64,
         engine: engine.into(),

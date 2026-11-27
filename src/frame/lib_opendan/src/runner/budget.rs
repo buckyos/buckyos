@@ -221,7 +221,7 @@ pub(super) async fn wrap_up(
     };
     // What the run did so far, then the wrap-up, in time order.
     let (mut bodies, marks) =
-        run_history_entries(&run_id, &snapshot, lc.behavior, FlushMarks::of(&live), turn);
+        run_history_entries(&run_id, &snapshot, lc.behavior, FlushMarks::of(&live), turn, &lc.run.results());
     bodies.push(WorklogBody::ControlApplied {
         input: InputRef {
             src: "_runner".into(),

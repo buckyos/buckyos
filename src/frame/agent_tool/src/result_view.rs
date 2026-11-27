@@ -54,6 +54,61 @@ pub struct ToolResultView {
     /// Hints shown with the result (`<runtime_hints>`), after the ledger.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hints: Vec<HintView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedup: Option<DedupView>,
+}
+
+/// The envelope's `dedup` (lenient view of `ResultDedup`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DedupView {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub hint: String,
+}
+
+/// The text a result shows in full, the same in both loops: the output,
+/// else a string detail, the summary, the title; a structured detail only
+/// when none of them is there (compact JSON within the per-result budget).
+/// An error shows its summary with its output.
+pub fn full_text(
+    is_error: bool,
+    output: Option<&str>,
+    detail: Option<&Value>,
+    summary: &str,
+    title: &str,
+) -> String {
+    let output = output.filter(|s| !s.trim().is_empty());
+    let summary_t = summary.trim();
+    let title = title.trim();
+    let detail_text = || match detail {
+        Some(Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
+        _ => None,
+    };
+    let detail_json = || match detail {
+        Some(Value::Null) | None => None,
+        Some(Value::Object(m)) if m.is_empty() => None,
+        Some(d) => Some(crate::text_budget::clip_to_default_budget(&d.to_string(), None).0),
+    };
+    if is_error {
+        return match (summary_t.is_empty(), output.map(str::trim)) {
+            (false, Some(out)) => format!("{summary_t}\n{out}"),
+            (false, None) => summary_t.to_string(),
+            (true, Some(out)) => out.to_string(),
+            (true, None) => detail_text()
+                .or_else(|| (!title.is_empty()).then(|| title.to_string()))
+                .or_else(detail_json)
+                .unwrap_or_else(|| "tool error".to_string()),
+        };
+    }
+    if let Some(out) = output {
+        return out.to_string();
+    }
+    detail_text()
+        .or_else(|| (!summary_t.is_empty()).then(|| summary.to_string()))
+        .or_else(|| (!title.is_empty()).then(|| title.to_string()))
+        .or_else(detail_json)
+        .unwrap_or_else(|| "Success".to_string())
 }
 
 /// One hint of the envelope (lenient view of `ResultHint`).
@@ -85,6 +140,26 @@ impl ToolResultView {
             self.agent_tool_protocol = Some(crate::AGENT_TOOL_PROTOCOL_VERSION.to_string());
         }
         serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+
+    /// The result in full ([`full_text`]).
+    pub fn full_text(&self) -> String {
+        full_text(
+            self.status == ToolResultStatusView::Error,
+            self.output.as_deref(),
+            self.detail.as_ref(),
+            &self.summary,
+            &self.title,
+        )
+    }
+
+    /// The `once` keys of the hints shown with the result.
+    pub fn once_keys(&self) -> Vec<String> {
+        self.hints
+            .iter()
+            .filter_map(|h| h.once.clone())
+            .filter(|k| !k.is_empty())
+            .collect()
     }
 
     /// The texts of the hints shown with the result.

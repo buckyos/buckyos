@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "ui",
     "class": "ui",
-    "created_at_ms": 1794290475425,
+    "created_at_ms": 1795768552646,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -35,6 +35,7 @@
       "max_sub_sessions": 4,
       "max_session_depth": 2,
       "tick_secs": 30,
+      "tick_max_secs": 600,
       "runtime_view": "chat"
     }
   },

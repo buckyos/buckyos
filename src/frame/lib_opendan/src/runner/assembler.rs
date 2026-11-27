@@ -107,13 +107,14 @@ pub trait SessionAssembler: Send + Sync {
     }
 }
 
-/// Render a custom input template (`llm_context::prompt_engine`, `__EXEC__`
-/// off) with libopendan's named formats. A template error keeps the inputs
-/// unconsumed.
-pub async fn render_template(template: &str, vars: Value) -> Result<String> {
+/// Render a custom input template (`agent_tool::prompt_engine`, `__EXEC__`
+/// off) with libopendan's named formats; `name` names it in warnings. A
+/// template error keeps the inputs unconsumed.
+pub async fn render_template(name: &str, template: &str, vars: Value) -> Result<String> {
     let template = &strip_block_tag_lines(template);
     let engine = PromptRenderEngine::new(EngineConfig {
         extensions: input_formats(),
+        name: name.to_string(),
         ..EngineConfig::default()
     });
     let mut rv = RenderVars::new();
@@ -414,7 +415,7 @@ impl SessionAssembler for DefaultAssembler {
                     "behavior": r.get("behavior").and_then(Value::as_str).unwrap_or_default(),
                     "status": r.get("status").and_then(Value::as_str).unwrap_or("ok"),
                     "result": r.get("result").and_then(Value::as_str).unwrap_or_default(),
-                    "submission": r.get("submission"),
+                    "submission": r.get("submission").map(|v| submission_text(cfg, state, v)),
                 })),
                 "sub_task": state.child_call().filter(|c| &c.behavior == to).map(|c| json!({
                     "mode": c.mode.as_str(),
@@ -435,8 +436,9 @@ impl SessionAssembler for DefaultAssembler {
                 "default_changed_background_hint_text": "",
             },
             "runtime": {
-                "status": m.runtime_status,
+                "status": blocks.runtime_lines.trim_end(),
                 "clock_text": m.input.time,
+                "raw": m.runtime_status,
             },
             "handover": handover,
             "hints": m.hints,
@@ -446,17 +448,67 @@ impl SessionAssembler for DefaultAssembler {
             "hints_text": blocks.hints,
             "active_sessions_text": blocks.active,
             "runtime_text": blocks.runtime,
-            "background": m.background,
+            "background": m.background.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
             "background_context": super::background::render(&m.background),
             "builtin": builtin,
         });
-        let text = render_template(template, vars).await?;
+        let name = format!("{}.{}", cfg.prompt.behavior.as_deref().unwrap_or("session"), m.hook);
+        let text = render_template(&name, template, vars).await?;
         Ok(Some(text).filter(|t| !t.is_empty()))
     }
 }
 
 fn esc(s: &str) -> String {
     agent_tool::escape_xml_text(s)
+}
+
+/// The `<runtime>` lines of a session's runtime status, in the sentences of
+/// the background context: the runtime its commands run in, the private
+/// runtime when that is another one, the workspace.
+fn runtime_lines(status: &Value) -> Vec<String> {
+    use super::background::{commands_line, one_line, runtime_head, workspace_line};
+    if !status.is_object() {
+        return Vec::new();
+    }
+    let private = status.pointer("/runtimes/private").filter(|p| p.is_object());
+    let private_id = private.and_then(|p| p.get("id")).and_then(Value::as_str);
+    let working = status
+        .pointer("/runtimes/working")
+        .and_then(Value::as_str)
+        .or(private_id)
+        .unwrap_or_default();
+    let same = private_id == Some(working);
+    let mut head = String::from(if same { "your private runtime" } else { "your working runtime" });
+    if !working.is_empty() {
+        head.push_str(&format!(" `{working}`"));
+    }
+    if let Some(p) = status.get("platform").and_then(Value::as_str).filter(|p| !p.is_empty()) {
+        head.push_str(&format!(" ({p})"));
+    }
+    let desc = |p: &Value| p.get("desc").and_then(Value::as_str).filter(|d| !d.trim().is_empty()).map(str::to_string);
+    let mut lines = vec![commands_line(&head, status, private.filter(|_| same).and_then(desc).as_deref())];
+    if let Some(p) = private.filter(|_| !same) {
+        let mut t = runtime_head("your private runtime", p);
+        if let Some(d) = desc(p) {
+            t.push_str(&format!(": {}", one_line(&d, 800)));
+        }
+        lines.push(t);
+    }
+    if let Some(w) = status.get("workspace").filter(|w| w.is_object()) {
+        lines.push(workspace_line(w));
+    }
+    lines
+}
+
+/// A sub context's submission as compact JSON within the per-result budget
+/// (prompt mechanics TODO E4): clipped, it says where the whole of it is.
+fn submission_text(cfg: &SessionConfig, state: &SessionState, submission: &Value) -> String {
+    let more = state
+        .open_turn
+        .as_ref()
+        .filter(|_| !cfg.runtime.is_node())
+        .map(|t| format!("whole submission: agent-session read-session {} --turn {}", cfg.session.session_id, t.index));
+    agent_tool::text_budget::clip_to_default_budget(&submission.to_string(), more.as_deref()).0
 }
 
 /// The per-batch material of the built-in templates, block by block (each
@@ -468,6 +520,8 @@ struct Blocks {
     hints: String,
     active: String,
     runtime: String,
+    /// The lines inside `<runtime>`.
+    runtime_lines: String,
 }
 
 impl Blocks {
@@ -487,7 +541,7 @@ impl Blocks {
                     escape_xml_attr(r.get("behavior").and_then(Value::as_str).unwrap_or_default()),
                     escape_xml_attr(r.get("status").and_then(Value::as_str).unwrap_or("ok")),
                     r.get("submission")
-                        .map(|v| esc(&v.to_string()))
+                        .map(|v| esc(&submission_text(cfg, state, v)))
                         .unwrap_or_else(|| esc(r
                             .get("result")
                             .and_then(Value::as_str)
@@ -548,22 +602,20 @@ impl Blocks {
             .map(|a| format!("{a}\n"))
             .unwrap_or_default();
         // `<runtime>`: this session's working runtime (and what it knows of
-        // the private one); a plan also gets the whole table as `<runtimes>`
-        // lines (runtime lifecycle TODO M6).
+        // the private one), one line each; a plan also gets the whole table
+        // as `<runtimes>` lines (runtime lifecycle TODO M6).
+        let runtime_lines: String = runtime_lines(&m.runtime_status)
+            .iter()
+            .map(|l| format!("- {l}\n"))
+            .collect();
         let runtime = if m.runtime_status.is_null() {
             String::new()
         } else {
-            let mut status = m.runtime_status.clone();
-            let lines = status
-                .get_mut("runtimes")
-                .and_then(Value::as_object_mut)
-                .and_then(|r| r.remove("lines"))
-                .and_then(|l| l.as_array().cloned())
-                .unwrap_or_default();
-            let mut s = format!("<runtime>{status}</runtime>\n");
-            if !lines.is_empty() {
+            let mut s = format!("<runtime>\n{runtime_lines}</runtime>\n");
+            let table = m.runtime_status.pointer("/runtimes/lines").and_then(Value::as_array);
+            if let Some(table) = table.filter(|t| !t.is_empty()) {
                 s.push_str("<runtimes>\n");
-                for l in lines {
+                for l in table {
                     s.push_str(l.as_str().unwrap_or_default());
                     s.push('\n');
                 }
@@ -587,6 +639,7 @@ impl Blocks {
             hints,
             active,
             runtime,
+            runtime_lines,
         }
     }
 
@@ -843,7 +896,7 @@ impl SessionAssembler for BehaviorAssembler {
                     None => Value::Null,
                 }},
             });
-            c.prompt.system = Some(render_template(&system, vars).await?);
+            c.prompt.system = Some(render_template(&format!("{name}.system"), &system, vars).await?);
         }
         self.inner.system_text(&c, agent_root).await
     }

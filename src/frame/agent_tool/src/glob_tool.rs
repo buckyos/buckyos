@@ -48,6 +48,9 @@ pub struct GlobArgs {
     pub pattern: String,
     #[serde(default)]
     pub path: Option<String>,
+    /// Matches to skip (the next page of a long list).
+    #[serde(default)]
+    pub offset: Option<usize>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -58,6 +61,10 @@ pub struct GlobOutput {
     pub num_files: usize,
     pub filenames: Vec<String>,
     pub truncated: bool,
+    /// Matches in all (`numFiles` of them are listed, from `offset`).
+    #[serde(rename = "totalFiles")]
+    pub total_files: usize,
+    pub offset: usize,
 }
 
 #[async_trait]
@@ -113,31 +120,63 @@ impl TypedTool for GlobTool {
             cmd.push_str(" path=");
             cmd.push_str(&quote_arg(path));
         }
+        if let Some(offset) = args.offset.filter(|o| *o > 0) {
+            cmd.push_str(&format!(" offset={offset}"));
+        }
         Some(cmd)
     }
 
     fn build_summary(&self, output: &Self::Output) -> String {
         let mut summary = format!(
             "found {} files in {}ms",
-            output.num_files, output.duration_ms
+            output.total_files, output.duration_ms
         );
-        if output.truncated {
-            summary.push_str(", truncated");
-        }
-        if !output.filenames.is_empty() {
-            summary.push_str("\n```files\n");
-            summary.push_str(&output.filenames.join("\n"));
-            summary.push_str("\n```");
+        if output.num_files < output.total_files {
+            summary.push_str(&format!(
+                "; listed {}–{}",
+                output.offset + usize::from(output.num_files > 0),
+                output.offset + output.num_files
+            ));
         }
         summary
+    }
+
+    fn build_output(&self, output: &Self::Output) -> Option<String> {
+        if output.filenames.is_empty() {
+            return None;
+        }
+        let mut text = output.filenames.join("\n");
+        let next = output.offset + output.num_files;
+        if next < output.total_files {
+            text.push_str(&format!(
+                "\n[{}–{next} of {} files listed: the next page is offset={next}]",
+                output.offset + 1,
+                output.total_files
+            ));
+        }
+        Some(text)
+    }
+
+    fn build_hints(&self, output: &Self::Output) -> Vec<crate::ResultHint> {
+        if output.offset + output.num_files >= output.total_files {
+            return Vec::new();
+        }
+        vec![crate::ResultHint {
+            text: "Glob lists one page of files a call (oldest change first): offset reads the next page, a narrower pattern or path finds fewer.".to_string(),
+            once: Some("glob.paging".to_string()),
+        }]
     }
 
     fn build_title(&self, output: &Self::Output) -> Option<String> {
         Some(format!(
             "{} => found {} files{}",
             TOOL_GLOB,
-            output.num_files,
-            if output.truncated { " (truncated)" } else { "" }
+            output.total_files,
+            if output.num_files < output.total_files {
+                " (paginated)"
+            } else {
+                ""
+            }
         ))
     }
 
@@ -226,8 +265,9 @@ impl TypedTool for GlobTool {
 
         let root_dir = self.cfg.root_dir.clone();
         let max_results = self.max_results;
+        let offset = args.offset.unwrap_or(0);
         let matches = tokio::task::spawn_blocking(move || {
-            collect_glob_matches(&search_dir, &search_pattern, &root_dir, max_results)
+            collect_glob_matches(&search_dir, &search_pattern, &root_dir, offset, max_results)
         })
         .await
         .map_err(|err| AgentToolError::ExecFailed(format!("glob task failed: {err}")))??;
@@ -237,6 +277,8 @@ impl TypedTool for GlobTool {
             num_files: matches.files.len(),
             filenames: matches.files,
             truncated: matches.truncated,
+            total_files: matches.total,
+            offset,
         })
     }
 }
@@ -316,6 +358,7 @@ fn parse_glob_args(tokens: &[String], shell_cwd: Option<&Path>) -> Result<Json, 
 struct GlobMatches {
     files: Vec<String>,
     truncated: bool,
+    total: usize,
 }
 
 #[derive(Debug)]
@@ -328,6 +371,7 @@ fn collect_glob_matches(
     search_dir: &Path,
     pattern: &str,
     output_root: &Path,
+    offset: usize,
     limit: usize,
 ) -> Result<GlobMatches, AgentToolError> {
     let matcher = GlobMatcher::new(pattern)?;
@@ -339,13 +383,19 @@ fn collect_glob_matches(
             .then_with(|| path_to_slash_string(&a.path).cmp(&path_to_slash_string(&b.path)))
     });
 
-    let truncated = candidates.len() > limit;
+    let total = candidates.len();
+    let truncated = total.saturating_sub(offset) > limit;
     let files = candidates
         .into_iter()
+        .skip(offset)
         .take(limit)
         .map(|candidate| display_path(&candidate.path, output_root))
         .collect();
-    Ok(GlobMatches { files, truncated })
+    Ok(GlobMatches {
+        files,
+        truncated,
+        total,
+    })
 }
 
 fn visit_files(

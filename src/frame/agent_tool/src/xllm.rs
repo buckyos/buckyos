@@ -210,7 +210,7 @@ pub const SECTION_ALIASES: &[(&str, u32)] = &[
 
 const EXEC_DEFAULT_TIMEOUT_MS: u64 = 1_800_000;
 const EXEC_MAX_TIMEOUT_MS: u64 = 3_600_000;
-const EXEC_MAX_OUTPUT_BYTES: usize = 64 * 1024;
+const EXEC_MAX_OUTPUT_BYTES: usize = crate::llm_bash::SHELL_OUTPUT_BYTES;
 const MCP_DISCOVERY_TIMEOUT_MS: u64 = 30_000;
 const MCP_CALL_TIMEOUT_MS: u64 = 120_000;
 
@@ -4205,6 +4205,17 @@ impl XllmToolManager {
         self.hints.clear(HINT_NS_DEDUP);
     }
 
+    /// Tokens one result takes at most (the session's read limit, see
+    /// [`crate::text_budget`]).
+    pub fn result_budget(&self) -> u32 {
+        self.session_template.effective_read_token_limit()
+    }
+
+    /// The per-result budget (`0`: the default).
+    pub fn set_result_budget(&mut self, tokens: u32) {
+        self.session_template.read_token_limit = tokens;
+    }
+
     /// Whether `tool`'s schema offers `intent`.
     pub fn set_intent_policy(&mut self, tool: &str, policy: IntentPolicy) {
         if policy == IntentPolicy::Off {
@@ -4516,7 +4527,8 @@ impl ToolManager for XllmToolManager {
                         }
                     }
                 }
-                let shown = apply_hints(&mut res, self.hints.as_ref());
+                fit_result_budget(&mut res, self.result_budget());
+                let shown = apply_hints(&mut res, self.hints.as_ref(), &call_id);
                 map_result_to_observation_with_hints(call_id, res, &shown)
             }
             Err(AgentToolError::Transport {
@@ -4580,6 +4592,36 @@ impl ToolManager for XllmToolManager {
             })
             .collect()
     }
+}
+
+/// What the per-result budget's marker says about the part left out.
+const RESULT_BUDGET_MORE: &str = "narrow the call (a range, a filter, less output) to see the rest";
+
+/// Keep `result` within `budget` tokens (prompt mechanics TODO B1): a
+/// longer text keeps its head and tail with what was left out; the summary
+/// takes at most a quarter of it. A result cut here is not shown in full,
+/// so it is no dedup source (its key is dropped).
+fn fit_result_budget(result: &mut AgentToolResult, budget: u32) {
+    use crate::text_budget::clip_to_budget;
+    let tokenizer = llm_context::deps::ByteHeuristicTokenizer;
+    let count = |s: &str| llm_context::deps::Tokenizer::count_tokens(&tokenizer, s);
+    if count(&result.observation_text()) <= budget {
+        return;
+    }
+    let summary_budget = budget / 4;
+    if count(&result.summary) > summary_budget {
+        result.summary = clip_to_budget(&result.summary, summary_budget, &tokenizer, None).0;
+    }
+    if result.status == AgentToolStatus::Error {
+        let rest = budget.saturating_sub(count(result.summary.trim()) + 1);
+        if let Some(out) = result.output.as_deref() {
+            result.output = Some(clip_to_budget(out, rest, &tokenizer, Some(RESULT_BUDGET_MORE)).0);
+        }
+    } else {
+        let text = result.observation_text();
+        result.output = Some(clip_to_budget(&text, budget, &tokenizer, Some(RESULT_BUDGET_MORE)).0);
+    }
+    result.dedup = None;
 }
 
 /// The observation of `result`, with the hints shown after its text
@@ -13080,7 +13122,7 @@ there]]></write_file>
                         json!({"command": if cfg!(windows) { "[Console]::Write((Get-Location).ProviderPath)" } else { "pwd" }, "cwd": ".."}),
                     ),
                 ];
-                for (name, args) in calls {
+                for (i, (name, args)) in calls.into_iter().enumerate() {
                     let obs = manager
                         .call_tool_t(AiToolCall {
                             name: name.into(),
@@ -13094,8 +13136,15 @@ there]]></write_file>
                             panic!("{name}: {obs:?}");
                         };
                         let content = content.as_str().expect("text observation");
-                        if name == "read_file" {
+                        if name == "read_file" && i == 0 {
                             assert!(content.contains("outside-original"), "{content}");
+                        }
+                        if name == "read_file" && i == 1 {
+                            // The same file spelled another way: one line.
+                            assert_eq!(
+                                content,
+                                "`../fixture.txt` is unchanged; same as the result of call test-call above."
+                            );
                         }
                         if name == TOOL_SHELL {
                             assert!(
@@ -13808,7 +13857,7 @@ there]]></write_file>
         let Observation::Success { content, .. } = again else { panic!("{again:?}") };
         assert_eq!(
             content.as_str().unwrap(),
-            "`notes.txt` is unchanged since you read it earlier in this run; use that content."
+            "`notes.txt` is unchanged; same as the result of call r1 above."
         );
         std::fs::write(env.workdir.join("notes.txt"), "alpha\ngamma\n").unwrap();
         let changed = manager.call_tool(read("r3"), ToolCallCtx::noop()).await.unwrap();
@@ -14474,6 +14523,359 @@ there]]></write_file>
             ),
             "{err:?}"
         );
+    }
+
+    // ---- prompt mechanics TODO A1, B1–B3, D2, D3 ----------------------
+
+    fn call(name: &str, id: &str, args: Value) -> AiToolCall {
+        AiToolCall {
+            name: name.into(),
+            args: serde_json::from_value(args).unwrap(),
+            call_id: id.into(),
+        }
+    }
+
+    fn text_of(obs: &Observation) -> String {
+        match obs {
+            Observation::Success { content, .. } => content.as_str().unwrap().to_string(),
+            Observation::Error { message, .. } => message.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn envelope(obs: &Observation) -> ToolResultView {
+        match obs {
+            Observation::Success { host, .. } | Observation::Error { host, .. } => {
+                ToolResultView::from_host(host).expect("envelope")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn within_budget(text: &str) -> bool {
+        llm_context::deps::Tokenizer::count_tokens(&llm_context::deps::ByteHeuristicTokenizer, text)
+            <= crate::text_budget::RESULT_BUDGET_TOKENS
+    }
+
+    #[derive(Debug)]
+    struct BigObject;
+
+    #[async_trait]
+    impl crate::read_tool::UrlReader for BigObject {
+        async fn read_url(
+            &self,
+            _ctx: &SessionRuntimeContext,
+            url: &str,
+            _property: Option<&str>,
+        ) -> Result<crate::read_tool::UrlContent, AgentToolError> {
+            let text = (1..=20_000)
+                .map(|i| format!("row {i}: {}", "v".repeat(40)))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(crate::read_tool::UrlContent {
+                text,
+                details: json!({"object": url.trim_end_matches('/'), "version": "7"}),
+            })
+        }
+    }
+
+    fn read_manager(workdir: &Path) -> XllmToolManager {
+        let mut manager = exec_manager(workdir);
+        let read = crate::read_tool::ReadTool::new(crate::FileToolConfig::new(workdir))
+            .with_urls(Some(Arc::new(BigObject)));
+        manager.register(Arc::new(read), "test").expect("register read");
+        let cfg = crate::FileToolConfig::new(workdir);
+        manager
+            .register(
+                Arc::new(TypedToolHandle::new(crate::GlobTool::new(cfg.clone()).with_max_results(5))),
+                "test",
+            )
+            .expect("register glob");
+        manager
+            .register(Arc::new(TypedToolHandle::new(crate::GrepTool::new(cfg))), "test")
+            .expect("register grep");
+        manager
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_huge_stdout_stays_within_the_budget_and_names_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager =
+            XllmToolManager::new(dir.path().to_path_buf(), "run-test", LoopModel::FunctionCall);
+        let shell = ShellSettings {
+            wait_ms: u64::MAX,
+            ..Default::default()
+        };
+        let extras = ShellExtras {
+            run: Some(manager.run_binding()),
+            ..Default::default()
+        };
+        let runner = Arc::new(
+            crate::llm_bash::LocalProcessBashRunner::new().with_run_binding(manager.run_binding()),
+        );
+        for t in builtin_bash_group(
+            dir.path(),
+            FilesystemPolicy::Workspace,
+            Some(runner),
+            Arc::new(LocalFileBackend),
+            &shell,
+            ShellRuntimeNote::native(),
+            manager.tasks(),
+            false,
+            extras,
+        ) {
+            manager.register(t, "groupname:bash").expect("register");
+        }
+        let runs = dir.path().join("runs");
+        manager.bind_run_dir("run-test", Some(runs.join("run-test")));
+        let obs = manager
+            .call_tool_t(call(
+                TOOL_SHELL,
+                "big",
+                json!({"command": "head -c 300000 /dev/zero | tr '\\0' 'x'; echo; echo END"}),
+            ))
+            .await
+            .unwrap();
+        let text = text_of(&obs);
+        assert!(within_budget(&text), "{} bytes", text.len());
+        let stdout = runs.join("run-test/exec/big/stdout");
+        assert!(
+            text.contains(&format!("bytes omitted; full stdout: {}]…", stdout.display())),
+            "{}",
+            &text[15000.min(text.len())..15600.min(text.len())]
+        );
+        assert!(text.trim_end().ends_with("END"), "the tail is kept");
+        assert_eq!(std::fs::metadata(&stdout).unwrap().len(), 300_005);
+    }
+
+    #[tokio::test]
+    async fn a_one_megabyte_line_is_cut_and_says_how_to_read_on() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("min.js"), "x".repeat(1 << 20)).unwrap();
+        let manager = exec_manager(dir.path());
+        let obs = manager
+            .call_tool_t(call(crate::TOOL_READ_FILE, "r1", json!({"path": "min.js"})))
+            .await
+            .unwrap();
+        let text = text_of(&obs);
+        assert!(within_budget(&text), "{} bytes", text.len());
+        let tail = &text[text.len() - 400..];
+        assert!(text.contains("[line 1 has 1048576 bytes, the first "), "{tail}");
+        assert!(text.contains("| cut -b "), "{tail}");
+        let summary = envelope(&obs).summary;
+        assert!(
+            summary.contains("shown lines 1–1 of 1") && summary.contains("line 1 cut at"),
+            "{summary}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_big_object_stays_within_the_budget_and_pages_by_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = read_manager(dir.path());
+        let obs = manager
+            .call_tool_t(call(
+                crate::TOOL_READ,
+                "o1",
+                json!({"uri": "https://example.com/big", "property": "rows"}),
+            ))
+            .await
+            .unwrap();
+        let text = text_of(&obs);
+        assert!(within_budget(&text), "{} bytes", text.len());
+        let tail = &text[text.len().saturating_sub(700)..];
+        assert!(text.contains("not shown: read again with range=201-400]"), "{tail}");
+        assert!(text.contains("same uri (and property)"), "{tail}");
+    }
+
+    #[tokio::test]
+    async fn truncation_markers_say_what_comes_next_and_the_paging_hint_shows_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let lines = |n: usize| (1..=n).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        std::fs::write(dir.path().join("a.txt"), lines(500)).unwrap();
+        std::fs::write(dir.path().join("b.txt"), lines(300)).unwrap();
+        for i in 0..8 {
+            std::fs::write(dir.path().join(format!("f{i}.md")), "needle\n").unwrap();
+        }
+        let manager = read_manager(dir.path());
+        let first = text_of(
+            &manager
+                .call_tool_t(call(crate::TOOL_READ_FILE, "r1", json!({"path": "a.txt"})))
+                .await
+                .unwrap(),
+        );
+        assert!(
+            first.contains("[lines 201–500 not shown: read again with range=201-400]"),
+            "{first}"
+        );
+        assert!(
+            first.contains("<runtime_hints>") && first.contains("`range` reads any part"),
+            "{first}"
+        );
+        let second = text_of(
+            &manager
+                .call_tool_t(call(crate::TOOL_READ_FILE, "r2", json!({"path": "b.txt"})))
+                .await
+                .unwrap(),
+        );
+        assert!(
+            second.contains("[lines 201–300 not shown: read again with range=201-300]"),
+            "{second}"
+        );
+        assert!(!second.contains("<runtime_hints>"), "said once: {second}");
+        // A window shown in full that ends before the file does says so.
+        let window = text_of(
+            &manager
+                .call_tool_t(call(crate::TOOL_READ_FILE, "r3", json!({"path": "a.txt", "range": "1-200"})))
+                .await
+                .unwrap(),
+        );
+        assert!(
+            window.ends_with("\n[shown lines 1–200 of 500; the next lines: range=201-400]"),
+            "{}",
+            &window[window.len() - 120..]
+        );
+        let glob = text_of(
+            &manager
+                .call_tool_t(call(crate::TOOL_GLOB, "g1", json!({"pattern": "*.md"})))
+                .await
+                .unwrap(),
+        );
+        assert!(glob.contains("[1–5 of 8 files listed: the next page is offset=5]"), "{glob}");
+        let next = text_of(
+            &manager
+                .call_tool_t(call(crate::TOOL_GLOB, "g2", json!({"pattern": "*.md", "offset": 5})))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(next.lines().count(), 3, "{next}");
+        if which_rg() {
+            let grep = text_of(
+                &manager
+                    .call_tool_t(call(
+                        crate::TOOL_GREP,
+                        "s1",
+                        json!({"pattern": "needle", "head_limit": 3}),
+                    ))
+                    .await
+                    .unwrap(),
+            );
+            assert!(
+                grep.contains("[1–3 of 8 files shown: the next page is offset=3 head_limit=3]"),
+                "{grep}"
+            );
+        }
+    }
+
+    fn which_rg() -> bool {
+        std::process::Command::new("rg").arg("--version").output().is_ok()
+    }
+
+    #[tokio::test]
+    async fn summaries_of_the_builtin_tools_read_on_their_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = (1..=300).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        std::fs::write(dir.path().join("a.txt"), &body).unwrap();
+        let manager = read_manager(dir.path());
+        let mut calls = vec![
+            call(crate::TOOL_READ_FILE, "1", json!({"path": "a.txt"})),
+            call(crate::TOOL_READ, "2", json!({"uri": "a.txt", "range": "10-20"})),
+            call(
+                crate::TOOL_EDIT_FILE,
+                "3",
+                json!({"path": "a.txt", "old_string": "line 7\n", "new_string": "line seven\n"}),
+            ),
+            call(crate::TOOL_WRITE_FILE, "4", json!({"path": "b.txt", "content": "x\ny\n"})),
+            call(crate::TOOL_GLOB, "5", json!({"pattern": "*.txt"})),
+        ];
+        if which_rg() {
+            calls.push(call(crate::TOOL_GREP, "6", json!({"pattern": "line", "output_mode": "content"})));
+            calls.push(call(crate::TOOL_GREP, "7", json!({"pattern": "line", "output_mode": "count"})));
+            calls.push(call(crate::TOOL_GREP, "8", json!({"pattern": "line"})));
+        }
+        for c in calls {
+            let name = c.name.clone();
+            let obs = manager.call_tool_t(c).await.unwrap();
+            let view = envelope(&obs);
+            assert!(!view.summary.contains("```"), "{name}: {}", view.summary);
+            assert!(view.summary.lines().count() <= 3, "{name}: {}", view.summary);
+            assert!(!view.summary.trim().is_empty(), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn four_spellings_of_one_file_are_one_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+        let manager = read_manager(dir.path());
+        let abs = dir.path().join("a.rs");
+        let uris = [
+            "a.rs".to_string(),
+            "./a.rs".to_string(),
+            abs.display().to_string(),
+            format!("file://{}", abs.display()),
+        ];
+        let mut full = 0;
+        for (i, uri) in uris.iter().enumerate() {
+            let text = text_of(
+                &manager
+                    .call_tool_t(call(crate::TOOL_READ, &format!("r{i}"), json!({"uri": uri})))
+                    .await
+                    .unwrap(),
+            );
+            if text.contains("fn main") {
+                full += 1;
+            } else {
+                assert_eq!(text, format!("`{uri}` is unchanged; same as the result of call r0 above."));
+            }
+        }
+        assert_eq!(full, 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_that_returns_dedup_is_answered_in_one_line_the_second_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = exec_manager(dir.path());
+        let result = json!({
+            "agent_tool_protocol": "1",
+            "status": "success",
+            "summary": "read obj://svc/x",
+            "output": "the object",
+            "dedup": {"key": "read:obj://svc/x#w::d", "hint": "`obj://svc/x` is unchanged"}
+        });
+        let command = format!("printf '%s' '{result}'");
+        let first = text_of(
+            &manager
+                .call_tool_t(call(TOOL_SHELL, "s1", json!({"command": command})))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(first, "the object");
+        let again = text_of(
+            &manager
+                .call_tool_t(call(TOOL_SHELL, "s2", json!({"command": command})))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(again, "`obj://svc/x` is unchanged; same as the result of call s1 above.");
+    }
+
+    #[test]
+    fn a_result_cut_by_the_budget_is_no_dedup_source() {
+        let ledger = MemoryHintLedger::new();
+        for id in ["c1", "c2"] {
+            let mut r = AgentToolResult::from_details(json!({}))
+                .with_output("x".repeat(10_000))
+                .with_dedup("read:/a#1-1::d", "`a` is unchanged");
+            fit_result_budget(&mut r, 600);
+            apply_hints(&mut r, ledger.as_ref(), id);
+            let out = r.output.unwrap();
+            assert!(out.contains("bytes omitted; narrow the call"), "{id}: {out}");
+            assert!(llm_context::deps::Tokenizer::count_tokens(&llm_context::deps::ByteHeuristicTokenizer, &out) <= 600);
+        }
+        assert!(ledger.keys(HINT_NS_DEDUP).is_empty());
     }
 }
 

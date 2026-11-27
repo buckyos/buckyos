@@ -445,6 +445,7 @@ async fn failed_summary_clips_older_tool_results_without_a_summary() {
             status: "ok".into(),
             // A binary file read as text.
             result: if i == 2 { "\u{fffd}".repeat(60_000) } else { format!("out {i}") },
+            meta: Default::default(),
         });
     }
     entries.push(WorklogBody::AssistantMessage {
@@ -469,6 +470,147 @@ async fn failed_summary_clips_older_tool_results_without_a_summary() {
     assert!(all.contains("out 5") && all.contains("found it"), "{all}");
     assert!(sd.summary_opt().unwrap().is_none(), "nothing kept");
     assert!(read_worklog(&sd).iter().all(|e| e.body.kind() != "compaction"));
+}
+
+/// A worklog of `rounds` tool rounds; every result is long, has a title and
+/// a summary, and round 3 reads `notes.md` (dedup key), repeated by the
+/// last round.
+fn rounds_worklog(rounds: usize) -> Vec<WorklogBody> {
+    let mut entries = vec![WorklogBody::UserMessage {
+        run_id: "r".into(),
+        turn: 1,
+        content: "go".into(),
+        brief: None,
+    }];
+    for i in 0..rounds {
+        let call_id = format!("c{i}");
+        entries.push(WorklogBody::AssistantMessage {
+            run_id: "r".into(),
+            turn: 1 + i as u64 / 10,
+            assistant: format!("round {i}"),
+            tool_calls: vec![ActionEntry {
+                call_id: call_id.clone(),
+                tool: "read".into(),
+                args: json!({ "uri": format!("f{i}") }),
+                effect: "read_only".into(),
+                intent: None,
+            }],
+        });
+        let last = i + 1 == rounds;
+        entries.push(WorklogBody::ActionResult {
+            run_id: "r".into(),
+            turn: 1 + i as u64 / 10,
+            call_id,
+            status: "ok".into(),
+            result: if last {
+                "`notes.md` is unchanged; same as the result of call c3 above.".into()
+            } else {
+                format!("BODY{i} {}", "x".repeat(2000))
+            },
+            meta: ResultMeta {
+                title: format!("read f{i} => success"),
+                summary: format!("f{i}: shown lines 1–40 of 40"),
+                dedup_key: (i == 3 || last).then(|| "read:/w/notes.md#1-40::d".to_string()),
+                hint_once_keys: if i == 1 { vec!["read.paging".into()] } else { Vec::new() },
+                dedup_of: last.then(|| "c3".to_string()),
+            },
+        });
+    }
+    entries.push(WorklogBody::AssistantMessage {
+        run_id: "r".into(),
+        turn: 1 + rounds as u64 / 10,
+        assistant: "done".into(),
+        tool_calls: Vec::new(),
+    });
+    entries
+}
+
+fn tool_texts(history: &[buckyos_api::AiMessage]) -> Vec<String> {
+    history
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|c| match c {
+            buckyos_api::AiContent::ToolResult { content, .. } => content.iter().find_map(|x| x.text_str().map(str::to_string)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Prompt mechanics TODO C1, D1: a history is rebuilt as it was shown while
+/// the provider's cache holds it; after the cache is gone, or when it has to
+/// be compressed, older results are shown by position — and a history that
+/// fits that way is not summarized.
+#[tokio::test]
+async fn older_results_are_shown_by_position_only_when_the_cache_is_gone_or_it_is_compressed() {
+    use libopendan::runner::history::{build_history_for, estimate, FULL_ROUNDS, SUMMARY_ROUNDS};
+    let env = Env::new();
+    let sd = env.create_work(work_spec("x")).await;
+    let lease = match sd.acquire(holder("w")).unwrap() {
+        Acquire::Acquired(l) => l,
+        _ => panic!(),
+    };
+    let mut s = sd.load(&lease).unwrap();
+    s.append_worklog(&lease, rounds_worklog(30)).unwrap();
+    s.commit_state(&lease).unwrap();
+    let summarizer = Summarizer {
+        llm: Arc::new(DownSummarizer),
+        model: "llm.summarize".into(),
+    };
+    let warm = build_history_for(&mut s, &lease, Some(&summarizer), HistoryShape::Native, 1_000_000, false)
+        .await
+        .unwrap();
+    let texts = tool_texts(&warm.messages);
+    assert_eq!(texts.len(), 30);
+    assert!(texts[..29].iter().all(|t| t.starts_with("BODY")), "warm: as shown");
+    assert!(texts[29].contains("same as the result of call c3"));
+    assert_eq!(warm.shown.keys().collect::<Vec<_>>(), ["c1", "c3"]);
+
+    let cold = build_history_for(&mut s, &lease, Some(&summarizer), HistoryShape::Native, 1_000_000, true)
+        .await
+        .unwrap();
+    let texts = tool_texts(&cold.messages);
+    let full = FULL_ROUNDS as usize;
+    let summary = SUMMARY_ROUNDS as usize;
+    for (i, t) in texts.iter().enumerate() {
+        let distance = 29 - i;
+        if i == 29 {
+            // The repeat of a result no longer shown in full shows it.
+            assert!(t.starts_with("BODY3 "), "{t}");
+        } else if distance < full {
+            assert!(t.starts_with(&format!("BODY{i} ")), "{i}: {t}");
+        } else if distance < full + summary {
+            assert!(t.starts_with(&format!("f{i}: shown lines 1–40 of 40\n[shortened; the full result: `agent-session read-session")), "{i}: {t}");
+        } else {
+            assert!(t.starts_with(&format!("read f{i} => success\n[shortened;")), "{i}: {t}");
+            assert!(t.ends_with(&format!("--turn {}`]", 1 + i / 10)), "{i}: {t}");
+        }
+    }
+    assert!(estimate(&cold.messages) * 2 < estimate(&warm.messages), "tokens drop");
+    // c3 and c1 are no longer shown in full; the last call shows c3's content.
+    assert_eq!(cold.shown.keys().collect::<Vec<_>>(), ["c29"]);
+    assert_eq!(cold.shown["c29"].dedup_key.as_deref(), Some("read:/w/notes.md#1-40::d"));
+    let again = build_history_for(&mut s, &lease, Some(&summarizer), HistoryShape::Native, 1_000_000, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_string(&again.messages).unwrap(),
+        serde_json::to_string(&cold.messages).unwrap(),
+        "the same worklog rebuilds the same"
+    );
+
+    // Over the budget: shown by position first, and that fits without a
+    // summary (the summarizer is down).
+    let budget = (estimate(&cold.messages) + 100) as u32;
+    assert!(estimate(&warm.messages) > u64::from(budget));
+    let compressed = build_history_for(&mut s, &lease, Some(&summarizer), HistoryShape::Native, budget, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_string(&compressed.messages).unwrap(),
+        serde_json::to_string(&cold.messages).unwrap()
+    );
+    assert!(compressed.report.is_none(), "no summary call");
+    assert!(sd.summary_opt().unwrap().is_none());
 }
 
 async fn kmsg_rules(client: Arc<buckyos_api::msg_queue::MsgQueueClient>) {

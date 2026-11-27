@@ -658,7 +658,7 @@ async fn hints_are_shown_once_and_unchanged_reads_deduplicated() {
         }
         4 => {
             let r = has_tool_result(req, "r2").unwrap();
-            assert!(r.contains("unchanged since you read it") && !r.contains("beta"), "{r}");
+            assert!(r.contains("`notes.txt` is unchanged; same as the result of call r1 above.") && !r.contains("beta"), "{r}");
             text("Both are running.")
         }
         _ => {
@@ -673,6 +673,45 @@ async fn hints_are_shown_once_and_unchanged_reads_deduplicated() {
     let r = drive_to_end(&s, &llm, &sd).await;
     assert!(r.is_finished(), "{r:?}");
     assert!(sd.state().unwrap().hints_once.contains("shell.task_followup"));
+}
+
+// 12b. Prompt mechanics TODO D1: a read the context still shows in full is
+//      one line in the next Turn too, read by another host process.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_shown_in_an_earlier_turn_is_one_line_after_a_restart() {
+    let s = setup();
+    let sd = create(&s, "read, build, read again", 0).await;
+    let workdir = libopendan::runtime::resolve_workdir(&sd).unwrap();
+    std::fs::write(workdir.join("notes.txt"), "alpha\nbeta\n").unwrap();
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => tool_call("r1", "read_file", json!({ "path": "notes.txt" })),
+        1 => {
+            assert!(has_tool_result(req, "r1").unwrap().contains("beta"));
+            shell("c1", "sleep 1.5; echo built", None)
+        }
+        2 => text("Building."),
+        3 => tool_call("r2", "read_file", json!({ "path": "./notes.txt" })),
+        4 => {
+            let r = has_tool_result(req, "r2").unwrap();
+            assert_eq!(r, "`./notes.txt` is unchanged; same as the result of call r1 above.");
+            report_end("built")
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let r = drive(&sd, &deps(&s, llm.clone()), StopWhen::Idle).await;
+    assert!(matches!(r, DriveResult::Idle { run_state: RunState::Waiting, .. }), "{r:?}");
+    // Another host process: nothing of the first one's memory is left.
+    let r = drive(&sd, &deps(&s, llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(llm.count(), 5);
+    let read = read_worklog(&sd)
+        .into_iter()
+        .find_map(|e| match e.body {
+            WorklogBody::ActionResult { call_id, meta, .. } if call_id == "r2" => Some(meta),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(read.dedup_of.as_deref(), Some("r1"));
 }
 
 /// Both task results are in the request's history.

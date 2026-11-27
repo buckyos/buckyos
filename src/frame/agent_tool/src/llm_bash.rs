@@ -48,7 +48,10 @@ pub const DEFAULT_MAX_TIMEOUT_MS: u64 = 60 * 60_000;
 pub const DEFAULT_AUTO_WAIT_MS: u64 = crate::task_model::DEFAULT_TASK_WAIT_MS;
 /// Upper bound of `wait_ms`.
 pub const MAX_AUTO_WAIT_MS: u64 = crate::task_model::MAX_IN_TOOL_WAIT_MS;
-const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
+/// Bytes of stdout and stderr together a `shell` result shows: within the
+/// per-result budget ([`crate::text_budget`]) with room for its hints.
+pub const SHELL_OUTPUT_BYTES: usize = 60 * 1024;
+const DEFAULT_MAX_OUTPUT_BYTES: usize = SHELL_OUTPUT_BYTES;
 /// Bytes of output kept in a progress / cancel text.
 pub const OUTPUT_TAIL_BYTES: usize = 2048;
 pub(crate) const LOCAL_ENGINE: &str = "native";
@@ -683,7 +686,9 @@ impl OutputCollector {
         self.total > self.head.len() + self.tail.len()
     }
 
-    pub(crate) fn render(&self) -> String {
+    /// Head and tail; the marker between them says how many bytes were left
+    /// out and, with `source`, which file holds them all.
+    pub(crate) fn render(&self, source: Option<&str>) -> String {
         let (a, b) = self.tail.as_slices();
         let mut tail = Vec::with_capacity(self.tail.len());
         tail.extend_from_slice(a);
@@ -692,21 +697,46 @@ impl OutputCollector {
         let tail = String::from_utf8_lossy(&tail);
         if self.is_truncated() {
             let omitted = self.total - self.head.len() - self.tail.len();
-            format!("{head}\n…[{omitted} bytes omitted]…\n{tail}")
+            format!("{head}\n{}\n{tail}", omitted_marker(omitted, source))
         } else {
             format!("{head}{tail}")
         }
     }
 }
 
-/// Head + tail of a file, bounded by `max` bytes, with the omitted count.
-pub(crate) fn read_file_bounded(path: &Path, max: usize) -> (String, bool) {
-    let Ok(bytes) = std::fs::read(path) else {
-        return (String::new(), false);
-    };
+/// `…[N bytes omitted; full stdout: <path>]…`.
+pub(crate) fn omitted_marker(omitted: usize, source: Option<&str>) -> String {
+    match source {
+        Some(path) => format!("…[{omitted} bytes omitted; full {}: {path}]…", stream_name(path)),
+        None => format!("…[{omitted} bytes omitted]…"),
+    }
+}
+
+fn stream_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().filter(|n| !n.is_empty()).unwrap_or("output")
+}
+
+/// The bytes stdout and stderr each show of `max` together: a stream that
+/// fits keeps all of it, the rest goes to the other.
+pub(crate) fn stream_shares(stdout: usize, stderr: usize, max: usize) -> (usize, usize) {
+    if stdout + stderr <= max {
+        return (stdout, stderr);
+    }
+    let half = max / 2;
+    if stdout <= half {
+        (stdout, max - stdout)
+    } else if stderr <= half {
+        (max - stderr, stderr)
+    } else {
+        (half, max - half)
+    }
+}
+
+/// Head + tail of `bytes`, bounded by `max`, naming `source` in the marker.
+pub(crate) fn bounded_text(bytes: &[u8], max: usize, source: Option<&str>) -> (String, bool) {
     let mut c = OutputCollector::new(max.max(16));
-    c.push(&bytes);
-    (c.render(), c.is_truncated())
+    c.push(bytes);
+    (c.render(source), c.is_truncated())
 }
 
 /// Last `max` bytes of a file as text.
@@ -727,9 +757,16 @@ pub(crate) fn output_from_exec_dir(
     max: usize,
     engine: &str,
     cwd: PathBuf,
+    kept: bool,
 ) -> BashRunOutput {
-    let (stdout, out_trunc) = read_file_bounded(&dir.join("stdout"), max);
-    let (stderr, err_trunc) = read_file_bounded(&dir.join("stderr"), max);
+    let out_path = dir.join("stdout");
+    let err_path = dir.join("stderr");
+    let out = std::fs::read(&out_path).unwrap_or_default();
+    let err = std::fs::read(&err_path).unwrap_or_default();
+    let (out_max, err_max) = stream_shares(out.len(), err.len(), max);
+    let named = |p: &Path| kept.then(|| p.to_string_lossy().to_string());
+    let (stdout, out_trunc) = bounded_text(&out, out_max, named(&out_path).as_deref());
+    let (stderr, err_trunc) = bounded_text(&err, err_max, named(&err_path).as_deref());
     let mut output = stdout.clone();
     if !stderr.is_empty() {
         if !output.is_empty() && !output.ends_with('\n') {
@@ -1268,6 +1305,7 @@ impl LocalCommand {
             self.max_output,
             LOCAL_ENGINE,
             self.cwd.clone(),
+            !self.temp,
         )
     }
 
