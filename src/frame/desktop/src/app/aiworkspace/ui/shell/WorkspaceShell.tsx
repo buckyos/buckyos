@@ -12,7 +12,7 @@ import { ArrowUpRight } from 'lucide-react'
 import type { CapturedAnchor } from '../../anchors/registry'
 import type { AiwsClient } from '../../api/client'
 import type { EntityEnvelope } from '../../api/types'
-import { WorkspaceUiContext, useEdits, useLoad, useOutlineVersion, useStore, useUserState, useVersion, type AnnotationMark, type WorkspaceUi } from '../../state/hooks'
+import { WorkspaceUiContext, useEdits, useLoad, useOutlineVersion, useStore, useUserState, useVersion, type AnnotationDraft, type AnnotationMark, type WorkspaceUi } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { BlockHost } from '../blocks/BlockHost'
 import { CanvasView, type CanvasFocus } from '../canvas/CanvasView'
@@ -136,7 +136,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
   useEffect(() => onControlPage((id) => setPageChoice(id)), [])
   const linkPage = target?.blockId && (target.page === 'control' || (phone && target.record && isDataControl(store.outline.get(target.blockId)?.kind))) ? target.blockId : null
   const pageControl = pageChoice === undefined ? linkPage : pageChoice
-  const [draft, setDraft] = useState<CapturedAnchor | null>(null)
+  const [draft, setDraft] = useState<AnnotationDraft | null>(null)
   const [activeAnnotation, setActiveAnnotation] = useState<string | null>(null)
   const [dialog, setDialog] = useState<DialogRequest | null>(null)
   const [offlineBusy, setOfflineBusy] = useState<string | null>(null)
@@ -247,10 +247,11 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
     dataTabsOf(store).open(entityId, options)
     setTopMode('sources')
   }), [store, setTopMode])
-  const annotate = useCallback((anchor: CapturedAnchor) => {
-    setDraft(anchor)
-    if (store.userState.get('mode') !== 'sources') store.userState.set('ui:side', 'annotations')
+  const annotate = useCallback((anchor: CapturedAnchor, parentId?: string) => {
+    setDraft({ ...anchor, parentId })
+    if (parentId || store.userState.get('mode') !== 'sources') store.userState.set('ui:side', 'annotations')
   }, [store])
+  const canvasAnnotationParentId = activeSurface?.content_folder_id ?? 'data'
   const [annotationFilter, setAnnotationFilter] = useState<string | null>(null)
   const showAnnotations = useCallback((targetId: string | null) => {
     setAnnotationFilter(targetId)
@@ -267,11 +268,11 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
       </div>
     )
   }, [store, t])
-  const ui = useMemo<WorkspaceUi & { draft: CapturedAnchor | null; clearDraft: () => void }>(() => ({
+  const ui = useMemo<WorkspaceUi & { draft: AnnotationDraft | null; clearDraft: () => void }>(() => ({
     entities, byId: new Map(entities.map((entity) => [entity.entity_id, entity])), annotations, openEntity,
-    annotate: canComment ? annotate : null, activeAnnotation, setActiveAnnotation, renderCell, draft, clearDraft: () => setDraft(null),
+    annotate: canComment ? annotate : null, annotateAt: annotate, canvasAnnotationParentId, activeAnnotation, setActiveAnnotation, renderCell, draft, clearDraft: () => setDraft(null),
     annotationFilter, showAnnotations,
-  }), [entities, annotations, openEntity, annotate, canComment, activeAnnotation, renderCell, draft, annotationFilter, showAnnotations])
+  }), [entities, annotations, openEntity, annotate, canComment, canvasAnnotationParentId, activeAnnotation, renderCell, draft, annotationFilter, showAnnotations])
 
   const runOffline = useCallback((label: string, work: () => Promise<void>) => {
     setOfflineBusy(label)

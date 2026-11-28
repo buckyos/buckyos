@@ -4,7 +4,7 @@
 `tests/dv/aiworkspace.spec.ts`、`aiworkspace.mobile.spec.ts`、
 `aiworkspace.journeys.spec.ts`、`aiworkspace.logic.spec.ts` 和
 `aiworkspace.integrity.spec.ts`，
-身份与清理逻辑在 `aiworkspace.fixtures.ts`。
+角色与多入口权限用例在 `aiworkspace.roles.spec.ts`。身份与清理逻辑在 `aiworkspace.fixtures.ts`。
 测试连接已经运行的 Zone，不构建或启动独立后台。
 
 ## 前置条件
@@ -78,6 +78,7 @@ setsid nohup bash /path/to/project/.work/aiworkspace-zone/run.sh \
 | --- | --- |
 | 登录、Desktop 打开、模板创建、表格和中文 IME 编辑、刷新 | 真实 session 的主体、Zone transport、服务端字段和富文本 AST、图片下载渲染 |
 | 私有工作区、UI 授予 reader、拒绝写入、撤回 | 第二用户不可枚举私有工作区；拒绝写入后值与版本未变；撤权后 API 与 UI 均不可读 |
+| 独立账号角色与多入口权限 | 三个新建账号分别配置评论、编辑和无授权身份；验证私有工作区、批量读取、子树授权、导出包、发布入口、许愿格输入引用、批注作者与提交记录 |
 | 双用户协作 | 富文本收敛；不同字段都保留；同字段冲突保留双方输入；确认覆盖后两端刷新结果一致 |
 | 手机视口 | Chromium Pixel 7、375px 宽度；文档和工具栏可见、无横向溢出，刷新不增加文档提交 |
 | 会话与幂等 | 无会话、无效会话拒绝；相同提交键返回同一 commit，head 只增加一次 |

@@ -64,7 +64,7 @@ test('[mindmap] the fixture on a real Zone: drawn, folded per reader, re-hung li
   const ws = await create(owner)
   const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as { commits: { operations: Operation[] }[] }
   for (const c of fixture.commits) await commit(owner, ws, c.operations)
-  await owner.client.ok('ws.grant', { workspace_id: ws.workspace_id, subject: peer.userId, capabilities: ['read', 'update', 'append', 'structure', 'delete', 'comment'] })
+  await owner.client.ok('acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: peer.userId, resource: '/', allow: ['read', 'update', 'append', 'structure', 'delete', 'comment'] }] })
   const right3 = await entity(owner, ws, 'right-3')
   expect(right3?.placement).toEqual(AUTO)
 

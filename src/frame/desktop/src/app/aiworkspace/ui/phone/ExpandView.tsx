@@ -38,7 +38,7 @@ export function ExpandView({ target, onClose, onMore }: { target: ExpandTarget; 
   if (gone) return null
   let editor
   switch (source.type_id) {
-    case 'buckyos.table-source': editor = <StandardTableEditor sourceId={source.entity_id} source={source} size="fullscreen" readOnly={readOnly || Boolean(source.source)} readOnlyReason={reason} />; break
+    case 'buckyos.table-source': editor = <StandardTableEditor sourceId={source.entity_id} source={source} size="fullscreen" readOnly={readOnly || Boolean(source.source)} readOnlyReason={reason} annotationParentId={ui.canvasAnnotationParentId ?? null} onStartAnnotation={onClose} />; break
     case 'buckyos.dir': editor = <DirectoryEditor key={source.entity_id} entityId={source.entity_id} size="full" readOnlyReason={readOnly ? reason : null} cellId={target.cellId} />; break
     case 'buckyos.richtext': editor = <FormatScope id={`expand:${source.entity_id}`}><div className="aiws-phone-expand-text"><RichTextCell entity={source} entityId={source.entity_id} renderEmbed={renderEmbed} /></div></FormatScope>; break
     case 'buckyos.record': editor = <div className="aiws-phone-expand-text"><RecordCell entityId={source.entity_id} entity={source} readOnly={readOnly} /></div>; break

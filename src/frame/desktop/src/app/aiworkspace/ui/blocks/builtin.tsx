@@ -63,6 +63,7 @@ function useEmbedRenderer(depth: number) {
 
 function TableBlock(context: RenderContext) {
   const flow = useContext(PrintFragmentContext)
+  const { canvasAnnotationParentId } = useWorkspaceUi()
   const source = context.source
   if (!source) return null
   // a printed page has every row, laid out whole (打印 TODO T9)
@@ -72,7 +73,8 @@ function TableBlock(context: RenderContext) {
     <div className={compact ? 'aiws-block-static' : undefined} style={compact ? undefined : { display: 'contents' }}>
       <TableBlockContext.Provider value={context}>
         <StandardTableEditor cellId={context.cell.entity_id} sourceId={source.entity_id} source={source}
-          compact={compact} readOnly={context.readOnlyReason !== null} />
+          compact={compact} readOnly={context.readOnlyReason !== null}
+          annotationParentId={context.depth === 0 && (context.mode === 'view' || context.mode === 'edit') ? canvasAnnotationParentId ?? null : null} />
       </TableBlockContext.Provider>
     </div>
   )

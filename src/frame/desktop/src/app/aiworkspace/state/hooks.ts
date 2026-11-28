@@ -7,6 +7,8 @@ import { useAiwsText } from '../useAiwsText'
 import type { EditEntry } from './edits'
 import type { WorkspaceStore } from './store'
 
+export type AnnotationDraft = CapturedAnchor & { parentId?: string }
+
 export interface AnnotationMark { entityId: string; payload: AnnotationPayload; anchor?: AnchorInfo; envelope: AnnotationRead }
 
 export const StoreContext = createContext<WorkspaceStore | null>(null)
@@ -143,6 +145,8 @@ export interface WorkspaceUi {
   openEntity: (entityId: string) => void
   /** Start writing an annotation; null without the `comment` capability (or in a mode that refuses it). */
   annotate: ((anchor: CapturedAnchor) => void) | null
+  annotateAt?: (anchor: CapturedAnchor, parentId: string) => void
+  canvasAnnotationParentId?: string
   activeAnnotation: string | null
   /** Select an annotation: its place in the content and its entry in the panel light up. */
   setActiveAnnotation: (entityId: string | null) => void

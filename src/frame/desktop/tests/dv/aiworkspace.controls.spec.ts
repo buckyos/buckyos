@@ -370,7 +370,7 @@ test('[ctl] TV screen: a video over 32 MiB from the Zone; a phone joins two minu
   const ws = await freeCanvas(owner)
   const def = await build(owner, ws, 'tv-screen')
   await accepted(owner, ws, [composite('tv', def)])
-  await owner.client.ok('ws.grant', { workspace_id: ws.workspace_id, subject: peer.userId, capabilities: ['read'] })
+  await owner.client.ok('acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: peer.userId, resource: '/', allow: ['read'] }] })
   const page = owner.page
   // the owner's device clock is 30 s behind (§5.3 5): the anchor goes by the service's clock
   await skew(page, -30_000)
@@ -464,7 +464,7 @@ test('[ctl] time-limited: each viewer gets their own minute from their first ope
   const label = (id: string, text: string, key: string) => ({ op: 'entity.create', entity_id: id, type_id: 'buckyos.cell', parent_id: 'tl', order_key: key,
     placement: { x: 'auto', y: 'auto', w: 180, h: 36 }, payload: { view: { type: 'label' }, title: text, slot: 'content' } })
   await accepted(owner, ws, [composite('tl', def, { config: { limit_ms: 60_000 } }), label('l1', 'Secret one', 'a'), label('l2', 'Secret two', 'b')])
-  await owner.client.ok('ws.grant', { workspace_id: ws.workspace_id, subject: peer.userId, capabilities: ['read'] })
+  await owner.client.ok('acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: peer.userId, resource: '/', allow: ['read'] }] })
   const block = (p: Page, id: string) => p.getByTestId(`aiws-canvas-block-${id}`)
 
   // A (the member) opens first and looks
@@ -523,8 +523,8 @@ test('[ctl] photo vote: eight photos; both vote three on a phone, one changes a 
     ] } },
     composite('vote', def, { bindings: { photos: { entity_id: 'photos' }, votes: { entity_id: 'votes' } } }),
   ])
-  await owner.client.ok('ws.grant', { workspace_id: ws.workspace_id, subject: peer.userId, capabilities: ['read'] })
-  await owner.client.ok('ws.grant', { workspace_id: ws.workspace_id, subject: peer.userId, scope_entity_id: 'votes', capabilities: ['read', 'append'] })
+  await owner.client.ok('acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: peer.userId, resource: '/', allow: ['read'] }] })
+  await owner.client.ok('acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: peer.userId, resource: 'votes', allow: ['read', 'append'] }] })
 
   // the owner prepares the ballot from the toolbar (declared action)
   const page = owner.page
@@ -611,7 +611,7 @@ test('[ctl] listen together: started from the toolbar without running it; a phon
     { op: 'entity.create', entity_id: 'listen', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'a', placement: { x: 60, y: 60, w: 380, h: 320 },
       payload: { view: { type: 'html' }, def_ref: { entity_id: def }, bindings: { playlist: { entity_id: 'playlist' } } } },
   ])
-  await owner.client.ok('ws.grant', { workspace_id: ws.workspace_id, subject: peer.userId, capabilities: ['read'] })
+  await owner.client.ok('acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: peer.userId, resource: '/', allow: ['read'] }] })
 
   // the owner starts it from the toolbar without running the control: one Commit writes the anchor
   const page = owner.page

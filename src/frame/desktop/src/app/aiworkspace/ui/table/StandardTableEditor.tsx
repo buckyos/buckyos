@@ -2,7 +2,7 @@
  * full screen after "展开" — the write lock, the read-only state and the comments come with it. */
 
 import type { EntityEnvelope } from '../../api/types'
-import { useDirectReadOnly, useWorkspaceUi, useWriteAccess } from '../../state/hooks'
+import { useDirectReadOnly, useEntity, useWorkspaceUi, useWriteAccess } from '../../state/hooks'
 import { TableViewCell } from '../TableViewCell'
 import type { TableEditorSize } from './model'
 
@@ -20,18 +20,23 @@ export interface StandardTableEditorProps {
   readOnly?: boolean
   /** Why, for the title row; worked out from the capability, the source and the connection when absent. */
   readOnlyReason?: string | null
+  annotationParentId: string | null
+  onStartAnnotation?: () => void
 }
 
-export function StandardTableEditor({ cellId, sourceId, source, size = 'embedded', compact = false, readOnly = false, readOnlyReason }: StandardTableEditorProps) {
+export function StandardTableEditor({ cellId, sourceId, source, size = 'embedded', compact = false, readOnly = false, readOnlyReason, annotationParentId, onStartAnnotation }: StandardTableEditorProps) {
   const ui = useWorkspaceUi()
   const lockSource = compact || readOnly ? undefined : source
   const access = useWriteAccess(lockSource)
   const readOnlyNow = useDirectReadOnly()
+  const folder = useEntity(annotationParentId ?? '')
+  const annotateAt = ui.annotateAt
   const lockBlocks = (access.required && !access.held) || readOnlyNow
   return (
     <TableViewCell cellId={cellId} sourceId={cellId ? undefined : sourceId} lockSource={lockSource}
       awaitingLock={Boolean(lockSource && !readOnlyNow && lockBlocks)} readOnly={compact || readOnly || lockBlocks}
       readOnlyReason={readOnlyReason} compact={compact} size={size} annotations={ui.annotations}
-      onAnnotate={compact || readOnly ? undefined : ui.annotate ?? undefined} onActivateAnnotation={ui.setActiveAnnotation} />
+      onAnnotate={annotationParentId && annotateAt && !readOnlyNow && folder?.capabilities.includes('comment')
+        ? (anchor) => { onStartAnnotation?.(); annotateAt(anchor, annotationParentId) } : undefined} onActivateAnnotation={ui.setActiveAnnotation} />
   )
 }

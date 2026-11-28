@@ -169,7 +169,7 @@ function TableEditorSession({ cell, sourceMode, size, awaitingLock, readOnly, re
   const [record, setRecord] = useState<RecordPanelState | null>(null)
   const [selection, setSelection] = useState<Set<string> | null>(null)
   const [phoneCell, setPhoneCell] = useState<CellRef | null>(null)
-  const [editBar, setEditBar] = useState<CellRef | null>(null)
+  const [editBar, setEditBar] = useState<(CellRef & { editable: boolean }) | null>(null)
   const pops = usePop<'menu' | 'delete-selected'>()
   // a toolbar button pressed while the Block was only selected names what to open (标准对象的交互改进 §5.2)
   const intentKey = compact ? '' : cellId
@@ -547,7 +547,7 @@ function TableEditorSession({ cell, sourceMode, size, awaitingLock, readOnly, re
       onPointerDownCapture={(e) => { window.clearTimeout(titleRelease.current); e.currentTarget.dataset.pointer = e.pointerType }}
       onClickCapture={interactiveStatic || awaitingLock ? (e) => {
         const target = e.target as HTMLElement
-        if (target.closest('a[href], .aiws-cell-reference button')) return
+        if (target.closest('a[href], .aiws-cell-reference button, .aiws-cell-annotate, .aiws-cell-comment-only')) return
         const td = target.closest<HTMLElement>('[role="gridcell"], [role="columnheader"]')
         if (!td?.dataset.fieldId) return
         e.stopPropagation()
@@ -616,7 +616,7 @@ function TableEditorSession({ cell, sourceMode, size, awaitingLock, readOnly, re
           editable={canUpdate} resultTable={Boolean(source.data.derived)} titleField={titleField} annotations={annotations} onAnnotate={onAnnotate} onActivateAnnotation={onActivateAnnotation}
           viewportRef={canvasGrid ? viewportRef : undefined} showHandles={!compact || interactiveStatic} selection={selection} onToggle={toggle} onToggleAll={toggleAll}
           onOpen={(id) => { if (interactiveStatic) activeBlock({ action: 'openRecord', recordId: id }); else setRecord({ kind: 'edit', recordId: id }) }}
-          annotatedRecords={annotatedSet} phoneCell={phoneCell} onPhoneCell={setPhoneCell} onPhoneEdit={(c) => { setPhoneCell(c); setEditBar(c) }}
+          annotatedRecords={annotatedSet} phoneCell={phoneCell} onPhoneCell={setPhoneCell} onPhoneEdit={(cell, editable) => setEditBar({ ...cell, editable })}
           columnsEditable={(!compact || interactiveStatic) && columnsReason === null}
           onResize={(fieldId, width) => saveColumns(entries.map((entry) => (entry.field.field_id === fieldId ? { ...entry, width } : entry)))}
           onMove={(fieldId, to) => {
@@ -666,7 +666,7 @@ function TableEditorSession({ cell, sourceMode, size, awaitingLock, readOnly, re
           onOpen={(recordId) => setRecord({ kind: 'edit', recordId })} onClose={() => setRecord(null)} />
       )}
       {editBar && editBarRow && editBarField && (
-        <PhoneEditBar key={`${editBar.recordId}/${editBar.fieldId}`} host={host} sourceId={sourceId} field={editBarField} row={editBarRow} pager={pager} onClose={() => setEditBar(null)} onAnnotate={onAnnotate} />
+        <PhoneEditBar key={`${editBar.recordId}/${editBar.fieldId}`} host={host} sourceId={sourceId} field={editBarField} row={editBarRow} pager={pager} editable={editBar.editable && canUpdate} onClose={() => setEditBar(null)} onAnnotate={onAnnotate} />
       )}
     </div>
   )

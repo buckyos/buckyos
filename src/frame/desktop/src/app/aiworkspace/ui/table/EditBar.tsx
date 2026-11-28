@@ -28,12 +28,13 @@ function useKeyboardInset(): number {
   return inset
 }
 
-export function PhoneEditBar({ host, sourceId, field, row, pager, onClose, onAnnotate }: {
+export function PhoneEditBar({ host, sourceId, field, row, pager, editable, onClose, onAnnotate }: {
   host: HTMLElement | null
   sourceId: string
   field: FieldDef
   row: QueryRow
   pager: TablePager
+  editable: boolean
   onClose: () => void
   onAnnotate?: (anchor: CapturedAnchor) => void
 }) {
@@ -45,6 +46,7 @@ export function PhoneEditBar({ host, sourceId, field, row, pager, onClose, onAnn
     editId: cellEditId(sourceId, row.record_id, field.field_id), locked: null, testId: 'aiws-table-edit-bar-field',
   }
   const write = async (_: FormField, input: Input, baseRev: number) => {
+    if (!editable) return
     const outcome = await store.submit({
       editId: form.editId, label: `${field.name} · ${row.record_id}`, mine: input === UNSET ? null : input, hasMine: true,
       operations: [writeOperation(sourceId, field, row.record_id, input, baseRev)],
@@ -59,7 +61,7 @@ export function PhoneEditBar({ host, sourceId, field, row, pager, onClose, onAnn
       onPointerDown={(event) => event.stopPropagation()}>
       <div className="aiws-table-edit-bar-head">
         <span className="aiws-table-edit-bar-name">{field.name}</span>
-        {live.entry && <EditState field={form} live={live} write={write} />}
+        {editable && live.entry && <EditState field={form} live={live} write={write} />}
         <span className="aiws-grow" />
         {onAnnotate && (
           <button type="button" className="aiws-table-btn" aria-label={t('aiworkspace.table.cell.commentAria', { field: field.name, record: row.record_id })} title={t('aiworkspace.table.cell.comment')} data-testid="aiws-table-edit-bar-comment"
@@ -68,14 +70,14 @@ export function PhoneEditBar({ host, sourceId, field, row, pager, onClose, onAnn
         {/* the press keeps the focus in the control, so leaving it does not write what is being cancelled */}
         <button type="button" className="aiws-table-btn" aria-label={t('aiworkspace.common.cancel')} title={t('aiworkspace.common.cancel')} data-testid="aiws-table-edit-bar-cancel"
           onPointerDown={(event) => event.preventDefault()} onMouseDown={(event) => event.preventDefault()} onClick={() => { live.cancel(); onClose() }}><X size={18} aria-hidden="true" /></button>
-        <button type="button" className="aiws-table-btn is-primary" aria-label={t('aiworkspace.table.editBar.done')} title={t('aiworkspace.table.editBar.done')} data-testid="aiws-table-edit-bar-done"
-          onPointerDown={(event) => event.preventDefault()} onMouseDown={(event) => event.preventDefault()} onClick={done}><Check size={18} aria-hidden="true" /></button>
+        {editable && <button type="button" className="aiws-table-btn is-primary" aria-label={t('aiworkspace.table.editBar.done')} title={t('aiworkspace.table.editBar.done')} data-testid="aiws-table-edit-bar-done"
+          onPointerDown={(event) => event.preventDefault()} onMouseDown={(event) => event.preventDefault()} onClick={done}><Check size={18} aria-hidden="true" /></button>}
       </div>
-      <div className="aiws-table-edit-bar-control">
+      {editable && <div className="aiws-table-edit-bar-control">
         <ValueControl def={field} raw={live.raw} ariaLabel={`${field.name} ${row.record_id}`} autoFocus onFocus={live.begin} onChange={live.change}
           onCommit={(raw) => { if (live.commit(raw) && (field.type === 'select' || field.type === 'boolean')) onClose() }} onCancel={() => { live.cancel(); onClose(); return true }} />
-      </div>
-      {live.error && <div className="aiws-error" role="alert">{live.error}</div>}
+      </div>}
+      {editable && live.error && <div className="aiws-error" role="alert">{live.error}</div>}
     </div>,
     target,
   )

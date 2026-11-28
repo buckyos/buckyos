@@ -5,7 +5,7 @@
 import { useContext, useState } from 'react'
 import type { CapturedAnchor } from '../../anchors/registry'
 import { authorLabel, readGuestName } from '../../state/guest'
-import { useStore, useWorkspaceUi } from '../../state/hooks'
+import { useDirectReadOnly, useEntity, useStore, useWorkspaceUi, type AnnotationDraft } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { annotationOp } from '../creators'
 import { anchorStatus, annotationLabel, revealAnnotation } from '../annotationInfo'
@@ -17,13 +17,17 @@ export interface NoteDraft { save: (body: string) => Promise<boolean>; cancel: (
 export function AnnotationsPanel({ parentId, draft, onDraftDone, noteDraft }: { parentId: string | null; draft?: CapturedAnchor | null; onDraftDone?: () => void; noteDraft?: NoteDraft | null }) {
   const store = useStore()
   const { t } = useAiwsText()
-  const { annotations: all, annotate, activeAnnotation, setActiveAnnotation, draft: uiDraft, clearDraft, annotationFilter, showAnnotations } = useWorkspaceUi() as ReturnType<typeof useWorkspaceUi> & { draft?: CapturedAnchor | null; clearDraft?: () => void }
+  const { annotations: all, annotate, activeAnnotation, setActiveAnnotation, draft: uiDraft, clearDraft, annotationFilter, showAnnotations } = useWorkspaceUi() as ReturnType<typeof useWorkspaceUi> & { draft?: AnnotationDraft | null; clearDraft?: () => void }
   const [body, setBody] = useState('')
   const [noteBody, setNoteBody] = useState('')
   const guest = useContext(ShellContext)?.identity.guest ?? false
   const pending = draft ?? uiDraft ?? null
   const done = onDraftDone ?? clearDraft ?? (() => undefined)
-  const target = parentId ?? 'data'
+  const scopedParent = draft ? undefined : uiDraft?.parentId
+  const target = scopedParent ?? parentId ?? 'data'
+  const folder = useEntity(scopedParent ?? '')
+  const windowReadOnly = useDirectReadOnly()
+  const canSave = !scopedParent || (!windowReadOnly && folder?.capabilities.includes('comment'))
   // a note's replies (标准对象的交互改进 §7.3): the annotations targeting it, oldest first
   const annotations = annotationFilter ? all.filter((mark) => mark.payload.target?.entity_id === annotationFilter).sort((a, b) => a.envelope.life_rev - b.envelope.life_rev) : all
   const filterLabel = annotationFilter ? store.outline.get(annotationFilter) : undefined
@@ -39,14 +43,14 @@ export function AnnotationsPanel({ parentId, draft, onDraftDone, noteDraft }: { 
       {pending && (
         <form className="aiws-annotation-draft" onSubmit={(event) => {
           event.preventDefault()
-          if (body.trim() === '') return
+          if (!canSave || body.trim() === '') return
           void store.submit({ editId: `annotation:new`, label: t('aiworkspace.shell.annotations.editLabel', { target: pending.label }), mine: body, hasMine: true, operations: [annotationOp(store.core, store.outline.childrenOf(target), target, pending, body.trim(), guest ? readGuestName() : undefined)] })
             .then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') { setBody(''); done() } })
         }}>
           <div data-testid="aiws-annotation-draft-target">{t('aiworkspace.shell.annotations.target', { target: pending.label })}</div>
           {pending.context?.quote && pending.range && <div className="aiws-annotation-quote">{pending.context.quote.exact}</div>}
           <textarea aria-label={t('aiworkspace.shell.annotations.body')} autoFocus rows={2} value={body} onChange={(event) => setBody(event.target.value)} maxLength={4000} />
-          <button type="submit" data-testid="aiws-annotation-save">{t('aiworkspace.shell.annotations.save')}</button>
+          <button type="submit" data-testid="aiws-annotation-save" disabled={!canSave}>{t('aiworkspace.shell.annotations.save')}</button>
           <button type="button" onClick={() => { setBody(''); done() }}>{t('aiworkspace.common.cancel')}</button>
         </form>
       )}

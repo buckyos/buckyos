@@ -52,8 +52,7 @@ impl Srv {
         Srv { base: format!("http://{addr}/kapi/aiworkspace"), http: reqwest::Client::new(), steps: Vec::new(), nfs }
     }
 
-    /// Call `method` and record the shapes of its request and result.
-    async fn call(&mut self, token: Option<&str>, method: &str, params: Value) -> Value {
+    async fn raw(&self, token: Option<&str>, method: &str, params: Value) -> Value {
         static SEQ: AtomicU64 = AtomicU64::new(1);
         let seq = SEQ.fetch_add(1, Ordering::SeqCst);
         let sys = match token {
@@ -62,7 +61,12 @@ impl Srv {
         };
         let v: Value = self.http.post(&self.base).json(&json!({ "method": method, "params": params, "sys": sys })).send().await.unwrap().json().await.unwrap();
         assert!(v.get("error").is_none(), "{method}: {v}");
-        let result = v["result"].clone();
+        v["result"].clone()
+    }
+
+    /// Call `method` and record the shapes of its request and result.
+    async fn call(&mut self, token: Option<&str>, method: &str, params: Value) -> Value {
+        let result = self.raw(token, method, params.clone()).await;
         assert!(result["ok"] == json!(true) || matches!(result["status"].as_str(), Some("accepted" | "ok")), "{method}: {result}");
         self.steps.push(json!({ "method": method, "params": shape(&params), "result": shape(&result) }));
         result
@@ -298,4 +302,29 @@ fn readme_authorization_table_is_generated() {
         return;
     }
     assert_eq!(rest.split_once(END).unwrap().0, table, "README authorization table is stale; regenerate with AIWS_REGEN=1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn batch_reads_require_workspace_access_before_returning_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Srv::start(dir.path()).await;
+    let created = s.rpc("ws.create", json!({ "title": "private batch" })).await;
+    let ws = created["workspace_id"].clone();
+    for targets in [json!([]), json!([{ "entity_id": "data" }])] {
+        let denied = s.raw(Some("tok-bob"), "doc.read", json!({ "workspace_id": ws, "targets": targets })).await;
+        assert_eq!(denied["ok"], false, "{denied}");
+        assert_eq!(denied["error"]["code"], "NOT_FOUND", "{denied}");
+        assert!(denied.get("head_seq").is_none(), "{denied}");
+        assert!(denied.get("results").is_none(), "{denied}");
+    }
+    s.rpc("acl.set", json!({ "workspace_id": ws, "changes": [{ "subject": "bob", "resource": "data", "allow": ["read"] }] })).await;
+    let mixed = s.call(Some("tok-bob"), "doc.read", json!({
+        "workspace_id": ws, "targets": [{ "entity_id": "data" }, { "entity_id": "missing" }]
+    })).await;
+    assert_eq!(mixed["ok"], true, "{mixed}");
+    assert_eq!(mixed["results"][0]["entity_id"], "data", "{mixed}");
+    assert_eq!(mixed["results"][1]["error"]["code"], "NOT_FOUND", "{mixed}");
+    s.rpc("acl.set", json!({ "workspace_id": ws, "changes": [{ "subject": "bob", "resource": "data" }] })).await;
+    let revoked = s.raw(Some("tok-bob"), "doc.read", json!({ "workspace_id": ws, "targets": [] })).await;
+    assert_eq!(revoked["error"]["code"], "NOT_FOUND", "{revoked}");
 }

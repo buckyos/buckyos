@@ -71,6 +71,7 @@ export function TableCell({ showHandles, annotatedRecords, pager, sourceId, fiel
   const formulaValue = formula ? formulaResult(formula, row.values, fields) : null
   const allowsInput = !formula && !field.submitter && (field.type !== 'object_ref' || Boolean(field.ref_purpose))
   const editable = canEdit && allowsInput
+  const commentOnly = phone && !editable && Boolean(onAnnotate && !annotation)
   const disabled = !(editable || (activateCells && allowsInput))
   const shown = pending ? formatValue(field, current) : formula ? (formulaValue === null ? `= ${formula.$formula.expr}` : String(formulaValue)) : formatValue(field, value)
   const selectedOnPhone = phone && phoneCell?.recordId === row.record_id && phoneCell.fieldId === field.field_id
@@ -83,7 +84,7 @@ export function TableCell({ showHandles, annotatedRecords, pager, sourceId, fiel
     if (!phone) { startEdit(); return }
     const cell = { recordId: row.record_id, fieldId: field.field_id }
     onPhoneCell(cell)
-    onPhoneEdit(cell)
+    onPhoneEdit(cell, true)
   }
   // arrows move between cells; a typed character starts editing with it (a spreadsheet's habit, 流式页交互改进 §5.3)
   const onCellKey = (event: ReactKeyboardEvent<HTMLElement>) => {
@@ -133,6 +134,13 @@ export function TableCell({ showHandles, annotatedRecords, pager, sourceId, fiel
           onCommit={async (input) => { const ok = await write(input, editing.baseRev); setEditing(null); return ok }}
           onTab={(back) => onTab(rowIndex, colIndex, back)}
         />
+      ) : commentOnly ? (
+        <button type="button" className="aiws-cell-value aiws-cell-comment-only" {...cellAttrs} onKeyDown={onCellKey}
+          onClick={() => {
+            const cell = { recordId: row.record_id, fieldId: field.field_id }
+            onPhoneCell(cell)
+            onPhoneEdit(cell, false)
+          }}><CellDisplay def={field} value={formula ? undefined : current} shown={shown} /></button>
       ) : field.type === 'boolean' && !formula ? (
         <label className="aiws-cell-check">
           <input ref={valueRef as RefObject<HTMLInputElement>} type="checkbox" checked={ticked ?? current === true} aria-disabled={disabled} {...cellAttrs}
@@ -149,7 +157,7 @@ export function TableCell({ showHandles, annotatedRecords, pager, sourceId, fiel
         </button>
       )}
       {resizeColumn && !editing && <span className="aiws-grid-resize is-column" aria-hidden="true" onPointerDown={resizeColumn} />}
-      {!editing && href && editable && <a href={href} target="_blank" rel="noreferrer" aria-label={t('aiworkspace.blockui.openLink')}><ExternalLink size={14} /></a>}
+      {!editing && href && (editable || commentOnly) && <a href={href} target="_blank" rel="noreferrer" aria-label={t('aiworkspace.blockui.openLink')}><ExternalLink size={14} /></a>}
       {!editing && formula && <span className="aiws-chip" data-testid="aiws-cell-formula" title={t('aiworkspace.table.cell.formulaTitle', { formula: formula.$formula.expr })}>{t('aiworkspace.table.record.formula')}</span>}
       {!editing && meta?.derived && !resultTable && (
         <span className="aiws-chip aiws-chip-derived" data-testid="aiws-derived" title={t('aiworkspace.data.cell.derivedBy', { program: meta.derived.program ?? t('aiworkspace.data.cell.processingProgram') })}>

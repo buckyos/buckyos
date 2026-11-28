@@ -683,6 +683,7 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller, ses
         "doc.read" => state.with_ws(ws_id()?, |ws| match p.get("targets").and_then(Value::as_array) {
             // batch form: each item (`entity_id` | `path`, `as`, `selector`, …) succeeds or fails on its own
             Some(targets) => {
+                ws.require_ws_any(caller)?;
                 if targets.len() > 1000 {
                     return Err(WsError::limit("at most 1000 targets"));
                 }

@@ -89,7 +89,7 @@ export interface TableGridProps {
   annotatedRecords: ReadonlySet<string>
   phoneCell: CellRef | null
   onPhoneCell: (cell: CellRef | null) => void
-  onPhoneEdit: (cell: CellRef) => void
+  onPhoneEdit: (cell: CellRef, editable: boolean) => void
   columnsEditable: boolean
   onResize: (fieldId: string, width: number) => void
   onMove: (fieldId: string, to: number) => void
