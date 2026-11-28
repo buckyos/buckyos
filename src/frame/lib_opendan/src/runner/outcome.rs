@@ -289,8 +289,8 @@ pub(super) async fn apply_ui_reply(
 /// `error.kind` of a Work whose context does not fit after its compactions.
 pub const CONTEXT_LIMIT_ERROR_KIND: &str = "context_limit";
 
-/// `error.kind` of a Turn the AI service refused under the AI quota or
-/// resource policy of the Agent's owner.
+/// `error.kind` of a Turn the AI service refused under the AI policy of the
+/// Agent's owner (a limit, the Credit balance, visibility or price).
 pub const AI_QUOTA_ERROR_KIND: &str = "ai_quota";
 
 fn is_retryable_error(e: &LLMComputeError) -> bool {
@@ -796,15 +796,15 @@ async fn interpret_outcome(
             next.kind = FinishKind::Error;
             let mut retry = is_retryable_error(&error);
             next.error = Some(match &error {
-                // AI Center Quota PRD §9.6: the session learns only that the
-                // Agent is limited; the rules and balances stay with its owner.
+                // doc/aicc/aicc_user_policy.md §6: the session learns only
+                // that the Agent is limited; limits and balances stay with its owner.
                 LLMComputeError::Provider {
                     failure: ProviderFailure::Refused { code },
                     ..
                 } if code != REFUSED_CREDENTIALS => json!({
                     "kind": AI_QUOTA_ERROR_KIND,
                     "refusal": code,
-                    "message": "the AI service refused the call under the quota or resource policy of the Agent's owner",
+                    "message": "the AI service refused the call under the AI policy of the Agent's owner",
                     "recoverable": false,
                 }),
                 _ => json!({

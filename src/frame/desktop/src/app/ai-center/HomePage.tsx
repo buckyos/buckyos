@@ -2,17 +2,17 @@ import { useAIStatus } from './hooks/use-aicc-store'
 import { EnableAIGuide } from './components/home/EnableAIGuide'
 import { UsageDashboard } from './components/home/UsageDashboard'
 import { AiccEventsCard } from './components/home/AiccEventsCard'
-import { QuotaHomeCard } from './components/home/QuotaHomeCard'
+import { CreditHomeCard } from './components/home/CreditHomeCard'
 import type { AICenterPage } from './components/layout/Sidebar'
-import type { QuotaRuleDraft } from './datamodel/quota'
+import type { PolicyIntent } from './PoliciesPage'
 
 interface HomePageProps {
   navigate: (page: AICenterPage) => void
-  /** Usage breakdown rows (Provider, model, App) open the quota editor for that row. */
-  onSetQuota?: (draft: Partial<QuotaRuleDraft>) => void
+  /** Usage breakdown rows (Provider, model, App) open the policy of that row. */
+  onSetPolicy?: (intent: PolicyIntent) => void
 }
 
-export function HomePage({ navigate, onSetQuota }: HomePageProps) {
+export function HomePage({ navigate, onSetPolicy }: HomePageProps) {
   const status = useAIStatus()
 
   if (status.state === 'disabled') {
@@ -21,9 +21,9 @@ export function HomePage({ navigate, onSetQuota }: HomePageProps) {
 
   return (
     <div className="flex flex-col gap-6">
-      <QuotaHomeCard onOpen={() => navigate('quota')} />
+      <CreditHomeCard onOpenCredit={() => navigate('credit')} onOpenPolicies={() => navigate('policies')} />
       <AiccEventsCard onOpenRouting={() => navigate('routing')} />
-      <UsageDashboard onSetQuota={onSetQuota} />
+      <UsageDashboard onSetPolicy={onSetPolicy} />
     </div>
   )
 }

@@ -116,8 +116,8 @@ pub(crate) struct ResolvedProviderCall {
     pub resource_leases: Vec<crate::resource::ResourceLease>,
     pub pricing: ResolvedPricing,
     pub reported_cost_currency: Option<String>,
-    /// Model metadata output cap: the quota budget when the call sets none.
-    pub model_max_output_tokens: Option<u64>,
+    /// Request dimensions Credit price rules match against.
+    pub pricing_context: MatchContext,
     pub revisions: LoweringRevisions,
 }
 
@@ -608,6 +608,7 @@ impl<'a> CallResolver<'a> {
             .transpose()?;
         let mut pricing_context = request_match_context(api_name, &operation, &normalized);
         pricing_context.extend(video_dimensions);
+        let pricing_context = pricing_context;
         let mut target_pricing = target.pricing;
         if let Some(target) = target_pricing.as_mut() {
             if target.matched_amount.is_none() {
@@ -682,7 +683,7 @@ impl<'a> CallResolver<'a> {
             resource_access_context: None,
             resource_leases: Vec::new(),
             pricing,
-            model_max_output_tokens,
+            pricing_context,
             reported_cost_currency: target
                 .provider_rules_id
                 .as_deref()
@@ -1374,7 +1375,7 @@ pub(crate) fn collect_resource_requirements(value: &Value) -> Vec<ResourceRequir
 
 /// The first price rule of an inventory (discovery) price that matches the
 /// request; provider-rule prices are matched by the catalog itself.
-fn matched_rule_amount(pricing: &Pricing, context: &MatchContext) -> Option<f64> {
+pub(crate) fn matched_rule_amount(pricing: &Pricing, context: &MatchContext) -> Option<f64> {
     pricing.rules.iter().find_map(|rule| {
         crate::matching::CompiledMatchRule::compile(
             rule.when.clone(),
@@ -1887,8 +1888,7 @@ mod tests {
             unreachable!()
         };
         request.max_output_tokens = Some(150);
-        let lowered = resolver.lower(&route, &call, target("secret")).unwrap();
-        assert_eq!(lowered.model_max_output_tokens, Some(150));
+        resolver.lower(&route, &call, target("secret")).unwrap();
         let AiccCall::ChatCompletionsCreate(request) = &mut call else {
             unreachable!()
         };

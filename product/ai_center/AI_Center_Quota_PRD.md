@@ -1,5 +1,7 @@
 # AI Center Token Quota 与资源可见性 PRD
 
+> **2026-11-27 起被部分取代。** 额度与可见性已合并为“用户策略”，并新增 Credit 价目表、余额与充值，见 [AICC 用户策略与 Credit 计费 TODO](../../notepads/aicc-user-policy-credit-todo.md)（owner 已定案）与实现说明 [aicc_user_policy.md](../../doc/aicc/aicc_user_policy.md)。本文仍然有效的部分：§3.1 调用身份与归属、§3.3 许愿格 AICC 归属、§3.4 中“最终列表 = 策略允许 ∩ 实际清单、服务端过滤、隐藏资源不泄露、无法求值时不放行”、§7.3 “换模型不能绕过、额度恢复不自动重放”、§9.6 “他人只看到通用提示”。被取代：§3.4 “按组取并集、不能对个人拒绝”、§5.1–§5.3 固定 UTC 窗口、周期切换与总量额度、§6 预占口径、§7.1 第 3–5 步、§7.2 待核对与暂估、§7.4 “本次预算超额”（`quota_budget_exceeded` 已删除，新增 `credit_insufficient`）、全部 `quota.*` / `visibility.*` 方法。
+
 - 产品名称：AI Center / AICC
 - 文档类型：PRD（产品需求文档）
 - 状态：v1.0 定稿；2026-10-22 已按本文实现（§17），真实 Zone 尚未验收
@@ -14,7 +16,7 @@
 | 2026-10-21 | 草案 | 用户 / App 周期额度、用户自限、许愿格 AICC 归属、用户组资源可见性、总量额度与管理员充值 |
 | 2026-10-22 | v1.0 | 补术语；可见性策略主体纳入 UserType 组，新增“整个 Provider（跟随清单）”允许项和开箱默认策略；明确 Agent、Limited、External、匿名访问者的 AICC 身份；错误类别；页面清单与消费方提示；当前实现差距；非功能要求、交付拆分、已知风险 |
 | 2026-10-22 | v1.0 定稿 | 评审确认 §16 各项取值，写入正文：默认策略含 `type:user`、默认输出预算来源、待核对期限、管理操作不要求 sudo、80% 阈值固定、准入延迟指标 |
-| 2026-10-22 | 实现 | M1–M6 实现，记录见 §17，技术说明见 [AICC Token 额度与资源可见性：实现说明](../../doc/aicc/aicc_token_quota.md) |
+| 2026-10-22 | 实现 | M1–M6 实现，记录见 §17，技术说明原为 `doc/aicc/aicc_token_quota.md`，已被 [aicc_user_policy.md](../../doc/aicc/aicc_user_policy.md) 取代 |
 
 ## 1. 背景与目标
 
@@ -585,7 +587,7 @@ M1 是 M2、M3 的前提；M4、M5、M6 在 M3 的协议稳定后并行。
 
 ## 17. 实现记录（2026-10-22）
 
-技术说明：[AICC Token 额度与资源可见性：实现说明](../../doc/aicc/aicc_token_quota.md)。
+技术说明：原 `doc/aicc/aicc_token_quota.md` 已删除，现行实现见 [aicc_user_policy.md](../../doc/aicc/aicc_user_policy.md)。
 
 | 交付 | 主要落点 |
 | --- | --- |

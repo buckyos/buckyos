@@ -73,13 +73,14 @@ Deno.test("failures of the AICC call are told apart by their code", async () => 
   const rpc = (code: string, message: string, data?: unknown) => Object.assign(new Error(message), { code, data });
 
   await assertModelError(() => failing(rpc("no_candidate_model", "llm.translate has no model")), "config", "no_candidate_model");
-  await assertModelError(() => failing(rpc("quota_exhausted", "the daily quota is used up")), "config");
+  await assertModelError(() => failing(rpc("quota_exhausted", "the daily limit is used up")), "config");
+  await assertModelError(() => failing(rpc("credit_insufficient", "the AI Credit balance is used up")), "config");
   await assertModelError(() => failing(rpc("resource_not_permitted", "not permitted")), "config");
   await assertModelError(() => failing(rpc("fallback_not_allowed", "the model is down and fallback is off")), "config");
   await assertModelError(() => failing(rpc("http_error", "RPC call error: 403", { status: 403 })), "config");
   await assertModelError(() => failing(new Error("RPC call error: route_failed: no route candidate generated")), "config");
   await assertModelError(() => failing(rpc("transport", "RPC call failed: connection reset")), "transient");
-  await assertModelError(() => failing(rpc("quota_unavailable", "the quota rule cannot be read")), "transient");
+  await assertModelError(() => failing(rpc("quota_unavailable", "the policy cannot be read")), "transient");
   await assertModelError(() => failing(rpc("http_error", "RPC call error: 504", { status: 504 })), "transient");
   await assertModelError(() => failing(rpc("provider_error", "the provider answered 500", { retriable: true })), "transient");
   await assertModelError(() => failing(rpc("provider_error", "bad request")), "failed");

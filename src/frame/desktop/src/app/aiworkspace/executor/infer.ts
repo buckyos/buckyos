@@ -17,7 +17,7 @@ export type Infer = (req: InferRequest) => Promise<InferAnswer>
 /** The run's sub-code of an AICC refusal (§7.4). */
 const REFUSALS: Record<string, string> = {
   quota_exhausted: 'AI_QUOTA_EXHAUSTED',
-  quota_budget_exceeded: 'AI_QUOTA_BUDGET_EXCEEDED',
+  credit_insufficient: 'AI_CREDIT_INSUFFICIENT',
   resource_not_permitted: 'AI_RESOURCE_NOT_PERMITTED',
   attribution_unavailable: 'AI_ATTRIBUTION_UNAVAILABLE',
   credentials: 'AI_UNAVAILABLE',

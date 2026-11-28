@@ -10,50 +10,52 @@ import { AddProviderPage } from './AddProviderPage'
 import { ModelsPage } from './ModelsPage'
 import { RoutingPage } from './RoutingPage'
 import { PlaygroundPage } from './PlaygroundPage'
-import { QuotaPage } from './QuotaPage'
-import { VisibilityPage } from './VisibilityPage'
-import type { QuotaRuleDraft } from './datamodel/quota'
+import { PoliciesPage, type PolicyIntent } from './PoliciesPage'
+import { PricesPage } from './PricesPage'
+import { CreditPage } from './CreditPage'
 import { aiCenterLaunchSchema } from './launch'
 import type { AppContentLoaderProps } from '../types'
 
-interface QuotaIntent {
-  intent: Partial<QuotaRuleDraft> | null
-  setIntent: (intent: Partial<QuotaRuleDraft> | null) => void
+interface PolicyIntentState {
+  intent: PolicyIntent | null
+  setIntent: (intent: PolicyIntent | null) => void
 }
 
-function PageRouter({ page, navigate, quota }: { page: AICenterPage; navigate: (p: AICenterPage) => void; quota: QuotaIntent }) {
-  const setQuota = (draft: Partial<QuotaRuleDraft>) => {
-    quota.setIntent(draft)
-    navigate('quota')
+function PageRouter({ page, navigate, policy }: { page: AICenterPage; navigate: (p: AICenterPage) => void; policy: PolicyIntentState }) {
+  const setPolicy = (intent: PolicyIntent) => {
+    policy.setIntent(intent)
+    navigate('policies')
   }
   switch (page) {
     case 'home':
-      return <HomePage navigate={navigate} onSetQuota={setQuota} />
+      return <HomePage navigate={navigate} onSetPolicy={setPolicy} />
     case 'usage':
-      return <UsagePage />
-    case 'quota':
-      return <QuotaPage intent={quota.intent} onIntentConsumed={() => quota.setIntent(null)} />
-    case 'visibility':
-      return <VisibilityPage />
+      return <UsagePage onSetPolicy={setPolicy} />
+    case 'policies':
+      return <PoliciesPage intent={policy.intent} onIntentConsumed={() => policy.setIntent(null)} />
+    case 'prices':
+      return <PricesPage />
+    case 'credit':
+      return <CreditPage />
     case 'providers':
       return <ProvidersPage navigate={navigate} />
     case 'providers/add':
       return <AddProviderPage navigate={navigate} />
     case 'models':
-      return <ModelsPage />
+      return <ModelsPage navigate={navigate} />
     case 'playground':
       return null
     case 'routing':
       return <RoutingPage />
     default:
-      return <HomePage navigate={navigate} onSetQuota={setQuota} />
+      return <HomePage navigate={navigate} onSetPolicy={setPolicy} />
   }
 }
 
 export function AICenterAppPanel({ launch }: AppContentLoaderProps) {
   const parsed = aiCenterLaunchSchema.safeParse(launch?.payload)
   const [store] = useState(() => createAICCMgr())
-  const [quotaIntent, setQuotaIntent] = useState<Partial<QuotaRuleDraft> | null>(null)
+  const [policyIntent, setPolicyIntent] = useState<PolicyIntent | null>(null)
 
   useEffect(() => {
     void store.refresh()
@@ -63,7 +65,7 @@ export function AICenterAppPanel({ launch }: AppContentLoaderProps) {
     <AICCStoreContext.Provider value={store}>
       <AICenterShell key={launch?.requestId ?? 'default'} initialPage={parsed.success ? parsed.data.page : undefined}>
         {(page, navigate) => <>
-          <PageRouter page={page} navigate={navigate} quota={{ intent: quotaIntent, setIntent: setQuotaIntent }} />
+          <PageRouter page={page} navigate={navigate} policy={{ intent: policyIntent, setIntent: setPolicyIntent }} />
           <div hidden={page !== 'playground'}><PlaygroundPage active={page === 'playground'} /></div>
         </>}
       </AICenterShell>

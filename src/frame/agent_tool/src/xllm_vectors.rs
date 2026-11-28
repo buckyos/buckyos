@@ -2069,7 +2069,7 @@ async fn loop_script_cases() -> Vec<Value> {
                 ProviderFailure::Refused {
                     code: REFUSED_QUOTA_EXHAUSTED.into(),
                 },
-                "token quota is exhausted",
+                "a usage limit is used up",
             )],
         },
         LoopInput {
@@ -2374,8 +2374,8 @@ async fn provider_error_cases() -> Vec<Value> {
             aicc_detailed(C::QuotaExhausted, true, None),
         ),
         (
-            "rpc_quota_budget_exceeded",
-            aicc_detailed(C::QuotaBudgetExceeded, false, None),
+            "rpc_credit_insufficient",
+            aicc_detailed(C::CreditInsufficient, false, None),
         ),
         (
             "rpc_resource_not_permitted",

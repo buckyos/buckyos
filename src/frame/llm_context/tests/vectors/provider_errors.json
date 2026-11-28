@@ -45,20 +45,20 @@
       "expect": {
         "failure": {
           "refused": {
-            "code": "quota_budget_exceeded"
+            "code": "credit_insufficient"
           }
         }
       },
       "input": {
-        "code": "quota_budget_exceeded",
+        "code": "credit_insufficient",
         "data": {
-          "code": "quota_budget_exceeded",
-          "message": "aicc quota_budget_exceeded"
+          "code": "credit_insufficient",
+          "message": "aicc credit_insufficient"
         },
         "kind": "rpc_detailed",
-        "message": "aicc quota_budget_exceeded (quota_budget_exceeded)"
+        "message": "aicc credit_insufficient (credit_insufficient)"
       },
-      "name": "rpc_quota_budget_exceeded",
+      "name": "rpc_credit_insufficient",
       "ts": true
     },
     {

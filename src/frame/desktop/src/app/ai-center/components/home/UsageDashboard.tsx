@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { Activity, Check, ChevronDown, ChevronUp, Copy, CreditCard, DollarSign, Filter, Gauge, HelpCircle, Route, Wallet } from 'lucide-react'
+import { Activity, Check, ChevronDown, ChevronUp, Copy, CreditCard, DollarSign, Filter, HelpCircle, Route, ShieldCheck, Wallet } from 'lucide-react'
 import { useMediaQuery } from '@mui/material'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useAIStatus, useProviders } from '../../hooks/use-aicc-store'
@@ -10,8 +10,10 @@ import { SummaryCard } from '../shared/SummaryCard'
 import { PagedListFooter } from '../shared/paged-list'
 import { LongField } from '../shared/LongField'
 import { RouteTraceAuditPanel } from '../usage/RouteTraceAuditPanel'
-import type { RouteTrace, UsageEvent, UsageEventsPage, UsageOverview, UsageScope, UsageSummary, UsageTimeRange, UserUsageSummary } from '../../../../api/aicc_mgr'
-import { formatTokens as formatQuotaTokens, type QuotaRuleDraft } from '../../datamodel/quota'
+import type { GroupUsageSummary, RouteTrace, UsageEvent, UsageEventsPage, UsageOverview, UsageScope, UsageSummary, UsageTimeRange, UserUsageSummary } from '../../../../api/aicc_mgr'
+import { exactCredit, formatCredit, formatTokens as formatQuotaTokens, splitExactModel } from '../../datamodel/policy'
+import { useSubjectLabel } from '../policy/policy-labels'
+import type { PolicyIntent } from '../../PoliciesPage'
 
 function formatTokens(n: number, locale: string): string {
   if (locale !== 'en') return formatQuotaTokens(n, locale)
@@ -54,6 +56,19 @@ function usageFinanceAmount(event: UsageEvent): number {
 function formatUsageEventMoney(event: UsageEvent, locale: string): string {
   const currency = event.finance_snapshot?.currency
   return currency ? formatMoney(usageFinanceAmount(event), currency, locale) : '-'
+}
+
+/** AI Credit of one event: the amount, or why there is none. */
+function usageCredit(event: UsageEvent, locale: string, t: TFn): string {
+  if (event.credit_status === 'free') return t('aiCenter.home.creditFree', 'Free')
+  if (event.credit_status === 'unpriced') return t('aiCenter.home.creditUnpriced', 'Not priced')
+  if (event.credit_status === 'unknown_usage') return t('aiCenter.home.creditUnknown', 'Pending')
+  return event.credit === undefined ? '-' : formatCredit(event.credit, locale)
+}
+
+function creditTotalText(total: string, complete: boolean, locale: string, t: TFn): string {
+  const amount = formatCredit(total, locale)
+  return complete ? amount : `${amount} · ${t('aiCenter.home.creditPartial', 'some calls not priced')}`
 }
 
 function usageTokens(event: UsageEvent): number {
@@ -211,10 +226,11 @@ function sameFilterText(left: FilterText, right: FilterText): boolean {
 
 interface UsageDashboardProps {
   mode?: 'home' | 'usage'
-  onSetQuota?: (draft: Partial<QuotaRuleDraft>) => void
+  /** Breakdown rows open the policy of the row's user (or App), focused on the row's Provider or model. */
+  onSetPolicy?: (intent: PolicyIntent) => void
 }
 
-export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProps) {
+export function UsageDashboard({ mode = 'home', onSetPolicy }: UsageDashboardProps) {
   const { t } = useI18n()
   const store = useAICCStore()
   const version = useSyncExternalStore(store.subscribe, store.getSnapshotVersion)
@@ -289,7 +305,8 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
             scope={scope}
             overview={result.overview}
             onSelectUser={isAdmin && scopeKey === 'system' ? (user) => setSelection(`user:${user}`) : undefined}
-            onSetQuota={scopeKey === 'mine' ? onSetQuota : undefined}
+            onSetPolicy={scopeKey === 'system' ? undefined : onSetPolicy}
+            policyUser={scopeKey.startsWith('user:') ? scopeKey.slice(5) : undefined}
           />
         </div>
       ) : <div role="status" className="p-4 text-sm" style={{ color: 'var(--cp-muted)' }}>{t('common.loading', 'Loading...')}</div>}
@@ -297,10 +314,12 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProp
   )
 }
 
-function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSelectUser }: UsageDashboardProps & {
+function ScopedUsageDashboard({ mode = 'home', onSetPolicy, policyUser, scope, overview, onSelectUser }: UsageDashboardProps & {
   scope: UsageScope
   overview: UsageOverview
   onSelectUser?: (user: string) => void
+  /** The user a "set policy" row action is for; the viewer when absent. */
+  policyUser?: string
 }) {
   const { t, locale } = useI18n()
   const store = useAICCStore()
@@ -561,10 +580,10 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
     },
   ]
   const activeHomeBreakdown = homeBreakdowns.find((item) => item.key === homeBreakdownKey) ?? homeBreakdowns[0]
-  const setQuotaFor = (key: HomeBreakdownKey, label: string) => {
-    if (key === 'provider') onSetQuota?.({ resource: { type: 'provider', provider_instance_name: label } })
-    if (key === 'model') onSetQuota?.({ resource: { type: 'model', exact_model: label } })
-    if (key === 'appAgent') onSetQuota?.({ object: { type: 'user_app', user_id: '', app_id: label } })
+  const setPolicyFor = (key: HomeBreakdownKey, label: string) => {
+    if (key === 'provider') onSetPolicy?.({ userId: policyUser, provider: label })
+    if (key === 'model') onSetPolicy?.({ userId: policyUser, model: label, provider: splitExactModel(label).provider })
+    if (key === 'appAgent') onSetPolicy?.({ userId: policyUser, appId: label })
   }
   const selectHomeBreakdown = (key: HomeBreakdownKey, label: string) => {
     if (key === 'provider') applyBreakdownFilter('provider', label)
@@ -713,6 +732,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
             <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.this_month_tokens, locale) })} />
             <Stat label={t('aiCenter.home.last30Days', 'Last 30 days')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.total_tokens, locale) })} />
             <Stat label={t('aiCenter.home.periodCost', 'Est. cost · 30 days')} value={formatFinanceTotals(summary.finance_totals, locale)} />
+            <Stat label={t('aiCenter.home.periodCredit', 'AI Credit · 30 days')} value={creditTotalText(summary.credit_total, summary.credit_complete, locale, t)} />
           </div>
         </section>
       </div>}
@@ -731,6 +751,8 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
       </section>}
 
       {!isUsagePage && onSelectUser && <UserUsageTable users={overview.users} onSelect={onSelectUser} />}
+
+      {onSelectUser && overview.groups && <GroupUsageTable groups={overview.groups} />}
 
       {!isUsagePage && (
         <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
@@ -763,7 +785,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
                 total={summary.total_tokens}
                 activeLabel={item.activeLabel}
                 onSelect={item.key === 'apiType' ? undefined : (label) => selectHomeBreakdown(item.key, label)}
-                onSetQuota={item.key === 'apiType' || !onSetQuota ? undefined : (label) => setQuotaFor(item.key, label)}
+                onSetPolicy={item.key === 'apiType' || !onSetPolicy ? undefined : (label) => setPolicyFor(item.key, label)}
                 viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
                 showLessLabel={t('aiCenter.home.showLess', 'Show less')}
                 filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
@@ -778,7 +800,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
               total={summary.total_tokens}
               activeLabel={activeHomeBreakdown.activeLabel}
               onSelect={activeHomeBreakdown.key === 'apiType' ? undefined : (label) => selectHomeBreakdown(activeHomeBreakdown.key, label)}
-              onSetQuota={activeHomeBreakdown.key === 'apiType' || !onSetQuota ? undefined : (label) => setQuotaFor(activeHomeBreakdown.key, label)}
+              onSetPolicy={activeHomeBreakdown.key === 'apiType' || !onSetPolicy ? undefined : (label) => setPolicyFor(activeHomeBreakdown.key, label)}
               viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
               showLessLabel={t('aiCenter.home.showLess', 'Show less')}
               filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
@@ -905,7 +927,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
           </div>
         </div>
         <div className="hidden max-h-[560px] overflow-auto md:block">
-          <table className="w-full min-w-[1120px] table-fixed">
+          <table className="w-full min-w-[1210px] table-fixed">
             <colgroup>
               <col className="w-[108px]" />
               <col className="w-[160px]" />
@@ -915,6 +937,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
               <col className="w-[210px]" />
               <col className="w-[90px]" />
               <col className="w-[86px]" />
+              <col className="w-[90px]" />
               <col className="w-[82px]" />
             </colgroup>
             <thead className="sticky top-0 z-10">
@@ -928,6 +951,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
                   ['taskSession', t('aiCenter.home.taskSession', 'Task / Session')],
                   ['tokens', t('aiCenter.home.colTokens', 'Tokens')],
                   ['cost', t('aiCenter.home.colCost', 'Cost')],
+                  ['credit', t('aiCenter.home.colCredit', 'AI Credit')],
                   ['status', t('aiCenter.home.colStatus', 'Status')],
                 ] as Array<[string, string]>).map(([key, h]) => (
                   <th key={key} className="text-left text-xs font-medium px-4 py-2" style={{ color: 'var(--cp-muted)' }}>
@@ -985,6 +1009,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
                     </td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatTokens(tokens, locale)}</td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatUsageEventMoney(event, locale)}</td>
+                    <td className="px-4 py-2 text-xs tabular-nums" data-testid="usage-event-credit" title={event.credit ? exactCredit(event.credit) : undefined} style={{ color: event.credit_status === 'unpriced' || event.credit_status === 'unknown_usage' ? 'var(--cp-warning)' : 'var(--cp-text)' }}>{usageCredit(event, locale, t)}</td>
                     <td className="px-4 py-2 text-xs" style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>{usageStatusLabel(event.status, t)}</td>
                   </tr>
                 )
@@ -992,7 +1017,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSe
               {usageLoading && pagedEvents.length === 0 && <UsageTableSkeletonRows />}
               {!usageLoading && pagedEvents.length === 0 && (
                 <tr style={{ borderTop: '1px solid var(--cp-border)' }}>
-                  <td className="px-4 py-8 text-center text-xs" colSpan={9} style={{ color: 'var(--cp-muted)' }}>
+                  <td className="px-4 py-8 text-center text-xs" colSpan={10} style={{ color: 'var(--cp-muted)' }}>
                     {t('aiCenter.home.noUsageEvents', 'No usage events match the current filters.')}
                   </td>
                 </tr>
@@ -1124,7 +1149,7 @@ function UserUsageTable({ users, onSelect }: { users: UserUsageSummary[]; onSele
         <table className="w-full text-left text-xs" style={{ color: 'var(--cp-text)' }}>
           <thead style={{ background: 'var(--cp-bg)', color: 'var(--cp-muted)' }}>
             <tr>
-              {[t('aiCenter.home.usageUser', 'User'), t('aiCenter.home.requests', 'Requests'), 'Tokens', t('aiCenter.home.estimatedCost', 'Est. Cost')].map((label) => <th key={label} className="px-3 py-2 font-medium">{label}</th>)}
+              {[t('aiCenter.home.usageUser', 'User'), t('aiCenter.home.requests', 'Requests'), 'Tokens', t('aiCenter.home.estimatedCost', 'Est. Cost'), t('aiCenter.home.colCredit', 'AI Credit')].map((label) => <th key={label} className="px-3 py-2 font-medium">{label}</th>)}
             </tr>
           </thead>
           <tbody>
@@ -1134,9 +1159,10 @@ function UserUsageTable({ users, onSelect }: { users: UserUsageSummary[]; onSele
                 <td className="px-3 py-2 tabular-nums">{user.total_requests.toLocaleString(locale)}</td>
                 <td className="px-3 py-2 tabular-nums" title={user.total_tokens.toLocaleString(locale)}>{formatTokens(user.total_tokens, locale)}</td>
                 <td className="px-3 py-2"><span className="whitespace-pre-line">{formatFinanceTotals(user.finance_totals, locale, true)}</span>{!user.finance_complete && <div style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.partialFinance', 'Partial financial total')}</div>}</td>
+                <td className="px-3 py-2 tabular-nums" data-testid="user-usage-credit" title={exactCredit(user.credit_total)}>{formatCredit(user.credit_total, locale)}{!user.credit_complete && <div style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.creditPartial', 'some calls not priced')}</div>}</td>
               </tr>
             ))}
-            {users.length === 0 && <tr><td colSpan={4} className="px-3 py-8 text-center" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.noBreakdownData', 'No usage data yet.')}</td></tr>}
+            {users.length === 0 && <tr><td colSpan={5} className="px-3 py-8 text-center" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.noBreakdownData', 'No usage data yet.')}</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1153,6 +1179,40 @@ function UserUsageTable({ users, onSelect }: { users: UserUsageSummary[]; onSele
         totalCount={users.length}
         labels={{ previous: t('common.previous', 'Previous'), next: t('common.next', 'Next'), page: t('aiCenter.home.pageNumber', 'Page {{page}}'), loading: t('common.loading', 'Loading...'), loadMore: t('common.loadMore', 'Load more'), retry: t('common.retry', 'Retry'), error: '' }}
       />}
+    </section>
+  )
+}
+
+/** Usage of each user type and system group (the groups each call's user was in at the time). */
+function GroupUsageTable({ groups }: { groups: GroupUsageSummary[] }) {
+  const { t, locale } = useI18n()
+  const subjectLabel = useSubjectLabel()
+  return (
+    <section data-testid="usage-by-group" className="min-w-0 overflow-hidden rounded-xl" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+      <div className="flex flex-wrap items-center justify-between gap-2 p-4">
+        <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.home.byGroup', 'Usage by user group')}</h3>
+        <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.byGroupHint', 'A user counts in each of their groups · last 30 days')}</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs" style={{ color: 'var(--cp-text)' }}>
+          <thead style={{ background: 'var(--cp-bg)', color: 'var(--cp-muted)' }}>
+            <tr>
+              {[t('aiCenter.home.group', 'Group'), t('aiCenter.home.requests', 'Requests'), 'Tokens', t('aiCenter.home.colCredit', 'AI Credit')].map((label) => <th key={label} className="px-3 py-2 font-medium">{label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map((group) => (
+              <tr key={group.subject} data-testid="group-usage-row" data-subject={group.subject} style={{ borderTop: '1px solid var(--cp-border)' }}>
+                <td className="max-w-48 break-all px-3 py-2">{subjectLabel(group.subject)}<div style={{ color: 'var(--cp-muted)' }}>{group.subject}</div></td>
+                <td className="px-3 py-2 tabular-nums">{group.total_requests.toLocaleString(locale)}</td>
+                <td className="px-3 py-2 tabular-nums" title={group.total_tokens.toLocaleString(locale)}>{formatTokens(group.total_tokens, locale)}</td>
+                <td className="px-3 py-2 tabular-nums" title={exactCredit(group.credit_total)}>{creditTotalText(group.credit_total, group.credit_complete, locale, t)}</td>
+              </tr>
+            ))}
+            {groups.length === 0 && <tr><td colSpan={4} className="px-3 py-8 text-center" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.noBreakdownData', 'No usage data yet.')}</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </section>
   )
 }
@@ -1327,6 +1387,7 @@ function UsageEventCard({
     `${t('aiCenter.home.filterModel')}: ${event.exact_model}`,
     `${t('aiCenter.home.colTokens')}: ${formatTokens(tokens, locale)}`,
     `${t('aiCenter.home.colCost')}: ${formatUsageEventMoney(event, locale)}`,
+    `${t('aiCenter.home.colCredit')}: ${usageCredit(event, locale, t)}`,
     `${t('aiCenter.home.colTime')}: ${formatLocalTime(event.timestamp, locale)}`,
     `${t('aiCenter.home.colStatus')}: ${usageStatusLabel(event.status, t)}`,
     event.session_id ? `${t('aiCenter.home.taskSession')}: ${event.session_id}` : '',
@@ -1376,6 +1437,7 @@ function UsageEventCard({
         <UsageCardRow label={t('aiCenter.home.filterProvider', 'Provider')} value={providerDisplayName} title={providerDisplayName === providerIdentifier ? providerDisplayName : `${providerDisplayName} (${providerIdentifier})`} />
         <UsageCardRow label={t('aiCenter.home.filterModel', 'Model')} value={event.exact_model} mono allowWrap />
         <UsageCardRow label={t('aiCenter.home.filterAppAgent', 'App / Agent')} value={appAgent} />
+        <UsageCardRow label={t('aiCenter.home.colCredit', 'AI Credit')} value={usageCredit(event, locale, t)} />
         {event.session_id && !onOpenTrace && <UsageCardRow label={t('aiCenter.home.taskSession', 'Task / Session')} value={event.session_id} mono />}
         {event.session_id && onOpenTrace && (
           <div className="flex min-w-0 items-center justify-between gap-2">
@@ -1907,7 +1969,7 @@ function Breakdown({
   total,
   activeLabel,
   onSelect,
-  onSetQuota,
+  onSetPolicy,
   viewAllLabel,
   showLessLabel,
   filterLabel,
@@ -1918,7 +1980,7 @@ function Breakdown({
   total: number
   activeLabel?: string
   onSelect?: (label: string) => void
-  onSetQuota?: (label: string) => void
+  onSetPolicy?: (label: string) => void
   viewAllLabel: string
   showLessLabel: string
   filterLabel: string
@@ -1952,17 +2014,17 @@ function Breakdown({
                 onClick={onSelect ? () => onSelect(label) : undefined}
               />
             </div>
-            {onSetQuota && (
+            {onSetPolicy && (
               <button
                 type="button"
-                data-testid="usage-set-quota"
-                onClick={() => onSetQuota(label)}
-                title={`${t('aiCenter.quota.setQuota', 'Set quota')}: ${label}`}
-                aria-label={`${t('aiCenter.quota.setQuota', 'Set quota')}: ${label}`}
+                data-testid="usage-set-policy"
+                onClick={() => onSetPolicy(label)}
+                title={`${t('aiCenter.policy.setPolicy', 'Set policy')}: ${label}`}
+                aria-label={`${t('aiCenter.policy.setPolicy', 'Set policy')}: ${label}`}
                 className="shrink-0 rounded-md p-2 outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cp-accent)]"
                 style={{ color: 'var(--cp-muted)' }}
               >
-                <Gauge size={14} />
+                <ShieldCheck size={14} />
               </button>
             )}
           </div>

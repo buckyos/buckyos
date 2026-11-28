@@ -22,17 +22,17 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Once;
 use std::time::Duration;
 
-mod quota;
-pub(crate) use quota::{AdmitOutcome, AttemptAdmission, QuotaWriteError, SettleOutcome};
+mod policy;
+pub(crate) use policy::{ChargeOutcome, CounterState, CreditEntryDraft, PolicyWriteError};
 
 const SERVICE_NAME: &str = "aicc";
-const STORAGE_SCHEMA_VERSION: i64 = 3;
+const STORAGE_SCHEMA_VERSION: i64 = 4;
 const INVENTORY_SCHEMA_VERSION: i64 = 1;
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 1_000;
 static INSTALL_DRIVERS: Once = Once::new();
 
-/// The complete current table set, applied together with `quota::QUOTA_SCHEMA`
+/// The complete current table set, applied together with `policy::POLICY_SCHEMA`
 /// only when the database holds no AICC table yet.
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -199,6 +199,8 @@ pub(crate) struct ProviderCompletion {
     pub finance_snapshot: Option<Value>,
     pub operator_id: Option<String>,
     pub attribution: Option<buckyos_api::AiccAttribution>,
+    pub credit: Option<(i64, buckyos_api::CreditChargeStatus)>,
+    pub subjects: Vec<String>,
     pub created_at_ms: i64,
 }
 
@@ -254,7 +256,7 @@ impl AiccStorage {
         } else {
             storage.init_schema().await?;
         }
-        storage.seed_default_visibility().await?;
+        storage.seed_default_policies().await?;
         Ok(storage)
     }
 
@@ -273,7 +275,9 @@ impl AiccStorage {
     }
 
     /// Creates the full current schema in an empty database; an existing one
-    /// must already record `STORAGE_SCHEMA_VERSION`.
+    /// must already record `STORAGE_SCHEMA_VERSION`, or version 3, which is
+    /// upgraded once (its token quota and visibility tables are dropped, the
+    /// usage history is kept).
     async fn init_schema(&self) -> StorageResult<()> {
         let tables_sql = match self.backend {
             RdbBackend::Sqlite => "SELECT name FROM main.sqlite_schema",
@@ -290,7 +294,7 @@ impl AiccStorage {
             .fetch_all(&mut *transaction)
             .await?;
         if tables.is_empty() {
-            for statement in [SCHEMA, quota::QUOTA_SCHEMA]
+            for statement in [SCHEMA, policy::POLICY_SCHEMA]
                 .into_iter()
                 .flat_map(|script| script.split(';'))
                 .map(str::trim)
@@ -317,6 +321,7 @@ impl AiccStorage {
             };
             match version {
                 Some(STORAGE_SCHEMA_VERSION) => {}
+                Some(3) => self.upgrade_from_v3(&mut transaction).await?,
                 Some(version) => {
                     return Err(StorageError::UnsupportedSchema(format!(
                         "schema version {version}; this build reads {STORAGE_SCHEMA_VERSION}"
@@ -331,6 +336,45 @@ impl AiccStorage {
         }
         transaction.commit().await?;
         Ok(())
+    }
+
+    async fn upgrade_from_v3(&self, transaction: &mut sqlx::Transaction<'_, Any>) -> StorageResult<()> {
+        for table in policy::V3_TABLES {
+            transaction
+                .execute(format!("DROP TABLE IF EXISTS {table}").as_str())
+                .await?;
+        }
+        transaction
+            .execute("DELETE FROM aicc_state WHERE state_key IN ('visibility_revision','visibility_seeded')")
+            .await?;
+        transaction
+            .execute("ALTER TABLE aicc_usage_event ADD COLUMN credit_micro BIGINT")
+            .await?;
+        transaction
+            .execute("ALTER TABLE aicc_usage_event ADD COLUMN credit_status TEXT")
+            .await?;
+        for statement in policy::POLICY_SCHEMA
+            .split(';')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            transaction.execute(statement).await?;
+        }
+        let update = self.sql(
+            "UPDATE aicc_schema_meta SET schema_version=?, updated_at_ms=? WHERE schema_key='aicc'",
+        );
+        sqlx::query(&update)
+            .bind(STORAGE_SCHEMA_VERSION)
+            .bind(now_ms_i64())
+            .execute(&mut **transaction)
+            .await?;
+        log::info!("AICC storage upgraded from schema version 3 to {STORAGE_SCHEMA_VERSION}");
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pool_for_tests(&self) -> &AnyPool {
+        &self.pool
     }
 
     pub(crate) async fn open_from_service_spec() -> StorageResult<Self> {
@@ -886,6 +930,11 @@ impl AiccStorage {
             finance_snapshot_json: completion.finance_snapshot,
             operator_id: completion.operator_id,
             attribution: completion.attribution,
+            credit: completion
+                .credit
+                .map(|(micro, _)| buckyos_api::format_credit_micro(micro)),
+            credit_status: completion.credit.map(|(_, status)| status),
+            subjects: completion.subjects,
             created_at_ms: completion.created_at_ms,
         };
         self.write_usage(&event).await
@@ -918,12 +967,21 @@ impl AiccStorage {
             ));
         }
         let finance = e.finance_snapshot_json.as_ref().and_then(valid_finance);
+        let credit_micro = e
+            .credit
+            .as_deref()
+            .map(|credit| {
+                buckyos_api::parse_credit_micro(credit)
+                    .ok_or_else(|| StorageError::InvalidRecord("usage credit is invalid".into()))
+            })
+            .transpose()?;
+        let mut tx = self.pool.begin().await?;
         let sql = self.sql("INSERT INTO aicc_usage_event
           (event_id,tenant_id,user_id,caller_app_id,task_id,trace_id,idempotency_key,method,capability,
            request_model,provider_instance_name,provider_model,input_tokens,output_tokens,total_tokens,
            request_units,usage_json,finance_snapshot_json,finance_amount,finance_currency,finance_valid,
-           operator_id,attribution_json,created_at_ms)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING");
+           operator_id,attribution_json,credit_micro,credit_status,created_at_ms)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING");
         let result = sqlx::query(&sql)
             .bind(&e.event_id)
             .bind(&e.tenant_id)
@@ -953,10 +1011,28 @@ impl AiccStorage {
             .bind(i64::from(finance.is_some()))
             .bind(&e.operator_id)
             .bind(e.attribution.as_ref().map(serde_json::to_string).transpose()?)
+            .bind(credit_micro)
+            .bind(e.credit_status.map(|status| status.as_str()))
             .bind(e.created_at_ms)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
-        Ok(if result.rows_affected() == 1 {
+        let inserted = result.rows_affected() == 1;
+        if inserted {
+            let subject_sql = self.sql(
+                "INSERT INTO aicc_usage_event_subject (event_id,subject,created_at_ms) VALUES (?,?,?)
+                 ON CONFLICT DO NOTHING",
+            );
+            for subject in &e.subjects {
+                sqlx::query(&subject_sql)
+                    .bind(&e.event_id)
+                    .bind(subject)
+                    .bind(e.created_at_ms)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(if inserted {
             UsageWriteOutcome::Inserted
         } else {
             UsageWriteOutcome::Duplicate
@@ -1104,10 +1180,10 @@ impl AiccStorage {
             "the task was started with a request this AICC version no longer supports",
         );
         let mut value = serde_json::from_str::<Value>(record_json).unwrap_or(Value::Null);
-        let quota_attempt_id = value
-            .pointer("/binding/quota_attempt_id")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let charge = value
+            .pointer("/binding/charge")
+            .cloned()
+            .and_then(|plan| serde_json::from_value(plan).ok());
         let retired = match value.as_object_mut() {
             Some(object) => {
                 object.remove("binding");
@@ -1138,7 +1214,7 @@ impl AiccStorage {
         Ok(RetiredExecution {
             task_id,
             error,
-            quota_attempt_id,
+            charge,
         })
     }
 
@@ -1218,6 +1294,7 @@ impl AiccStorage {
                 ));
                 raw.truncate(page_limit);
             }
+            self.load_usage_subjects(&mut raw).await?;
         }
         Ok(QueryUsageResponse {
             total,
@@ -1226,6 +1303,31 @@ impl AiccStorage {
             events: raw,
             next_cursor,
         })
+    }
+
+    async fn load_usage_subjects(&self, events: &mut [AiccUsageEvent]) -> StorageResult<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let mut query = QueryBuilder::<Any>::new(
+            "SELECT event_id,subject FROM aicc_usage_event_subject WHERE event_id IN (",
+        );
+        let mut separated = query.separated(",");
+        for event in events.iter() {
+            separated.push_bind(event.event_id.clone());
+        }
+        separated.push_unseparated(") ORDER BY subject");
+        let mut subjects = HashMap::<String, Vec<String>>::new();
+        for row in query.build().fetch_all(&self.pool).await? {
+            subjects
+                .entry(row.try_get("event_id")?)
+                .or_default()
+                .push(row.try_get("subject")?);
+        }
+        for event in events.iter_mut() {
+            event.subjects = subjects.remove(&event.event_id).unwrap_or_default();
+        }
+        Ok(())
     }
 
     async fn usage_aggregates(
@@ -1253,9 +1355,18 @@ impl AiccStorage {
              COALESCE(SUM(COALESCE(total_tokens,COALESCE(input_tokens,0)+COALESCE(output_tokens,0))),0) AS total_tokens,\
              COALESCE(SUM(CASE WHEN request_units IS NULL OR request_units<1 THEN 1 ELSE request_units END),0) AS request_units,\
              COALESCE(SUM(CASE WHEN finance_valid=1 THEN finance_amount ELSE 0 END),0.0) AS finance_amount,\
-             COALESCE(SUM(finance_valid),0) AS valid_finance_count \
-             FROM aicc_usage_event WHERE created_at_ms>=",
+             COALESCE(SUM(finance_valid),0) AS valid_finance_count,\
+             COALESCE(SUM(COALESCE(credit_micro,0)),0) AS credit_micro,\
+             COALESCE(SUM(CASE WHEN credit_status IN ('unpriced','unknown_usage') THEN 1 ELSE 0 END),0) AS credit_incomplete_count \
+             FROM aicc_usage_event",
         );
+        if groups.contains(&UsageQueryGroup::UserGroup) {
+            select.push_str(
+                " JOIN (SELECT event_id AS subject_event_id, subject AS user_group FROM aicc_usage_event_subject) subjects \
+                 ON subjects.subject_event_id=aicc_usage_event.event_id",
+            );
+        }
+        select.push_str(" WHERE created_at_ms>=");
         let mut query = usage_query(select, start, end, filters, None);
         query.push(" GROUP BY ");
         if let Some(span) = bucket_span_ms {
@@ -1498,6 +1609,8 @@ impl UsageCompletionPort for AiccStorage {
                 })?,
             operator_id: completion.operator_id,
             attribution: completion.attribution,
+            credit: completion.credit,
+            subjects: completion.subjects,
             created_at_ms: completion.completed_at_ms,
         })
         .await
@@ -1606,6 +1719,13 @@ fn usage_from_row(row: AnyRow) -> StorageResult<AiccUsageEvent> {
             .try_get::<Option<String>, _>("attribution_json")?
             .map(|value| serde_json::from_str(&value))
             .transpose()?,
+        credit: row
+            .try_get::<Option<i64>, _>("credit_micro")?
+            .map(buckyos_api::format_credit_micro),
+        credit_status: row
+            .try_get::<Option<String>, _>("credit_status")?
+            .and_then(|status| buckyos_api::CreditChargeStatus::parse(&status)),
+        subjects: Vec::new(),
         created_at_ms: row.try_get("created_at_ms")?,
     })
 }
@@ -1772,6 +1892,14 @@ fn usage_query(
     push_in_clause(&mut query, "task_id", &filters.task_ids);
     push_in_clause(&mut query, "idempotency_key", &filters.idempotency_keys);
     push_in_clause(&mut query, "method", &filters.methods);
+    if !filters.user_groups.is_empty() {
+        query.push(" AND event_id IN (SELECT event_id FROM aicc_usage_event_subject WHERE subject IN (");
+        let mut separated = query.separated(",");
+        for value in &filters.user_groups {
+            separated.push_bind(value.clone());
+        }
+        separated.push_unseparated("))");
+    }
     if let Some((timestamp, id)) = cursor {
         query
             .push(" AND (created_at_ms<")
@@ -1900,6 +2028,8 @@ struct SqlUsageAggregateAccumulator {
     aggregate: UsageAggregate,
     valid_finance_count: u64,
     finance: BTreeMap<String, Option<f64>>,
+    credit_micro: i64,
+    credit_incomplete_count: u64,
 }
 
 struct SqlUsageAggregateRow {
@@ -1936,6 +2066,10 @@ fn merge_usage_aggregate_rows(
         accumulator.aggregate.total_tokens += from_i64(row.try_get("total_tokens")?)?;
         accumulator.aggregate.consumed_request_units += from_i64(row.try_get("request_units")?)?;
         accumulator.valid_finance_count += valid_finance_count;
+        accumulator.credit_micro = accumulator
+            .credit_micro
+            .saturating_add(row.try_get::<i64, _>("credit_micro")?);
+        accumulator.credit_incomplete_count += from_i64(row.try_get("credit_incomplete_count")?)?;
         if valid_finance_count > 0 {
             let currency: Option<String> = row.try_get("finance_currency")?;
             let amount: f64 = row.try_get("finance_amount")?;
@@ -1963,6 +2097,9 @@ fn merge_usage_aggregate_rows(
                 .into_iter()
                 .filter_map(|(currency, amount)| amount.map(|amount| Money::new(amount, currency)))
                 .collect();
+            accumulator.aggregate.credit_total =
+                buckyos_api::format_credit_micro(accumulator.credit_micro);
+            accumulator.aggregate.credit_complete = accumulator.credit_incomplete_count == 0;
             SqlUsageAggregateRow {
                 bucket_start_ms,
                 group: groups
@@ -2077,6 +2214,12 @@ fn valid_obj_id(value: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b'.'))
 }
+fn now_ms_i64() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or_default()
+}
 fn to_i64(value: u64) -> StorageResult<i64> {
     i64::try_from(value).map_err(|_| StorageError::InvalidRecord("integer overflow".into()))
 }
@@ -2158,7 +2301,7 @@ mod tests {
     async fn storage_rejects_other_schema_versions_without_touching_rows() {
         let storage = db().await;
         insert_route_trace(&storage, "trace-kept").await;
-        for version in [STORAGE_SCHEMA_VERSION - 1, STORAGE_SCHEMA_VERSION + 1] {
+        for version in [2, STORAGE_SCHEMA_VERSION + 1] {
             sqlx::query("UPDATE aicc_schema_meta SET schema_version=? WHERE schema_key='aicc'")
                 .bind(version)
                 .execute(&storage.pool)
@@ -2174,6 +2317,147 @@ mod tests {
                 vec!["trace-kept".to_string()]
             );
         }
+    }
+
+    #[tokio::test]
+    async fn schema_3_is_upgraded_once_keeping_usage_history() {
+        // C24: the token quota and visibility tables go, usage stays, the
+        // default policies are written.
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}?mode=rwc", dir.path().join("aicc.db").display());
+        {
+            let storage = AiccStorage::open(&url, RdbBackend::Sqlite).await.unwrap();
+            storage
+                .write_provider_completion(completion("usage-old", "task-old", "idem-old", 5))
+                .await
+                .unwrap();
+            for statement in [
+                "DROP TABLE aicc_policy",
+                "DROP TABLE aicc_price_entry",
+                "DROP TABLE aicc_price_rate",
+                "DROP TABLE aicc_credit_account",
+                "DROP TABLE aicc_credit_entry",
+                "DROP TABLE aicc_credit_charge",
+                "DROP TABLE aicc_quota_counter",
+                "DROP TABLE aicc_usage_event_subject",
+                "ALTER TABLE aicc_usage_event DROP COLUMN credit_micro",
+                "ALTER TABLE aicc_usage_event DROP COLUMN credit_status",
+                "DELETE FROM aicc_state",
+                "INSERT INTO aicc_state (state_key,int_value,updated_at_ms) VALUES ('visibility_seeded',1,0)",
+                "CREATE TABLE aicc_visibility_policy (subject TEXT PRIMARY KEY, entries_json TEXT NOT NULL)",
+                "CREATE TABLE aicc_quota_rule (rule_id TEXT PRIMARY KEY)",
+                "CREATE TABLE aicc_quota_counter (counter_key TEXT PRIMARY KEY, settled_tokens BIGINT)",
+                "CREATE TABLE aicc_quota_account (account_id TEXT PRIMARY KEY)",
+                "CREATE TABLE aicc_quota_grant (grant_id TEXT PRIMARY KEY)",
+                "CREATE TABLE aicc_quota_attempt (attempt_id TEXT PRIMARY KEY)",
+                "UPDATE aicc_schema_meta SET schema_version=3 WHERE schema_key='aicc'",
+            ] {
+                sqlx::query(statement).execute(&storage.pool).await.unwrap();
+            }
+            storage.pool.close().await;
+        }
+        let storage = AiccStorage::open(&url, RdbBackend::Sqlite).await.unwrap();
+        let version: i64 =
+            sqlx::query_scalar("SELECT schema_version FROM aicc_schema_meta WHERE schema_key='aicc'")
+                .fetch_one(&storage.pool)
+                .await
+                .unwrap();
+        assert_eq!(version, STORAGE_SCHEMA_VERSION);
+        let tables: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table'")
+            .fetch_all(&storage.pool)
+            .await
+            .unwrap();
+        for gone in ["aicc_visibility_policy", "aicc_quota_rule", "aicc_quota_account", "aicc_quota_attempt"] {
+            assert!(!tables.iter().any(|table| table == gone), "{gone}");
+        }
+        let usage = storage
+            .query_usage(
+                &QueryUsageRequest {
+                    output_mode: UsageQueryOutputMode::Events,
+                    ..QueryUsageRequest::new(UsageQueryTimeRange::Explicit {
+                        start_time_ms: 0,
+                        end_time_ms: 100,
+                    })
+                },
+                100,
+            )
+            .await
+            .unwrap();
+        assert_eq!(usage.events.len(), 1);
+        assert_eq!(usage.events[0].credit, None);
+        let policies = storage.policies().await.unwrap();
+        assert_eq!(
+            policies.iter().map(|policy| policy.subject.to_string()).collect::<Vec<_>>(),
+            ["type:admin", "type:user"]
+        );
+        assert!(policies
+            .iter()
+            .all(|policy| policy.body.price_coefficient == Some(0.0) && policy.body.all_providers == Some(true)));
+        // The upgraded layout is the layout of a new database (node_updater
+        // compares them), whitespace aside.
+        let layout = |pool: &AnyPool| {
+            let pool = pool.clone();
+            async move {
+                let rows: Vec<(String, String)> = sqlx::query_as(
+                    "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' ORDER BY name",
+                )
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+                rows.into_iter()
+                    .map(|(name, sql)| (name, sql.split_whitespace().collect::<String>()))
+                    .collect::<Vec<_>>()
+            }
+        };
+        let fresh = db().await;
+        assert_eq!(layout(&storage.pool).await, layout(&fresh.pool).await);
+        storage.pool.close().await;
+        let reopened = AiccStorage::open(&url, RdbBackend::Sqlite).await.unwrap();
+        assert_eq!(reopened.policies().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn c23_usage_groups_by_the_subjects_recorded_at_call_time() {
+        let storage = db().await;
+        let mut first = completion("usage-1", "task-1", "idem-1", 10);
+        first.subjects = vec!["type:user".into(), "group:students".into()];
+        first.credit = Some((1_500_000, buckyos_api::CreditChargeStatus::Charged));
+        let mut second = completion("usage-2", "task-2", "idem-2", 20);
+        second.subjects = vec!["type:user".into()];
+        second.credit = Some((0, buckyos_api::CreditChargeStatus::Unpriced));
+        storage.write_provider_completion(first).await.unwrap();
+        storage.write_provider_completion(second).await.unwrap();
+        let mut request = QueryUsageRequest::new(UsageQueryTimeRange::Explicit {
+            start_time_ms: 0,
+            end_time_ms: 100,
+        });
+        request.group_by = vec![UsageQueryGroup::UserGroup];
+        let response = storage.query_usage(&request, 100).await.unwrap();
+        assert_eq!(response.total.total_requests, 2);
+        assert_eq!(response.total.credit_total, "1.5");
+        assert!(!response.total.credit_complete);
+        let by_group = response
+            .grouped
+            .iter()
+            .map(|row| (row.group["user_group"].clone(), row.aggregate.total_requests, row.aggregate.credit_total.clone()))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            by_group,
+            [
+                ("group:students".to_string(), 1, "1.5".to_string()),
+                ("type:user".to_string(), 2, "1.5".to_string()),
+            ]
+            .into_iter()
+            .collect()
+        );
+        request.group_by.clear();
+        request.filters.user_groups = vec!["group:students".into()];
+        request.output_mode = UsageQueryOutputMode::SummaryAndEvents;
+        let response = storage.query_usage(&request, 100).await.unwrap();
+        assert_eq!(response.total.total_requests, 1);
+        assert!(response.total.credit_complete);
+        assert_eq!(response.events[0].subjects, ["group:students", "type:user"]);
+        assert_eq!(response.events[0].credit.as_deref(), Some("1.5"));
     }
 
     #[tokio::test]
@@ -2873,6 +3157,8 @@ mod tests {
             finance_snapshot: Some(json!({"amount": 0.25, "currency": "USD"})),
             operator_id: None,
             attribution: None,
+            credit: None,
+            subjects: Vec::new(),
             created_at_ms: at,
         }
     }
@@ -2906,6 +3192,9 @@ mod tests {
             finance_snapshot_json: finance,
             operator_id: None,
             attribution: None,
+            credit: None,
+            credit_status: None,
+            subjects: Vec::new(),
             created_at_ms: 10_000,
         }
     }
@@ -2923,6 +3212,7 @@ mod tests {
             user_id: "user-a".into(),
             caller_app_id: Some("app-a".into()),
             attribution: None,
+            principal: None,
             request_model: "llm.chat".into(),
             body_fingerprint: format!("fingerprint-{task_id}"),
             task_id: task_id.into(),
@@ -2941,7 +3231,7 @@ mod tests {
         let fingerprint = sha256_hex(reference.as_bytes())[..16].to_string();
         PinnedProviderTask {
             reported_cost_currency: None,
-            quota_attempt_id: None,
+            charge: None,
             runtime_generation: 7,
             origin_provider: "openai".into(),
             exact_model: "gpt-5:reasoning@openai-primary".into(),
@@ -3150,7 +3440,12 @@ mod tests {
         db.claim(old.clone()).await.unwrap();
         let mut binding = serde_json::to_value(provider_binding()).unwrap();
         binding["api_type"] = json!("video.txt2video");
-        binding["quota_attempt_id"] = json!("attempt-old");
+        binding["charge"] = json!({
+            "attempt_id": "attempt-old", "task_id": old.task_id, "usage_event_id": "usage-old",
+            "user_id": "user-a", "provider_instance_name": "p", "exact_model": "m@p",
+            "admitted_at_ms": 1, "subjects": ["type:user"], "token_metered": true,
+            "price": {"kind": "free", "provider_coefficient": 0.0, "model_coefficient": 1.0}
+        });
         let mut old_json = serde_json::to_value(&old).unwrap();
         old_json["state"] = json!("running");
         old_json["binding"] = binding;
@@ -3166,7 +3461,10 @@ mod tests {
         assert_eq!(recoverable.retired.len(), 1);
         assert_eq!(recoverable.retired[0].task_id, old.task_id);
         assert_eq!(
-            recoverable.retired[0].quota_attempt_id.as_deref(),
+            recoverable.retired[0]
+                .charge
+                .as_ref()
+                .map(|charge| charge.attempt_id.as_str()),
             Some("attempt-old")
         );
         let retired = db.get_task(&old.task_id).await.unwrap().unwrap();
@@ -3208,6 +3506,8 @@ mod tests {
             }),
             operator_id: None,
             attribution: None,
+            credit: Some((250_000, buckyos_api::CreditChargeStatus::Charged)),
+            subjects: vec!["type:user".into(), "group:students".into()],
             completed_at_ms: 10_000,
         };
         db.write_once(completion.clone()).await.unwrap();

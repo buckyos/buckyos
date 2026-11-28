@@ -1508,6 +1508,26 @@ async fn a_quota_refusal_tells_the_owner_where_to_look() {
     loader.shutdown().await;
 }
 
+/// C21: a Credit refusal tells the owner of a direct chat their balance is
+/// used up; a group only learns that the Agent is limited.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_credit_refusal_tells_the_owner_to_recharge() {
+    let w = World::new();
+    std::fs::write(
+        w.root.join("i18n/en.toml"),
+        "[outbound]\nturn_failed = \"(something went wrong)\"\nai_quota_limited = \"(limited)\"\nai_quota_limited_owner = \"(your quota)\"\nai_credit_insufficient_owner = \"(recharge)\"\n",
+    )
+    .unwrap();
+    let llm = Llm::new(|_, _| "fine now".to_string());
+    *llm.refusal.lock().unwrap() = Some(agent_tool::xllm::REFUSED_CREDIT_INSUFFICIENT);
+    llm.failures.store(1, Ordering::SeqCst);
+    let loader = w.start(llm.clone()).await;
+    w.mail.deliver(&format!("dm:{BOB}"), chat(BOB, "hello"));
+    until("refusal notice", || w.mail.sent().len() == 1).await;
+    assert_eq!(w.mail.sent().remove(0).1.content.content, "(recharge)");
+    loader.shutdown().await;
+}
+
 /// M3: the Loader dies after the reply was committed and before msg-center
 /// took it. The next process sends the stored message — the same ObjId
 /// under the same key — and nothing is inferred or sent twice.

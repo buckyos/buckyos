@@ -4,7 +4,7 @@ import { aiCenterPlaygroundEn, aiCenterPlaygroundZh } from './ai-center-playgrou
 import { modelCatalogEn, modelCatalogZh } from './model-catalog'
 import { aiCenterEn, aiCenterZh } from './ai-center'
 import { aiCenterRoutingEn, aiCenterRoutingZh } from './ai-center-routing'
-import { aiCenterQuotaEn, aiCenterQuotaZh } from './ai-center-quota'
+import { aiCenterPolicyEn, aiCenterPolicyZh } from './ai-center-policy'
 import { fileBrowserReviewEn, fileBrowserReviewZh } from './filebrowser-review'
 import { messageHubEn, messageHubZh } from './messagehub'
 import { homeStationEn, homeStationZh } from './homestation'
@@ -49,7 +49,7 @@ const en: Dictionary = {
   ...aiCenterEn,
   ...aiCenterPlaygroundEn,
   ...aiCenterRoutingEn,
-  ...aiCenterQuotaEn,
+  ...aiCenterPolicyEn,
   ...messageHubEn,
   ...homeStationEn,
   ...loadingTipsEn,
@@ -887,7 +887,7 @@ const zhCN: Dictionary = {
   ...aiCenterZh,
   ...aiCenterPlaygroundZh,
   ...aiCenterRoutingZh,
-  ...aiCenterQuotaZh,
+  ...aiCenterPolicyZh,
   ...messageHubZh,
   ...homeStationZh,
   ...loadingTipsZh,

@@ -5613,17 +5613,18 @@ impl AiccLlmClient {
     }
 }
 
-/// `ProviderFailure::Refused.code` of the AICC refusals (AI Center Quota PRD
-/// §7.4); also the `RunErrorRecord.kind` hosts read.
+/// `ProviderFailure::Refused.code` of the AICC refusals
+/// (doc/aicc/aicc_user_policy.md §6); also the `RunErrorRecord.kind` hosts read.
 pub const REFUSED_QUOTA_EXHAUSTED: &str = "quota_exhausted";
-pub const REFUSED_QUOTA_BUDGET_EXCEEDED: &str = "quota_budget_exceeded";
+/// The user's AI Credit balance is used up (not a Provider account balance).
+pub const REFUSED_CREDIT_INSUFFICIENT: &str = "credit_insufficient";
 pub const REFUSED_RESOURCE_NOT_PERMITTED: &str = "resource_not_permitted";
 pub const REFUSED_ATTRIBUTION_UNAVAILABLE: &str = "attribution_unavailable";
 /// The service refused the caller's credentials (kRPC token errors, HTTP
 /// 401 / 403): a run paused on it resumes once the credential is fixed.
 pub const REFUSED_CREDENTIALS: &str = "credentials";
 
-/// AICC 额度与资源策略的拒绝（AI Center Quota PRD §7.4）；暂不可用的额度状态可以稍后重试。
+/// AICC 用户策略的拒绝（doc/aicc/aicc_user_policy.md §6）；暂不可用的策略状态可以稍后重试。
 fn aicc_refusal(code: AiccErrorCode) -> Option<ProviderFailure> {
     let refused = |code: &str| {
         Some(ProviderFailure::Refused {
@@ -5632,7 +5633,7 @@ fn aicc_refusal(code: AiccErrorCode) -> Option<ProviderFailure> {
     };
     match code {
         AiccErrorCode::QuotaExhausted => refused(REFUSED_QUOTA_EXHAUSTED),
-        AiccErrorCode::QuotaBudgetExceeded => refused(REFUSED_QUOTA_BUDGET_EXCEEDED),
+        AiccErrorCode::CreditInsufficient => refused(REFUSED_CREDIT_INSUFFICIENT),
         AiccErrorCode::ResourceNotPermitted => refused(REFUSED_RESOURCE_NOT_PERMITTED),
         AiccErrorCode::AttributionUnavailable => refused(REFUSED_ATTRIBUTION_UNAVAILABLE),
         AiccErrorCode::QuotaUnavailable => Some(ProviderFailure::Transient),
@@ -9225,8 +9226,11 @@ impl XllmRun {
                     false,
                     code.as_str(),
                     Some(match code.as_str() {
-                        REFUSED_QUOTA_EXHAUSTED | REFUSED_QUOTA_BUDGET_EXCEEDED => {
-                            "the AI token quota does not cover this call; wait for it to reset, lower the output budget, or ask an administrator; do not retry right away".into()
+                        REFUSED_QUOTA_EXHAUSTED => {
+                            "an AI usage limit of this user is used up; wait for its window to reset or ask an administrator; do not retry right away".into()
+                        }
+                        REFUSED_CREDIT_INSUFFICIENT => {
+                            "the user's AI Credit balance is used up; ask an administrator to recharge it, or use a free model; do not retry right away".into()
                         }
                         REFUSED_RESOURCE_NOT_PERMITTED => {
                             "the model is not permitted to this user; choose a permitted model or ask an administrator".into()
@@ -11697,7 +11701,7 @@ there]]></write_file>
 
     #[tokio::test]
     async fn aicc_refusals_stay_refused_even_when_marked_retriable() {
-        let mut error = AiccError::new(AiccErrorCode::QuotaExhausted, "token quota is exhausted");
+        let mut error = AiccError::new(AiccErrorCode::QuotaExhausted, "a usage limit is used up");
         error.retriable = true;
         for error in aicc_error_both_ways(error).await {
             assert!(

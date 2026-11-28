@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS aicc_usage_event (
  provider_model TEXT NOT NULL, input_tokens BIGINT, output_tokens BIGINT, total_tokens BIGINT,
  request_units BIGINT, usage_json TEXT NOT NULL, finance_snapshot_json TEXT,
  finance_amount REAL, finance_currency TEXT, finance_valid INTEGER NOT NULL DEFAULT 0,
- created_at_ms BIGINT NOT NULL, operator_id TEXT, attribution_json TEXT);
+ created_at_ms BIGINT NOT NULL, operator_id TEXT, attribution_json TEXT,
+ credit_micro BIGINT, credit_status TEXT);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time ON aicc_usage_event(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time ON aicc_usage_event(tenant_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_trace_time ON aicc_usage_event(trace_id, created_at_ms);

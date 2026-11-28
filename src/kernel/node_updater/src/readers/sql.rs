@@ -416,18 +416,43 @@ pub(super) fn repo(ctx: &mut Context) -> Result<(), Failure> {
         &[REPO_SERVICE_RDB_SCHEMA_SQLITE],
     )
 }
+/// Schema 3 is kept as it is: AICC upgrades it to 4 itself the first time it
+/// opens it (token quota and visibility tables dropped, usage kept).
+const AICC_SELF_UPGRADED_SCHEMA: i64 = 3;
+const AICC_SCHEMA_MARKER: &str = "SELECT schema_version FROM aicc_schema_meta WHERE schema_key='aicc'";
+
 pub(super) fn aicc(ctx: &mut Context) -> Result<(), Failure> {
-    rdb(
-        ctx,
-        "aicc",
-        AICC_USAGE_LOG_RDB_INSTANCE_ID,
-        3,
-        Some("SELECT schema_version FROM aicc_schema_meta WHERE schema_key='aicc'"),
-        &[
-            source_sql!("frame/aicc/src/storage/schema.sql"),
-            source_sql!("frame/aicc/src/storage/quota.sql"),
-        ],
-    )
+    let paths = ctx
+        .rdb
+        .remove(&key("aicc", AICC_USAGE_LOG_RDB_INSTANCE_ID))
+        .ok_or_else(|| ctx.error(AICC_USAGE_LOG_RDB_INSTANCE_ID, "unresolved registered instance"))?;
+    let mut expected = None;
+    for path in paths {
+        let Some(db) = Database::copy(ctx, &path)? else {
+            continue;
+        };
+        let marker = db
+            .conn
+            .query_row(AICC_SCHEMA_MARKER, [], |r| r.get::<_, i64>(0))
+            .optional()
+            .ok()
+            .flatten();
+        if marker == Some(AICC_SELF_UPGRADED_SCHEMA) {
+            continue;
+        }
+        let schema = match expected.as_ref() {
+            Some(s) => s,
+            None => expected.insert(reference(
+                ctx,
+                &[
+                    source_sql!("frame/aicc/src/storage/schema.sql"),
+                    source_sql!("frame/aicc/src/storage/policy.sql"),
+                ],
+            )?),
+        };
+        verify_schema(ctx, &db, 4, Some(AICC_SCHEMA_MARKER), schema)?;
+    }
+    Ok(())
 }
 pub(super) fn home(ctx: &mut Context) -> Result<(), Failure> {
     rdb(

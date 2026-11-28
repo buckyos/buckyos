@@ -24,7 +24,7 @@ For older headerless Gemini PCM use `ffmpeg -f s16le -ar 24000 -ac 1 -i in.pcm o
 
 #### Errors and implementation
 
-Exit 1 means bad arguments before submission, 2 AICC/provider failure, 3 no route, 4 timeout, 5 file I/O. Change the rejected option on provider 400. For `resource_not_permitted`, `quota_exhausted` or `quota_budget_exceeded`, report the owner's access or quota issue (`ai_quota` shows rules).
+Exit 1 means bad arguments before submission, 2 AICC/provider failure, 3 no route, 4 timeout, 5 file I/O. Change the rejected option on provider 400. For `resource_not_permitted`, `quota_exhausted` or `credit_insufficient`, report the owner's access, limit or AI Credit issue (`ai_quota` shows balance and limits).
 
 The container ships `commands/text_to_speech.ts` and `lib/{aicc,io,bucket}.ts` under `/opt/buckyos/bin/opendan/buckyos-agent`. Nodes ship them under `$BUCKYOS_ROOT/libexec/buckyos-agent`. Use the installed `deno.json` and SDK `aicc_client.d.ts` for derived scripts in the session directory or `$OPENDAN_AGENT_ROOT/tools/`. Grant `--allow-run` if invoking ffmpeg. `uploadNamed` stores bytes in `artifacts` or the seven-day `scratch` bucket.
 

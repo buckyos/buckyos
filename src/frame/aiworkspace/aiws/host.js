@@ -14,7 +14,7 @@
 //
 // The executor gives: `tool(name, args)` (its `proc.tool`), `infer({ model, messages, schema, max_tokens })` →
 // `{ text, tokens?, input_tokens?, model? }` (the output and input tokens, the model that answered; throws with `code`
-// AI_QUOTA_EXHAUSTED / AI_QUOTA_BUDGET_EXCEEDED / AI_RESOURCE_NOT_PERMITTED / AI_UNAVAILABLE on a refusal),
+// AI_QUOTA_EXHAUSTED / AI_CREDIT_INSUFFICIENT / AI_RESOURCE_NOT_PERMITTED / AI_UNAVAILABLE on a refusal),
 // `zoneFetch(url, { method, headers, body })` → `{ status, headers, text? | base64? }`, `aicc(method, params)` (one
 // AICC call; a refusal as for `infer`), `task(id)` (the task manager's record of an AICC task), `importAsset(obj_id)`
 // → `{ object_id, media_type, size }` (`asset.import_object` of this Workspace), `zoneHosts` (the Zone's host names),

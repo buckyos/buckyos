@@ -585,12 +585,13 @@ function generateUsageEvents(): UsageEvent[] {
   const events: UsageEvent[] = []
   const now = Date.now()
   const day = 24 * 60 * 60 * 1000
+  // `credit`: AI Credit per million input / output tokens for users who pay (see mock/policy.ts); `null` is unpriced.
   const rows = [
-    { provider: 'openai-main', exact: 'gpt-5.1@openai-main', requested: 'llm.code', api: 'llm' as ApiType, cost: 0.000028 },
-    { provider: 'anthropic-work', exact: 'claude-opus-4.7@anthropic-work', requested: 'llm.plan', api: 'llm' as ApiType, cost: 0.000042 },
-    { provider: 'openai-main', exact: 'text-embedding-3-large@openai-main', requested: 'embedding', api: 'embedding.text' as ApiType, cost: 0.000001 },
-    { provider: 'sn-router', exact: 'sn-router-image@sn-router', requested: 'image.txt2img', api: 'image.txt2img' as ApiType, cost: 0.00005 },
-    { provider: 'local', exact: 'qwen2.5-coder-32b@local', requested: 'llm.code', api: 'llm' as ApiType, cost: 0 },
+    { provider: 'openai-main', exact: 'gpt-5.1@openai-main', requested: 'llm.code', api: 'llm' as ApiType, cost: 0.000028, credit: [10, 40] as const },
+    { provider: 'anthropic-work', exact: 'claude-opus-4.7@anthropic-work', requested: 'llm.plan', api: 'llm' as ApiType, cost: 0.000042, credit: [15, 75] as const },
+    { provider: 'openai-main', exact: 'text-embedding-3-large@openai-main', requested: 'embedding', api: 'embedding.text' as ApiType, cost: 0.000001, credit: null },
+    { provider: 'sn-router', exact: 'sn-router-image@sn-router', requested: 'image.txt2img', api: 'image.txt2img' as ApiType, cost: 0.00005, credit: [0, 0] as const },
+    { provider: 'local', exact: 'qwen2.5-coder-32b@local', requested: 'llm.code', api: 'llm' as ApiType, cost: 0, credit: [0, 0] as const },
   ]
   const apps = ['studio', 'codeassistant', 'messagehub', 'jarvis']
   const agents = ['agent-coder', 'agent-planner', 'agent-analyst', 'jarvis-default']
@@ -603,6 +604,11 @@ function generateUsageEvents(): UsageEvent[] {
     const tokenEquivalent = row.api === 'image.txt2img' ? 1600 + ((i * 71) % 1200) : undefined
     const billableTokens = tokenEquivalent ?? (tokensIn ?? 0) + (tokensOut ?? 0)
     const estimatedCost = Number((billableTokens * row.cost).toFixed(4))
+    const user = ['alice', 'bob', 'dave'][i % 3]
+    // Only bob (a User) pays; administrators and the historic calls of others were free.
+    const pays = user === 'bob'
+    const credit = !pays ? 0 : row.credit ? ((tokensIn ?? 0) * row.credit[0] + (tokensOut ?? 0) * row.credit[1]) / 1_000_000 : 0
+    const creditStatus = !pays ? 'free' as const : row.credit === null ? 'unpriced' as const : credit > 0 ? 'charged' as const : 'free' as const
 
     events.push({
       id: `evt-${i.toString().padStart(3, '0')}`,
@@ -611,8 +617,8 @@ function generateUsageEvents(): UsageEvent[] {
       exact_model: row.exact,
       requested_model: row.requested,
       api_type: row.api,
-      tenant_id: ['alice', 'bob', 'dave'][i % 3],
-      user_id: ['alice', 'bob', 'dave'][i % 3],
+      tenant_id: user,
+      user_id: user,
       app_id: apps[i % apps.length],
       agent_id: agents[i % agents.length],
       session_id: `session-${Math.floor(i / 4).toString().padStart(2, '0')}`,
@@ -625,6 +631,9 @@ function generateUsageEvents(): UsageEvent[] {
         currency: i % 9 === 0 ? 'CNY' : i % 7 === 0 ? 'EUR' : 'USD',
         provider_trace_id: `trace-${i.toString().padStart(3, '0')}`,
       },
+      credit: credit.toFixed(6).replace(/\.?0+$/, ''),
+      credit_status: creditStatus,
+      subjects: [user === 'alice' ? 'type:admin' : user === 'dave' ? 'type:limited' : 'type:user'],
       status: i % 23 === 0 ? 'failed' : 'success',
     })
   }

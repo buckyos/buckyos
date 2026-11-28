@@ -179,7 +179,7 @@ AICC 请求采用 `execution_mode: immediate`，传入消息、实际允许的�
 
 | AICC 错误 | Provider 失败类别 | Run |
 | --- | --- | --- |
-| `quota_exhausted` / `quota_budget_exceeded` / `resource_not_permitted` / `attribution_unavailable` | `Refused` | failed |
+| `quota_exhausted` / `credit_insufficient` / `resource_not_permitted` / `attribution_unavailable` | `Refused` | failed |
 | `quota_unavailable` | `Transient` | paused |
 | `context_length_exceeded`，或 `details.http_status = 413`（Provider 拒收请求体） | `ContextLimit` | 压缩后续跑（§9.3） |
 | `timeout`，或其它 `retriable: true`（AICC 已做过同模型重试与 fallback） | `Transient` | paused |

@@ -412,9 +412,9 @@ pub fn hand_edited(e: &EntityRow, generated_rev: u64) -> bool {
 
 /// Run codes that send a wish back to coding: the macro failed, its code changed, or it no longer fits its inputs.
 const CODING_CODES: &[&str] = &["PROGRAM_FAILED", "MACRO_CODE_CHANGED", "NEEDS_CODING"];
-/// Run codes that say the wish cannot run here now (permissions, AI quota, execution environment).
+/// Run codes that say the wish cannot run here now (permissions, AI policy or Credit, execution environment).
 const CANNOT_RUN_CODES: &[&str] = &[
-    "AI_QUOTA_EXHAUSTED", "AI_QUOTA_BUDGET_EXCEEDED", "AI_RESOURCE_NOT_PERMITTED", "AI_ATTRIBUTION_UNAVAILABLE", "AI_UNAVAILABLE",
+    "AI_QUOTA_EXHAUSTED", "AI_CREDIT_INSUFFICIENT", "AI_RESOURCE_NOT_PERMITTED", "AI_ATTRIBUTION_UNAVAILABLE", "AI_UNAVAILABLE",
     "EXECUTION_CONTEXT_MISSING", "SNAPSHOT_TOO_LARGE", "PERMISSION_DENIED", "ACCESS_DENIED",
 ];
 

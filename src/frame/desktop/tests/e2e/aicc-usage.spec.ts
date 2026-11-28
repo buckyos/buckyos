@@ -28,7 +28,8 @@ test('administrator can compare users, drill into one user and return to own or 
   await expect(scope).toHaveValue('system')
   await expect(content).toHaveAttribute('data-scope', 'system')
   await expect(users.getByTestId('user-usage-row')).toHaveCount(3)
-  await expect(page.getByTestId('usage-set-quota')).toHaveCount(0)
+  // Zone-wide rows have no single user to set a policy for.
+  await expect(page.getByTestId('usage-set-policy')).toHaveCount(0)
   const alice = users.locator('[data-user-id="alice"]')
   await expect(alice).toContainText('USD')
   await expect(alice).toContainText('EUR')
@@ -39,12 +40,12 @@ test('administrator can compare users, drill into one user and return to own or 
   await expect(scope).toHaveValue('user:bob')
   await expect(content).toHaveAttribute('data-scope', 'user:bob')
   await expectOwner(page.getByTestId('recent-usage-row'), 'bob')
-  await expect(page.getByTestId('usage-set-quota')).toHaveCount(0)
+  await expect(page.getByTestId('usage-set-policy').first()).toBeVisible()
 
   await scope.selectOption('mine')
   await expect(content).toHaveAttribute('data-scope', 'mine')
   await expectOwner(page.getByTestId('recent-usage-row'), 'alice')
-  await expect(page.getByTestId('usage-set-quota').first()).toBeVisible()
+  await expect(page.getByTestId('usage-set-policy').first()).toBeVisible()
 
   await scope.selectOption('user:carol')
   await expect(content).toHaveAttribute('data-scope', 'user:carol')

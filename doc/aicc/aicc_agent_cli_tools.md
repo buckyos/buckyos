@@ -560,14 +560,14 @@ ai_provider health <exact_model>
 
 ### 7.2 `ai_quota`
 
-Token 额度查询：列出约束调用者的额度规则（管理员对调用者及其 App / Agent 的规则、共享 App 规则、本人 App 自限），每条带当前周期窗口或总量账户的已结算、预占、可用与 `reset_at_ms`（总量账户为 `null`）。协议见 [aicc_token_quota.md](aicc_token_quota.md)。
+AI 用量状态：调用者的 AI Credit 余额（十进制字符串，可以为负）和作用于本人（加 `--app` 时含经该 App / Agent 的调用）的全部时间窗口 limit：周期（5h / 24h / 7d）、单位（credit / token）、上限、已用、状态与 `reset_at_ms`（当前窗口结束时刻；没有活动窗口时缺省，窗口从下一次使用起算）。协议见 [aicc_user_policy.md](aicc_user_policy.md)。
 
 ```bash
 ai_quota
 ai_quota --app aiworkspace
 ```
 
-映射到 `quota.query`（`{ app_id? }`）。各 AIGC 命令遇到额度或资源策略拒绝时，结果的 `detail.error_code` 为 `quota_exhausted` / `quota_budget_exceeded` / `quota_unavailable` / `resource_not_permitted` / `attribution_unavailable`，`detail.details` 为 AICC 的拒绝详情。
+映射到 `policy.status`（`{ app_id? }`）。各 AIGC 命令遇到用户策略拒绝时，结果的 `detail.error_code` 为 `quota_exhausted`（limit 用满）/ `credit_insufficient`（Credit 余额用完，不是 Provider 账户余额）/ `quota_unavailable` / `resource_not_permitted`（不可见，或未定价：`details.reason = "unpriced"`）/ `attribution_unavailable`，`detail.details` 为 AICC 的拒绝详情。
 
 ### 7.3 `materialize_resource`
 

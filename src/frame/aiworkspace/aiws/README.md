@@ -76,7 +76,7 @@ const tags = await aiws.llm.map(texts, 'Judge the sentiment of this customer fee
 - **Numbers in text come from facts.** Give the model the facts the macro computed and ask it not to compute or invent numbers; numbers in a text result that are neither in the facts nor in a table result are flagged to the user.
 - **Keep data apart from instructions.** Put input text in its own clearly marked block (JSON), never mixed into the instruction.
 - **Constrain the output** with `schema` whenever the macro uses the answer as data.
-- **Cache and budget**: answers are cached by content — the same request gives the same answer on the next run, and costs nothing. New calls count against the declared limits (calls, tokens, items); over them the call throws `AI_BUDGET_EXCEEDED`. A refusal of the AI service (`AI_QUOTA_EXHAUSTED`, `AI_QUOTA_BUDGET_EXCEEDED`, `AI_RESOURCE_NOT_PERMITTED`) ends the run with that reason; do not catch it.
+- **Cache and budget**: answers are cached by content — the same request gives the same answer on the next run, and costs nothing. New calls count against the declared limits (calls, tokens, items); over them the call throws `AI_BUDGET_EXCEEDED`. A refusal of the AI service (`AI_QUOTA_EXHAUSTED`: a usage limit is used up, `AI_CREDIT_INSUFFICIENT`: the AI Credit balance is used up, `AI_RESOURCE_NOT_PERMITTED`) ends the run with that reason; do not catch it.
 
 ## 4b. Generated pictures and video clips
 

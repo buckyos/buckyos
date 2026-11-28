@@ -111,10 +111,10 @@ export function bailRuntimeError(tool: string, err: unknown): never {
   );
 }
 
-/** AICC token quota / resource policy refusals (AI Center Quota PRD §7.4). */
+/** AICC user policy refusals (doc/aicc/aicc_user_policy.md §6). */
 const AICC_REFUSAL_CODES = [
   "quota_exhausted",
-  "quota_budget_exceeded",
+  "credit_insufficient",
   "quota_unavailable",
   "resource_not_permitted",
   "attribution_unavailable",
@@ -129,8 +129,8 @@ export function aiccRefusal(err: unknown): { code: string; details?: JsonValue }
 
 export function bailAiccError(tool: string, method: string, err: unknown): never {
   const msg = err instanceof Error ? err.message : String(err);
-  // Refused under the token quota or the resource policy: the code says what
-  // to do (wait for the reset, lower the budget, ask the owner); never retry it at once.
+  // Refused under the user policy: the code says what to do (wait for the
+  // window to reset, ask the owner to recharge or open a model); never retry it at once.
   const refusal = aiccRefusal(err);
   if (refusal) {
     emitAndExit(

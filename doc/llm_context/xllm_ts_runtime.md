@@ -113,7 +113,7 @@ const outcome = await run.execute()   // { status, record }
 
 | 来源 | 分类 | run |
 | --- | --- | --- |
-| `quota_exhausted` / `quota_budget_exceeded` / `resource_not_permitted` / `attribution_unavailable` | `Refused { code }` | failed，`last_error.kind = code` |
+| `quota_exhausted` / `credit_insufficient` / `resource_not_permitted` / `attribution_unavailable` | `Refused { code }` | failed，`last_error.kind = code` |
 | `quota_unavailable` | Transient | paused |
 | `context_length_exceeded`、`details.http_status == 413` | ContextLimit | 压缩后续跑（§8）；每个 run 最多 3 次，之后 failed `context_capacity` |
 | `timeout`、`retriable: true` | Transient | paused |

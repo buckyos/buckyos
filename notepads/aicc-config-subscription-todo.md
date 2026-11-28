@@ -41,7 +41,8 @@
 
 - 只有 API 类型和协议客户端升级需要发版本，其余（包括内置 Provider 的能力升级）都靠配置更新（[协议客户端 TODO](aicc-provider-protocol-client-todo.md) 目标第 7 条）。本单就是交付这条“配置更新”通道。
 - 模型事实只从 Model Driver 读，目录不认识的模型名就是不识别，不给默认值。
-- AICC 不自动换模型或 Provider（[aicc_router.md §9](../doc/aicc/aicc_router.md)）。价格会进入路由（成本上限、`cost_first` 评分）。比例价会让原来价格未知的模型有价格，不能借此引入自动切换，见 §7.6。
+- AICC 不自动换模型或 Provider（[aicc_router.md §9](../doc/aicc/aicc_router.md)）。路由改造以 [用户视角路由 TODO](aicc-user-centric-routing-todo.md) 为准（它取代了显式 fallback TODO）。其中直接影响本单的两条：metadata 更新直接改变默认路由，不钉住、不要求确认（它的 Q1）；`cost_first` 删除（它的 Q12）。价格对路由的影响见 §7.6，与它的交点汇总在 §15。
+- 价格分两套（[用户策略与 Credit TODO](aicc-user-policy-credit-todo.md)）：本单管的是 Provider 成本价；面向用户的 Credit 价目表是 Zone 管理员的本地配置，不走订阅。两者的交点见 §7.7。
 - 默认允许 breaking change，不做旧格式兼容（`AGENTS.md`）。旧的 index / manifest / track 协议和 `revisions/` 缓存直接删除，不迁移。
 
 ### 1.3 我对原话的理解（待 owner 确认，见 §12 Q1–Q5、Q13）
@@ -264,8 +265,15 @@ custom Provider 实例的规则不走订阅，仍然是实例 settings 里的规
   - `validate_item`：`MetadataFile::parse` 加单文件 schema 校验。
   - `validate_merged`：`CatalogSnapshot::from_current_files`，再用当前库存试建一次 `ModelRegistry`（修旧 TODO §2 第 5 条）。
 - **`metadata_target_seq` 改为组件的 `generation`**。订阅更新、二进制升级带来的预装变化、本地覆盖变化都会推进它，Provider 收敛只看这一个值。删除 `BUILTIN_CATALOG_REVISION_SEQ`。`metadata_applied_seq` 的语义不变。
+  - `generation` 的起点必须高于库存里已经存着的 `metadata_applied_seq`（存在 AICC RDB，[storage/mod.rs:46](../src/frame/aicc/src/storage/mod.rs#L46)，现在的值在 26 左右）。否则 `generation` 涨到同一个数时，没收敛的旧库存会被当成已收敛。做法：组件第一次建 `merged/state.json` 时，AICC 把起点设为“所有库存的 `metadata_applied_seq` 最大值 + 1”。这样不需要再升 AICC 存储版本：Credit TODO 正在把它从 3 升到 4（工作区里已经改了），本单不该再升一次。
 - **只改 metadata 时不做全量 discovery**：新增“沿用已保存的模型列表，用新 metadata 重建库存”的路径。discovery 只按它自己的定时器跑（修旧 TODO §2 第 4 条）。只改了 `logical_tree` 的更新连库存都不重建，只重建 `ModelRegistry`。
 - local 和 system-config 的变化仍然从 settings reload 路径进来，由它调用 `reload_local()`。文件监听不做，文档里写明（旧 TODO §2 最后一条）。
+
+### 6.2.1 订阅更新与默认路由
+
+- 订阅只改变路由 TODO 里“默认配置”这一层（`默认 < 管理员 < 用户 < App 组 < 会话组`）。管理员层、用户层、策略组都是本机数据，不走订阅，也不受订阅影响。
+- 按路由 TODO 的 Q1，订阅带来的默认模型变化直接生效，不钉住、不要求确认。它 §3.2 的稳定性契约把“Model Driver metadata”列为输入；本单之后这个输入是整份合并结果：Model Driver、Provider Rules、Known Provider、逻辑树默认权重，以及价格（见 §7.6）。
+- 建议（不是新机制，可以不做）：`generation` 变化后，用路由 TODO 的 `routing.usecases` 对 Zone 默认视角算一次前后对比，有用途的默认模型变了就记一条事件（“metadata 更新：编码从 A 换成 B”）。用户能看懂默认路由为什么变了，路由 TODO 的目标就是这个。见 Q17。
 
 ### 6.3 管理接口与界面
 
@@ -343,6 +351,7 @@ Provider Rules 新增价格基准：
 - `match` 的维度和 `model_pricing` 现在用的一样（例如 `region`）。同一个实例匹配到多个币种时怎么选，见 Q11。
 - 算价：渠道价 = 相对倍数 × 该组基准值；token 维度再除以 1e6，得到现有 `Pricing` 的每 token 单价。`tiers` 和 `rules` 里的数值按同一倍数缩放。
 - **显式集成**：只有 Provider Rules 的 `pricing_basis` 命中了 `(model_driver, group)`，并且该模型在 Model Driver 里有 `relative_pricing`，才产生价格。任何一边缺失，结果都是 unknown。custom Provider 和没有写 `pricing_basis` 的 Provider 默认没有价格（P8）。
+- **算价函数要能复用**：写成 `catalog` 里的纯函数（输入 `relative_pricing`、基准值、币种，输出一个普通 `Pricing`）。Credit TODO §3.3 末尾计划让管理员在价目表里只写“某价格组的 1.0 = N Credit”，就是用币种 `CREDIT` 调同一个函数。Provider Rules 的 `values` 里不允许出现 `CREDIT`（Provider 成本不是 Credit）。
 
 ### 7.4 来源顺序
 
@@ -365,11 +374,28 @@ Provider Rules 新增价格基准：
 
 ### 7.6 对路由的影响
 
-只迁移现有价格时价格不变，路由不变。之后官方直连 Provider 新加的模型会自动有价格（以前是 unknown），这会影响 `max_estimated_cost` 上限和同权重池内的 `cost_first` 评分。实施报告里要列出“从 unknown 变成有价格”的模型清单。路由仍然遵守“不自动换模型”：价格只能帮管理员做判断，不能成为自动切换 Provider 的理由（参见 [显式 fallback TODO](aicc-explicit-fallback-todo.md) 的 Q7）。
+按路由 TODO，`cost_first` 会删除（R2）。删除之后，Provider 成本价还在这几处影响路由：
+
+1. `not_pricier`（换下一个不更贵的模型）：逐维度比较单价，任何一边价格未知就算“不能证明不更贵”而排除（路由 TODO §4.5）。比例价让更多模型有已知价格，这个策略能找到的备选随之变多。
+2. 请求的 `max_estimated_cost` 上限。
+3. 其余调度 profile 的 `cost` 分量：要不要保留还没定（路由 TODO §9.1 N1，建议整个删掉）。如果保留，价格就成了默认路由的输入，订阅更新价格会改变池内排序。
+4. 计费用户的可用性：Credit TODO 规定“没有价格且系数不为 0 的模型，逻辑路由不把它当候选”。它的价格来源第 3 种是“Provider 成本 × `credit_rates`”，所以 Provider 成本从 unknown 变成已知，模型就从“对计费用户不可用”变成可用、并开始扣费。
+
+只迁移现有价格（§7.5）时价格不变，以上都不变。之后的订阅更新让模型从 unknown 变成有价格时，按路由 TODO 的 Q1 直接生效；实施报告和 §6.2.1 的事件要列出这些模型。价格仍然不能成为自动切换 Provider 的理由：`not_pricier` 只在管理员或用户手工打开后才生效。
+
+比例价按 P8 可以不精确，而 `not_pricier` 是逐维度比较，可能因为这点误差选到一个实际略贵的模型。trace 和用量里要带 `PricingSource::ProviderBasis`，让人看得出这次的判断用的是比例价。
+
+### 7.7 与 Credit 价格、汇率的交点
+
+- **Credit 价目表不走订阅。** 它是 Zone 管理员的本地配置（存在 AICC RDB），本单不碰。本单只改它的第 3 种来源“Provider 成本 × `credit_rates`”的输入：比例价算出的 Provider 成本会按管理员的汇率折成 Credit 向用户扣费，P8 接受的误差会直接进入用户的账单。所以 Credit 扣费记录里钉住的 `pricing_json` 要带上 Provider 成本的来源（`ProviderBasis` 及其基准条目）。
+- **汇率现在没有数据。** 路由 TODO 的 `not_pricier` 跨币种比较用 `catalog.cost_in_usd`（[catalog/mod.rs:453](../src/frame/aicc/src/catalog/mod.rs#L453)），它读的是 Known Provider catalog 上可选的 `exchange_rates`（带 `expires_at_ms`，[catalog/schema.rs:1005](../src/frame/aicc/src/catalog/schema.rs#L1005)）。但没有任何内置 Known Provider 文件写了这个字段，所以生产环境里 CNY 和 USD 之间永远无法比较，`not_pricier` 在跨币种时总是排除。
+- 汇率正好适合走订阅：它常变、有过期时间、各 Zone 都一样。建议把它从 Known Provider 里拿出来，做成单独的 kind `exchange_rates`，由官方源定期发布，过期后不再使用（不用过期的汇率比较）。这和 P7“不同币种的值不按汇率换算”不冲突：汇率只用于比较大小，不用来生成价格。Credit 的 `credit_rates` 是管理员定的结算汇率，不受影响。见 Q16。
 
 ## 8. 逻辑树纳入订阅（旧 TODO §5，整体保留）
 
 方向已在 2026-09-25 定下：要做，而且意义比 Model Driver 更新还大。逻辑树承载“特定用途下的默认模型优先级”，是最需要随市场频繁调整的部分。
+
+**先等路由 TODO 的 R0–R2。** 路由 TODO 要改的正是这里要导出的代码：R0 删除 `parent` fallback 模式、关掉七个 LLM 用途到 `llm.fallback` 的回退（`model_defaults.rs`）；R1 把 `settings.session_config` 改名为 `routing`，加上兜底 LLM 开关、用户层和策略组；R2 删除 `cost_first`，默认 profile 改为 `balanced`。先导出再改，`tasks` 的 schema 就得带上马上要删的字段，所以 §8.2 的导出要排在 R0–R2 之后，导出的是它们改完以后的定义。下文已按改完后的样子写。
 
 ### 8.1 现状
 
@@ -380,13 +406,13 @@ Provider Rules 新增价格基准：
 | 任务节点定义（path、api_type、min_line、mount_mode、scheduler_profile、fallback、tier） | `builtin_logical_model_definitions()`，用 Rust 构造的 `LogicalModelDefinition`（不是 serde 类型） | 需要新 schema |
 | 功能路径 → 规格引用及权重、媒体家族权重 | `builtin_logical_tree_overlay()` + `MEDIA_FAMILIES`，产出公共类型 `AiccRouteOverlay`（已可 serde） | 几乎直接可用 |
 | 规格、家族、driver mount、auto mount | Model Driver catalog + 库存 | 已是数据 |
-| 用户调整 | settings `session_config`（`AiccRouteOverlay` + `routing_commands`），每次重建后重放 | 已是数据 |
+| 管理员、用户、策略组的调整 | 现在是 settings `session_config`（`AiccRouteOverlay` + `routing_commands`），每次重建后重放。路由 TODO 实施后：管理员层是 settings `routing`（`usecases` + `routing_commands` + `provider_weights`），用户层、策略组、App 绑定在 AICC RDB | 本机数据，不走订阅 |
 
 ### 8.2 目标形态
 
 - 新 kind `logical_tree`，文件放 `src/frame/aicc/driver_metadata/logical-tree/<id>.logical-tree.json`，和另外三类一样经过订阅合并。
 - 拆成两个 id，方便分别更新：
-  - `tasks`：任务节点定义（变动少、风险高）；
+  - `tasks`：任务节点定义（变动少、风险高）。这些任务节点就是路由 TODO 里用户看到的 29 个“用途”，外加 `llm.fallback`；七个 LLM 用途到兜底 LLM 的那条边（路由 TODO R1 唯一保留的内置边）也写在这里，不再有别的 fallback 字段；
   - `defaults`：功能路径 → 规格、家族引用及权重，以及全局权重（变动多、风险低，订阅首版主要发它）。
 - 内容是 `{ tasks: [...] }` 或 `{ overlay: <AiccRouteOverlay 子集：logical_tree、global_exact_model_weights、provider_weights> }`，外加和其它 catalog 一致的 `format`、`schema_version`、`catalog_id`。
 - 用一个测试把现有 Rust 常量一次性导出成 builtin JSON，并做 golden 对比：导出前后的 `ModelRegistry` 完全一致（节点、引用、权重、fallback）。之后删除 Rust 常量，JSON 成为唯一事实源，不保留双轨。
@@ -397,10 +423,11 @@ Provider Rules 新增价格基准：
 2. `ServiceModelAssembler::build`（[model_defaults.rs](../src/frame/aicc/src/service/model_defaults.rs)）的定义和 factory overlay 改为从 catalog 读。逻辑树本来就在每次收敛时重建，catalog 一变树就跟着变，不需要新的触发机制。
 3. 悬空引用：`defaults` 引用了当前 Model Driver 里不存在的规格时，忽略这条引用并记诊断事件（复用 `routing_command_stale` 一类事件），不让 registry 构建失败。
 4. 任务节点 path 与规格或家族名冲突时，在 catalog 校验阶段判为非法，拒绝该项；运行时不应该走到 `register_specs` 报错。
-5. 用户调整（`session_config`、`routing_commands`）继续在 factory 之后应用和重放，订阅更新默认值不改用户层。已有的 stale 检测覆盖“用户调整的目标被订阅删除”的情况。
-6. WebUI 的路由和模型页显示每个权重的来源（预装、哪个订阅源、用户），提供“恢复默认”，也就是删除对应的用户命令。
+5. 管理员层、用户层、策略组（路由 TODO §3.3）继续叠在默认层之上，订阅只改默认层。管理员层的 `routing_commands` 沿用已有的 stale 检测，覆盖“调整的目标被订阅删除”的情况。
+6. **用途被订阅删除或改名时**（只有 `tasks` 能做到这一点）：管理员层、用户层、策略组里引用这个用途的配置保留不删，在用途表上标“这个用途已不存在”，并记事件，做法同路由 TODO §4.1“所选模型已不可用”。这是 Q15 建议首版不通过订阅更新 `tasks` 的原因之一。
+7. 界面不另做：路由 TODO 的用途页已经有“来源”一列（默认 / 管理员 / 我 / 策略组）。来源是“默认”时，再标出它来自预装还是哪个订阅源、发布日期。“恢复默认”就是它的“恢复为跟随下一层”。
 
-旧 D10.1 已定为新增 kind；D10.3（用户调整优先）在新机制下自然成立。D10.2、D10.4 见 Q15。
+旧 D10.1 已定为新增 kind；D10.3（用户调整优先）由路由 TODO 的层次自然满足。D10.2、D10.4 见 Q15。
 
 ## 9. 旧 TODO 决策项的去向
 
@@ -440,9 +467,9 @@ Provider Rules 新增价格基准：
 - [ ] A2 AICC 接入组件，先只接预装和两个本地层，不接订阅源。验收：三组快照（wire、库存、发现请求）不变，local / system-config 覆盖行为不变。
 - [ ] A3 `metadata_target_seq` 改为 `generation`，删除 `BUILTIN_CATALOG_REVISION_SEQ`；新增“沿用模型列表重建库存”的路径；收敛失败的退避重试。
 - [ ] A4 发布工具的 `lock` / `build` 和锁文件、CI 检查；预装版本改成 `build` 的产物。
-- [ ] A5 价格：`price_groups`、`relative_pricing`、`pricing_basis` 的 schema、校验、算价、`PricingSource::ProviderBasis`。测试至少覆盖：没写基准的 Provider 不出价；Model Driver 有比例但 Provider 没集成时不出价；`tiers` 和 `rules` 的缩放；多币种 `match`。先不迁移数据。
+- [ ] A5 价格：`price_groups`、`relative_pricing`、`pricing_basis` 的 schema、校验、算价纯函数（可用 `CREDIT` 调用，§7.3）、`PricingSource::ProviderBasis`。测试至少覆盖：没写基准的 Provider 不出价；Model Driver 有比例但 Provider 没集成时不出价；`tiers` 和 `rules` 的缩放；多币种 `match`；Provider Rules 里写 `CREDIT` 被拒。先不迁移数据。**等 Credit TODO 的改动合入后再做**：它正在改 `call/mod.rs`、`execution/mod.rs`、`service/inference.rs` 里同一段价格代码（工作区里已经在改）。
 - [ ] A6 选一个官方直连 Provider 做价格迁移示范（建议 Claude：15 条、只有 USD、组内形状整齐），按 §7.5 验收价格不变。
-- [ ] A7 逻辑树 §8.2、§8.3 的第 1–5 条（导出 + golden、Assembler 读 catalog、悬空引用降级）。只走预装和本地层，可以立刻用于调整默认优先级的 DV。
+- [ ] A7 逻辑树 §8.2、§8.3 的第 1–6 条（导出 + golden、Assembler 读 catalog、悬空引用降级、用途删除的处理）。只走预装和本地层，可以立刻用于调整默认优先级的 DV。**排在路由 TODO 的 R0–R2 之后**（§8 开头）。
 
 **阶段 B：依赖 §12 和运维决策**
 
@@ -450,7 +477,7 @@ Provider Rules 新增价格基准：
 - [ ] B2 预置官方源（D1、D4），`sign` / `publish`，以及发布门禁（D5）。
 - [ ] B3 新 RPC、system-config key、RBAC、`aicc_client.rs`、`aicc_mgr.ts`、skill 手册、Desktop 界面（§6.3）。
 - [ ] B4 其余 Provider 的价格迁移（Q14 定范围），两处 Rust 价格特判改成 metadata。
-- [ ] B5 逻辑树的 WebUI 来源显示和“恢复默认”（§8.3 第 6 条）。
+- [ ] B5 在路由 TODO 的用途页“来源”里标出默认值来自预装还是哪个订阅源（§8.3 第 7 条），排在它的 R6 之后；`exchange_rates` kind 和官方源发布汇率（§7.7，按 Q16）。
 - [ ] B6 重写 `test/aicc_test/acceptance/cloud_update_*` 验收用例；`node_updater/readers.toml` 登记新的持久数据。
 - [ ] B7 文档（§14）。
 
@@ -472,7 +499,9 @@ Provider Rules 新增价格基准：
 12. **实时价和静态价谁优先。** 现在静态价（`model_pricing`）优先于 discovery 实时价。建议改成实时价优先（呼应“尽量通过协议拿实时价格”）。会受影响的是同时有两种价格的 Provider，例如 fal。
 13. **“宁可不准确也不估算”的理解**（§1.3 最后一条）是否正确。
 14. **价格迁移范围。** 建议官方直连 Provider 全部迁移（openai、claude、gemini、deepseek、glm、kimi、minimax、qwen、doubao、fal、typesafe），复现不了的留作例外；第三方渠道不动。另一个做法是只上新机制，现有 334 条保持不动，以后新增的才用比例。
-15. **逻辑树的剩余决策**（旧 D10.2、D10.4）：订阅首版只开放 `defaults`（权重和引用），`tasks` 暂不通过订阅更新？权重调整能否走比 Model Driver 更轻的发布流程（例如运营发布、双人确认）？建议首版只发 `defaults`。
+15. **逻辑树的剩余决策**（旧 D10.2、D10.4）：订阅首版只开放 `defaults`（权重和引用），`tasks` 暂不通过订阅更新？权重调整能否走比 Model Driver 更轻的发布流程（例如运营发布、双人确认）？建议首版只发 `defaults`。（`tasks` 就是路由 TODO 里用户看到的用途列表，通过订阅增删用途会让管理员和用户已有的用途配置失效，§8.3 第 6 条。）
+16. **汇率要不要走订阅。** 现在 `not_pricier` 跨币种比较依赖的汇率在生产环境里没有数据（§7.7）。建议新增 kind `exchange_rates`，由官方源定期发布，过期不用；汇率只用于比较，不用于生成价格。另一个做法是由管理员在本机配置汇率（类似 Credit 的 `credit_rates`），或者干脆不做跨币种比较。
+17. **订阅更新后要不要记“默认模型变了”的事件**（§6.2.1）。建议记：不加新机制，只是在 `generation` 变化时用现有的用途表算一次前后对比。
 
 旧 TODO 里需要运维定的 D1、D3、D4、D5（密钥与审批部分）、D9、D12，见 §9。
 
@@ -508,3 +537,13 @@ Provider Rules 新增价格基准：
 - 价格相关的四份文档（§7.5）。
 - 逻辑树：[aicc 逻辑模型目录.md](../doc/aicc/aicc%20逻辑模型目录.md)、[frozen_model_driver_and_logical_model_fs.md](../doc/aicc/frozen_model_driver_and_logical_model_fs.md)。
 - [doc/aicc/README.md](../doc/aicc/README.md) 和 [provider_architecture_durable_data_schema.md](../doc/aicc/provider_architecture_durable_data_schema.md) 里提到 `driver_metadata_update` 的地方。
+
+## 15. 与其它 TODO 的关系
+
+| TODO | 交点 | 本单的处理 |
+| --- | --- | --- |
+| [用户视角路由](aicc-user-centric-routing-todo.md) | 订阅只改它的“默认”层，变化直接生效（它的 Q1）；它的 R0–R2 改的是 §8 要导出的逻辑树代码；用途页的“来源”列；`not_pricier` 依赖价格和汇率；`cost_first` 删除 | §6.2.1、§7.6、§7.7；§8 排在 R0–R2 之后；B5 排在 R6 之后 |
+| [用户策略与 Credit](aicc-user-policy-credit-todo.md) | 它的价格来源第 3 种用 Provider 成本；它计划复用本单的相对价格（“某价格组的 1.0 = N Credit”）；它把 AICC 存储升到版本 4，并且正在改同一段价格代码 | §7.3 算价纯函数、§7.7；`generation` 起点不再升存储版本（§6.2）；A5 等它合入后再做 |
+| [协议客户端](aicc-provider-protocol-client-todo.md) | 目标第 7 条“除 API 类型和协议客户端外都靠配置更新”的通道就是本单；fal 价格地址在它的 P1-11 | §1.2、§7.5 |
+| [自定义 Provider 自动探测](aicc-custom-provider-auto-probe-todo.md) | custom Provider 默认没有价格（P8）；探测结果写进实例配置，不走订阅 | §6.1 |
+| [AICC 当另一个 AICC 的 Provider](aicc-zone-aicc-provider-todo.md) | 远端 AICC 作为 Provider 时价格从哪来（远端上报的实际费用，或下游 Zone 自己写 `pricing_basis`） | 不在本单范围，留给它定 |

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::aicc_client::{ai_methods, AiUsage, Money};
-use crate::aicc_quota::AiccAttribution;
+use crate::aicc_quota::{AiccAttribution, CreditChargeStatus};
 use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 
 /// Logical name of the aicc usage-log rdb instance. The scheduler writes this
@@ -87,6 +87,16 @@ pub struct AiccUsageEvent {
     pub operator_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attribution: Option<AiccAttribution>,
+    /// Credit charged for this usage (decimal string); absent for a system
+    /// principal, which is never charged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_status: Option<CreditChargeStatus>,
+    /// UserType group and system user groups of the charged user at the
+    /// time of the call (`type:*`, `group:*`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subjects: Vec<String>,
     pub created_at_ms: i64,
 }
 
@@ -229,6 +239,10 @@ pub struct UsageQueryFilters {
     pub idempotency_keys: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<String>,
+    /// `type:*` / `group:*` subjects the charged user belonged to at the
+    /// time of the call (administrators only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_groups: Vec<String>,
 }
 
 /// Group dimensions supported by `query_usage`. Multiple values produce a
@@ -244,6 +258,9 @@ pub enum UsageQueryGroup {
     CallerAppId,
     UserId,
     TenantId,
+    /// The charged user's `type:*` / `group:*` subjects at the time of the
+    /// call; an event counts once per subject (administrators only).
+    UserGroup,
 }
 
 impl UsageQueryGroup {
@@ -257,6 +274,7 @@ impl UsageQueryGroup {
             Self::CallerAppId => "caller_app_id",
             Self::UserId => "user_id",
             Self::TenantId => "tenant_id",
+            Self::UserGroup => "user_group",
         }
     }
 }
@@ -337,7 +355,9 @@ impl QueryUsageRequest {
 /// incomplete. Consumers may use valid subtotals from an incomplete aggregate,
 /// but must not treat them as the complete cost of all events.
 /// `consumed_request_units` counts every successful completion as at least one
-/// unit: `max(request_units.unwrap_or(1), 1)`.
+/// unit: `max(request_units.unwrap_or(1), 1)`. `credit_total` is the Credit
+/// charged (decimal string); `credit_complete` is false when an event's charge
+/// is `unpriced` or `unknown_usage`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct UsageAggregate {
@@ -348,6 +368,8 @@ pub struct UsageAggregate {
     pub consumed_request_units: u64,
     pub finance_totals: Vec<Money>,
     pub finance_complete: bool,
+    pub credit_total: String,
+    pub credit_complete: bool,
 }
 
 impl Default for UsageAggregate {
@@ -360,6 +382,8 @@ impl Default for UsageAggregate {
             consumed_request_units: 0,
             finance_totals: Vec::new(),
             finance_complete: true,
+            credit_total: "0".to_string(),
+            credit_complete: true,
         }
     }
 }
@@ -429,6 +453,9 @@ mod tests {
             finance_snapshot_json: None,
             operator_id: None,
             attribution: None,
+            credit: Some("0.25".to_string()),
+            credit_status: Some(CreditChargeStatus::Charged),
+            subjects: vec!["type:user".to_string()],
             created_at_ms: 1_750_000_000_000,
         }
     }
@@ -543,7 +570,9 @@ mod tests {
                 "total_tokens": 0,
                 "consumed_request_units": 0,
                 "finance_totals": [],
-                "finance_complete": true
+                "finance_complete": true,
+                "credit_total": "0",
+                "credit_complete": true
             })
         );
         assert_eq!(

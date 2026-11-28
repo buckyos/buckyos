@@ -30,7 +30,7 @@ export interface ModelAnswer {
 export type ModelCall = (request: ModelRequest) => Promise<ModelAnswer>;
 
 /**
- * `config`: no model, no quota or no permission — nothing a retry changes;
+ * `config`: no model, no limit or Credit left, or no permission — nothing a retry changes;
  * `budget`: the tokens this run was given are used up; `transient`: try again
  * later; `failed`: anything else.
  */
@@ -47,7 +47,7 @@ export class ModelError extends Error {
 
 const CONFIG_CODES = [
   "quota_exhausted",
-  "quota_budget_exceeded",
+  "credit_insufficient",
   "resource_not_permitted",
   "attribution_unavailable",
   "policy_denied",

@@ -186,6 +186,10 @@ p, admin,obj://config/users/{admin}/agents,list|query,allow
 p, admin,obj://config/users/{admin}/agents/{agent}/{key},read|write,allow
 p, admin,obj://config/services/aicc/settings,read|write,allow
 p, admin,obj://config/services/aicc/driver_metadata_update,read|write,allow
+# AICC Credit recharge and adjustment. A payment gateway gets its own line in
+# the policy tail (`p, app:<gateway>,obj://aicc/credit/recharge,write,allow`);
+# being an App of an administrator is not enough.
+p, admin,obj://aicc/credit/recharge,write,allow
 p, admin,obj://config/services/msg-center/settings,read|write,allow
 p, admin,obj://config/services/{service}/instances/{node},write,allow
 p, admin,obj://config/services/*,read,allow
@@ -1147,6 +1151,29 @@ g, did:bns:jarvis, agent
             )
             .await
         );
+    }
+
+    #[tokio::test]
+    async fn aicc_credit_recharge_needs_admin_and_an_explicit_gateway_grant() {
+        let _guard = TEST_LOCK.lock().await;
+
+        let policy_tail = r#"
+g, alice, admin
+g, bob, users
+g, app:writer, app
+g, app:paygate, app
+p, app:paygate,obj://aicc/credit/recharge,write,allow
+"#;
+        let config = build_current_rbac_config(Some(policy_tail));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+        let recharge = "obj://aicc/credit/recharge";
+        assert!(rbac::enforce("alice", "system:control-panel", recharge, "write", None).await);
+        assert!(!rbac::enforce("bob", "system:control-panel", recharge, "write", None).await);
+        assert!(!rbac::enforce("alice", "app:writer", recharge, "write", None).await);
+        assert!(rbac::enforce("alice", "app:paygate", recharge, "write", None).await);
+        assert!(!rbac::enforce("bob", "app:paygate", recharge, "write", None).await);
     }
 
     #[tokio::test]

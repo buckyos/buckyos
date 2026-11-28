@@ -3,16 +3,17 @@ import { useI18n } from '../../../../../i18n/provider'
 import { LongField } from '../../shared/LongField'
 import type { ValidationResult, WizardDraft } from '../../../../../api/aicc_mgr'
 import { ProviderAccessSection } from './ProviderAccessSection'
+import { NO_PROVIDER_ACCESS, type ProviderAccess } from './providerAccess'
 
 interface StepReviewProps {
   draft: WizardDraft
   validation: ValidationResult | null
   onToggleAutoSync: (value: boolean) => void
-  openTo?: string[]
-  onOpenToChange?: (subjects: string[]) => void
+  access?: ProviderAccess
+  onAccessChange?: (access: ProviderAccess) => void
 }
 
-export function StepReview({ draft, validation, onToggleAutoSync, openTo = [], onOpenToChange }: StepReviewProps) {
+export function StepReview({ draft, validation, onToggleAutoSync, access = NO_PROVIDER_ACCESS, onAccessChange }: StepReviewProps) {
   const { t } = useI18n()
   const providerName = draft.display_name || draft.provider_instance_name || '-'
 
@@ -97,7 +98,7 @@ export function StepReview({ draft, validation, onToggleAutoSync, openTo = [], o
           </div>
         </div>
       </div>
-      {onOpenToChange && <ProviderAccessSection selected={openTo} onChange={onOpenToChange} />}
+      {onAccessChange && <ProviderAccessSection access={access} onChange={onAccessChange} />}
     </div>
   )
 }

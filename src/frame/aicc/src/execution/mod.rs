@@ -248,9 +248,9 @@ pub(crate) struct PinnedProviderTask {
     pub resume: Option<NativeTaskResumeDescriptor>,
     pub pricing: Option<PinnedPricingSnapshot>,
     pub reported_cost_currency: Option<String>,
-    /// Token quota reservation of the attempt this binding was started by.
+    /// Credit charge plan of the attempt this binding was started by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quota_attempt_id: Option<String>,
+    pub charge: Option<crate::policy::ChargePlan>,
 }
 
 impl PinnedProviderTask {
@@ -283,7 +283,7 @@ impl PinnedProviderTask {
             resume: None,
             pricing: PinnedPricingSnapshot::from_call(call)?,
             reported_cost_currency: call.reported_cost_currency.clone(),
-            quota_attempt_id: None,
+            charge: None,
         })
     }
 }
@@ -905,6 +905,9 @@ pub(crate) struct ExecutionRecord {
     pub caller_app_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attribution: Option<AiccAttribution>,
+    /// The charged account as policies see it; `None` for a system principal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<crate::policy::PolicyPrincipal>,
     pub request_model: String,
     pub body_fingerprint: String,
     pub task_id: String,
@@ -967,7 +970,7 @@ pub(crate) struct RecoverableExecutions {
 pub(crate) struct RetiredExecution {
     pub task_id: String,
     pub error: AiccError,
-    pub quota_attempt_id: Option<String>,
+    pub charge: Option<crate::policy::ChargePlan>,
 }
 
 #[derive(Debug, Clone)]
@@ -1157,6 +1160,10 @@ pub(crate) struct UsageCompletion {
     pub finance_snapshot: Option<AiCost>,
     pub operator_id: Option<String>,
     pub attribution: Option<AiccAttribution>,
+    /// Credit charged for this usage and how; `None` for a system principal.
+    pub credit: Option<(i64, buckyos_api::CreditChargeStatus)>,
+    /// The charged user's `type:*` / `group:*` at admission.
+    pub subjects: Vec<String>,
     pub completed_at_ms: i64,
 }
 
@@ -1165,31 +1172,41 @@ pub(crate) trait UsageCompletionPort: Send + Sync {
     async fn write_once(&self, completion: UsageCompletion) -> Result<(), AiccError>;
 }
 
-/// How an upstream attempt ended, for its token quota reservation.
+/// How an upstream attempt ended, for its Credit charge.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum AttemptSettlement {
-    /// The Provider reported this usage.
-    Usage(AiUsage, ApiType),
+    /// The Provider reported this usage; the Provider cost of it, if known.
+    Usage(AiUsage, ApiType, Option<AiCost>),
     /// The Provider never accepted the attempt.
     Released,
-    /// The attempt may have consumed tokens that were not reported.
+    /// The attempt may have consumed something that was not reported.
     Unknown,
 }
 
-/// Token quota admission of each upstream attempt (PRD §7.1–§7.2).
+/// Credit charged for one attempt.
+pub(crate) type SettledCharge = (i64, buckyos_api::CreditChargeStatus);
+
+/// User policy admission of each upstream attempt
+/// (doc/aicc/aicc_user_policy.md §4).
 #[async_trait]
 pub(crate) trait AdmissionPort: Send + Sync {
-    /// Reserve the attempt's budget on every applicable rule, or refuse with
-    /// a quota error. `Ok(None)` when the call is outside token quota.
+    /// Check visibility, price, limits and balance without writing anything,
+    /// or refuse with a policy error. `Ok(None)` for a caller policies do not
+    /// apply to (a system principal).
     async fn admit(
         &self,
         record: &ExecutionRecord,
         call: &ResolvedProviderCall,
         attempt_id: &str,
-    ) -> Result<Option<String>, AiccError>;
+    ) -> Result<Option<crate::policy::ChargePlan>, AiccError>;
 
-    /// Settle a reservation; repeating it changes nothing.
-    async fn settle(&self, attempt_id: &str, settlement: AttemptSettlement);
+    /// Charge an attempt; repeating it changes nothing, except that a charge
+    /// left with an unknown usage is completed once.
+    async fn settle(
+        &self,
+        plan: &crate::policy::ChargePlan,
+        settlement: AttemptSettlement,
+    ) -> Option<SettledCharge>;
 }
 
 #[derive(Debug)]
@@ -1324,6 +1341,7 @@ pub(crate) struct ExecutionRequest {
     pub user_id: String,
     pub caller_app_id: Option<String>,
     pub attribution: Option<AiccAttribution>,
+    pub principal: Option<crate::policy::PolicyPrincipal>,
     pub trace_id: Option<String>,
     pub request_model: String,
     pub idempotency_key: String,
@@ -1368,7 +1386,7 @@ struct ActiveExecution {
 }
 
 enum AttemptFailure {
-    /// Token quota refused the attempt before any upstream call.
+    /// The user policy refused the attempt before any upstream call.
     Admission(AiccError),
     Provider(ProviderStartFailure),
 }
@@ -1484,17 +1502,22 @@ impl ExecutionEngine {
         record: &ExecutionRecord,
         call: &ResolvedProviderCall,
         attempt_id: &str,
-    ) -> Result<Option<String>, AiccError> {
+    ) -> Result<Option<crate::policy::ChargePlan>, AiccError> {
         match &self.admission {
             Some(admission) => admission.admit(record, call, attempt_id).await,
             None => Ok(None),
         }
     }
 
-    async fn settle(&self, attempt_id: Option<&str>, settlement: AttemptSettlement) {
-        if let (Some(admission), Some(attempt_id)) = (&self.admission, attempt_id) {
-            admission.settle(attempt_id, settlement).await;
-        }
+    async fn settle(
+        &self,
+        plan: Option<&crate::policy::ChargePlan>,
+        settlement: AttemptSettlement,
+    ) -> Option<SettledCharge> {
+        let (Some(admission), Some(plan)) = (&self.admission, plan) else {
+            return None;
+        };
+        admission.settle(plan, settlement).await
     }
 
     /// The task an earlier call with the same idempotency key started, with
@@ -1595,6 +1618,7 @@ impl ExecutionEngine {
             user_id: request.user_id,
             caller_app_id: request.caller_app_id,
             attribution: request.attribution,
+            principal: request.principal,
             request_model: request.request_model,
             body_fingerprint: fingerprint,
             task_id: task.task_id,
@@ -1661,11 +1685,13 @@ impl ExecutionEngine {
                 Err(error) => return self.finish_failure(&record.task_id, error).await,
             };
             let mut same_model_attempt = 0;
+            let mut started_charge = None;
+            let mut started_subjects = Vec::new();
             let execution = loop {
                 same_model_attempt += 1;
                 let attempt_id = format!("{}:{index}:{same_model_attempt}", record.task_id);
-                let quota_attempt = match self.admit(&record, call, &attempt_id).await {
-                    Ok(quota_attempt) => quota_attempt,
+                let charge = match self.admit(&record, call, &attempt_id).await {
+                    Ok(charge) => charge,
                     Err(error) => break Err(AttemptFailure::Admission(error)),
                 };
                 let started = self
@@ -1677,21 +1703,28 @@ impl ExecutionEngine {
                     // A failed attempt that reported usage already consumed
                     // tokens, seconds, or money, so it is settled against what
                     // the Provider said instead of being written off.
-                    self.settle(
-                        quota_attempt.as_deref(),
-                        match (&failure.error.usage, failure.provider_accepted) {
-                            (Some(usage), _) => {
-                                AttemptSettlement::Usage(usage.clone(), call.api_type)
-                            }
-                            (None, true) => AttemptSettlement::Unknown,
-                            (None, false) => AttemptSettlement::Released,
-                        },
-                    )
-                    .await;
+                    started_charge = self
+                        .settle(
+                            charge.as_ref(),
+                            match (&failure.error.usage, failure.provider_accepted) {
+                                (Some(usage), _) => AttemptSettlement::Usage(
+                                    usage.clone(),
+                                    call.api_type,
+                                    binding.completion_cost(usage),
+                                ),
+                                (None, true) => AttemptSettlement::Unknown,
+                                (None, false) => AttemptSettlement::Released,
+                            },
+                        )
+                        .await;
+                    started_subjects = charge
+                        .as_ref()
+                        .map(|charge| charge.subjects.clone())
+                        .unwrap_or_default();
                 }
                 match started {
                     Ok(execution) => {
-                        binding.quota_attempt_id = quota_attempt;
+                        binding.charge = charge;
                         break Ok(execution);
                     }
                     Err(failure)
@@ -1728,11 +1761,13 @@ impl ExecutionEngine {
                             .await?
                         {
                             self.settle(
-                                binding.quota_attempt_id.as_deref(),
+                                binding.charge.as_ref(),
                                 match &output.usage {
-                                    Some(usage) => {
-                                        AttemptSettlement::Usage(usage.clone(), binding.api_type)
-                                    }
+                                    Some(usage) => AttemptSettlement::Usage(
+                                        usage.clone(),
+                                        binding.api_type,
+                                        self.providers.completion_cost(&binding, &output),
+                                    ),
                                     None => AttemptSettlement::Unknown,
                                 },
                             )
@@ -1751,7 +1786,7 @@ impl ExecutionEngine {
                             .await?
                         {
                             self.settle(
-                                binding.quota_attempt_id.as_deref(),
+                                binding.charge.as_ref(),
                                 AttemptSettlement::Unknown,
                             )
                             .await;
@@ -1799,7 +1834,7 @@ impl ExecutionEngine {
                             }
                             self.providers.release_native_inputs(&binding, true).await;
                             self.settle(
-                                binding.quota_attempt_id.as_deref(),
+                                binding.charge.as_ref(),
                                 AttemptSettlement::Unknown,
                             )
                             .await;
@@ -1833,7 +1868,7 @@ impl ExecutionEngine {
                                 &record.task_id,
                                 ExecutionState::Submitted,
                                 json_state(
-                                    "quota_failover",
+                                    "policy_failover",
                                     Some(Value::String(call.exact_model.clone())),
                                     record.trace_id.as_deref(),
                                 ),
@@ -1875,6 +1910,7 @@ impl ExecutionEngine {
                                 &binding,
                                 error,
                                 usage,
+                                (started_charge, started_subjects),
                             )
                             .await;
                     }
@@ -1995,7 +2031,7 @@ impl ExecutionEngine {
                         false,
                     );
                     lease.terminal_error = Some(error.clone());
-                    self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                    self.settle(binding.charge.as_ref(), AttemptSettlement::Unknown)
                         .await;
                     return self.finish_failure(task_id, error).await;
                 }
@@ -2116,7 +2152,7 @@ impl ExecutionEngine {
                     }
                     Ok(NativeTaskPoll::Pending(state, progress, retry_after)) => {
                         if state.is_terminal() {
-                            self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                            self.settle(binding.charge.as_ref(), AttemptSettlement::Unknown)
                                 .await;
                             let error = aicc_error(
                                 AiccErrorCode::ProviderError,
@@ -2167,7 +2203,7 @@ impl ExecutionEngine {
                             .await;
                     }
                     Ok(NativeTaskPoll::Failed(error)) => {
-                        self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                        self.settle(binding.charge.as_ref(), AttemptSettlement::Unknown)
                             .await;
                         return self.finish_failure(task_id, error.into()).await;
                     }
@@ -2185,7 +2221,7 @@ impl ExecutionEngine {
                             retry_delay = (retry_delay * 2).min(Duration::from_secs(3));
                             continue;
                         }
-                        self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                        self.settle(binding.charge.as_ref(), AttemptSettlement::Unknown)
                             .await;
                         return self.finish_failure(task_id, error).await;
                     }
@@ -2203,10 +2239,10 @@ impl ExecutionEngine {
         let RecoverableExecutions { records, retired } = self.store.recoverable().await?;
         for retired in retired {
             // An upstream task an earlier build submitted keeps running at
-            // the Provider; its result is not collected, so the reservation
-            // settles as unknown rather than as a charge or a refund.
+            // the Provider; its result is not collected, so the attempt is
+            // charged as an unknown usage rather than as a known amount.
             self.settle(
-                retired.quota_attempt_id.as_deref(),
+                retired.charge.as_ref(),
                 AttemptSettlement::Unknown,
             )
             .await;
@@ -2280,7 +2316,7 @@ impl ExecutionEngine {
                 record
                     .binding
                     .as_ref()
-                    .and_then(|binding| binding.quota_attempt_id.as_deref()),
+                    .and_then(|binding| binding.charge.as_ref()),
                 AttemptSettlement::Unknown,
             )
             .await;
@@ -2333,7 +2369,7 @@ impl ExecutionEngine {
         if !accepted || !self.store.try_cancel(task_id).await? {
             return Ok(false);
         }
-        self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+        self.settle(binding.charge.as_ref(), AttemptSettlement::Unknown)
             .await;
         self.log_llm_terminal(task_id, false).await;
         self.tasks
@@ -2364,7 +2400,7 @@ impl ExecutionEngine {
         loop {
             let event = tokio::select! {
                 _ = cancellation.cancelled() => {
-                    self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                    self.settle(binding.charge.as_ref(), AttemptSettlement::Unknown)
                         .await;
                     self.remove_active(task_id);
                     return self.current_receipt(task_id).await;
@@ -2397,13 +2433,13 @@ impl ExecutionEngine {
                     return self.finish_success(task_id, scope, binding, output).await;
                 }
                 Err(error) => {
-                    self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                    self.settle(binding.charge.as_ref(), AttemptSettlement::Unknown)
                         .await;
                     return self.finish_failure(task_id, error.into()).await;
                 }
             }
         }
-        self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+        self.settle(binding.charge.as_ref(), AttemptSettlement::Unknown)
             .await;
         self.finish_failure(
             task_id,
@@ -2424,23 +2460,28 @@ impl ExecutionEngine {
         output: ProtocolOutput,
     ) -> Result<ExecutionReceipt, AiccError> {
         self.providers.release_native_inputs(&binding, false).await;
-        self.settle(
-            binding.quota_attempt_id.as_deref(),
-            match &output.usage {
-                Some(usage) => AttemptSettlement::Usage(usage.clone(), binding.api_type),
-                None => AttemptSettlement::Unknown,
-            },
-        )
-        .await;
-        if let Err(error) = output.validate_canonical_type(binding.api_type) {
-            return self.finish_failure(task_id, error.into()).await;
-        }
-        let finance_snapshot = match self
+        let finance_snapshot = self
             .providers
             .completion_cost(&binding, &output)
             .map(validate_completion_cost)
-            .transpose()
-        {
+            .transpose();
+        let charged = self
+            .settle(
+                binding.charge.as_ref(),
+                match &output.usage {
+                    Some(usage) => AttemptSettlement::Usage(
+                        usage.clone(),
+                        binding.api_type,
+                        finance_snapshot.as_ref().ok().cloned().flatten(),
+                    ),
+                    None => AttemptSettlement::Unknown,
+                },
+            )
+            .await;
+        if let Err(error) = output.validate_canonical_type(binding.api_type) {
+            return self.finish_failure(task_id, error.into()).await;
+        }
+        let finance_snapshot = match finance_snapshot {
             Ok(cost) => cost,
             Err(error) => return self.finish_failure(task_id, error).await,
         };
@@ -2454,7 +2495,21 @@ impl ExecutionEngine {
             return self.finish_failure(task_id, error).await;
         }
         if let Err(error) = self
-            .record_usage_completion(task_id, scope, &binding, &output.usage, finance_snapshot)
+            .record_usage_completion(
+                task_id,
+                scope,
+                &binding,
+                &output.usage,
+                finance_snapshot,
+                (
+                    charged,
+                    binding
+                        .charge
+                        .as_ref()
+                        .map(|charge| charge.subjects.clone())
+                        .unwrap_or_default(),
+                ),
+            )
             .await
         {
             return self.finish_failure(task_id, error).await;
@@ -2479,10 +2534,11 @@ impl ExecutionEngine {
         binding: &PinnedProviderTask,
         error: AiccError,
         usage: AiUsage,
+        credit: (Option<SettledCharge>, Vec<String>),
     ) -> Result<ExecutionReceipt, AiccError> {
         let finance_snapshot = binding.completion_cost(&usage);
         if let Err(error) = self
-            .record_usage_completion(task_id, scope, binding, &usage, finance_snapshot)
+            .record_usage_completion(task_id, scope, binding, &usage, finance_snapshot, credit)
             .await
         {
             return self.finish_failure(task_id, error).await;
@@ -2498,6 +2554,7 @@ impl ExecutionEngine {
         binding: &PinnedProviderTask,
         usage: &AiUsage,
         finance_snapshot: Option<AiCost>,
+        (credit, subjects): (Option<SettledCharge>, Vec<String>),
     ) -> Result<(), AiccError> {
         let record = self.store.get_task(task_id).await?.ok_or_else(|| {
             aicc_error(
@@ -2530,6 +2587,8 @@ impl ExecutionEngine {
                 finance_snapshot,
                 operator_id,
                 attribution: record.attribution,
+                credit,
+                subjects,
                 completed_at_ms,
             })
             .await
@@ -2724,7 +2783,7 @@ impl From<ProtocolErrorKind> for ExecutionState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::call::{LoweringRevisions, PricingSource, ResolvedPricing};
     use crate::catalog::Pricing;
@@ -3225,11 +3284,11 @@ mod tests {
         );
     }
 
-    fn call(instance: &str) -> ResolvedProviderCall {
+    pub(crate) fn call(instance: &str) -> ResolvedProviderCall {
         let request = LlmChatInvokeRequest::new(format!("model@{instance}"), Vec::new());
         ResolvedProviderCall {
             reported_cost_currency: None,
-            model_max_output_tokens: None,
+            pricing_context: Default::default(),
             exact_model: format!("model@{instance}"),
             provider_model_id: "model".into(),
             provider_instance_name: instance.into(),
@@ -3725,6 +3784,7 @@ mod tests {
             user_id: "user-1".into(),
             caller_app_id: Some("app-1".into()),
             attribution: None,
+            principal: None,
             trace_id: Some("trace-1".into()),
             request_model: "smart-chat".into(),
             idempotency_key: "idem-1".into(),
@@ -4752,25 +4812,50 @@ mod tests {
     impl AdmissionPort for FakeAdmission {
         async fn admit(
             &self,
-            _record: &ExecutionRecord,
+            record: &ExecutionRecord,
             call: &ResolvedProviderCall,
             attempt_id: &str,
-        ) -> Result<Option<String>, AiccError> {
+        ) -> Result<Option<crate::policy::ChargePlan>, AiccError> {
             if self.deny.lock().unwrap().contains(&call.exact_model) {
                 return Err(AiccError::new(
                     AiccErrorCode::QuotaExhausted,
-                    "token quota is exhausted",
+                    "a usage limit is used up",
                 ));
             }
             self.admitted.lock().unwrap().push(attempt_id.to_string());
-            Ok(Some(attempt_id.to_string()))
+            Ok(Some(crate::policy::ChargePlan {
+                attempt_id: attempt_id.to_string(),
+                task_id: record.task_id.clone(),
+                usage_event_id: record.usage_event_id.clone(),
+                user_id: record.user_id.clone(),
+                app_id: record.caller_app_id.clone(),
+                operator_id: None,
+                provider_instance_name: call.provider_instance_name.clone(),
+                exact_model: call.exact_model.clone(),
+                admitted_at_ms: 0,
+                subjects: vec!["type:user".into()],
+                price: crate::policy::PinnedCreditPrice {
+                    kind: crate::policy::pricing::PinnedCreditKind::Free,
+                    provider_coefficient: 0.0,
+                    model_coefficient: 1.0,
+                },
+                counters: Vec::new(),
+                token_metered: true,
+            }))
         }
 
-        async fn settle(&self, attempt_id: &str, settlement: AttemptSettlement) {
+        async fn settle(
+            &self,
+            plan: &crate::policy::ChargePlan,
+            settlement: AttemptSettlement,
+        ) -> Option<SettledCharge> {
+            let charged = matches!(settlement, AttemptSettlement::Usage(..))
+                .then_some((1_500_000, buckyos_api::CreditChargeStatus::Charged));
             self.settled
                 .lock()
                 .unwrap()
-                .push((attempt_id.to_string(), settlement));
+                .push((plan.attempt_id.clone(), settlement));
+            charged
         }
     }
 
@@ -4805,8 +4890,30 @@ mod tests {
         assert_eq!(settled[0], (format!("{task}:0:1"), AttemptSettlement::Released));
         assert!(matches!(
             &settled[1],
-            (id, AttemptSettlement::Usage(usage, ApiType::Llm)) if id == &format!("{task}:0:2") && usage.total_tokens == Some(3)
+            (id, AttemptSettlement::Usage(usage, ApiType::Llm, _)) if id == &format!("{task}:0:2") && usage.total_tokens == Some(3)
         ));
+    }
+
+    #[tokio::test]
+    async fn the_usage_event_carries_the_credit_and_subjects_of_its_charge() {
+        let providers = Arc::new(FakeProviders::default());
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(output("ok"))));
+        let admission = Arc::new(FakeAdmission::default());
+        let (engine, _, _, usage) = make_engine(providers);
+        let engine = engine.with_admission(admission);
+        let receipt = engine.execute(request(call("primary"))).await.unwrap();
+        assert_eq!(receipt.state, ExecutionState::Succeeded);
+        let writes = usage.writes.lock().unwrap();
+        let completion = writes.values().next().unwrap();
+        assert_eq!(
+            completion.credit,
+            Some((1_500_000, buckyos_api::CreditChargeStatus::Charged))
+        );
+        assert_eq!(completion.subjects, ["type:user"]);
     }
 
     #[tokio::test]
@@ -4896,7 +5003,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accepted_failures_keep_the_reservation_for_reconciliation() {
+    async fn accepted_failures_are_charged_as_unknown_usage() {
         let providers = Arc::new(FakeProviders::default());
         providers.plans.lock().unwrap().push_back(StartPlan::Failure(
             ProviderStartFailure::after_accept(ProtocolError::new(
@@ -5671,6 +5778,7 @@ mod tests {
             user_id: orphan_request.user_id.clone(),
             caller_app_id: orphan_request.caller_app_id.clone(),
             attribution: None,
+            principal: None,
             request_model: orphan_request.request_model.clone(),
             body_fingerprint: canonical_body_fingerprint(&orphan_request.canonical_body).unwrap(),
             task_id: "orphan-task".into(),

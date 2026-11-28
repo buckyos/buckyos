@@ -355,27 +355,30 @@ impl AiccHandler for AiccService {
         })
     }
 
-    async fn handle_quota_rpc(
+    async fn handle_policy_rpc(
         &self,
         method: &str,
         params: Value,
         ctx: RPCContext,
     ) -> Result<Value, RPCErrors> {
+        use buckyos_api::policy_methods as methods;
         let caller = match method {
-            buckyos_api::quota_methods::QUERY => {
+            methods::POLICY_STATUS
+            | methods::POLICY_EFFECTIVE
+            | methods::PRICE_GET
+            | methods::CREDIT_ACCOUNT_GET
+            | methods::CREDIT_LEDGER_LIST => {
                 self.authorize_opened(&ctx, "read", RESOURCE_INFO).await?
             }
-            buckyos_api::quota_methods::ACCOUNT_RECHARGE
-            | buckyos_api::quota_methods::RECHARGE_GET
-            | buckyos_api::quota_methods::VISIBILITY_GET
-            | buckyos_api::quota_methods::VISIBILITY_UPDATE
-            | buckyos_api::quota_methods::VISIBILITY_PREVIEW => {
-                self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?
+            methods::CREDIT_RECHARGE | methods::CREDIT_RECHARGE_GET | methods::CREDIT_ADJUST => {
+                self.authorize(&ctx, "write", buckyos_api::AICC_CREDIT_RECHARGE_RESOURCE)
+                    .await?
             }
+            methods::PRICE_UPDATE => self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?,
             _ => self.authorize(&ctx, "read", RESOURCE_INFO).await?,
         };
         let snapshot = self.runtime.capture().await?;
-        self.quota
+        self.policy
             .handle(&caller, method, params, &admin_inventory(&snapshot))
             .await
     }
@@ -387,6 +390,14 @@ impl AiccHandler for AiccService {
     ) -> Result<QueryUsageResponse, RPCErrors> {
         let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
         let manages = caller.is_admin();
+        if !manages
+            && (request.group_by.contains(&buckyos_api::UsageQueryGroup::UserGroup)
+                || !request.filters.user_groups.is_empty())
+        {
+            return Err(RPCErrors::NoPermission(
+                "only an administrator may query usage by user group".to_string(),
+            ));
+        }
         if request.zone_wide {
             if !manages {
                 return Err(RPCErrors::NoPermission(
@@ -538,7 +549,7 @@ impl AiccHandler for AiccService {
                         .get(&provider.provider_instance_name)
                         .map(|models| {
                             models
-                                .iter()
+                                .keys()
                                 .filter(|model| access.allows_model(model))
                                 .count() as u64
                         })
@@ -733,6 +744,10 @@ impl AiccHandler for AiccService {
         let caller = self.authorize_opened(&ctx, "read", RESOURCE_INFO).await?;
         let snapshot = self.runtime.capture().await?;
         let access = self.access(&caller, &snapshot).await?;
+        let prices = self
+            .policy
+            .model_prices(&caller, &admin_inventory(&snapshot))
+            .await?;
         let mut models = snapshot.models;
         if request.view == Some(buckyos_api::AiccListView::Manage) {
             if !(caller.is_admin() || matches!(caller.principal, CallerPrincipal::System { .. })) {
@@ -744,6 +759,7 @@ impl AiccHandler for AiccService {
         } else if access.is_restricted() {
             filter_models_value(&mut models, &access);
         }
+        attach_credit_prices(&mut models, &prices);
         Ok(models)
     }
 
@@ -797,27 +813,59 @@ impl AiccHandler for AiccService {
     }
 }
 
-/// Each model of a management `models.list` says whether the caller may use it.
-fn mark_model_access(models: &mut Value, access: &crate::visibility::Access) {
+/// Each model carries the caller's Credit price ("free", priced, or
+/// "unpriced": not usable for a caller who pays).
+fn attach_credit_prices(
+    models: &mut Value,
+    prices: &BTreeMap<String, buckyos_api::ModelCreditPrice>,
+) {
     for model in models
         .get_mut("models")
         .and_then(Value::as_array_mut)
         .into_iter()
         .flatten()
     {
-        let accessible = model
+        let price = model
             .get("exact_model")
             .and_then(Value::as_str)
-            .is_some_and(|exact_model| access.allows_model(exact_model));
+            .and_then(|exact_model| prices.get(exact_model))
+            .and_then(|price| serde_json::to_value(price).ok());
+        if let (Some(model), Some(price)) = (model.as_object_mut(), price) {
+            model.insert("credit_price".to_string(), price);
+        }
+    }
+}
+
+/// Each model of a management `models.list` says whether the caller may see
+/// (`accessible`) and call (`usable`) it.
+fn mark_model_access(models: &mut Value, access: &crate::policy::Access) {
+    for model in models
+        .get_mut("models")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        let exact_model = model
+            .get("exact_model")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         if let Some(model) = model.as_object_mut() {
-            model.insert("accessible".to_string(), Value::Bool(accessible));
+            model.insert(
+                "accessible".to_string(),
+                Value::Bool(access.allows_model(&exact_model)),
+            );
+            model.insert(
+                "usable".to_string(),
+                Value::Bool(access.usable_model(&exact_model)),
+            );
         }
     }
 }
 
 /// Keep only what the caller may use: exact models, their catalog Provider
 /// entries and logical items pointing at them (§3.4, filtered server-side).
-fn filter_models_value(models: &mut Value, access: &crate::visibility::Access) {
+fn filter_models_value(models: &mut Value, access: &crate::policy::Access) {
     let allowed = |value: &Value| {
         value
             .as_str()

@@ -79,6 +79,8 @@ const EMPTY_USAGE_SUMMARY: UsageSummary = {
   total_requests: 0,
   finance_totals: [],
   finance_complete: true,
+  credit_total: '0',
+  credit_complete: true,
   today_tokens: 0,
   this_month_tokens: 0,
   by_api_namespace: {
@@ -333,6 +335,8 @@ interface RawUsageAggregate {
   finance_amount?: unknown
   finance_totals?: unknown[]
   finance_complete?: unknown
+  credit_total?: unknown
+  credit_complete?: unknown
 }
 
 interface RawProviderInstanceView {
@@ -393,6 +397,9 @@ interface RawUsageEvent {
   total_tokens?: unknown
   request_units?: unknown
   finance_snapshot_json?: unknown
+  credit?: unknown
+  credit_status?: unknown
+  subjects?: unknown
   created_at_ms?: unknown
 }
 
@@ -506,12 +513,25 @@ export interface UserUsageSummary {
   total_requests: number
   finance_totals: UsageSummary['finance_totals']
   finance_complete: boolean
+  credit_total: string
+  credit_complete: boolean
+}
+
+/** Usage of one `type:*` / `group:*` subject (the user's groups at the time of each call). */
+export interface GroupUsageSummary {
+  subject: string
+  total_tokens: number
+  total_requests: number
+  credit_total: string
+  credit_complete: boolean
 }
 
 export interface UsageOverview {
   summary: UsageSummary
   trend: UsageTrendPoint[]
   users: UserUsageSummary[]
+  /** Zone-wide overviews of administrators only. */
+  groups?: GroupUsageSummary[]
 }
 
 export interface UsageEventsQuery {
@@ -890,9 +910,30 @@ class MockAiccProvider implements AiccDataProvider {
       trend: this.store.getUsageTrend(events),
       users: Array.from(users, ([user_id, userEvents]) => {
         const usage = this.store.getUsageSummary(userEvents)
-        return { user_id, total_tokens: usage.total_tokens, total_requests: usage.total_requests, finance_totals: usage.finance_totals, finance_complete: usage.finance_complete }
+        return { user_id, total_tokens: usage.total_tokens, total_requests: usage.total_requests, finance_totals: usage.finance_totals, finance_complete: usage.finance_complete, credit_total: usage.credit_total, credit_complete: usage.credit_complete }
       }).sort((left, right) => right.total_tokens - left.total_tokens),
+      groups: scope.zoneWide && !scope.userId ? await this.groupUsage(events) : undefined,
     }
+  }
+
+  /** Each event counts once per `type:*` / `group:*` subject of its user. */
+  private async groupUsage(events: StoreSnapshot['usageEvents']): Promise<GroupUsageSummary[]> {
+    const { fetchUserList } = await import('./user_mgr')
+    const users = (await fetchUserList()).data?.users ?? []
+    const subjectsOf = new Map(users.map((user) => {
+      const type = user.user_type === 'root' || user.user_type === 'admin' ? 'admin' : user.user_type === 'limited' ? 'limited' : 'user'
+      return [user.user_id, [`type:${type}`, ...((user as { groups?: string[] }).groups ?? []).map((group) => `group:${group}`)]]
+    }))
+    const bySubject = new Map<string, StoreSnapshot['usageEvents']>()
+    for (const event of events) {
+      for (const subject of event.subjects ?? subjectsOf.get(event.user_id ?? event.tenant_id) ?? []) {
+        bySubject.set(subject, [...(bySubject.get(subject) ?? []), event])
+      }
+    }
+    return [...bySubject.entries()].map(([subject, subjectEvents]) => {
+      const usage = this.store.getUsageSummary(subjectEvents)
+      return { subject, total_tokens: usage.total_tokens, total_requests: usage.total_requests, credit_total: usage.credit_total, credit_complete: usage.credit_complete }
+    }).sort((left, right) => left.subject.localeCompare(right.subject))
   }
 
   async queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage> {
@@ -1177,7 +1218,8 @@ class BuckyOSAiccProvider implements AiccDataProvider {
       output_mode: 'summary',
       ...extra,
     })
-    const [byModel, byCapability, byApp, trend, today, thisMonth, byUser] = await Promise.all([
+    const byGroupScope = scope.zoneWide === true && !scope.userId
+    const [byModel, byCapability, byApp, trend, today, thisMonth, byUser, byGroup] = await Promise.all([
       query(dashboardRange, { group_by: ['provider_model'] }),
       query(dashboardRange, { group_by: ['capability'] }),
       query(dashboardRange, { group_by: ['caller_app_id'] }),
@@ -1185,6 +1227,10 @@ class BuckyOSAiccProvider implements AiccDataProvider {
       query(localTodayRange()),
       query(localCurrentMonthRange()),
       query(dashboardRange, { group_by: ['user_id'] }),
+      // Usage by user group is for administrators (zone-wide); an older AICC without it only loses this table.
+      byGroupScope
+        ? this.queryUsageOrEmpty({ time_range: toRawTimeRange(dashboardRange), zone_wide: true, filters: {}, output_mode: 'summary', group_by: ['user_group'] })
+        : Promise.resolve<RawUsageQueryResponse>({}),
     ])
     return {
       summary: toUsageSummary({ byModel, byCapability, byApp, today, thisMonth }),
@@ -1195,7 +1241,18 @@ class BuckyOSAiccProvider implements AiccDataProvider {
         total_requests: asNumber(row.aggregate?.total_requests, 0),
         finance_totals: normalizeFinanceTotals(row.aggregate?.finance_totals),
         finance_complete: asBoolean(row.aggregate?.finance_complete, true),
+        credit_total: creditTotal(row.aggregate),
+        credit_complete: asBoolean(row.aggregate?.credit_complete, true),
       })).sort((left, right) => right.total_tokens - left.total_tokens),
+      groups: byGroupScope
+        ? groupedRows(byGroup).map((row) => ({
+          subject: asNonEmptyString(row.group?.user_group, ''),
+          total_tokens: aggregateTokens(row.aggregate),
+          total_requests: asNumber(row.aggregate?.total_requests, 0),
+          credit_total: creditTotal(row.aggregate),
+          credit_complete: asBoolean(row.aggregate?.credit_complete, true),
+        })).filter((row) => row.subject).sort((left, right) => left.subject.localeCompare(right.subject))
+        : undefined,
     }
   }
 
@@ -1520,6 +1577,8 @@ function toUsageSummary(raw: {
     total_requests: asNumber(total.total_requests, 0),
     finance_totals: normalizeFinanceTotals(total.finance_totals),
     finance_complete: asBoolean(total.finance_complete, true),
+    credit_total: creditTotal(total),
+    credit_complete: asBoolean(total.credit_complete, true),
     today_tokens: aggregateTokens(raw.today.total),
     this_month_tokens: aggregateTokens(raw.thisMonth.total),
     by_provider: byProvider,
@@ -1600,9 +1659,20 @@ function toUsageEvents(raw: RawUsageQueryResponse): StoreSnapshot['usageEvents']
       token_equivalent: tokenEquivalent,
       estimated_cost: estimatedCost(event.finance_snapshot_json),
       finance_snapshot: toUsageFinanceSnapshot(event.finance_snapshot_json),
+      credit: asOptionalString(event.credit),
+      credit_status: toCreditStatus(event.credit_status),
+      subjects: Array.isArray(event.subjects) ? event.subjects.filter((item): item is string => typeof item === 'string') : undefined,
       status: 'success',
     }
   })
+}
+
+function creditTotal(raw?: RawUsageAggregate): string {
+  return typeof raw?.credit_total === 'string' && raw.credit_total ? raw.credit_total : '0'
+}
+
+function toCreditStatus(value: unknown): StoreSnapshot['usageEvents'][number]['credit_status'] {
+  return value === 'charged' || value === 'free' || value === 'unpriced' || value === 'unknown_usage' ? value : undefined
 }
 
 function capabilityToApiType(value: string): ApiType {

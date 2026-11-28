@@ -1,31 +1,37 @@
-//! AICC token quota and resource visibility protocol
-//! (product/ai_center/AI_Center_Quota_PRD.md, doc/aicc/aicc_token_quota.md).
+//! AICC user policy, Credit price list and Credit accounts
+//! (doc/aicc/aicc_user_policy.md).
 //!
-//! The rules, the live state of their windows and accounts, the denial
-//! details carried by the §7.4 error codes, the per-group Provider / Model
-//! allow lists and the delegated attribution a system service sends when it
-//! calls on a user's behalf.
+//! A policy is what an administrator (or a user, for their own Apps) grants
+//! and limits: Provider / Model visibility, price coefficients and time
+//! window limits. Credit is the Zone's unit of account for AI use; prices
+//! come from the price list, a usage is charged after it happened and a
+//! balance may go negative. The delegated attribution a system service sends
+//! when it calls on a user's behalf is also defined here.
 
-use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fmt;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-pub mod quota_methods {
-    pub const QUERY: &str = "quota.query";
-    pub const RULE_LIST: &str = "quota.rule.list";
-    pub const RULE_GET: &str = "quota.rule.get";
-    pub const RULE_PREVIEW: &str = "quota.rule.preview";
-    pub const RULE_CREATE: &str = "quota.rule.create";
-    pub const RULE_UPDATE: &str = "quota.rule.update";
-    pub const RULE_DELETE: &str = "quota.rule.delete";
-    pub const ACCOUNT_GET: &str = "quota.account.get";
-    pub const ACCOUNT_RECHARGE: &str = "quota.account.recharge";
-    pub const RECHARGE_GET: &str = "quota.recharge.get";
-    pub const VISIBILITY_GET: &str = "visibility.get";
-    pub const VISIBILITY_UPDATE: &str = "visibility.update";
-    pub const VISIBILITY_PREVIEW: &str = "visibility.preview";
+pub mod policy_methods {
+    pub const POLICY_LIST: &str = "policy.list";
+    pub const POLICY_GET: &str = "policy.get";
+    pub const POLICY_UPSERT: &str = "policy.upsert";
+    pub const POLICY_DELETE: &str = "policy.delete";
+    pub const POLICY_EFFECTIVE: &str = "policy.effective";
+    pub const POLICY_STATUS: &str = "policy.status";
+    pub const PRICE_GET: &str = "price.get";
+    pub const PRICE_UPDATE: &str = "price.update";
+    pub const CREDIT_ACCOUNT_GET: &str = "credit.account.get";
+    pub const CREDIT_ACCOUNT_LIST: &str = "credit.account.list";
+    pub const CREDIT_LEDGER_LIST: &str = "credit.ledger.list";
+    pub const CREDIT_RECHARGE: &str = "credit.recharge";
+    pub const CREDIT_RECHARGE_GET: &str = "credit.recharge.get";
+    pub const CREDIT_ADJUST: &str = "credit.adjust";
 
-    pub fn is_quota_method(method: &str) -> bool {
-        method.starts_with("quota.") || method.starts_with("visibility.")
+    pub fn is_policy_method(method: &str) -> bool {
+        method.starts_with("policy.") || method.starts_with("price.") || method.starts_with("credit.")
     }
 }
 
@@ -33,8 +39,50 @@ pub mod quota_methods {
 pub const AICC_ON_BEHALF_OF_PARAM: &str = "on_behalf_of";
 /// RBAC resource a system service needs (`write`) to send `on_behalf_of`.
 pub const AICC_ON_BEHALF_OF_RESOURCE: &str = "obj://aicc/on_behalf_of";
-/// Share of a limit at which a rule is shown as near its limit (§9.2, fixed).
+/// RBAC resource (`write`) of `credit.recharge`, `credit.recharge.get` and
+/// `credit.adjust`: the admin role by default, a payment gateway by a grant
+/// appended to `system/rbac/policy`.
+pub const AICC_CREDIT_RECHARGE_RESOURCE: &str = "obj://aicc/credit/recharge";
+/// Share of a limit at which it is shown as near its limit.
 pub const QUOTA_NEAR_LIMIT_PERCENT: u64 = 80;
+/// Credit is stored in millionths.
+pub const CREDIT_MICRO_PER_UNIT: i64 = 1_000_000;
+
+/// `12.5` → 12_500_000. At most six decimals, optional sign; `None` for
+/// anything else (exponents, spaces, overflow).
+pub fn parse_credit_micro(value: &str) -> Option<i64> {
+    let (negative, digits) = match value.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, value.strip_prefix('+').unwrap_or(value)),
+    };
+    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    if whole.is_empty() && fraction.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+        || fraction.len() > 6
+        || (digits.contains('.') && fraction.is_empty())
+    {
+        return None;
+    }
+    let whole: i64 = if whole.is_empty() { 0 } else { whole.parse().ok()? };
+    let fraction: i64 = format!("{fraction:0<6}").parse().ok()?;
+    let micro = whole.checked_mul(CREDIT_MICRO_PER_UNIT)?.checked_add(fraction)?;
+    Some(if negative { -micro } else { micro })
+}
+
+/// 12_500_000 → `"12.5"`; whole numbers have no decimal point.
+pub fn format_credit_micro(micro: i64) -> String {
+    let sign = if micro < 0 { "-" } else { "" };
+    let abs = micro.unsigned_abs();
+    let whole = abs / CREDIT_MICRO_PER_UNIT as u64;
+    let fraction = abs % CREDIT_MICRO_PER_UNIT as u64;
+    if fraction == 0 {
+        format!("{sign}{whole}")
+    } else {
+        let fraction = format!("{fraction:06}");
+        format!("{sign}{whole}.{}", fraction.trim_end_matches('0'))
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -77,7 +125,7 @@ pub struct AiccOnBehalfOf {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AiccAttribution {
-    /// The quota user (an account of this Zone) or, for an undelegated
+    /// The charged user (an account of this Zone) or, for an undelegated
     /// system or device principal, that principal.
     pub user_id: String,
     /// Trusted business App: an AppId, an AgentId, or `system:<service>`.
@@ -95,132 +143,149 @@ pub struct AiccAttribution {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaRuleSource {
+pub enum PolicySource {
     Admin,
     User,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaObject {
-    User { user_id: String },
-    /// Shared by every user of the App in this Zone.
-    App { app_id: String },
+impl PolicySource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::User => "user",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "admin" => Some(Self::Admin),
+            "user" => Some(Self::User),
+            _ => None,
+        }
+    }
+}
+
+/// Who a policy applies to. UserType groups, system user groups and users
+/// are the user side (more specific overrides); Apps and user + App
+/// combinations are the App side (only narrows).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PolicySubject {
+    /// `type:admin` / `type:user` / `type:limited`.
+    UserType(String),
+    /// `group:<group_id>`, a system user group.
+    Group(String),
+    /// `user:<user_id>`.
+    User(String),
+    /// `app:<app_id>`: every user's calls through the App (or Agent).
+    App(String),
+    /// `user_app:<user_id>/<app_id>`.
     UserApp { user_id: String, app_id: String },
 }
 
-impl QuotaObject {
+pub const POLICY_USER_TYPES: [&str; 3] = ["admin", "user", "limited"];
+
+impl PolicySubject {
+    pub fn parse(value: &str) -> Option<Self> {
+        let (kind, rest) = value.split_once(':')?;
+        let valid = |id: &str| !id.trim().is_empty() && id.len() <= 256 && !id.contains('\u{1f}');
+        match kind {
+            "type" => POLICY_USER_TYPES
+                .contains(&rest)
+                .then(|| Self::UserType(rest.to_string())),
+            "group" => valid(rest).then(|| Self::Group(rest.to_string())),
+            "user" => (valid(rest) && !rest.contains('/')).then(|| Self::User(rest.to_string())),
+            "app" => valid(rest).then(|| Self::App(rest.to_string())),
+            "user_app" => {
+                let (user_id, app_id) = rest.split_once('/')?;
+                (valid(user_id) && valid(app_id)).then(|| Self::UserApp {
+                    user_id: user_id.to_string(),
+                    app_id: app_id.to_string(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    pub fn is_app_side(&self) -> bool {
+        matches!(self, Self::App(_) | Self::UserApp { .. })
+    }
+
     pub fn user_id(&self) -> Option<&str> {
         match self {
-            Self::User { user_id } | Self::UserApp { user_id, .. } => Some(user_id),
-            Self::App { .. } => None,
+            Self::User(user_id) | Self::UserApp { user_id, .. } => Some(user_id),
+            _ => None,
         }
     }
 
     pub fn app_id(&self) -> Option<&str> {
         match self {
-            Self::App { app_id } | Self::UserApp { app_id, .. } => Some(app_id),
-            Self::User { .. } => None,
+            Self::App(app_id) | Self::UserApp { app_id, .. } => Some(app_id),
+            _ => None,
         }
     }
 
-    pub fn matches(&self, user_id: &str, app_id: Option<&str>) -> bool {
-        match self {
-            Self::User { user_id: rule_user } => rule_user == user_id,
-            Self::App { app_id: rule_app } => app_id == Some(rule_app.as_str()),
-            Self::UserApp {
-                user_id: rule_user,
-                app_id: rule_app,
-            } => rule_user == user_id && app_id == Some(rule_app.as_str()),
-        }
+    /// The UserType group an account type belongs to (Root is an admin).
+    pub fn for_user_type(user_type: crate::UserType) -> Self {
+        Self::UserType(
+            match user_type {
+                crate::UserType::Root | crate::UserType::Admin => "admin",
+                crate::UserType::User => "user",
+                crate::UserType::Limited => "limited",
+            }
+            .to_string(),
+        )
     }
+}
 
-    pub fn type_name(&self) -> &'static str {
+impl fmt::Display for PolicySubject {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::User { .. } => "user",
-            Self::App { .. } => "app",
-            Self::UserApp { .. } => "user_app",
+            Self::UserType(name) => write!(formatter, "type:{name}"),
+            Self::Group(group) => write!(formatter, "group:{group}"),
+            Self::User(user_id) => write!(formatter, "user:{user_id}"),
+            Self::App(app_id) => write!(formatter, "app:{app_id}"),
+            Self::UserApp { user_id, app_id } => write!(formatter, "user_app:{user_id}/{app_id}"),
         }
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuotaResource {
-    /// Every token-metered model.
-    All,
-    Provider { provider_instance_name: String },
-    /// `provider_model_id[:variant]@provider_instance_name`.
-    Model { exact_model: String },
-    /// A resource the viewer may no longer see; identity withheld.
-    Hidden,
+impl Serialize for PolicySubject {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
 }
 
-impl QuotaResource {
-    pub fn matches(&self, provider_instance_name: &str, exact_model: &str) -> bool {
-        match self {
-            Self::All => true,
-            Self::Provider {
-                provider_instance_name: rule_provider,
-            } => rule_provider == provider_instance_name,
-            Self::Model {
-                exact_model: rule_model,
-            } => rule_model == exact_model,
-            Self::Hidden => false,
-        }
-    }
-
-    pub fn type_name(&self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Provider { .. } => "provider",
-            Self::Model { .. } => "model",
-            Self::Hidden => "hidden",
-        }
-    }
-
-    /// Provider instance this resource lives in, if it names one.
-    pub fn provider_instance_name(&self) -> Option<&str> {
-        match self {
-            Self::Provider {
-                provider_instance_name,
-            } => Some(provider_instance_name),
-            Self::Model { exact_model } => exact_model.rsplit_once('@').map(|(_, provider)| provider),
-            Self::All | Self::Hidden => None,
-        }
+impl<'de> Deserialize<'de> for PolicySubject {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "`{value}` is not a policy subject (type:<admin|user|limited>, group:<id>, user:<id>, app:<id>, user_app:<user>/<app>)"
+            ))
+        })
     }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum QuotaPeriod {
-    #[serde(rename = "4h")]
-    FourHours,
+pub enum LimitPeriod {
+    #[serde(rename = "5h")]
+    FiveHours,
     #[serde(rename = "24h")]
     Day,
-    #[serde(rename = "72h")]
-    ThreeDays,
-    #[serde(rename = "week")]
+    #[serde(rename = "7d")]
     Week,
 }
 
 const HOUR_MS: i64 = 60 * 60 * 1000;
-/// `1970-01-05 00:00 UTC`, a Monday: base of the 72-hour and weekly windows.
-const PERIOD_EPOCH_MS: i64 = 4 * 24 * HOUR_MS;
 
-impl QuotaPeriod {
-    pub const ALL: [QuotaPeriod; 4] = [
-        QuotaPeriod::FourHours,
-        QuotaPeriod::Day,
-        QuotaPeriod::ThreeDays,
-        QuotaPeriod::Week,
-    ];
+impl LimitPeriod {
+    pub const ALL: [LimitPeriod; 3] = [LimitPeriod::FiveHours, LimitPeriod::Day, LimitPeriod::Week];
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::FourHours => "4h",
+            Self::FiveHours => "5h",
             Self::Day => "24h",
-            Self::ThreeDays => "72h",
-            Self::Week => "week",
+            Self::Week => "7d",
         }
     }
 
@@ -228,64 +293,115 @@ impl QuotaPeriod {
         Self::ALL.into_iter().find(|period| period.as_str() == value)
     }
 
+    /// A window starts at the first use after the previous one ended.
     pub fn length_ms(self) -> i64 {
         match self {
-            Self::FourHours => 4 * HOUR_MS,
+            Self::FiveHours => 5 * HOUR_MS,
             Self::Day => 24 * HOUR_MS,
-            Self::ThreeDays => 72 * HOUR_MS,
             Self::Week => 7 * 24 * HOUR_MS,
         }
     }
+}
 
-    /// The fixed UTC window `[start, end)` containing `at_ms` (§5.1).
-    pub fn window(self, at_ms: i64) -> (i64, i64) {
-        let length = self.length_ms();
-        let base = match self {
-            Self::FourHours | Self::Day => 0,
-            Self::ThreeDays | Self::Week => PERIOD_EPOCH_MS,
-        };
-        let start = base + (at_ms - base).div_euclid(length) * length;
-        (start, start + length)
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitUnit {
+    Credit,
+    /// Counts only token-metered calls (LLM, decision, embeddings).
+    Token,
+}
+
+impl LimitUnit {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Credit => "credit",
+            Self::Token => "token",
+        }
+    }
+}
+
+/// One time window limit. `amount` is a decimal string (Credit, up to six
+/// decimals) or a whole number of tokens; `0` forbids use.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyLimit {
+    pub period: LimitPeriod,
+    pub unit: LimitUnit,
+    pub amount: String,
+}
+
+impl PolicyLimit {
+    /// The amount in the counter's unit (micro-Credit or tokens).
+    pub fn amount_value(&self) -> Option<i64> {
+        match self.unit {
+            LimitUnit::Credit => parse_credit_micro(&self.amount).filter(|amount| *amount >= 0),
+            LimitUnit::Token => self.amount.parse::<i64>().ok().filter(|amount| *amount >= 0),
+        }
     }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaKind {
-    Periodic,
-    Total,
+pub enum ProviderVisibility {
+    /// Every model of the Provider's inventory, present and future.
+    AllModels,
+    /// Only the models this policy marks `visible: true`.
+    SelectedModels,
+    Hidden,
 }
 
-/// A period change that takes effect when the current window ends.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaPendingPeriod {
-    pub period: QuotaPeriod,
-    pub effective_at_ms: i64,
-    /// The switch found another rule with the target period and kept the old one.
-    #[serde(default)]
-    pub conflict: bool,
+pub struct ProviderPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible: Option<ProviderVisibility>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_coefficient: Option<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<PolicyLimit>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaRule {
-    pub rule_id: String,
-    pub source: QuotaRuleSource,
-    pub object: QuotaObject,
-    pub resource: QuotaResource,
-    pub kind: QuotaKind,
+pub struct ModelPolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub period: Option<QuotaPeriod>,
+    pub visible: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit_tokens: Option<u64>,
+    pub price_coefficient: Option<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<PolicyLimit>,
+}
+
+/// What one policy says. Every field is optional: an absent field has no
+/// opinion and leaves the decision to another layer.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyBody {
+    /// Every Provider, present and future, with all of its models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
+    pub all_providers: Option<bool>,
+    /// This layer's coefficient for every Provider (`0` is free).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_coefficient: Option<f64>,
+    /// Limits on every resource.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<PolicyLimit>,
+    /// Provider instance → its visibility, coefficient and limits.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub providers: BTreeMap<String, ProviderPolicy>,
+    /// Exact model (`provider_model_id[:variant]@instance`) → its settings.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub models: BTreeMap<String, ModelPolicy>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AiccPolicy {
+    pub policy_id: String,
+    pub source: PolicySource,
+    pub subject: PolicySubject,
     pub enabled: bool,
-    #[serde(default)]
-    pub deleted: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_period: Option<QuotaPendingPeriod>,
+    pub body: PolicyBody,
     pub version: u64,
     pub created_by: String,
     pub created_at_ms: i64,
@@ -293,107 +409,98 @@ pub struct QuotaRule {
     pub updated_at_ms: i64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum QuotaStatus {
-    Normal,
-    NearLimit,
-    Exhausted,
-    /// Periodic limit of zero: use is forbidden.
-    Forbidden,
-    Disabled,
-    /// The Provider or exact model is no longer in the inventory.
-    ResourceUnavailable,
-}
-
-/// Live state of a rule's current window or of its total account.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaUsageState {
-    pub status: QuotaStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window_start_ms: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window_end_ms: Option<i64>,
-    /// Next automatic recovery; always `null` for a total account.
-    pub reset_at_ms: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub granted_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_start_ms: Option<i64>,
-    pub settled_tokens: u64,
-    /// In-flight reservations, including those waiting for reconciliation.
-    pub reserved_tokens: u64,
-    /// Part of `reserved_tokens` whose real usage is still unknown.
-    pub pending_tokens: u64,
-    pub available_tokens: u64,
-    /// Consumption beyond the grant or limit; a recharge pays it first.
-    pub debt_tokens: u64,
-    pub updated_at_ms: i64,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct QuotaRuleView {
-    pub rule: QuotaRule,
-    pub state: QuotaUsageState,
-    /// The viewer may change this rule.
+pub struct AiccPolicyView {
+    pub policy: AiccPolicy,
+    /// The viewer may change this policy.
     pub editable: bool,
+    /// Providers or exact models the body names that are not in the inventory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unavailable_resources: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyDraft {
+    /// Defaults to `admin` for an administrator and `user` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<PolicySource>,
+    pub subject: PolicySubject,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub body: PolicyBody,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaListScope {
-    /// Rules that constrain the caller, and the caller's own rules.
+pub enum PolicyListScope {
+    /// Policies that apply to the caller, and the caller's own.
     #[default]
     Mine,
-    /// Every rule of the Zone (admin only).
+    /// Every policy of the Zone (admin only).
     Manage,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaQueryRequest {
-    /// Only the rules that apply to calls of this App.
+pub struct PolicyListRequest {
+    #[serde(default)]
+    pub scope: PolicyListScope,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyListResponse {
+    pub policies: Vec<AiccPolicyView>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyGetRequest {
+    pub policy_id: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyGetResponse {
+    pub policy: AiccPolicyView,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audit: Vec<PolicyAuditRecord>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyUpsertRequest {
+    pub draft: PolicyDraft,
+    /// Version of the stored policy of the same source and subject; absent
+    /// when creating one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app_id: Option<String>,
+    pub expected_version: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaQueryResponse {
-    pub user_id: String,
-    pub rules: Vec<QuotaRuleView>,
-    pub near_limit_count: u64,
-    pub exhausted_count: u64,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct QuotaRuleListRequest {
-    #[serde(default)]
-    pub scope: QuotaListScope,
-    #[serde(default)]
-    pub include_deleted: bool,
+pub struct PolicyDeleteRequest {
+    pub policy_id: String,
+    pub expected_version: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaRuleListResponse {
-    pub rules: Vec<QuotaRuleView>,
+pub struct PolicyDeleteResponse {
+    pub ok: bool,
+    pub policy_id: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaRuleGetRequest {
-    pub rule_id: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct QuotaAuditRecord {
+pub struct PolicyAuditRecord {
     pub audit_id: String,
     pub target_type: String,
     pub target_id: String,
@@ -406,216 +513,477 @@ pub struct QuotaAuditRecord {
     pub created_at_ms: i64,
 }
 
+/// Counter a limit is measured on: the charged user, an App shared by all of
+/// its users, or one user's calls through one App.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LimitCounter {
+    User { user_id: String },
+    App { app_id: String },
+    UserApp { user_id: String, app_id: String },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LimitResource {
+    All,
+    Provider { provider_instance_name: String },
+    /// `provider_model_id[:variant]@provider_instance_name`.
+    Model { exact_model: String },
+    /// A resource the viewer may not see; identity withheld.
+    Hidden,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaGrantKind {
-    Initial,
-    Recharge,
+pub enum LimitStatus {
+    Normal,
+    NearLimit,
+    Exhausted,
+    /// The amount is zero: use is forbidden.
+    Forbidden,
+}
+
+/// A limit that applies, with the state of its current window.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EffectiveLimit {
+    pub policy_id: String,
+    pub source: PolicySource,
+    pub subject: PolicySubject,
+    pub counter: LimitCounter,
+    pub resource: LimitResource,
+    pub period: LimitPeriod,
+    pub unit: LimitUnit,
+    pub amount: String,
+    /// Used in the current window, in the limit's unit.
+    pub used: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_start_ms: Option<i64>,
+    /// End of the current window; `null` when no window is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_at_ms: Option<i64>,
+    pub status: LimitStatus,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CreditPriceSource {
+    /// An `exact:` entry of the price list.
+    Exact,
+    /// A `model:` entry (Provider independent model identity).
+    Model,
+    /// Provider cost × the administrator's Credit rate of its currency.
+    ProviderCost,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CreditPriceState {
+    /// Explicitly free: a zero price or a zero coefficient.
+    Free,
+    /// Calls are charged.
+    Priced,
+    /// No price and a non-zero coefficient: the model cannot be used.
+    Unpriced,
+}
+
+/// What a model costs one user (through one App).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ModelCreditPrice {
+    pub state: CreditPriceState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<CreditPriceSource>,
+    /// The price list entry (`model:…` / `exact:…`) the price comes from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_key: Option<String>,
+    /// Credit pricing of the entry, token rates per million tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<Value>,
+    /// Currency and Credit per unit of a Provider cost price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_cost_currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_rate: Option<f64>,
+    pub provider_coefficient: f64,
+    pub model_coefficient: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EffectiveModel {
+    pub exact_model: String,
+    pub provider_instance_name: String,
+    /// Policies (subjects) the visibility comes from.
+    pub visible_from: Vec<String>,
+    /// The policies of the provider and model coefficients.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coefficient_from: Vec<String>,
+    pub price: ModelCreditPrice,
+    /// Visible and priced (or free).
+    pub usable: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyEffectiveRequest {
+    /// Defaults to the caller; another user needs an administrator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    /// Calls through this App (App side policies apply).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    /// Unsaved policy to compare against the stored ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<PolicyDraft>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyEffectiveResponse {
+    pub user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    pub balance: String,
+    /// Visible models (usable or not).
+    pub models: Vec<EffectiveModel>,
+    pub limits: Vec<EffectiveLimit>,
+    /// Visible models without a price for this user.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unpriced_models: Vec<String>,
+    /// Exact models the draft opens to this user.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added: Vec<String>,
+    /// Exact models the draft takes from this user (hidden or unpriced).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
+    /// Accounts the draft's subject covers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub affected_users: Vec<String>,
+    /// Exact models the caller would no longer be able to use with the draft.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caller_loses: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyStatusRequest {
+    /// Only the limits that apply to calls through this App.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaGrantRecord {
-    pub grant_id: String,
-    pub account_id: String,
-    pub kind: QuotaGrantKind,
-    pub amount_tokens: u64,
+pub struct PolicyStatusResponse {
+    pub user_id: String,
+    pub balance: String,
+    pub limits: Vec<EffectiveLimit>,
+    pub near_limit_count: u64,
+    pub exhausted_count: u64,
+}
+
+/// One price list entry. `entry_key` is `model:<model_driver_id>:<origin_model_id>`
+/// or `exact:<provider_model_id>[:variant]@<instance>`; `pricing` has the
+/// shape of a Provider price with `currency: "CREDIT"` and token rates per
+/// million tokens.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PriceEntry {
+    pub entry_key: String,
+    pub pricing: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub updated_by: String,
+    #[serde(default)]
+    pub updated_at_ms: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PriceEntryInput {
+    pub entry_key: String,
+    pub pricing: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PriceGetRequest {}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PriceGetResponse {
+    pub revision: u64,
+    pub entries: Vec<PriceEntry>,
+    /// Currency → Credit per unit of Provider cost (administrators only).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub credit_rates: BTreeMap<String, f64>,
+    /// Inventory models without any price (administrators only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unpriced_models: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PriceUpdateRequest {
+    pub expected_revision: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upserts: Vec<PriceEntryInput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deletes: Vec<String>,
+    /// Replaces every rate when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_rates: Option<BTreeMap<String, f64>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CreditEntryKind {
+    Recharge,
+    Adjust,
+}
+
+/// A recharge or an adjustment.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CreditEntry {
+    pub entry_id: String,
+    pub user_id: String,
+    pub kind: CreditEntryKind,
+    pub amount: String,
+    pub balance_after: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recharge_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_ref: Option<Value>,
     pub operator: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     pub created_at_ms: i64,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CreditChargeStatus {
+    Charged,
+    /// Explicitly free: a zero price or a zero coefficient.
+    Free,
+    /// The usage has a dimension the price does not cover, or the Provider
+    /// reported no cost for a Provider cost price: nothing charged.
+    Unpriced,
+    /// The outcome is unknown; charged once the real usage arrives.
+    UnknownUsage,
+}
+
+impl CreditChargeStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Charged => "charged",
+            Self::Free => "free",
+            Self::Unpriced => "unpriced",
+            Self::UnknownUsage => "unknown_usage",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "charged" => Some(Self::Charged),
+            "free" => Some(Self::Free),
+            "unpriced" => Some(Self::Unpriced),
+            "unknown_usage" => Some(Self::UnknownUsage),
+            _ => None,
+        }
+    }
+}
+
+/// The charge of one upstream attempt.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CreditCharge {
+    pub attempt_id: String,
+    pub task_id: String,
+    pub user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_id: Option<String>,
+    pub provider_instance_name: String,
+    pub exact_model: String,
+    pub admitted_at_ms: i64,
+    pub tokens: u64,
+    pub amount: String,
+    pub status: CreditChargeStatus,
+    pub settled_at_ms: i64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaAccountView {
-    pub account_id: String,
-    pub object: QuotaObject,
-    pub resource: QuotaResource,
-    pub granted_tokens: u64,
-    pub settled_tokens: u64,
-    pub reserved_tokens: u64,
-    pub pending_tokens: u64,
-    pub available_tokens: u64,
-    pub debt_tokens: u64,
-    pub start_at_ms: i64,
-    pub version: u64,
+pub struct CreditAccount {
+    pub user_id: String,
+    pub balance: String,
     pub updated_at_ms: i64,
-    /// Whether an enabled total rule currently blocks on this account.
-    pub enforced: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaRuleDetail {
-    pub rule: QuotaRuleView,
-    /// Every enabled rule that constrains the same calls, this one included.
-    pub constraints: Vec<QuotaRuleView>,
-    /// Rules among `constraints` with no available tokens.
-    pub blocking_rule_ids: Vec<String>,
+pub struct CreditAccountGetRequest {
+    /// Defaults to the caller; another user needs an administrator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account: Option<QuotaAccountView>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub grants: Vec<QuotaGrantRecord>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub audit: Vec<QuotaAuditRecord>,
+    pub user_id: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaRuleDraft {
-    /// Defaults to `admin` for an admin and `user` otherwise.
+pub struct CreditAccountListRequest {
+    /// Only members of this system user group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<QuotaRuleSource>,
-    pub object: QuotaObject,
-    pub resource: QuotaResource,
-    pub kind: QuotaKind,
+    pub group: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CreditAccountListResponse {
+    /// Every account of the Zone; users never charged or recharged have 0.
+    pub accounts: Vec<CreditAccount>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CreditLedgerListRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub period: Option<QuotaPeriod>,
+    pub user_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit_tokens: Option<u64>,
-    /// Initial grant of a new total account.
+    pub start_time_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initial_tokens: Option<u64>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct QuotaRulePreviewRequest {
-    pub draft: QuotaRuleDraft,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct QuotaRulePreviewResponse {
-    /// State the rule would have if saved now.
-    pub state: QuotaUsageState,
-    /// A total account of the same scope exists and would be restored.
+    pub end_time_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub existing_account: Option<QuotaAccountView>,
-    /// An existing rule of the same identity; saving is refused.
+    pub cursor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conflict_rule_id: Option<String>,
-    /// Other enabled rules that constrain the same calls.
-    pub other_constraints: Vec<QuotaRuleView>,
+    pub limit: Option<u32>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct QuotaRuleCreateRequest {
-    pub draft: QuotaRuleDraft,
+/// One line of a user's Credit ledger, newest first.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CreditLedgerItem {
+    Entry(CreditEntry),
+    Charge(CreditCharge),
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaRuleUpdateRequest {
-    pub rule_id: String,
-    pub expected_version: u64,
+pub struct CreditLedgerListResponse {
+    pub user_id: String,
+    pub balance: String,
+    pub items: Vec<CreditLedgerItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit_tokens: Option<u64>,
-    /// New period of a periodic rule, switched when the current window ends.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub period: Option<QuotaPeriod>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    #[serde(default)]
-    pub cancel_pending_period: bool,
+    pub next_cursor: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaRuleDeleteRequest {
-    pub rule_id: String,
-    pub expected_version: u64,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct QuotaRuleDeleteResponse {
-    pub ok: bool,
-    pub rule_id: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct QuotaAccountGetRequest {
-    pub account_id: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct QuotaAccountGetResponse {
-    pub account: QuotaAccountView,
-    pub grants: Vec<QuotaGrantRecord>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct QuotaRechargeRequest {
-    pub account_id: String,
-    /// Client-generated idempotency key: the same id is credited once.
+pub struct CreditRechargeRequest {
+    pub user_id: String,
+    /// Caller-generated idempotency key (a payment order id): the same id
+    /// is credited once.
     pub recharge_id: String,
-    pub amount_tokens: u64,
+    /// Positive decimal string.
+    pub amount: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Free JSON a payment gateway keeps with the entry; never interpreted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_ref: Option<Value>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaRechargeResponse {
-    pub recharge: QuotaGrantRecord,
-    pub account: QuotaAccountView,
-    /// The recharge id had already been credited; nothing new was added.
+pub struct CreditAdjustRequest {
+    pub user_id: String,
+    /// Idempotency key of the adjustment.
+    pub adjust_id: String,
+    /// Signed decimal string, not zero.
+    pub amount: String,
+    pub note: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_ref: Option<Value>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CreditEntryResponse {
+    pub entry: CreditEntry,
+    pub account: CreditAccount,
+    /// The id had already been applied; nothing new was added.
     pub replayed: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaRechargeGetRequest {
+pub struct CreditRechargeGetRequest {
     pub recharge_id: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaRechargeGetResponse {
+pub struct CreditRechargeGetResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recharge: Option<QuotaGrantRecord>,
+    pub entry: Option<CreditEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account: Option<QuotaAccountView>,
+    pub account: Option<CreditAccount>,
 }
 
-/// One rule that refused a reservation (§7.3).
+/// One limit that refused a call.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct QuotaBlockingRule {
-    pub rule_id: String,
-    pub source: QuotaRuleSource,
-    pub object: QuotaObject,
-    pub resource: QuotaResource,
-    pub kind: QuotaKind,
+pub struct QuotaBlockingLimit {
+    pub policy_id: String,
+    pub source: PolicySource,
+    pub subject: PolicySubject,
+    pub resource: LimitResource,
+    pub period: LimitPeriod,
+    pub unit: LimitUnit,
+    pub used: String,
+    pub amount: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub period: Option<QuotaPeriod>,
-    pub state: QuotaUsageState,
-    /// Waiting for the window to reset can help: the limit is above zero and
-    /// covers the requested budget.
-    pub recoverable: bool,
-}
-
-/// `details` of `quota_exhausted` and `quota_budget_exceeded`.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct QuotaDenialDetails {
-    pub required_tokens: u64,
-    /// Largest budget every enabled rule still admits.
-    pub max_allowed_tokens: u64,
-    pub provider_instance_name: String,
-    pub exact_model: String,
-    pub blocking: Vec<QuotaBlockingRule>,
-    /// When every blocking rule recovers; `null` if one never does by itself.
     pub reset_at_ms: Option<i64>,
 }
 
-/// `details` of `quota_unavailable` (§7.4).
+/// `details` of `quota_exhausted`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct QuotaDenialDetails {
+    pub provider_instance_name: String,
+    pub exact_model: String,
+    pub blocking: Vec<QuotaBlockingLimit>,
+    /// When every blocking limit recovers; `null` when one of them is zero.
+    pub reset_at_ms: Option<i64>,
+}
+
+/// `details` of `credit_insufficient`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CreditInsufficientDetails {
+    pub balance: String,
+    pub provider_instance_name: String,
+    pub exact_model: String,
+}
+
+/// `details` of `resource_not_permitted` for a visible model without a price.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceUnpricedDetails {
+    /// Always `unpriced`.
+    pub reason: String,
+    pub provider_instance_name: String,
+    pub exact_model: String,
+}
+
+/// `details` of `quota_unavailable`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct QuotaUnavailableDetails {
@@ -623,124 +991,17 @@ pub struct QuotaUnavailableDetails {
     pub occurred_at_ms: i64,
 }
 
-/// `details` of `attribution_unavailable` (§7.4).
+/// `details` of `attribution_unavailable`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AttributionUnavailableDetails {
     pub mode: AiccAttributionMode,
 }
 
-pub const VISIBILITY_SUBJECT_TYPE_PREFIX: &str = "type:";
-pub const VISIBILITY_SUBJECT_GROUP_PREFIX: &str = "group:";
-
-/// One allow item of a group (§3.4).
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum VisibilityEntry {
-    /// Every Provider instance, present and future, with all of its models.
-    AllProviders,
-    /// One Provider with every model of its inventory, present and future.
-    ProviderAllModels { provider_instance_name: String },
-    /// One Provider with the exact models chosen; new models stay hidden.
-    ProviderModels {
-        provider_instance_name: String,
-        exact_models: Vec<String>,
-    },
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct VisibilitySubjectPolicy {
-    /// `type:admin|user|limited` or `group:<id>`.
-    pub subject: String,
-    pub entries: Vec<VisibilityEntry>,
-    pub updated_by: String,
-    pub updated_at_ms: i64,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct VisibilityProviderInventory {
-    pub provider_instance_name: String,
-    pub enabled: bool,
-    pub exact_models: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct VisibilityGetRequest {}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct VisibilityGetResponse {
-    pub revision: u64,
-    pub subjects: Vec<VisibilitySubjectPolicy>,
-    pub providers: Vec<VisibilityProviderInventory>,
-    /// Inventory models no subject can see.
-    pub unexposed_models: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct VisibilityUpdateRequest {
-    pub expected_revision: u64,
-    pub subject: String,
-    /// Empty removes every allow item of the subject.
-    pub entries: Vec<VisibilityEntry>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct VisibilityDraft {
-    pub subject: String,
-    pub entries: Vec<VisibilityEntry>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct VisibilityPreviewRequest {
-    /// Final list of this user (defaults to the caller).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_id: Option<String>,
-    /// Unsaved change to compare against the stored policy.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub draft: Option<VisibilityDraft>,
-}
-
-/// A visible resource and the subjects granting it.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct VisibilityGrant {
-    pub provider_instance_name: String,
-    /// `None` for a Provider allowed without any current model.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exact_model: Option<String>,
-    pub sources: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct VisibilityPreviewResponse {
-    pub user_id: String,
-    pub grants: Vec<VisibilityGrant>,
-    /// Exact models the draft opens to its subject.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub added: Vec<String>,
-    /// Exact models the draft takes from its subject.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub removed: Vec<String>,
-    /// Users the draft changes (members of its subject).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub affected_users: Vec<String>,
-    /// Exact models the caller would lose with the draft.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub caller_loses: Vec<String>,
-}
-
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AiccListView {
-    /// Resources the caller may use.
+    /// Resources the caller may see.
     #[default]
     Use,
     /// The complete inventory (admin only), each model marked with whether
@@ -752,70 +1013,63 @@ pub enum AiccListView {
 mod tests {
     use super::*;
 
-    const DAY: i64 = 24 * HOUR_MS;
-
     #[test]
-    fn windows_follow_fixed_utc_boundaries() {
-        let at = 1_000 * DAY + 5 * HOUR_MS + 1;
-        assert_eq!(
-            QuotaPeriod::FourHours.window(at),
-            (1_000 * DAY + 4 * HOUR_MS, 1_000 * DAY + 8 * HOUR_MS)
-        );
-        assert_eq!(QuotaPeriod::Day.window(at), (1_000 * DAY, 1_001 * DAY));
-        let boundary = 1_000 * DAY + 4 * HOUR_MS;
-        assert_eq!(QuotaPeriod::FourHours.window(boundary).0, boundary);
-        assert_eq!(QuotaPeriod::FourHours.window(boundary - 1).1, boundary);
+    fn credit_amounts_round_trip_with_six_decimals() {
+        assert_eq!(parse_credit_micro("12.5"), Some(12_500_000));
+        assert_eq!(parse_credit_micro("-2.5"), Some(-2_500_000));
+        assert_eq!(parse_credit_micro("0.000001"), Some(1));
+        assert_eq!(parse_credit_micro(".5"), Some(500_000));
+        assert_eq!(parse_credit_micro("3"), Some(3_000_000));
+        for invalid in ["", "-", "1.", "1.0000001", "1e3", " 1", "1,5", "abc", "99999999999999999"] {
+            assert_eq!(parse_credit_micro(invalid), None, "{invalid}");
+        }
+        assert_eq!(format_credit_micro(12_500_000), "12.5");
+        assert_eq!(format_credit_micro(-2_500_000), "-2.5");
+        assert_eq!(format_credit_micro(1), "0.000001");
+        assert_eq!(format_credit_micro(0), "0");
+        assert_eq!(format_credit_micro(-1), "-0.000001");
     }
 
     #[test]
-    fn week_and_72h_windows_start_from_monday_1970_01_05() {
-        assert_eq!(QuotaPeriod::Week.window(PERIOD_EPOCH_MS), (PERIOD_EPOCH_MS, PERIOD_EPOCH_MS + 7 * DAY));
-        // 2026-10-19 is a Monday.
-        let monday = 20_745 * DAY;
-        let (start, end) = QuotaPeriod::Week.window(monday + 3 * DAY);
-        assert_eq!((start, end), (monday, monday + 7 * DAY));
-        let (start, _) = QuotaPeriod::ThreeDays.window(PERIOD_EPOCH_MS + 3 * DAY + 1);
-        assert_eq!(start, PERIOD_EPOCH_MS + 3 * DAY);
-        let (start, end) = QuotaPeriod::ThreeDays.window(0);
-        assert_eq!((start, end), (PERIOD_EPOCH_MS - 6 * DAY, PERIOD_EPOCH_MS - 3 * DAY));
+    fn subjects_parse_and_print_their_wire_form() {
+        for text in [
+            "type:admin",
+            "type:limited",
+            "group:students",
+            "user:bob",
+            "app:writer.test.buckyos.io",
+            "user_app:bob/writer",
+        ] {
+            let subject = PolicySubject::parse(text).unwrap();
+            assert_eq!(subject.to_string(), text);
+            assert_eq!(serde_json::to_value(&subject).unwrap(), text);
+        }
+        for invalid in ["type:root", "group:", "user:a/b", "user_app:bob", "team:x", "bob"] {
+            assert!(PolicySubject::parse(invalid).is_none(), "{invalid}");
+        }
+        assert!(PolicySubject::parse("app:writer").unwrap().is_app_side());
+        assert!(!PolicySubject::parse("group:a").unwrap().is_app_side());
+        assert_eq!(
+            PolicySubject::for_user_type(crate::UserType::Root),
+            PolicySubject::UserType("admin".into())
+        );
     }
 
     #[test]
-    fn objects_and_resources_match_their_scope() {
-        let shared = QuotaObject::App {
-            app_id: "writer".into(),
+    fn limits_and_periods_keep_their_protocol_names() {
+        let limit: PolicyLimit =
+            serde_json::from_value(serde_json::json!({"period": "5h", "unit": "credit", "amount": "10.5"}))
+                .unwrap();
+        assert_eq!(limit.amount_value(), Some(10_500_000));
+        let tokens = PolicyLimit {
+            period: LimitPeriod::Week,
+            unit: LimitUnit::Token,
+            amount: "200000".into(),
         };
-        assert!(shared.matches("alice", Some("writer")));
-        assert!(shared.matches("bob", Some("writer")));
-        assert!(!shared.matches("bob", None));
-        let own = QuotaObject::UserApp {
-            user_id: "alice".into(),
-            app_id: "writer".into(),
-        };
-        assert!(!own.matches("bob", Some("writer")));
-        let model = QuotaResource::Model {
-            exact_model: "model-a@cloud-main".into(),
-        };
-        assert!(model.matches("cloud-main", "model-a@cloud-main"));
-        assert!(!model.matches("cloud-2", "model-a@cloud-2"));
-        assert_eq!(model.provider_instance_name(), Some("cloud-main"));
-        assert!(!QuotaResource::Hidden.matches("cloud-main", "model-a@cloud-main"));
-    }
-
-    #[test]
-    fn protocol_names_are_stable() {
-        assert_eq!(
-            serde_json::to_value(QuotaObject::UserApp {
-                user_id: "alice".into(),
-                app_id: "aiworkspace".into()
-            })
-            .unwrap(),
-            serde_json::json!({"type": "user_app", "user_id": "alice", "app_id": "aiworkspace"})
-        );
-        assert_eq!(serde_json::to_value(QuotaPeriod::FourHours).unwrap(), "4h");
-        assert_eq!(
-            serde_json::to_value(VisibilityEntry::AllProviders).unwrap(),
-            serde_json::json!({"type": "all_providers"})
-        );
+        assert_eq!(tokens.amount_value(), Some(200_000));
+        assert_eq!(serde_json::to_value(LimitPeriod::Week).unwrap(), "7d");
+        assert_eq!(LimitPeriod::FiveHours.length_ms(), 5 * HOUR_MS);
+        assert!(serde_json::from_value::<LimitPeriod>(serde_json::json!("4h")).is_err());
+        assert!(serde_json::from_value::<PolicyBody>(serde_json::json!({"price_coeficient": 1})).is_err());
     }
 }

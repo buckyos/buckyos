@@ -210,7 +210,7 @@ session overlay 是请求级临时配置，不能绕过上层 locked policy。�
 | 校验/新增 Provider | `provider.validate`, `provider.add` |
 | 列表/健康/更新/删除 | `provider.list`, `provider.health`, `provider.update`, `provider.delete` |
 | 立即刷新库存 | `provider.refresh_models` |
-| 配额/用量/route trace | `quota.query`, `usage.query`, `trace.query` |
+| 用量/route trace | `usage.query`, `trace.query`；用户策略、价目表与 Credit（`policy.*` / `price.*` / `credit.*`）见 [aicc_user_policy.md](aicc_user_policy.md) |
 | metadata 更新状态/目标 | `driver_metadata_update.get`, `driver_metadata_update.set` |
 
 配置写入使用 `expected_settings_revision` 做 CAS。收到 `settings_revision_conflict` 后必须重新读取、重放用户意图，不能盲目覆盖。`provider.validate` 不写配置；`provider.add/update/delete` 才改变 system-config 并发布新 runtime。

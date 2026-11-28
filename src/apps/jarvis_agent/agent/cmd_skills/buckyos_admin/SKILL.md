@@ -38,7 +38,7 @@ buckyos log query --service <id> --since <RFC3339> --limit 100
 - Node Executor profiles, grants or remote desktop/daemon operations: read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_admin/references/executors.md`.
 - Accounts, groups, SSO, invites, Apps, devices, network or writable keys: read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_admin/references/settings.md`.
 - Buckets, previews, missing attachments, object URLs or extension tool packages: read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_admin/references/storage-tools.md`.
-- AI Center, provider models, rules, quota, usage or gateway timeouts: read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_admin/references/providers.md`.
+- AI Center, provider models, rules, AI policies, prices, Credit and recharge, usage or gateway timeouts: read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_admin/references/providers.md`.
 - Logs, diagnostic bundles, expired sessions, Agent recovery, node upgrades or tracing a fault into the running source: read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_admin/references/diagnosis.md`.
 
 For App development or release use `buckyos_app_dev` or `buckyos_dev_release`; for model calls use `xllm` or the relevant `aigc_*` skill.

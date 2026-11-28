@@ -2,9 +2,9 @@ use crate::aicc_usage_log::{
     QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
 };
 use crate::{
-    quota_methods, video_error, AiccListView, AiccOnBehalfOf, AppDoc, AppType, DecisionAnswer,
-    DecisionQuestion, DecisionRequirements, GeneratedVideo, QuotaQueryRequest, QuotaQueryResponse,
-    SelectorType, VideoGenerateHelperRequest, VideoGenerateRequest, VideoGenerationRequirement,
+    policy_methods, video_error, AiccListView, AiccOnBehalfOf, AppDoc, AppType, DecisionAnswer,
+    DecisionQuestion, DecisionRequirements, GeneratedVideo, PolicyStatusRequest,
+    PolicyStatusResponse, SelectorType, VideoGenerateHelperRequest, VideoGenerateRequest, VideoGenerationRequirement,
     VideoOutputSpec, AICC_ON_BEHALF_OF_PARAM,
 };
 use ::kRPC::*;
@@ -88,7 +88,6 @@ pub mod ai_methods {
 
     pub const CANCEL: &str = "cancel";
     pub const SERVICE_RELOAD_SETTINGS: &str = "service.reload_settings";
-    pub const QUOTA_QUERY: &str = "quota.query";
     pub const USAGE_QUERY: &str = "usage.query";
     pub const TRACE_QUERY: &str = "trace.query";
     pub const ROUTING_GET: &str = "routing.get";
@@ -149,7 +148,6 @@ pub mod ai_methods {
         matches!(
             method,
             SERVICE_RELOAD_SETTINGS
-                | QUOTA_QUERY
                 | USAGE_QUERY
                 | TRACE_QUERY
                 | ROUTING_GET
@@ -169,7 +167,7 @@ pub mod ai_methods {
                 | MODELS_LIST
                 | DRIVER_METADATA_UPDATE_GET
                 | DRIVER_METADATA_UPDATE_SET
-        ) || crate::quota_methods::is_quota_method(method)
+        ) || crate::policy_methods::is_policy_method(method)
     }
 }
 
@@ -808,8 +806,8 @@ mod canonical_contract_tests {
 
     #[test]
     fn quota_refusals_travel_as_detailed_errors_with_their_code() {
-        let mut error = AiccError::new(AiccErrorCode::QuotaExhausted, "token quota is exhausted");
-        error.details = Some(json!({"required_tokens": 10}));
+        let mut error = AiccError::new(AiccErrorCode::QuotaExhausted, "a usage limit is used up");
+        error.details = Some(json!({"blocking": []}));
         let wire = error.to_krpc_error();
         let RPCErrors::Detailed(detail) = &wire else {
             panic!("quota refusals are detailed errors");
@@ -1476,14 +1474,17 @@ pub enum AiccErrorCode {
     SettingsRevisionConflict,
     Cancelled,
     InternalError,
-    /// An enabled token quota rule has nothing left (§7.4).
+    /// A time window limit that applies to the call is used up.
     QuotaExhausted,
-    /// Every rule has tokens left, but fewer than this call reserves.
-    QuotaBudgetExceeded,
-    /// A configured rule could not be read or reserved; never treated as unlimited.
+    /// The model is priced for the caller and the caller's Credit balance is
+    /// not above zero. Unrelated to a Provider account running out of credits.
+    CreditInsufficient,
+    /// Policies, the balance or a limit counter could not be read; never
+    /// treated as unlimited.
     QuotaUnavailable,
-    /// The Provider / Model is outside the caller's visibility, or no
-    /// permitted candidate is left; hidden identities are not disclosed.
+    /// The Provider / Model is outside the caller's visibility, has no price
+    /// for a caller who pays (`details.reason = "unpriced"`), or no permitted
+    /// candidate is left; hidden identities are not disclosed.
     ResourceNotPermitted,
     /// The AICC user of a delegated run cannot be determined.
     AttributionUnavailable,
@@ -1494,12 +1495,12 @@ pub enum AiccErrorCode {
 }
 
 impl AiccErrorCode {
-    /// Token quota and resource policy refusals (AI Center Quota PRD §7.4).
+    /// User policy refusals (doc/aicc/aicc_user_policy.md).
     pub fn is_policy_refusal(self) -> bool {
         matches!(
             self,
             Self::QuotaExhausted
-                | Self::QuotaBudgetExceeded
+                | Self::CreditInsufficient
                 | Self::QuotaUnavailable
                 | Self::ResourceNotPermitted
                 | Self::AttributionUnavailable
@@ -1528,7 +1529,7 @@ impl AiccErrorCode {
             Self::Cancelled => "cancelled",
             Self::InternalError => "internal_error",
             Self::QuotaExhausted => "quota_exhausted",
-            Self::QuotaBudgetExceeded => "quota_budget_exceeded",
+            Self::CreditInsufficient => "credit_insufficient",
             Self::QuotaUnavailable => "quota_unavailable",
             Self::ResourceNotPermitted => "resource_not_permitted",
             Self::AttributionUnavailable => "attribution_unavailable",
@@ -5498,8 +5499,8 @@ impl AiccClient {
         }
     }
 
-    /// One `quota.*` / `visibility.*` method (see [`quota_methods`]).
-    pub async fn quota_call<Req, Resp>(
+    /// One `policy.*` / `price.*` / `credit.*` method (see [`policy_methods`]).
+    pub async fn policy_call<Req, Resp>(
         &self,
         method: &str,
         request: &Req,
@@ -5514,7 +5515,7 @@ impl AiccClient {
         let result = match self {
             Self::InProcess(handler) => {
                 handler
-                    .handle_quota_rpc(method, params, RPCContext::default())
+                    .handle_policy_rpc(method, params, RPCContext::default())
                     .await?
             }
             Self::KRPC(client) => client.call(method, params).await?,
@@ -5524,11 +5525,11 @@ impl AiccClient {
         })
     }
 
-    pub async fn query_quota(
+    pub async fn policy_status(
         &self,
-        request: QuotaQueryRequest,
-    ) -> std::result::Result<QuotaQueryResponse, RPCErrors> {
-        self.quota_call(quota_methods::QUERY, &request).await
+        request: PolicyStatusRequest,
+    ) -> std::result::Result<PolicyStatusResponse, RPCErrors> {
+        self.policy_call(policy_methods::POLICY_STATUS, &request).await
     }
 
     pub async fn set_context(&self, context: RPCContext) {
@@ -6535,9 +6536,9 @@ pub trait AiccHandler: Send + Sync {
         ))
     }
 
-    /// Every `quota.*` and `visibility.*` method; the typed requests and
-    /// responses are in `aicc_quota`.
-    async fn handle_quota_rpc(
+    /// Every `policy.*`, `price.*` and `credit.*` method; the typed requests
+    /// and responses are in `aicc_quota`.
+    async fn handle_policy_rpc(
         &self,
         method: &str,
         _params: Value,
@@ -6965,8 +6966,8 @@ impl<T: AiccHandler> AiccServerHandler<T> {
                     .handle_list_events(EventsListRequest::from_json(req.params)?, ctx)
                     .await?
             )),
-            method if quota_methods::is_quota_method(method) => {
-                RPCResult::Success(self.0.handle_quota_rpc(method, req.params, ctx).await?)
+            method if policy_methods::is_policy_method(method) => {
+                RPCResult::Success(self.0.handle_policy_rpc(method, req.params, ctx).await?)
             }
             ai_methods::USAGE_QUERY => RPCResult::Success(json!(
                 self.0

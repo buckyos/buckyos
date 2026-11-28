@@ -140,8 +140,8 @@ library = "aicc"
 rust = "sql::aicc"
 owner = "aicc"
 areas = ["rdb/aicc/aicc-usage-log"]
-schema = "3"
-audit = ["frame/aicc/src/storage/mod.rs", "frame/aicc/src/storage/quota.rs", "frame/aicc/src/storage/schema.sql", "frame/aicc/src/storage/quota.sql"]
+schema = "4"
+audit = ["frame/aicc/src/storage/mod.rs", "frame/aicc/src/storage/policy.rs", "frame/aicc/src/storage/schema.sql", "frame/aicc/src/storage/policy.sql"]
 depends = ["rdb"]
 
 [[reader]]

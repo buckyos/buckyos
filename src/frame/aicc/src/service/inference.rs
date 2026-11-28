@@ -10,7 +10,7 @@ pub(crate) struct RuntimeInferencePort {
     pub(super) url_fetcher: Arc<dyn UrlResourceFetcher>,
     artifact_url_reader: Arc<RuntimeProviderExecutionPort>,
     model_health: Arc<ModelHealthRegistry>,
-    governance: Arc<QuotaService>,
+    governance: Arc<PolicyService>,
 }
 
 fn named_object_url_provider(settings: &AiccSettings) -> Arc<dyn NamedObjectUrlProvider> {
@@ -96,7 +96,7 @@ impl RuntimeInferencePort {
         url_fetcher: Arc<dyn UrlResourceFetcher>,
         artifact_url_reader: Arc<RuntimeProviderExecutionPort>,
         model_health: Arc<ModelHealthRegistry>,
-        governance: Arc<QuotaService>,
+        governance: Arc<PolicyService>,
     ) -> Self {
         Self {
             runtime,
@@ -116,11 +116,11 @@ impl RuntimeInferencePort {
         &self,
         caller: &AuthorizedCaller,
         snapshot: &crate::runtime::RuntimeSnapshot,
-    ) -> Result<crate::visibility::Access, RPCErrors> {
+    ) -> Result<crate::policy::Access, RPCErrors> {
         self.governance
             .access(
                 caller,
-                &crate::visibility::Inventory::from_runtime(snapshot),
+                &crate::policy::Inventory::from_runtime(snapshot),
             )
             .await
     }
@@ -149,6 +149,9 @@ impl RuntimeInferencePort {
         let provider_names = if input.model.contains('@') {
             if !access.allows_model(&input.model) {
                 return Err(not_permitted());
+            }
+            if access.is_unpriced(&input.model) {
+                return Err(unpriced(&input.model));
             }
             // A permitted exact model answers a video demand it cannot meet
             // with the field at fault, not an anonymous "no candidate".
@@ -183,7 +186,7 @@ impl RuntimeInferencePort {
                 })?;
             let permitted = reachable
                 .into_iter()
-                .filter(|model| access.allows_model(&model.exact_model.to_string()))
+                .filter(|model| access.usable_model(&model.exact_model.to_string()))
                 .map(|model| model.identity.provider_instance_name)
                 .collect::<Vec<_>>();
             if permitted.is_empty() {
@@ -1235,6 +1238,7 @@ impl InferencePort for RuntimeInferencePort {
                 user_id: caller.user_id.clone(),
                 caller_app_id: caller.app_id.clone(),
                 attribution: Some(caller.attribution()),
+                principal: super::policy::principal_of(caller),
                 trace_id: Some(routed.trace_id.clone()),
                 request_model: request_model.clone(),
                 idempotency_key,
@@ -1321,6 +1325,23 @@ pub(super) fn inference_error(code: AiccErrorCode, message: impl Into<String>) -
     AiccError::new(code, message).to_krpc_error()
 }
 
+fn unpriced(exact_model: &str) -> RPCErrors {
+    let mut error = AiccError::new(
+        AiccErrorCode::ResourceNotPermitted,
+        "the model has no price; ask an administrator to price it",
+    );
+    error.details = serde_json::to_value(buckyos_api::ResourceUnpricedDetails {
+        reason: "unpriced".to_string(),
+        provider_instance_name: exact_model
+            .rsplit_once('@')
+            .map(|(_, provider)| provider.to_string())
+            .unwrap_or_default(),
+        exact_model: exact_model.to_string(),
+    })
+    .ok();
+    error.to_krpc_error()
+}
+
 fn not_permitted() -> RPCErrors {
     inference_error(
         AiccErrorCode::ResourceNotPermitted,
@@ -1335,7 +1356,7 @@ async fn candidate_runtime_states(
     estimated_input_tokens: Option<u64>,
     estimated_output_tokens: Option<u64>,
     video: Option<&buckyos_api::VideoGenerationRequirement>,
-    access: &crate::visibility::Access,
+    access: &crate::policy::Access,
 ) -> BTreeMap<String, CandidateRuntimeState> {
     let mut credentials = BTreeMap::new();
     let mut health_states = BTreeMap::new();
@@ -1371,7 +1392,7 @@ async fn candidate_runtime_states(
                 .is_none_or(|metadata| metadata.routable);
             let enabled = settings.is_some_and(|provider| provider.enabled)
                 && metadata_routable
-                && access.allows_model(&model.exact_model);
+                && access.usable_model(&model.exact_model);
             let observed =
                 model_health.snapshot(&model.exact_model, &model.provider_instance_name, now_ms());
             let health = if observed.circuit_open {

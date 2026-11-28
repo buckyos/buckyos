@@ -1812,7 +1812,7 @@ AI Center
 ## Phase 3：高级版
 - 多 Key / 多账号策略
 - 并行多模型与高级路由
-- 配额 / 限额控制（见 [AI Center Token Quota 与资源可见性 PRD](AI_Center_Quota_PRD.md)）
+- 用户策略（可见性、价格系数、5h / 24h / 7d limit）、Credit 价目表、余额与充值（见 [AICC 用户策略与 Credit 计费 TODO](../../notepads/aicc-user-policy-credit-todo.md) §6，取代 [Token Quota PRD](AI_Center_Quota_PRD.md) 的额度与可见性页面）
 - 更强审计与权限体系
 
 ---

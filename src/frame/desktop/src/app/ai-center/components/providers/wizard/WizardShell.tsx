@@ -11,8 +11,10 @@ import { StepConnection } from './StepConnection'
 import { StepModels } from './StepModels'
 import { StepValidation } from './StepValidation'
 import { StepReview } from './StepReview'
-import { openProviderTo } from '../../../../../api/aicc_quota'
-import { useQuotaApi } from '../../../hooks/use-quota-api'
+import { usePolicyApi } from '../../../hooks/use-policy-api'
+import { useViewerIsAdmin } from '../../../../settings/hooks/use-viewer-is-admin'
+import { applyProviderAccess, NO_PROVIDER_ACCESS, type ProviderAccess } from './providerAccess'
+import { ProviderCreatedPanel } from './ProviderCreatedPanel'
 import { isConnectionValid, wizardDraftSchema } from './connectionValidation'
 
 const INITIAL_DRAFT: WizardDraft = {
@@ -39,9 +41,10 @@ const STEP_LABELS: Record<WizardStepKey, string> = {
 interface WizardShellProps {
   onBack: () => void
   onCreated: () => void
+  onOpenPrices?: () => void
 }
 
-export function WizardShell({ onBack, onCreated }: WizardShellProps) {
+export function WizardShell({ onBack, onCreated, onOpenPrices }: WizardShellProps) {
   const { t } = useI18n()
   const store = useAICCStore()
   const providers = useProviders()
@@ -60,8 +63,10 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [keyboardInset, setKeyboardInset] = useState(0)
-  const [openTo, setOpenTo] = useState<string[]>([])
-  const quotaApi = useQuotaApi()
+  const [access, setAccess] = useState<ProviderAccess>(NO_PROVIDER_ACCESS)
+  const [created, setCreated] = useState<{ provider: string; models: string[]; free: boolean } | null>(null)
+  const policyApi = usePolicyApi()
+  const isAdmin = useViewerIsAdmin() === true
   const selectedProfile = catalog?.providers.find((item) => item.provider_profile_id === draft.provider_profile_id)
 
   const selectsInventoryModels = (selectedProfile?.selectable_inventory_models?.length ?? 0) > 0
@@ -95,13 +100,18 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
       setCreateError(null)
       try {
         await new Promise((r) => setTimeout(r, 300))
-        const created = await store.addProvider(draft)
-        if (openTo.length > 0) {
-          await openProviderTo(quotaApi, created.config.provider_instance_name, openTo).catch((error: unknown) => {
-            console.error('aicc.visibility.open_provider failed', error)
+        const provider = await store.addProvider(draft)
+        const name = provider.config.provider_instance_name
+        let free = false
+        if (isAdmin) {
+          free = await applyProviderAccess(policyApi, name, access).then(() => access.free, (error: unknown) => {
+            console.error('aicc.policy.provider_access failed', error)
+            return false
           })
         }
-        onCreated()
+        // Administrators see how much of the new Provider is priced before leaving.
+        if (isAdmin) setCreated({ provider: name, models: provider.inventory.models.map((model) => model.exact_model), free })
+        else onCreated()
       } catch (error) {
         const message = error instanceof Error ? error.message : ''
         if (message.includes('provider_validation_required') || message.includes('provider_validation_mismatch')) {
@@ -267,7 +277,10 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
         } : undefined}
         onFocusCapture={keepFocusedFieldVisible}
       >
-        {currentStep === 'chooseType' && (
+        {created && (
+          <ProviderCreatedPanel provider={created.provider} models={created.models} free={created.free} onOpenPrices={onOpenPrices} onDone={onCreated} />
+        )}
+        {!created && currentStep === 'chooseType' && (
           <StepChooseType
             selected={draft.provider_profile_id}
             onSelect={handleTypeSelect}
@@ -278,7 +291,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
             onRetry={() => void loadCatalog()}
           />
         )}
-        {currentStep === 'connection' && (
+        {!created && currentStep === 'connection' && (
           <StepConnection
             key={draft.provider_profile_id}
             draft={draft}
@@ -286,19 +299,19 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
             onUpdate={updateDraft}
           />
         )}
-        {currentStep === 'models' && (
+        {!created && currentStep === 'models' && (
           <StepModels draft={draft} profile={selectedProfile ?? null} onUpdate={updateDraft} />
         )}
-        {currentStep === 'validation' && (
+        {!created && currentStep === 'validation' && (
           <StepValidation draft={draft} onResult={setValidation} />
         )}
-        {currentStep === 'review' && (
+        {!created && currentStep === 'review' && (
           <StepReview
             draft={draft}
             validation={validation}
             onToggleAutoSync={(v) => updateDraft({ auto_sync_models: v })}
-            openTo={openTo}
-            onOpenToChange={setOpenTo}
+            access={access}
+            onAccessChange={setAccess}
           />
         )}
         {createError && (
@@ -316,7 +329,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
       </div>
 
       {/* Footer */}
-      <div
+      {!created && <div
         className="sticky bottom-0 z-10 flex shrink-0 items-center justify-between px-4 py-3 md:px-6"
         style={{
           borderTop: '1px solid var(--cp-border)',
@@ -358,7 +371,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
               : t('aiCenter.wizard.next', 'Next')}
           </button>
         )}
-      </div>
+      </div>}
     </div>
   )
 }

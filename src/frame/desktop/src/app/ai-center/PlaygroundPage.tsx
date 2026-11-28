@@ -5,8 +5,9 @@ import { useI18n } from '../../i18n/provider'
 import { isMockRuntime } from '../../runtime'
 import { cancelPlaygroundTask, getPlaygroundTask, invokePlayground, listPlaygroundModels } from '../../api/aicc_playground'
 import { useProviders } from './hooks/use-aicc-store'
-import { useMyQuotaRules } from './hooks/use-quota-api'
-import { modelQuotaStatus } from './datamodel/quota'
+import { useMyModelPrices } from './hooks/use-policy-api'
+import { formatCredit, isPositiveCredit, modelLimitStatus } from './datamodel/policy'
+import { usePriceText } from './components/policy/policy-labels'
 import type { ApiType } from './mock/types'
 import { defaultRequest, importRequest, PLAYGROUND_APIS, taskResponse, validateRequest, type JsonObject, type ValidationIssue } from './datamodel/playground'
 import { RequestFields } from './components/playground/RequestFields'
@@ -33,7 +34,7 @@ function describeError(error: unknown): unknown {
 }
 
 export function PlaygroundPage({ active = true }: { active?: boolean }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const providers = useProviders()
   const [api, setApi] = useState<ApiType>('llm')
   const [params, setParams] = useState<JsonObject>(() => defaultRequest('llm'))
@@ -50,12 +51,17 @@ export function PlaygroundPage({ active = true }: { active?: boolean }) {
   const mounted = useRef(true)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   const { data: models, error: modelsError, isLoading, mutate } = useSWR(active ? ['aicc-playground-models', providers] : null, () => listPlaygroundModels(providers), { revalidateOnFocus: false, shouldRetryOnError: false, keepPreviousData: true })
-  const quotaRules = useMyQuotaRules()
-  const quotaMark = (exact: string) => {
-    const status = modelQuotaStatus(quotaRules, [exact])
-    if (status === 'near_limit') return ` · ${t('aiCenter.quota.status.nearLimit', 'Near limit')}`
-    if (status) return ` · ${t('aiCenter.quota.status.exhausted', 'Exhausted')}`
-    return ''
+  const prices = useMyModelPrices()
+  const priceText = usePriceText()
+  // The viewer's price and limit state of a model, for its option label (§6 Models / Playground).
+  const policyMark = (exact: string) => {
+    const model = prices.models.get(exact)
+    const status = modelLimitStatus(prices.effective?.limits ?? [], exact)
+    const parts = [
+      model ? priceText(model.price) : '',
+      status === 'near_limit' ? t('aiCenter.policy.status.nearLimit', 'Near limit') : status ? t('aiCenter.policy.status.exhausted', 'Used up') : '',
+    ].filter(Boolean)
+    return parts.length ? ` · ${parts.join(' · ')}` : ''
   }
   const matchingModels = (models ?? []).filter((model) => model.api_types.includes(api) && (!provider || model.provider === provider))
   const exactModel = String(params.exact_model ?? '')
@@ -136,9 +142,10 @@ export function PlaygroundPage({ active = true }: { active?: boolean }) {
             </select></label>
             <label className="block text-sm space-y-2"><span>{t('aiCenter.playground.model')}</span><select aria-label={t('aiCenter.playground.model')} className={controlClass} style={controlStyle} value={exactModel} onChange={(event) => updateParams({ ...params, exact_model: event.target.value })}>
               <option value="">{t('aiCenter.playground.chooseModel')}</option>{exactModel && !selectedModel && <option value={exactModel}>{exactModel} ({t('aiCenter.playground.unavailable')})</option>}
-              {matchingModels.map((model) => <option key={model.exact_model} value={model.exact_model}>{model.exact_model}{model.health && model.health !== 'available' && model.health !== 'healthy' ? ` · ${model.health}` : ''}{quotaMark(model.exact_model)}</option>)}
+              {matchingModels.map((model) => <option key={model.exact_model} value={model.exact_model}>{model.exact_model}{model.health && model.health !== 'available' && model.health !== 'healthy' ? ` · ${model.health}` : ''}{policyMark(model.exact_model)}</option>)}
             </select></label>
           </div>
+          {selectedModel && <PolicyNotice exactModel={selectedModel.exact_model} prices={prices} balanceText={formatCredit(prices.effective?.balance, locale)} />}
           {isLoading && <p role="status" className="text-sm">{t('aiCenter.playground.loadingModels')}</p>}
           {modelsError && <div role="alert" className="text-sm" style={{ color: 'var(--cp-danger)' }}>{t('aiCenter.playground.modelsError')} <button type="button" className="underline" onClick={() => void mutate()}>{t('common.retry')}</button></div>}
           {!isLoading && !modelsError && !matchingModels.length && <p className="text-sm" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.playground.noModels')}</p>}
@@ -193,4 +200,18 @@ export function PlaygroundPage({ active = true }: { active?: boolean }) {
       </div>
     </div>
   </div>
+}
+
+/** Why a call to the chosen model would be refused before it runs: no price for this viewer, an AI Credit
+ * balance at or below zero for a priced model, or a limit used up. The service still decides. */
+function PolicyNotice({ exactModel, prices, balanceText }: { exactModel: string; prices: ReturnType<typeof useMyModelPrices>; balanceText: string }) {
+  const { t } = useI18n()
+  const model = prices.models.get(exactModel)
+  const status = modelLimitStatus(prices.effective?.limits ?? [], exactModel)
+  let text = ''
+  if (model?.price.state === 'unpriced') text = t('aiCenter.playground.unpricedNotice', 'This model has no price for you, so calls are refused. An administrator can price it or make it free.')
+  else if (model?.price.state === 'priced' && prices.effective && !isPositiveCredit(prices.effective.balance)) text = t('aiCenter.playground.creditNotice', 'Your AI Credit balance is {{balance}}: calls to this priced model are refused until it is recharged.', { balance: balanceText })
+  else if (status === 'exhausted' || status === 'forbidden') text = t('aiCenter.playground.limitNotice', 'A limit on this model is used up, so calls are refused until it resets.')
+  if (!text) return null
+  return <p data-testid="playground-policy-notice" className="text-xs" style={{ color: 'var(--cp-warning)' }}>{text}</p>
 }

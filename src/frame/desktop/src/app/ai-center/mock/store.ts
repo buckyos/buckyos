@@ -396,6 +396,8 @@ export class MockDataStore {
     const financeTotals = new Map<string, number>()
     let todayTokens = 0
     let monthTokens = 0
+    let creditMicro = 0
+    let creditComplete = true
 
     for (const evt of events) {
       const tokens = evt.token_equivalent ?? (evt.tokens_in ?? 0) + (evt.tokens_out ?? 0)
@@ -407,6 +409,8 @@ export class MockDataStore {
       const currency = evt.finance_snapshot?.currency?.toUpperCase()
       if (currency) financeTotals.set(currency, (financeTotals.get(currency) ?? 0) + usageFinanceAmount(evt))
 
+      creditMicro += Math.round(Number(evt.credit ?? 0) * 1_000_000)
+      if (evt.credit_status === 'unpriced' || evt.credit_status === 'unknown_usage') creditComplete = false
       if (ts >= todayStart) todayTokens += tokens
       if (ts >= monthStart) monthTokens += tokens
 
@@ -424,6 +428,8 @@ export class MockDataStore {
         amount: Number(amount.toFixed(4)),
       })).sort((left, right) => right.amount - left.amount),
       finance_complete: true,
+      credit_total: (creditMicro / 1_000_000).toFixed(6).replace(/\.?0+$/, '') || '0',
+      credit_complete: creditComplete,
       today_tokens: todayTokens,
       this_month_tokens: monthTokens,
       by_api_namespace: byApiNamespace,

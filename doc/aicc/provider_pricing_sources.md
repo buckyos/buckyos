@@ -66,6 +66,12 @@ Provider Rules；缺失时宁可 unknown，也不使用未经确认的价格。
 
 本轮补齐与复核日期：2026-09-26。具体条目的核验日期以其 `verified_at` 为准。
 
+## Provider 价格与 Credit 价目表是两套
+
+本文的价格是 **Provider 成本**：模型通过某个 Provider 调用时上游实际收多少钱，来自 Provider Rules 的 `model_pricing`、discovery 或 Provider 上报的费用，结果写在 usage 的 `finance_*`，路由的 `cost_first` / `max_estimated_cost` 只看它。规则不变：没有显式配置就没有价格，宁可没有也不估算。
+
+面向用户扣费的是 **Credit 价目表**（[aicc_user_policy.md](aicc_user_policy.md) §3）：管理员按 `model:<model_driver_id>:<origin_model_id>` 或 `exact:<model>@<provider>` 配 Credit 单价，形状与本文的 `Pricing` 相同（`currency` 为 `CREDIT`），算价也复用同一套 `completion_cost`。两者唯一的联系是管理员可选的 `credit_rates`：价目表里没有条目的模型，按“Provider 成本 × 该币种的 Credit 汇率”扣 Credit。Provider 价格缺失时，这条路径也没有价格；Credit 价目表的条目不会写回 Provider 价格，也不影响路由。
+
 ## PR #634 Review 修正
 
 - `tiers` 内有 token 单价即可钉住 token 价格；静态条目必须具备可结算维度，`amount` 必须同时声明 `unit`。

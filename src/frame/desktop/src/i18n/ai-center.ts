@@ -114,7 +114,6 @@ const messages: Record<string, [string, string]> = {
   'aiCenter.home.periodCost': ['Est. cost · 30 days', '近 30 天估算费用'],
   'aiCenter.home.overviewLoadFailed': ['Could not load usage statistics.', '无法加载用量统计。'],
   'aiCenter.home.ownTracesOnly': ['Route traces show your own requests.', '路由 Trace 展示当前登录用户自己的请求。'],
-  'aiCenter.home.ownQuota': ['My token quota', '我的 Token 配额'],
   'aiCenter.home.allTime': ['All time', '全部时间'],
   'aiCenter.home.last24Hours': ['Last 24 hours', '最近 24 小时'],
   'aiCenter.home.last7Days': ['Last 7 days', '最近 7 天'],

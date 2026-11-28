@@ -1,10 +1,10 @@
 # AICC 用户策略（配额中心）与 Credit 计费充值 TODO
 
-2026-11-27 立项，未实施，代码基线 `fcd23bfb4`。owner 当天答复了 §10 的 15 个问题，正文已按裁决改写；裁决带出的两处推论（Q16、Q17）待确认，见 §10.1。
+2026-11-27 立项，同日实施（未提交，实施记录见 §12），代码基线 `fcd23bfb4`。owner 当天答复了 §10 的全部问题（Q1–Q17），正文已按裁决改写，没有待确认项。
 
 本文把现有的 **Token 额度** 和 **资源可见性** 合并成一套“用户策略”，并新增 **价目表、Credit 余额、扣费、充值 API**。它取代 [AI Center Token Quota 与资源可见性 PRD](../product/ai_center/AI_Center_Quota_PRD.md) 中的额度模型（周期 / 总量 token 规则、预占、总量账户与充值）和可见性策略的存放方式；该 PRD 中仍然有效的部分（调用身份与归属、许愿格 AICC 归属、隐藏资源不泄露、错误只按错误码判断）在 §2.2 列出。
 
-实施方先读 §1、§2，再按 §9 的步骤做。Q16 只影响窗口计数（§3.5“计数器”），Q17 只影响默认策略（§3.1 末尾）；正文按我的建议写，确认之前可以先做其余全部步骤。
+实施方先读 §1、§2，再按 §9 的步骤做。
 
 ## 1. 目标与原则
 
@@ -253,7 +253,7 @@ credit = completion_cost(钉住的 Credit 价格, usage) × Provider 系数 × �
 4. 明确失败且未消耗：不写扣费记录。明确失败但 Provider 已上报 usage：照扣（沿用现在“失败但已计费”的处理）。
 5. 管理员、用户的调用都照扣，不隐式豁免；要豁免就在策略里把系数设为 0。
 
-**计数器与窗口**（按 Q16 的建议写）：
+**计数器与窗口**（Q16）：
 
 - 窗口从首次使用起算，和常见 AI 订阅的 5 小时限额一样：某个作用域没有活动窗口时，下一次扣费的准入时刻就是新窗口的起点，窗口长 5h / 24h / 7d；到期后不立即开新窗口，等下一次使用。`reset_at_ms` 是当前窗口的结束时刻。
 - 每个“作用域 + 周期”只有一行计数器：键 = 消费对象（`user` / `app` / `user_app`）+ 资源（`all` / `provider:<p>` / `model:<m>`）+ 周期，值为 `window_start_ms`、`window_end_ms`、已用 Credit、已用 token。同一作用域同一周期的多条 limit（例如 Credit 与 token 两种单位）共用这个窗口。
@@ -389,33 +389,33 @@ websdk 要先推，buckyos 的构建才会用到新的客户端。
 
 **阶段 A：基础部件，彼此独立，可以先做**
 
-- [ ] A1 价目表与 Credit 算价（纯函数）：`aicc_price_entry` 的类型与校验（`currency` 必须是 `CREDIT`、模型身份格式、`exact:` 属于存在的实例时校验 variant）；单价解析第 1、2、4 种；用 `PinnedPricingSnapshot::from_pricing` 钉价、`completion_cost` 算额、乘系数、取整到 1e-6。单测覆盖：模型身份价对两个 Provider 实例都生效；`exact:` 覆盖模型身份价；未映射到 Model Driver 的模型只能用 `exact:`；按张 / 按秒 / `tiers` / `rules`；价格全为 0 与系数 0 都算显式免费、没有价格不算；取整。
-- [ ] A2 Credit 账户与流水：`aicc_credit_account`、`aicc_credit_entry`，充值幂等（同号同参、同号不同参、并发两笔）、余额可负、`credit.recharge.get`。单测覆盖旧 PRD Q30、Q35 的同类场景。
-- [ ] A3 用量记账：`aicc_usage_event` 加列、`aicc_usage_event_subject`、`usage.query` 的 `user_group` 分组与 `credit_total`。
-- [ ] A4 让结算拿得到 Provider 成本：`AttemptSettlement::Usage` 增加 `Option<AiCost>`，`finish_success` 改成先算费用再结算，尝试循环里启动失败带 usage 的分支用同一个 `binding.completion_cost` 算。现有额度行为不变，为 B4 铺路；跑现有执行引擎测试确认无回归。
+- [x] A1 价目表与 Credit 算价（纯函数）：`aicc_price_entry` 的类型与校验（`currency` 必须是 `CREDIT`、模型身份格式、`exact:` 属于存在的实例时校验 variant）；单价解析第 1、2、4 种；用 `PinnedPricingSnapshot::from_pricing` 钉价、`completion_cost` 算额、乘系数、取整到 1e-6。单测覆盖：模型身份价对两个 Provider 实例都生效；`exact:` 覆盖模型身份价；未映射到 Model Driver 的模型只能用 `exact:`；按张 / 按秒 / `tiers` / `rules`；价格全为 0 与系数 0 都算显式免费、没有价格不算；取整。
+- [x] A2 Credit 账户与流水：`aicc_credit_account`、`aicc_credit_entry`，充值幂等（同号同参、同号不同参、并发两笔）、余额可负、`credit.recharge.get`。单测覆盖旧 PRD Q30、Q35 的同类场景。
+- [x] A3 用量记账：`aicc_usage_event` 加列、`aicc_usage_event_subject`、`usage.query` 的 `user_group` 分组与 `credit_total`。
+- [x] A4 让结算拿得到 Provider 成本：`AttemptSettlement::Usage` 增加 `Option<AiCost>`，`finish_success` 改成先算费用再结算，尝试循环里启动失败带 usage 的分支用同一个 `binding.completion_cost` 算。现有额度行为不变，为 B4 铺路；跑现有执行引擎测试确认无回归。
 
 **阶段 B：策略与准入**
 
-- [ ] B1 共享类型：`aicc_quota.rs` 改写（策略、limit、`QuotaPeriod` 改为 5h / 24h / 7d、有效策略视图、拒绝详情）、`AiccErrorCode` 增删、`aicc_usage_log.rs`。
-- [ ] B2 `policy/` 求值模块（§3.2），单测至少覆盖 §11 的 C01–C12、C25。
-- [ ] B3 存储 v4：`aicc_policy`、`aicc_credit_charge`、计数器改成每个“作用域 + 周期”一行、默认策略播种（§3.1 末尾）；3 → 4 的一次性升级步骤：删除旧额度表与可见性表、usage 表加列、建新表、写默认策略，旧额度规则和 token 账户不迁移（Q14）。
-- [ ] B4 准入与扣费（§3.5）：合并 `precheck` / `admit` 为只读准入；未定价不可用；钉进 `PinnedProviderTask`；结算事务；`unknown_usage` 的补扣；从首次使用起算的窗口；删除 `attempt_budget`、预占、核对任务中的暂估部分、`pending_period` 周期切换与固定 UTC 窗口。
-- [ ] B5 kRPC（§3.8）与权限、RBAC 资源；`models.list` 的价格字段。
-- [ ] B6 单价解析第 3 种与 `credit_rates`（Q7）。
-- [ ] B7 `credit.adjust`（Q11）；充值权限从“管理员账户”改成 RBAC 检查（Q12）。
+- [x] B1 共享类型：`aicc_quota.rs` 改写（策略、limit、`QuotaPeriod` 改为 5h / 24h / 7d、有效策略视图、拒绝详情）、`AiccErrorCode` 增删、`aicc_usage_log.rs`。
+- [x] B2 `policy/` 求值模块（§3.2），单测至少覆盖 §11 的 C01–C12、C25。
+- [x] B3 存储 v4：`aicc_policy`、`aicc_credit_charge`、计数器改成每个“作用域 + 周期”一行、默认策略播种（§3.1 末尾）；3 → 4 的一次性升级步骤：删除旧额度表与可见性表、usage 表加列、建新表、写默认策略，旧额度规则和 token 账户不迁移（Q14）。
+- [x] B4 准入与扣费（§3.5）：合并 `precheck` / `admit` 为只读准入；未定价不可用；钉进 `PinnedProviderTask`；结算事务；`unknown_usage` 的补扣；从首次使用起算的窗口；删除 `attempt_budget`、预占、核对任务中的暂估部分、`pending_period` 周期切换与固定 UTC 窗口。
+- [x] B5 kRPC（§3.8）与权限、RBAC 资源；`models.list` 的价格字段。
+- [x] B6 单价解析第 3 种与 `credit_rates`（Q7）。
+- [x] B7 `credit.adjust`（Q11）；充值权限从“管理员账户”改成 RBAC 检查（Q12）。
 
 **阶段 C：调用方与界面（B1、B5 稳定后并行）**
 
-- [ ] C1 websdk 客户端、CLI、xllm TS；先推 websdk。
-- [ ] C2 Rust 侧调用方：`agent_tool` xllm、`lib_opendan`、`aiworkspace`、`buckyos-agent`。
-- [ ] C3 Desktop 界面（§6）与 e2e / datamodel 测试、mock。
-- [ ] C4 cmd_skills（§4 表）与文档（§8）、`readers.toml`。
+- [x] C1 websdk 客户端、CLI、xllm TS；先推 websdk。
+- [x] C2 Rust 侧调用方：`agent_tool` xllm、`lib_opendan`、`aiworkspace`、`buckyos-agent`。
+- [x] C3 Desktop 界面（§6）与 e2e / datamodel 测试、mock。
+- [x] C4 cmd_skills（§4 表）与文档（§8）、`readers.toml`。
 
 **阶段 D：验证**
 
-- [ ] D1 `cargo test -p aicc -- --test-threads=1`、`cargo test -p buckyos-api -- --test-threads=1`、`agent_tool` / `libopendan` / `aiworkspace` 相关用例；websdk 测试；Desktop `pnpm check`、`pnpm test:e2e` 的 AI Center 部分。基线就失败的用例在报告里单列。
+- [x] D1 `cargo test -p aicc -- --test-threads=1`、`cargo test -p buckyos-api -- --test-threads=1`、`agent_tool` / `libopendan` / `aiworkspace` 相关用例；websdk 测试；Desktop `pnpm check`、`pnpm test:e2e` 的 AI Center 部分。基线就失败的用例在报告里单列。
 - [ ] D2 本机 Zone DV（部署新 AICC 要 root 重启，需要用户配合）：见 §11 “DV”。
-- [ ] D3 实施报告：落点、偏差、未验证项、净行数构成（生产 / 测试 / 文档分开统计；预期额度部分的生产代码减少，因为预占、核对、总量账户被删除）。
+- [x] D3 实施报告：落点、偏差、未验证项、净行数构成（生产 / 测试 / 文档分开统计；预期额度部分的生产代码减少，因为预占、核对、总量账户被删除）。
 
 ## 10. owner 裁决（2026-11-27）
 
@@ -452,12 +452,14 @@ websdk 要先推，buckyos 的构建才会用到新的客户端。
 15. **管理员的默认系数。** 建议 `type:admin` 默认不设系数（即 1.0，和普通用户一样扣），首次保存价目表时提示并提供一键设 0。（沿用旧 PRD “管理员不隐式豁免”。）
 > 按你建议
 
-（注：Q15 的做法和 Q6 的裁决合起来会让开箱不可用，已按 Q17 调整，待确认。）
+（注：Q15 的做法和 Q6 的裁决合起来会让开箱不可用，已按 Q17 调整。）
 
-### 10.1 裁决带出的两处推论（待 owner 确认）
+### 10.1 裁决带出的两处推论
 
 16. **窗口的起点。** Q5 定了 5 小时、24 小时、7 天，“按惯例”。5 小时不能整除一天，如果沿用现在的固定 UTC 边界（从纪元起每 5 小时一段），每天的重置时刻都不一样，用户没法预期。建议按常见 AI 订阅的做法：窗口从这个作用域的首次使用起算，到期后等下一次使用再开新窗口；24 小时和 7 天也一样，口径统一。代价是新建 limit 时不追溯此前的消耗（§7）；好处是计数器每个“作用域 + 周期”只要一行，周期切换的代码可以删掉。正文 §3.5 按这个写。另一个做法：5 小时用首次使用起算，24 小时和 7 天用 UTC 自然日和自然周。
+> 按建议（2026-11-27）
 17. **默认策略的系数设为 0。** Q6 定了“没有价格不等于免费、免费要显式配置”，开箱时价目表是空的，如果默认系数是 1.0（Q15），所有模型都没有价格，开箱就什么都用不了，与原话“最简单的策略是不限额，随便用”冲突。建议默认策略 `type:admin`、`type:user` 都写 `price_coefficient: 0`：开箱显式免费；管理员开始计费时把 `type:user` 改成 1，界面同时问 `type:admin` 是否计费。管理员仍然不被隐式豁免，系数 0 是一条可以修改的普通策略。正文 §3.1 末尾按这个写。
+> 按建议（2026-11-27）
 
 ## 11. 验收
 
@@ -498,3 +500,53 @@ websdk 要先推，buckyos 的构建才会用到新的客户端。
 - 组策略：建一个系统用户组，给它隐藏一个 Provider 并设 24h Credit limit，用组内和组外两个用户分别验证。
 - 网关模拟：用一个脚本身份，在 RBAC 尾部授权后调 `credit.recharge`（带 `external_ref`），重复调用只入账一次；未授权时被拒。
 - Desktop 策略、价目表、Credit 三页在桌面与手机宽度、深浅色下各走一遍主要操作。
+
+## 12. 实施记录（2026-11-27，未提交、未部署）
+
+**落点**
+
+| 部分 | 位置 |
+| --- | --- |
+| 共享类型 | `kernel/buckyos-api/src/aicc_quota.rs` 重写（`policy_methods`、策略 / 价目表 / Credit 类型、`parse_credit_micro` / `format_credit_micro`、`AICC_CREDIT_RECHARGE_RESOURCE`）；`aicc_client.rs` 删 `QuotaBudgetExceeded`、加 `CreditInsufficient`，`quota_call` → `policy_call`；`aicc_usage_log.rs` 加 `credit` / `credit_status` / `subjects`、`UserGroup` 分组、`user_groups` 过滤、`credit_total` / `credit_complete`；`rbac_config.rs` 加 `p, admin,obj://aicc/credit/recharge,write,allow` 与测试（C18） |
+| 求值与算价（纯函数） | `frame/aicc/src/policy/mod.rs`（`Inventory`、`Access`、`Evaluator`、`ChargePlan`、`validate_body`）、`policy/pricing.rs`（键解析、每百万 ↔ 每 token、单价解析、`PinnedCreditPrice::charge`）；删除 `visibility.rs`、`quota/` |
+| 存储 v4 | `storage/policy.rs` + `policy.sql`（取代 `quota.rs` / `quota.sql`）；`storage/mod.rs` 的 3 → 4 升级、usage 加列与 `aicc_usage_event_subject`、按组聚合 |
+| 准入 / 扣费 / 方法 | `service/policy.rs`（取代 `service/quota.rs`）；`execution/mod.rs`：`PinnedProviderTask.charge`、`AttemptSettlement::Usage(usage, api_type, Option<AiCost>)`、`finish_success` 先算成本再结算、usage 事件带 Credit；`call/mod.rs`：`ResolvedProviderCall.pricing_context`（Credit 规则匹配用），删 `model_max_output_tokens`；`service/inference.rs` 未定价拒绝与候选过滤；`service/management.rs` 方法鉴权、`models.list` 的 `credit_price` / `usable`、按组 usage 只给管理员 |
+| node_updater | `kernel/node_updater/src/readers/sql.rs`：schema 4 按 `schema.sql` + `policy.sql` 校验布局；schema 3 只看标记放行（AICC 首次打开时自己升级）；`readers.toml` 的 `aicc` 改为 schema 4、audit 换新文件（`[review]` 留给每周 review） |
+| Rust 调用方 | `agent_tool` xllm（`REFUSED_CREDIT_INSUFFICIENT`，向量已重新生成）；`lib_opendan` 文案；`opendan` 的 `ai_credit_insufficient_owner`（en / zh）；AIWorkspace 子码 `AI_CREDIT_INSUFFICIENT`（server、core、aiws README、host.js） |
+| websdk | `src/aicc_client.ts`（`AICC_POLICY_METHODS` 与类型、客户端方法）、xllm TS、CLI `buckyos ai policy / policy-effective / policies / prices / credit / credit-ledger / credit-recharge / credit-recharge-get / credit-adjust`、aiws 子码；`dist` 已重建 |
+| buckyos-agent | `ai_quota` 改调 `policy.status`（名字不变）；`lib/result.ts`、`lib/model.ts` 的拒绝码 |
+| 手册与文档 | `buckyos_admin`（SKILL 与 providers：策略、价目表、Credit、网关授权）、`xllm/references/runs.md`、`aigc_image`、`aigc_audio`、`aigc_video`；新 `doc/aicc/aicc_user_policy.md`（含支付网关接入），删 `aicc_token_quota.md`；README、`aicc_agent_cli_tools.md`、`frozen_*`、`provider_pricing_sources.md`、xllm / local llm context 错误表、Quota PRD 顶部说明、AI Center PRD、UserType |
+| Desktop（C3） | 见本节末“Desktop” |
+
+**与正文的偏差**
+
+- 策略的内容放在 `body` 字段里（`{ policy_id, source, subject, enabled, body: {...}, version }`），草案（§3.1）是平铺的；这样 `PolicyBody` 可以严格拒绝未知字段。
+- `credit.adjust` 也带幂等 id（`adjust_id`），与充值共用一个 id 空间。
+- token limit 只约束 token 计量的调用：图片、音视频不会被 token limit 拦，只受 Credit limit 和余额约束（§3.5 只写了“计 0”）。
+- `policy.effective`、`price.get`、`credit.ledger.list` 与 `policy.status`、`credit.account.get` 一样对受限会话（Limited）开放，都只读本人。
+- 用户自己的 `user_app` 策略允许 `visible: true`，但只能配合同一 Provider 的 `selected_models`（否则无法表达“只用某个模型”）。
+- 列表时判断“Provider 成本 × 汇率”是否有价，用清单价格的币种或 Provider rules `reported_cost` 的币种；清单价格全为 0 时算免费。
+- `buckyos-agent` 的 `ai_quota` 命令名保留（ext_tools 清单、baseline 里都登记了它）。
+
+**验证**
+
+- `cargo test -p aicc`：825 通过（新增 policy 28、storage policy 6、service policy 9、v3 升级与布局、C23 按组、usage 事件带 Credit）；`cargo test -p buckyos-api`：430 通过；`cargo test --workspace --no-run` 通过；`cargo test -p node_updater` 通过；`opendan --test loader`（C21 两条）、`aiworkspace --test wish`、`libopendan` skills 与内置手册检查通过。
+- websdk：jest 1433 通过；CLI `deno check` 与 `zone_admin_test` 通过。
+- 基线就失败、与本单无关：`agent_tool` 的 `grep_tool` 3 条（本机没有 `rg`）；`aiworkspace-core` `apply_log` 回放哈希（换回 HEAD 的 `freshness.rs` 一样失败）；websdk `file_meta` 真实 PDF 样例。
+- 未做：D2 本机 Zone DV（需要 root 重启 AICC）；Postgres 后端没有测试（SQL 按两种后端写，并发充值的唯一键冲突走重读）。
+
+**已知限制（实施时确认）**
+
+- 准入之后、`set_running` 持久化 binding 之前进程崩溃，这次尝试没有扣费记录；已持久化的会在恢复时以真实 usage 或 `unknown_usage` 结算。
+- 一个任务只有一条 usage 事件：fallback 前已上报 usage 的失败尝试有扣费记录，但不单独出现在 usage 明细里。
+- 历史文档 `doc/aicc/maintenance/acceptance/*`、`aicc_reimplementation_roadmap.md`、`aicc_api设计.md` 里的 `quota.query` 是历史记录，没有改。
+
+**净行数**（不含 Desktop；`mod.rs` 内的测试按生产代码计）：buckyos 生产 +5329 / −5579（净 −250），独立测试文件 +1388 / −16，文档 +385 / −239；websdk 源码与测试 +325 / −138。
+
+**Desktop（C3）**
+
+- 新页面：`app/ai-center/{PoliciesPage,PricesPage,CreditPage}.tsx`，`api/aicc_policy.ts`（调用全部 14 个方法），`datamodel/policy.ts`、`hooks/use-policy-api.ts`、`mock/policy.ts`（e2e 用的 mock 世界），`components/{policy,prices,credit}/*`、`home/CreditHomeCard.tsx`、`models/UnpricedModelsNotice.tsx`、向导的 `providerAccess.ts` / `ProviderCreatedPanel.tsx`，`i18n/ai-center-policy.ts`（8 种语言都有新键）。删除旧的额度 / 可见性页面、组件、mock、datamodel 与两份旧测试。Home、Models、Playground、Usage、Add Provider 向导按 §6 改。
+- 验证：`pnpm check` 通过；datamodel AICC 测试 25 条通过；`playwright.aicc.config.ts`（models、routing、新 policy、usage）20 条通过。`pnpm lint` 剩下的 6 个错误都在没改的文件里；playground 的 2 条与 `pages/ai-center` 的多币种 1 条 e2e 在未改代码上同样失败；`desktop-i18n` 各语言缺的 3 个 `taskCenter.tasks.*` 键是原来就缺。
+- 与服务端的不便（服务端未改）：`provider.validate` 不返回模型的 Model Driver 映射，所以“N 个模型已有价格”只能在 Provider 建好之后显示；`policy.effective` 的 draft 预览只针对一个用户，组 / 类型的预览取第一个成员、可切换，没有全体汇总；Models / Playground 的价格取自 `policy.effective`，没有用 `models.list` 的 `credit_price`；旧链接 `/quota`、`/visibility` 打开 Home。
+- 待 owner 确认的取舍：导航名“策略 / 价目表 / AI 点数”（英文 Policies / Price list / AI Credit）；Usage 行的“设置策略”打开哪个主体；向导“对所有人免费”会把能看到该 Provider 的每条管理员用户侧策略的 Provider 系数设为 0；建好 Provider 后写开放策略失败只打到控制台；其它语言的术语由子任务翻译，“Provider”保留英文，与 ja/ko/fr/es/ru/ar 现有译法不一致；英文单数（“1 users”）有几处不通顺。
+- Desktop 净行数：已跟踪文件 +2889 / −4659，新文件 5029 行（含测试与 i18n）。

@@ -15,7 +15,7 @@ gen_video 'The cat from @{cat} jumps over @{fence}' out/jump.mp4 --ref-image cat
 
 #### Errors and source
 
-Exit 1 is bad arguments before submission, 2 provider/request failure, 3 no route, 4 timeout, 5 file I/O. `resource_not_permitted` and `quota_*` require an access or budget change. Delivery rejects multiple videos. A provider URL may expire, so use the delivered bucket copy.
+Exit 1 is bad arguments before submission, 2 provider/request failure, 3 no route, 4 timeout, 5 file I/O. `resource_not_permitted`, `quota_exhausted` and `credit_insufficient` need an access, limit or AI Credit change by the owner or an administrator. Delivery rejects multiple videos. A provider URL may expire, so use the delivered bucket copy.
 
 `resume_aicc_task` waits up to 900 s by default (`--timeout S`). AICC polls accepted jobs for up to 30 min and does not resubmit if the answer is lost. Some providers cannot cancel an accepted job and can still charge. Reusing a key for different inputs returns `idempotency_conflict`.
 

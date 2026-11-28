@@ -10,6 +10,7 @@ export function AddProviderPage({ navigate }: AddProviderPageProps) {
     <WizardShell
       onBack={() => navigate('providers')}
       onCreated={() => navigate('home')}
+      onOpenPrices={() => navigate('prices')}
     />
   )
 }

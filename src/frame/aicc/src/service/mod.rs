@@ -6,7 +6,7 @@ mod management;
 mod model_defaults;
 mod ports;
 mod provider_execution;
-mod quota;
+mod policy;
 mod settings_runtime;
 mod video_materials;
 
@@ -22,8 +22,8 @@ use ports::{
 };
 pub(crate) use provider_execution::RuntimeProviderExecutionPort;
 #[cfg(test)]
-use quota::provider_quota;
-pub(crate) use quota::{ProviderQuotaTruthPort, QuotaPort, QuotaService};
+use policy::provider_quota;
+pub(crate) use policy::{PolicyPort, PolicyService, ProviderQuotaTruthPort};
 use settings_runtime::provider_auth_config;
 pub(crate) use settings_runtime::{RuntimeProviderValidator, ServiceRuntimeFactory};
 
@@ -533,8 +533,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         model_health.clone(),
     ));
     let directory: Arc<dyn UserDirectory> = Arc::new(SystemConfigUserDirectory::default());
-    let quota_service = Arc::new(QuotaService::new(storage.clone(), directory.clone()));
-    quota_service.spawn_reconciler();
+    let policy_service = Arc::new(PolicyService::new(storage.clone(), directory.clone()));
     let execution = Arc::new(
         ExecutionEngine::new(
             storage.clone(),
@@ -542,7 +541,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
             provider_execution.clone(),
             storage.clone(),
         )
-        .with_admission(quota_service.clone()),
+        .with_admission(policy_service.clone()),
     );
     let recovery = execution.clone();
     tokio::spawn(async move {
@@ -563,7 +562,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         url_fetcher,
         provider_execution.clone(),
         model_health,
-        quota_service.clone(),
+        policy_service.clone(),
     ));
     let service = AiccService::new(
         Arc::new(RuntimeAuthorizer::new(directory)),
@@ -574,7 +573,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
             storage.clone(),
         )),
         Arc::new(StorageQueryPort::new(storage)),
-        quota_service,
+        policy_service,
         Arc::new(CloudUpdateDriverMetadataPort::new(
             system_config_url,
             cloud_update.clone(),
@@ -739,7 +738,7 @@ pub(crate) struct AiccService {
     runtime: Arc<dyn ServiceRuntime>,
     validator: Arc<dyn ProviderValidator>,
     usage: Arc<dyn UsageQueryPort>,
-    quota: Arc<dyn QuotaPort>,
+    policy: Arc<dyn PolicyPort>,
     metadata: Arc<dyn DriverMetadataPort>,
     execution: Option<Arc<ExecutionEngine>>,
     inference: Option<Arc<dyn InferencePort>>,
@@ -755,7 +754,7 @@ impl AiccService {
         runtime: Arc<dyn ServiceRuntime>,
         validator: Arc<dyn ProviderValidator>,
         usage: Arc<dyn UsageQueryPort>,
-        quota: Arc<dyn QuotaPort>,
+        policy: Arc<dyn PolicyPort>,
         metadata: Arc<dyn DriverMetadataPort>,
     ) -> Self {
         Self {
@@ -764,7 +763,7 @@ impl AiccService {
             runtime,
             validator,
             usage,
-            quota,
+            policy,
             metadata,
             execution: None,
             inference: None,
@@ -844,8 +843,8 @@ impl AiccService {
         &self,
         caller: &AuthorizedCaller,
         snapshot: &RuntimeAdminSnapshot,
-    ) -> Result<crate::visibility::Access, RPCErrors> {
-        self.quota.access(caller, &admin_inventory(snapshot)).await
+    ) -> Result<crate::policy::Access, RPCErrors> {
+        self.policy.access(caller, &admin_inventory(snapshot)).await
     }
 
     async fn invoke_typed<R>(
@@ -929,8 +928,8 @@ impl AiccService {
     }
 }
 
-fn admin_inventory(snapshot: &RuntimeAdminSnapshot) -> crate::visibility::Inventory {
-    crate::visibility::Inventory::from_views(
+fn admin_inventory(snapshot: &RuntimeAdminSnapshot) -> crate::policy::Inventory {
+    crate::policy::Inventory::from_views(
         snapshot
             .providers
             .iter()
@@ -946,8 +945,8 @@ const RESTRICTED_RESOURCE: &str = "restricted";
 /// drop list items describing them.
 fn redact_hidden(
     value: &mut Value,
-    access: &crate::visibility::Access,
-    inventory: &crate::visibility::Inventory,
+    access: &crate::policy::Access,
+    inventory: &crate::policy::Inventory,
 ) {
     let hidden = |text: &str| {
         (text.contains('@') && inventory.contains_model(text) && !access.allows_model(text))
@@ -1485,6 +1484,7 @@ fn runtime_admin_snapshot(
     snapshot: &crate::runtime::RuntimeSnapshot,
     codecs: &CodecRegistry,
 ) -> RuntimeAdminSnapshot {
+    let provider_costs = crate::policy::provider_costs(snapshot);
     let providers = snapshot
         .settings
         .providers
@@ -1700,7 +1700,9 @@ fn runtime_admin_snapshot(
         ),
         models: json!({
             "catalog": model_catalog_json(&snapshot.catalog, &snapshot.models, &providers),
-            "models": snapshot.models.model_views().into_iter().map(|model| json!({
+            "models": snapshot.models.model_views().into_iter().map(|model| {
+                let cost = provider_costs.get(&(model.provider_instance_name.clone(), model.provider_model_id.clone()));
+                json!({
                 "exact_model": model.exact_model,
                 "model_uid": model.model_uid,
                 "provider_instance_name": model.provider_instance_name,
@@ -1716,7 +1718,9 @@ fn runtime_admin_snapshot(
                 "attributes": model.attributes,
                 "operations": model.operations,
                 "inventory_revision": model.inventory_revision,
-            })).collect::<Vec<_>>(),
+                "provider_cost_currency": cost.map(|cost| &cost.currency),
+                "provider_cost_zero": cost.map(|cost| cost.zero),
+            })}).collect::<Vec<_>>(),
             "directory": model_directory_json(&snapshot.models),
             "logical_definitions": logical_definitions_json(&snapshot.models),
             "catalog_patterns": snapshot.catalog.model_drivers().map(|driver| json!({

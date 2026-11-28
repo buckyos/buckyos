@@ -265,16 +265,24 @@ impl UsageQueryPort for FakeUsage {
     }
 }
 
-struct FakeQuota;
+struct FakePolicy;
 
 #[async_trait]
-impl QuotaPort for FakeQuota {
+impl PolicyPort for FakePolicy {
     async fn access(
         &self,
         _caller: &AuthorizedCaller,
-        _inventory: &crate::visibility::Inventory,
-    ) -> Result<crate::visibility::Access, RPCErrors> {
-        Ok(crate::visibility::Access::Unrestricted)
+        _inventory: &crate::policy::Inventory,
+    ) -> Result<crate::policy::Access, RPCErrors> {
+        Ok(crate::policy::Access::Unrestricted)
+    }
+
+    async fn model_prices(
+        &self,
+        _caller: &AuthorizedCaller,
+        _inventory: &crate::policy::Inventory,
+    ) -> Result<BTreeMap<String, buckyos_api::ModelCreditPrice>, RPCErrors> {
+        Ok(BTreeMap::new())
     }
 
     async fn handle(
@@ -282,7 +290,7 @@ impl QuotaPort for FakeQuota {
         caller: &AuthorizedCaller,
         method: &str,
         _params: Value,
-        _inventory: &crate::visibility::Inventory,
+        _inventory: &crate::policy::Inventory,
     ) -> Result<Value, RPCErrors> {
         Ok(json!({"method": method, "user_id": caller.user_id}))
     }
@@ -409,7 +417,7 @@ fn fixture(deny: bool) -> Fixture {
         Arc::new(SharedFakeRuntime(runtime.clone())),
         validator.clone(),
         usage.clone(),
-        Arc::new(FakeQuota),
+        Arc::new(FakePolicy),
         Arc::new(FakeMetadata),
     )
     .with_inference(inference.clone());

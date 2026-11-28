@@ -162,6 +162,11 @@ export interface UsageEvent {
   token_equivalent?: number
   estimated_cost?: number
   finance_snapshot?: UsageFinanceSnapshot
+  /** AI Credit charged (decimal string) and how (`charged`, `free`, `unpriced`, `unknown_usage`). */
+  credit?: string
+  credit_status?: 'charged' | 'free' | 'unpriced' | 'unknown_usage'
+  /** `type:*` / `group:*` of the charged user at the time of the call. */
+  subjects?: string[]
   status: 'success' | 'failed'
 }
 
@@ -177,6 +182,9 @@ export interface UsageSummary {
   total_requests: number
   finance_totals: Money[]
   finance_complete: boolean
+  /** AI Credit charged (decimal string); not complete when a charge is unpriced or its outcome unknown. */
+  credit_total: string
+  credit_complete: boolean
   today_tokens: number
   this_month_tokens: number
   by_api_namespace: Record<ApiNamespace, number>

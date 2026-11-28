@@ -18,6 +18,8 @@ Deno.test('usage overview and event requests apply the same explicit scope acros
     total_tokens: 120,
     finance_totals: [{ currency: 'usd', amount: 0.25 }, { currency: 'EUR', amount: 0.5 }],
     finance_complete: false,
+    credit_total: '1.25',
+    credit_complete: false,
   }
   sdk.getAccountInfo = async () => ({ session_token: 'test-session' })
   sdk.getServiceRpcClient = () => ({
@@ -27,11 +29,11 @@ Deno.test('usage overview and event requests apply the same explicit scope acros
       const key = (params.group_by as string[] | undefined)?.[0]
       return {
         total: aggregate,
-        grouped: key ? [{ group: { [key]: key === 'user_id' ? 'bob' : 'model@provider' }, aggregate }] : [],
+        grouped: key ? [{ group: { [key]: key === 'user_id' ? 'bob' : key === 'user_group' ? 'type:user' : 'model@provider' }, aggregate }] : [],
         buckets: params.time_bucket ? [{ bucket_start_ms: 1_700_000_000_000, aggregate }] : [],
         events: params.output_mode === 'events' ? [{
           event_id: 'event-bob', tenant_id: 'tenant-bob', user_id: 'bob', created_at_ms: 1_700_000_000_000,
-          provider_model: 'model@provider', total_tokens: 120,
+          provider_model: 'model@provider', total_tokens: 120, credit: '0.5', credit_status: 'charged',
         }] : [],
       }
     },
@@ -48,13 +50,18 @@ Deno.test('usage overview and event requests apply the same explicit scope acros
       assert(overview.users[0].user_id === 'bob', 'user breakdown uses user_id, not tenant_id')
       assert(overview.users[0].finance_totals.length === 2, 'per-user costs preserve separate currencies')
       assert(!overview.users[0].finance_complete, 'incomplete per-user costs remain marked incomplete')
+      assert(overview.summary.credit_total === '1.25' && !overview.summary.credit_complete && overview.users[0].credit_total === '1.25', 'AI Credit totals and their completeness are kept')
+      const system = scope.zoneWide === true && !scope.userId
+      assert(system ? overview.groups?.[0]?.subject === 'type:user' : overview.groups === undefined, 'usage by user group only for the whole system')
       assert(overview.trend[0].tokens === 120, 'trend carries scoped aggregates')
       const page = await manager.queryUsageEvents({
         scope, timeRange: { startTimeMs: 0, endTimeMs: Date.now() }, limit: 10,
         filters: { providerInstanceNames: ['provider'] },
       })
       assert(page.events[0].user_id === 'bob' && page.events[0].tenant_id === 'tenant-bob', 'event ownership and tenant remain distinct')
-      assert(sent.length === 8, 'all seven overview slices plus events are requested')
+      assert(page.events[0].credit === '0.5' && page.events[0].credit_status === 'charged', 'events carry their AI Credit')
+      assert(sent.length === (system ? 9 : 8), 'all overview slices (plus user groups for the whole system) and events are requested')
+      assert(sent.some((params) => (params.group_by as string[] | undefined)?.includes('user_group')) === system, 'user groups are queried zone-wide only')
       for (const params of sent) {
         assert(params.zone_wide === (scope.zoneWide === true), 'every request carries the selected system/personal boundary')
         const filters = params.filters as Record<string, unknown>

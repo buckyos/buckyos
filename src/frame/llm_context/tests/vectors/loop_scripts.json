@@ -1982,7 +1982,7 @@
               }
             },
             "kind": "provider",
-            "message": "token quota is exhausted"
+            "message": "a usage limit is used up"
           }
         }
       ],

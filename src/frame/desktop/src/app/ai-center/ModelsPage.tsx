@@ -7,10 +7,11 @@ import useSWR from 'swr'
 import { useI18n } from '../../i18n/provider'
 import { useAICCStore } from './hooks/use-aicc-store'
 import { WeightFactorControl } from './components/routing/WeightFactorControl'
-import { UnexposedModelsNotice } from './components/models/UnexposedModelsNotice'
-import { StatusChip } from './components/quota/QuotaWidgets'
-import { useMyQuotaRules } from './hooks/use-quota-api'
-import { modelQuotaStatus, type QuotaRuleView } from './datamodel/quota'
+import { UnpricedModelsNotice } from './components/models/UnpricedModelsNotice'
+import { CreditPriceBadge, LimitStatusDot, StatusDot } from './components/policy/PolicyWidgets'
+import { useMyModelPrices } from './hooks/use-policy-api'
+import { isPositiveCredit, modelLimitStatus, type EffectiveModel, type LimitStatus, type PolicyEffectiveResponse } from './datamodel/policy'
+import type { AICenterPage } from './components/layout/nav'
 import {
   defaultModelFilters, filterModelCatalog, modelCard, modelFiltersSchema, vendorNames,
   type ModelCardView, type ModelFilters,
@@ -20,7 +21,24 @@ const surface = { background: 'var(--cp-surface)', border: '1px solid var(--cp-b
 const muted = { color: 'var(--cp-muted)' }
 const success = 'var(--cp-success)'
 
-export function ModelsPage() {
+/** What the viewer pays for a catalog model: of its exact models, the most usable price (free, then priced,
+ * then unpriced); the worst limit over them; and whether a priced model meets an empty AI Credit balance. */
+interface ModelMarks { price?: EffectiveModel['price']; limit?: LimitStatus; lowBalance: boolean }
+
+const PRICE_RANK = { free: 0, priced: 1, unpriced: 2 } as const
+const LIMIT_RANK: Record<LimitStatus, number> = { normal: 0, near_limit: 1, exhausted: 2, forbidden: 3 }
+
+function modelMarks(exactModels: string[], models: Map<string, EffectiveModel>, effective: PolicyEffectiveResponse | null): ModelMarks {
+  const best = exactModels.flatMap((exact) => models.get(exact) ?? []).sort((a, b) => PRICE_RANK[a.price.state] - PRICE_RANK[b.price.state])[0]
+  let limit: LimitStatus | undefined
+  for (const exact of exactModels) {
+    const status = modelLimitStatus(effective?.limits ?? [], exact)
+    if (status && (!limit || LIMIT_RANK[status] > LIMIT_RANK[limit])) limit = status
+  }
+  return { price: best?.price, limit, lowBalance: best?.price.state === 'priced' && !!effective && !isPositiveCredit(effective.balance) }
+}
+
+export function ModelsPage({ navigate }: { navigate?: (page: AICenterPage) => void }) {
   const { t } = useI18n()
   const store = useAICCStore()
   const version = useSyncExternalStore(store.subscribe, store.getSnapshotVersion)
@@ -41,7 +59,7 @@ export function ModelsPage() {
     [t('aiCenter.models.local'), allModels.filter((model) => model.local).length],
   ] as const
   const showModel = (vendor: string, model: string) => setSelected({ vendor, model })
-  const quotaRules = useMyQuotaRules()
+  const prices = useMyModelPrices()
 
   return (
     <div className="flex min-w-0 flex-col gap-5" style={{ color: 'var(--cp-text)' }}>
@@ -55,7 +73,7 @@ export function ModelsPage() {
           <RefreshCw size={17} className={isValidating ? 'animate-spin' : ''} />
         </button>
       </header>
-      <UnexposedModelsNotice />
+      <UnpricedModelsNotice onOpenPrices={navigate ? () => navigate('prices') : undefined} />
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {stats.map(([label, count]) => (
@@ -106,20 +124,20 @@ export function ModelsPage() {
           <p className="font-medium">{t(allModels.length ? 'aiCenter.models.noMatches' : 'aiCenter.models.empty')}</p>
           <p className="mt-2 text-sm" style={muted}>{t(allModels.length ? 'aiCenter.models.noMatchesHint' : 'aiCenter.models.emptyHint')}</p>
         </div>}
-        {vendors.map((vendor) => <VendorSection key={vendor.id} vendor={vendor} showModel={showModel} quotaRules={quotaRules} />)}
+        {vendors.map((vendor) => <VendorSection key={vendor.id} vendor={vendor} showModel={showModel} prices={prices} />)}
       </>}
       <Dialog open={!!selectedModel} onClose={() => setSelected(null)} maxWidth="md" fullWidth aria-labelledby="model-detail-title"
         slotProps={{ paper: { sx: { bgcolor: 'var(--cp-surface)', color: 'var(--cp-text)', borderRadius: 3, margin: 2, width: 'calc(100% - 32px)' } } }}>
-        {selectedModel && <ModelDetails model={selectedModel} onClose={() => setSelected(null)} />}
+        {selectedModel && <ModelDetails model={selectedModel} prices={prices.models} onClose={() => setSelected(null)} />}
       </Dialog>
     </div>
   )
 }
 
-function VendorSection({ vendor, showModel, quotaRules }: {
+function VendorSection({ vendor, showModel, prices }: {
   vendor: ReturnType<typeof filterModelCatalog>[number]
   showModel: (vendor: string, model: string) => void
-  quotaRules: QuotaRuleView[]
+  prices: ReturnType<typeof useMyModelPrices>
 }) {
   const { t } = useI18n()
   const sectionId = useId()
@@ -177,16 +195,15 @@ function VendorSection({ vendor, showModel, quotaRules }: {
         </> : <p className="py-2 text-xs" style={muted}>{t('aiCenter.models.emptySpec')}</p>}
       </div>}
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-3">
-        {vendor.models.map((model) => <ModelCard key={model.id} model={model} quotaRules={quotaRules} onClick={() => showModel(vendor.id, model.id)} />)}
+        {vendor.models.map((model) => <ModelCard key={model.id} model={model} marks={modelMarks(model.providers.flatMap((provider) => provider.exact_models), prices.models, prices.effective)} onClick={() => showModel(vendor.id, model.id)} />)}
       </div>
     </div>
   </section>
 }
 
-function ModelCard({ model, quotaRules, onClick }: { model: ModelCardView; quotaRules: QuotaRuleView[]; onClick: () => void }) {
+function ModelCard({ model, marks, onClick }: { model: ModelCardView; marks: ModelMarks; onClick: () => void }) {
   const { t, locale } = useI18n()
   const context = model.metadata.capabilities?.max_context_tokens
-  const quotaStatus = modelQuotaStatus(quotaRules, model.providers.flatMap((provider) => provider.exact_models))
   return <button type="button" onClick={onClick} data-testid="model-card" data-model={model.id} data-available={model.available} data-local={model.local}
     className="flex min-w-0 flex-col gap-3 rounded-xl p-4 text-left transition-shadow hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
     style={{ ...surface, borderColor: model.available ? 'color-mix(in srgb, var(--cp-success) 45%, var(--cp-border))' : 'var(--cp-border)' }}>
@@ -207,12 +224,16 @@ function ModelCard({ model, quotaRules, onClick }: { model: ModelCardView; quota
         <span className="h-2 w-2 rounded-full" style={{ background: 'currentColor' }} />
         {model.available ? t('aiCenter.models.providerCount', undefined, { count: model.providers.length }) : t('aiCenter.models.unavailable')}
       </span>
-      {quotaStatus && <StatusChip status={quotaStatus} />}
+      {marks.limit && <LimitStatusDot status={marks.limit} />}
     </div>
+    {(marks.price || marks.lowBalance) && <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-1">
+      {marks.price && <CreditPriceBadge price={marks.price} />}
+      {marks.lowBalance && <StatusDot testId="model-credit-low" tone="error" label={t('aiCenter.models.creditLow', 'Your AI Credit is used up')} />}
+    </div>}
   </button>
 }
 
-function ModelDetails({ model, onClose }: { model: ModelCardView; onClose: () => void }) {
+function ModelDetails({ model, prices, onClose }: { model: ModelCardView; prices: Map<string, EffectiveModel>; onClose: () => void }) {
   const { t } = useI18n()
   const llm = model.metadata.llm
   const facts = [
@@ -237,7 +258,10 @@ function ModelDetails({ model, onClose }: { model: ModelCardView; onClose: () =>
     <h3 className="mb-2 mt-6 text-sm font-semibold">{t('aiCenter.models.providers')}</h3>
     {model.providers.length ? <div className="space-y-2">{model.providers.map((provider) => <div key={provider.id} className="rounded-lg p-3" style={{ background: 'var(--cp-bg)' }}>
       <p className="flex items-center gap-2 break-all text-sm"><Monitor size={16} className="shrink-0" style={{ color: provider.local ? success : 'var(--cp-muted)' }} />{provider.id}{provider.local && <span className="text-xs" style={{ color: success }}>{t('aiCenter.models.local')}</span>}</p>
-      {provider.exact_models.map((exact) => <p key={exact} className="mt-1 break-all font-mono text-xs" style={muted}>{exact}</p>)}
+      {provider.exact_models.map((exact) => <div key={exact} className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <span className="break-all font-mono text-xs" style={muted}>{exact}</span>
+        {prices.get(exact) && <CreditPriceBadge price={prices.get(exact)!.price} />}
+      </div>)}
     </div>)}</div> : <p className="text-sm" style={muted}>{t('aiCenter.models.noProviders')}</p>}
     {model.deployable && <div className="mt-5 rounded-lg p-4" style={{ background: 'var(--cp-bg)' }}>
       <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm font-medium">{t('aiCenter.models.localDeployment')}</span>
