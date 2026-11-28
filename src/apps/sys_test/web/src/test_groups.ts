@@ -331,13 +331,13 @@ export const TEST_GROUPS: TestGroup[] = [
         },
       },
       {
-        name: 'AiccClient.queryQuota',
+        name: 'AiccClient.policyStatus',
         run: async ({ sdk }) => {
-          const quota = await sdk.getAiccClient().queryQuota({})
-          if (typeof quota.user_id !== 'string' || !Array.isArray(quota.rules)) {
-            throw new Error('quota.query returned no user or rule list')
+          const status = await sdk.getAiccClient().policyStatus({})
+          if (typeof status.user_id !== 'string' || !Array.isArray(status.limits)) {
+            throw new Error('policy.status returned no user or limit list')
           }
-          return { user_id: quota.user_id, rules: quota.rules.length }
+          return { user_id: status.user_id, limits: status.limits.length }
         },
       },
       {

@@ -655,12 +655,12 @@ function buildGroupRunners(
           });
         return { definitions: definitions.length };
       }),
-      await runSelftestCase("AiccClient.queryQuota", async () => {
-        const quota = await sdk.buckyos.getAiccClient().queryQuota({});
-        if (typeof quota.user_id !== "string" || !Array.isArray(quota.rules)) {
-          throw new Error("quota.query returned no user or rule list");
+      await runSelftestCase("AiccClient.policyStatus", async () => {
+        const status = await sdk.buckyos.getAiccClient().policyStatus({});
+        if (typeof status.user_id !== "string" || !Array.isArray(status.limits)) {
+          throw new Error("policy.status returned no user or limit list");
         }
-        return { user_id: quota.user_id, rules: quota.rules.length };
+        return { user_id: status.user_id, limits: status.limits.length };
       }),
       await runSelftestCase(
         "MsgCenterClient rejects an ungranted owner inbox read",
