@@ -251,6 +251,9 @@ pub(crate) struct PinnedProviderTask {
     /// Credit charge plan of the attempt this binding was started by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub charge: Option<crate::policy::ChargePlan>,
+    /// The exact model the usecase's unavailable policy replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_from: Option<String>,
 }
 
 impl PinnedProviderTask {
@@ -284,6 +287,7 @@ impl PinnedProviderTask {
             pricing: PinnedPricingSnapshot::from_call(call)?,
             reported_cost_currency: call.reported_cost_currency.clone(),
             charge: None,
+            fallback_from: call.fallback_from.clone(),
         })
     }
 }
@@ -1165,6 +1169,7 @@ pub(crate) struct UsageCompletion {
     /// The charged user's `type:*` / `group:*` at admission.
     pub subjects: Vec<String>,
     pub completed_at_ms: i64,
+    pub fallback_from: Option<String>,
 }
 
 #[async_trait]
@@ -1349,8 +1354,8 @@ pub(crate) struct ExecutionRequest {
     pub parent_task_id: Option<String>,
     pub runtime_generation: u64,
     pub primary: ResolvedProviderCall,
-    pub failover: Vec<ResolvedProviderCall>,
-    pub runtime_failover: bool,
+    /// The usecase's "when unavailable" policy; asked at most once.
+    pub fallback: Option<Arc<dyn UnavailableFallback>>,
     pub now_ms: u64,
     pub idempotency_window_ms: Option<u64>,
 }
@@ -1389,6 +1394,79 @@ enum AttemptFailure {
     /// The user policy refused the attempt before any upstream call.
     Admission(AiccError),
     Provider(ProviderStartFailure),
+}
+
+/// The usecase's "when unavailable" policy, asked by the engine when the
+/// selected model failed in a way that lets it take over
+/// (doc/aicc/aicc_router.md §9.2–§9.3).
+#[async_trait]
+pub(crate) trait UnavailableFallback: Send + Sync {
+    /// The backup call for `failed`, ready to execute; `Ok(None)` when the
+    /// policy has no model.
+    async fn backup(
+        &self,
+        failed: &ResolvedProviderCall,
+        reason: &str,
+    ) -> Result<Option<ResolvedProviderCall>, AiccError>;
+}
+
+/// Why a failure lets the usecase's policy switch models, or `None`: only
+/// a Provider that stayed unavailable after the same-model retries, a model
+/// that is gone, upstream quota that is exhausted. A bad request,
+/// authentication, a conflict, a cancellation, a failure that consumed usage
+/// and one after an asynchronous task was accepted never switch.
+pub(crate) fn unavailable_trigger(failure: &ProviderStartFailure) -> Option<&'static str> {
+    let error = &failure.error;
+    if error.usage.is_some() || error.kind == ProtocolErrorKind::Cancelled {
+        return None;
+    }
+    // A model that is gone switches even when the attempt itself is not
+    // retryable, unless the Provider accepted work it may still bill.
+    if error.is_model_unavailable() && (failure.retryable || !failure.provider_accepted) {
+        return Some("model_unavailable");
+    }
+    if !failure.retryable {
+        return None;
+    }
+    if matches!(error.http_status, Some(400 | 401 | 403 | 409)) {
+        return None;
+    }
+    if error.http_status == Some(402) || error.is_account_exhausted() {
+        Some("upstream_quota_exhausted")
+    } else if error.kind == ProtocolErrorKind::Timeout {
+        Some("timeout")
+    } else {
+        Some("provider_unavailable")
+    }
+}
+
+/// The error of a request whose backup also failed: both causes.
+pub(crate) fn with_original_failure(
+    original: Option<(String, AiccError)>,
+    mut error: AiccError,
+    backup_model: &str,
+) -> AiccError {
+    let Some((original_model, original)) = original else {
+        return error;
+    };
+    let details = serde_json::json!({
+        "fallback": {
+            "from": {"exact_model": original_model, "code": original.code, "message": original.message},
+            "to": {"exact_model": backup_model, "code": error.code, "message": error.message},
+        }
+    });
+    error.message = format!(
+        "{original_model} failed: {}; fallback {backup_model} failed: {}",
+        original.message, error.message
+    );
+    error.details = Some(match error.details.take() {
+        Some(Value::Object(mut map)) => {
+            map.insert("fallback".into(), details["fallback"].clone());
+            Value::Object(map)
+        }
+        _ => details,
+    });
+    error
 }
 
 #[derive(Clone)]
@@ -1656,29 +1734,28 @@ impl ExecutionEngine {
             )
             .await?;
 
-        let mut calls = Vec::with_capacity(1 + request.failover.len());
-        calls.push(request.primary);
-        if request.runtime_failover {
-            calls.extend(request.failover);
-        }
-        let mut last_error = None;
-        for (index, call) in calls.iter().enumerate() {
+        let api_type = request.primary.api_type;
+        let mut current = request.primary;
+        let mut index = 0usize;
+        let mut original_failure: Option<(String, AiccError)> = None;
+        loop {
             if cancellation.is_cancelled() {
                 self.remove_active(&record.task_id);
                 return self.current_receipt(&record.task_id).await;
             }
-            if call.method != record.scope.method || call.api_type != calls[0].api_type {
+            if current.method != record.scope.method || current.api_type != api_type {
                 return self
                     .finish_failure(
                         &record.task_id,
                         aicc_error(
                             AiccErrorCode::InternalError,
-                            "runtime failover candidate changes method or API type",
+                            "fallback call changes method or API type",
                             false,
                         ),
                     )
                     .await;
             }
+            let call = &current;
             let mut binding = match PinnedProviderTask::from_call(request.runtime_generation, call)
             {
                 Ok(binding) => binding,
@@ -1862,46 +1939,39 @@ impl ExecutionEngine {
                     }
                 },
                 Err(AttemptFailure::Admission(error)) => {
-                    if request.runtime_failover && index + 1 < calls.len() {
-                        self.tasks
-                            .report_state(
-                                &record.task_id,
-                                ExecutionState::Submitted,
-                                json_state(
-                                    "policy_failover",
-                                    Some(Value::String(call.exact_model.clone())),
-                                    record.trace_id.as_deref(),
-                                ),
-                            )
-                            .await?;
-                        last_error = Some(error);
-                        continue;
+                    if index == 0 {
+                        if let Some(next) = self
+                            .switch_to_backup(&record, request.fallback.as_ref(), call, "quota_denied")
+                            .await?
+                        {
+                            original_failure = Some((call.exact_model.clone(), error));
+                            current = next;
+                            index = 1;
+                            continue;
+                        }
                     }
+                    let error = with_original_failure(original_failure, error, &call.exact_model);
                     return self.finish_failure(&record.task_id, error).await;
                 }
                 Err(AttemptFailure::Provider(failure)) => {
-                    let can_failover =
-                        failure.retryable && request.runtime_failover && index + 1 < calls.len();
+                    let trigger = unavailable_trigger(&failure);
                     let consumed = failure.error.usage.clone();
                     let mut error: AiccError = failure.error.into();
                     if failure.provider_accepted {
                         error.code = AiccErrorCode::ProviderError;
                     }
-                    if can_failover {
-                        self.tasks
-                            .report_state(
-                                &record.task_id,
-                                ExecutionState::Submitted,
-                                json_state(
-                                    "runtime_failover",
-                                    Some(Value::String(call.exact_model.clone())),
-                                    record.trace_id.as_deref(),
-                                ),
-                            )
-                            .await?;
-                        last_error = Some(error);
-                        continue;
+                    if let (0, Some(reason)) = (index, trigger) {
+                        if let Some(next) = self
+                            .switch_to_backup(&record, request.fallback.as_ref(), call, reason)
+                            .await?
+                        {
+                            original_failure = Some((call.exact_model.clone(), error));
+                            current = next;
+                            index = 1;
+                            continue;
+                        }
                     }
+                    let error = with_original_failure(original_failure, error, &call.exact_model);
                     if let Some(usage) = consumed {
                         return self
                             .finish_failure_with_usage(
@@ -1918,17 +1988,50 @@ impl ExecutionEngine {
                 }
             }
         }
-        self.finish_failure(
-            &record.task_id,
-            last_error.unwrap_or_else(|| {
-                aicc_error(
-                    AiccErrorCode::ProviderStartFailed,
-                    "no Provider execution attempt was available",
-                    true,
+    }
+
+    /// Ask the usecase's policy for a backup after `failed` failed. A
+    /// policy that cannot produce one keeps the original error.
+    async fn switch_to_backup(
+        &self,
+        record: &ExecutionRecord,
+        fallback: Option<&Arc<dyn UnavailableFallback>>,
+        failed: &ResolvedProviderCall,
+        reason: &str,
+    ) -> Result<Option<ResolvedProviderCall>, AiccError> {
+        let Some(fallback) = fallback else {
+            return Ok(None);
+        };
+        let next = match fallback.backup(failed, reason).await {
+            Ok(next) => next,
+            Err(error) => {
+                log::warn!(
+                    "unavailable_fallback_failed: task_id={} exact_model={} error={}",
+                    record.task_id,
+                    failed.exact_model,
+                    error
+                );
+                None
+            }
+        };
+        if let Some(next) = &next {
+            self.tasks
+                .report_state(
+                    &record.task_id,
+                    ExecutionState::Submitted,
+                    json_state(
+                        "unavailable_fallback",
+                        Some(serde_json::json!({
+                            "from": failed.exact_model,
+                            "to": next.exact_model,
+                            "reason": reason,
+                        })),
+                        record.trace_id.as_deref(),
+                    ),
                 )
-            }),
-        )
-        .await
+                .await?;
+        }
+        Ok(next)
     }
 
     pub(crate) async fn drive_native(&self, task_id: &str) -> Result<ExecutionReceipt, AiccError> {
@@ -2590,6 +2693,7 @@ impl ExecutionEngine {
                 credit,
                 subjects,
                 completed_at_ms,
+                fallback_from: binding.fallback_from.clone(),
             })
             .await
     }
@@ -3287,6 +3391,7 @@ pub(crate) mod tests {
     pub(crate) fn call(instance: &str) -> ResolvedProviderCall {
         let request = LlmChatInvokeRequest::new(format!("model@{instance}"), Vec::new());
         ResolvedProviderCall {
+            fallback_from: None,
             reported_cost_currency: None,
             pricing_context: Default::default(),
             exact_model: format!("model@{instance}"),
@@ -3792,11 +3897,41 @@ pub(crate) mod tests {
             parent_task_id: None,
             runtime_generation: 7,
             primary,
-            failover: Vec::new(),
-            runtime_failover: false,
+            fallback: None,
             now_ms: 1_000,
             idempotency_window_ms: None,
         }
+    }
+
+    /// A usecase policy that hands out one prepared backup call.
+    struct FixedFallback {
+        call: Mutex<Option<ResolvedProviderCall>>,
+        reasons: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl UnavailableFallback for FixedFallback {
+        async fn backup(
+            &self,
+            failed: &ResolvedProviderCall,
+            reason: &str,
+        ) -> Result<Option<ResolvedProviderCall>, AiccError> {
+            self.reasons
+                .lock()
+                .unwrap()
+                .push(format!("{}:{reason}", failed.exact_model));
+            Ok(self.call.lock().unwrap().take().map(|mut call| {
+                call.fallback_from = Some(failed.exact_model.clone());
+                call
+            }))
+        }
+    }
+
+    fn fallback_to(call: ResolvedProviderCall) -> Option<Arc<dyn UnavailableFallback>> {
+        Some(Arc::new(FixedFallback {
+            call: Mutex::new(Some(call)),
+            reasons: Mutex::new(Vec::new()),
+        }))
     }
 
     fn large_canonical_body(exact_model: &str) -> Value {
@@ -4177,8 +4312,7 @@ pub(crate) mod tests {
         req.trace_id = Some("llm-log-test-decision".into());
         req.request_model = "decision".into();
         req.canonical_body = req.primary.input.canonical_request.to_params().unwrap();
-        req.failover.push(decision_call("backup"));
-        req.runtime_failover = true;
+        req.fallback = fallback_to(decision_call("backup"));
         let (engine, _, _, usage) = make_engine(providers.clone());
         assert_eq!(
             engine.execute(req).await.unwrap().state,
@@ -4759,8 +4893,7 @@ pub(crate) mod tests {
         let (engine, _, _, _) = make_engine(providers.clone());
         let mut req = request(call("primary"));
         req.trace_id = Some("llm-log-test-failover".into());
-        req.failover.push(call("backup"));
-        req.runtime_failover = true;
+        req.fallback = fallback_to(call("backup"));
         let receipt = engine.execute(req).await.unwrap();
         assert_eq!(receipt.state, ExecutionState::Succeeded);
         assert_eq!(
@@ -4789,8 +4922,7 @@ pub(crate) mod tests {
         let (engine, _, _, _) = make_engine(providers.clone());
         let mut req = request(call("primary"));
         req.idempotency_key = "idem-2".into();
-        req.failover.push(call("backup"));
-        req.runtime_failover = true;
+        req.fallback = fallback_to(call("backup"));
         assert_eq!(
             engine.execute(req).await.unwrap().state,
             ExecutionState::Succeeded
@@ -4928,8 +5060,7 @@ pub(crate) mod tests {
         admission.deny.lock().unwrap().push("model@primary".into());
         let engine = engine_with_admission(providers.clone(), admission.clone());
         let mut req = request(call("primary"));
-        req.failover.push(call("backup"));
-        req.runtime_failover = true;
+        req.fallback = fallback_to(call("backup"));
         assert_eq!(
             engine.execute(req).await.unwrap().state,
             ExecutionState::Succeeded
@@ -4940,7 +5071,6 @@ pub(crate) mod tests {
         let engine = engine_with_admission(providers.clone(), admission);
         let mut req = request(call("primary"));
         req.idempotency_key = "idem-locked".into();
-        req.failover.push(call("backup"));
         let receipt = engine.execute(req).await.unwrap();
         assert_eq!(receipt.state, ExecutionState::Failed);
         assert_eq!(receipt.error.unwrap().code, AiccErrorCode::QuotaExhausted);
@@ -4963,8 +5093,7 @@ pub(crate) mod tests {
         let mut backup = call("backup");
         backup.api_type = ApiType::VideoGenerate;
         let mut req = request(primary);
-        req.failover.push(backup);
-        req.runtime_failover = true;
+        req.fallback = fallback_to(backup);
         let receipt = engine.execute(req).await.unwrap();
         assert_eq!(receipt.state, ExecutionState::Failed);
         assert_eq!(receipt.error.unwrap().code, AiccErrorCode::ProviderError);
@@ -4990,8 +5119,7 @@ pub(crate) mod tests {
         backup.api_type = ApiType::VideoGenerate;
         let mut req = request(primary);
         req.idempotency_key = "idem-video-rejected".into();
-        req.failover.push(backup);
-        req.runtime_failover = true;
+        req.fallback = fallback_to(backup);
         assert_eq!(
             engine.execute(req).await.unwrap().state,
             ExecutionState::Succeeded
@@ -5033,8 +5161,7 @@ pub(crate) mod tests {
         ]);
         let (engine, _, _, _) = make_engine(providers.clone());
         let mut req = request(call("primary"));
-        req.failover.push(call("backup"));
-        req.runtime_failover = true;
+        req.fallback = fallback_to(call("backup"));
 
         assert_eq!(
             engine.execute(req).await.unwrap().state,
@@ -5044,6 +5171,161 @@ pub(crate) mod tests {
             providers.starts.lock().unwrap().as_slice(),
             ["model@primary", "model@backup"]
         );
+    }
+
+    #[tokio::test]
+    async fn without_a_policy_a_failing_model_is_never_replaced() {
+        // Two Providers could serve the request; with no unavailable policy
+        // the second one receives nothing however often the first fails.
+        let providers = Arc::new(FakeProviders::default());
+        for _ in 0..20 {
+            providers
+                .plans
+                .lock()
+                .unwrap()
+                .push_back(StartPlan::Failure(ProviderStartFailure::before_accept(
+                    ProtocolError::new(ProtocolErrorKind::Transport, "503 upstream")
+                        .with_http_status(503),
+                    true,
+                )));
+        }
+        let (engine, _, _, _) = make_engine(providers.clone());
+        for attempt in 0..10 {
+            let mut req = request(call("primary"));
+            req.idempotency_key = format!("idem-no-policy-{attempt}");
+            let receipt = engine.execute(req).await.unwrap();
+            assert_eq!(receipt.state, ExecutionState::Failed);
+        }
+        let starts = providers.starts.lock().unwrap();
+        assert!(starts.iter().all(|model| model == "model@primary"));
+        assert_eq!(starts.len(), 20, "each request retries the same model once");
+    }
+
+    #[tokio::test]
+    async fn a_policy_switches_once_and_reports_both_failures() {
+        let providers = Arc::new(FakeProviders::default());
+        for _ in 0..4 {
+            providers
+                .plans
+                .lock()
+                .unwrap()
+                .push_back(StartPlan::Failure(ProviderStartFailure::before_accept(
+                    ProtocolError::new(ProtocolErrorKind::Timeout, "timed out"),
+                    true,
+                )));
+        }
+        let (engine, _, _, _) = make_engine(providers.clone());
+        let fallback = Arc::new(FixedFallback {
+            call: Mutex::new(Some(call("backup"))),
+            reasons: Mutex::new(Vec::new()),
+        });
+        let mut req = request(call("primary"));
+        req.fallback = Some(fallback.clone());
+        let receipt = engine.execute(req).await.unwrap();
+        assert_eq!(receipt.state, ExecutionState::Failed);
+        assert_eq!(
+            providers.starts.lock().unwrap().as_slice(),
+            ["model@primary", "model@primary", "model@backup", "model@backup"]
+        );
+        assert_eq!(
+            fallback.reasons.lock().unwrap().as_slice(),
+            ["model@primary:timeout"],
+            "the policy is asked once per request"
+        );
+        let error = receipt.error.unwrap();
+        assert!(error.message.contains("model@primary failed"), "{}", error.message);
+        assert!(error.message.contains("fallback model@backup failed"), "{}", error.message);
+        let details = error.details.unwrap();
+        assert_eq!(details["fallback"]["from"]["exact_model"], "model@primary");
+        assert_eq!(details["fallback"]["to"]["exact_model"], "model@backup");
+    }
+
+    #[tokio::test]
+    async fn usage_of_a_switched_request_belongs_to_the_backup() {
+        let providers = Arc::new(FakeProviders::default());
+        let refused = || {
+            StartPlan::Failure(ProviderStartFailure::before_accept(
+                ProtocolError::new(ProtocolErrorKind::Transport, "connection refused"),
+                true,
+            ))
+        };
+        providers.plans.lock().unwrap().extend([
+            refused(),
+            refused(),
+            StartPlan::Success(ProviderExecution::Immediate(ProtocolOutput {
+                value: json!({"ok": true}),
+                usage: Some(token_usage(3, 4)),
+                artifacts: Vec::new(),
+            })),
+        ]);
+        let (engine, _, _, usage) = make_engine(providers.clone());
+        let mut req = request(call("primary"));
+        req.fallback = fallback_to(call("backup"));
+        assert_eq!(
+            engine.execute(req).await.unwrap().state,
+            ExecutionState::Succeeded
+        );
+        let writes = usage.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        let completion = writes.values().next().unwrap();
+        assert_eq!(completion.provider_instance_name, "backup");
+        assert_eq!(completion.fallback_from.as_deref(), Some("model@primary"));
+    }
+
+    #[test]
+    fn only_unavailability_lets_a_policy_switch_models() {
+        let failure = |error: ProtocolError, retryable: bool| {
+            ProviderStartFailure::before_accept(error, retryable)
+        };
+        let status = |kind, code: u16| ProtocolError::new(kind, "upstream").with_http_status(code);
+        let cases = [
+            (failure(status(ProtocolErrorKind::Transport, 503), true), Some("provider_unavailable")),
+            (failure(status(ProtocolErrorKind::Transport, 429), true), Some("provider_unavailable")),
+            (failure(ProtocolError::new(ProtocolErrorKind::Transport, "reset"), true), Some("provider_unavailable")),
+            (failure(ProtocolError::new(ProtocolErrorKind::Timeout, "slow"), true), Some("timeout")),
+            (
+                failure(
+                    ProtocolError::new(ProtocolErrorKind::InvalidRequest, "model not found")
+                        .with_http_status(404),
+                    true,
+                ),
+                Some("model_unavailable"),
+            ),
+            (failure(status(ProtocolErrorKind::ProviderRejected, 402), true), Some("upstream_quota_exhausted")),
+            (
+                failure(ProtocolError::new(ProtocolErrorKind::Transport, "insufficient balance"), true),
+                Some("upstream_quota_exhausted"),
+            ),
+            (failure(status(ProtocolErrorKind::InvalidRequest, 400), false), None),
+            (failure(status(ProtocolErrorKind::Authentication, 401), false), None),
+            (failure(status(ProtocolErrorKind::Authentication, 403), false), None),
+            (failure(status(ProtocolErrorKind::Transport, 409), true), None),
+            (failure(ProtocolError::new(ProtocolErrorKind::Cancelled, "cancelled"), true), None),
+            (
+                failure(
+                    ProtocolError::new(ProtocolErrorKind::Transport, "cut off")
+                        .with_usage(Some(token_usage(1, 1))),
+                    true,
+                ),
+                None,
+            ),
+            (
+                ProviderStartFailure::native_submit_unknown(ProtocolError::new(
+                    ProtocolErrorKind::Transport,
+                    "no answer after submit",
+                )),
+                None,
+            ),
+        ];
+        for (failure, expected) in cases {
+            assert_eq!(unavailable_trigger(&failure), expected, "{:?}", failure.error);
+        }
+        let accepted_video = ProviderStartFailure::after_accept(ProtocolError::new(
+            ProtocolErrorKind::Transport,
+            "lost",
+        ))
+        .for_api(ApiType::VideoGenerate);
+        assert_eq!(unavailable_trigger(&accepted_video), None);
     }
 
     #[tokio::test]

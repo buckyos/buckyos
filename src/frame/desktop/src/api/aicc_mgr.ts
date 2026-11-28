@@ -5,6 +5,7 @@ import type { ModelCatalog } from '../app/ai-center/datamodel/model-catalog'
 import { mockModelCatalog } from '../app/ai-center/mock/model-catalog'
 import { MockDataStore } from '../app/ai-center/mock/store'
 import { MockRoutingWorld } from '../app/ai-center/mock/routing'
+import { mockUsecaseWorld } from '../app/ai-center/mock/usecases'
 import type {
   AiccEvent,
   AiccEventFeed,
@@ -16,6 +17,7 @@ import type {
   RoutingWorkspace,
 } from '../app/ai-center/datamodel/routing'
 import { normalizeFinanceTotals } from '../app/ai-center/datamodel/transforms'
+import { toUsecaseRequirement, type UsecaseCoverageChange } from '../app/ai-center/datamodel/usecases'
 import { toAiccRpcCallOptions } from './aicc_rpc_options'
 import { parseProviderAdvancedRules, toProviderInstanceRules } from './provider_model_selection'
 import type {
@@ -37,6 +39,7 @@ import type {
   ProviderStatus,
   ProviderType,
   ProviderView,
+  RouteFallback,
   RouteTrace,
   SelectableInventoryModel,
   RoutePolicy,
@@ -124,6 +127,7 @@ const EMPTY_SNAPSHOT: StoreSnapshot = {
     inventory_ok: false,
   },
   settingsRevision: 0,
+  usecaseRequirements: {},
 }
 
 const BUILTIN_PROVIDER_NAMES: Array<[ProviderType, string, string, string, string[]?]> = [
@@ -314,7 +318,6 @@ interface RawLogicalDefinition {
   kind?: unknown
   api_type?: unknown
   min_line?: unknown
-  fallback?: unknown
   route_policy?: unknown
   scheduler_profile?: unknown
 }
@@ -354,6 +357,7 @@ interface RawProviderInstanceView {
   auth?: unknown
   inventory?: unknown
   health?: unknown
+  marked_faulty?: unknown
 }
 
 interface RawProviderListResponse {
@@ -400,6 +404,7 @@ interface RawUsageEvent {
   credit?: unknown
   credit_status?: unknown
   subjects?: unknown
+  fallback_from?: unknown
   created_at_ms?: unknown
 }
 
@@ -429,6 +434,7 @@ interface AiccDataProvider {
   updateProviderKey(provider: ProviderView, apiKey: string): Promise<void>
   updateProviderRules(provider: ProviderView, draft: Partial<WizardDraft>): Promise<void>
   setProviderEnabled(provider: ProviderView, enabled: boolean): Promise<void>
+  setProviderMarkedFaulty(provider: ProviderView, marked: boolean): Promise<void>
   setProviderWeight(providerInstanceName: string, weight: number): Promise<void>
   validateConnection(draft: WizardDraft): Promise<ValidationResult>
   getUsageSummary(): UsageSummary
@@ -463,6 +469,7 @@ export interface AICCMgr {
   updateProviderKey(provider: ProviderView, apiKey: string): Promise<void>
   updateProviderRules(provider: ProviderView, draft: Partial<WizardDraft>): Promise<void>
   setProviderEnabled(provider: ProviderView, enabled: boolean): Promise<void>
+  setProviderMarkedFaulty(provider: ProviderView, marked: boolean): Promise<void>
   setProviderRoutingWeight(providerInstanceName: string, weight: number): Promise<void>
   validateConnection(draft: WizardDraft): Promise<ValidationResult>
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
@@ -544,6 +551,8 @@ export interface UsageEventsQuery {
     providerInstanceQuery?: string
     appIds?: string[]
     appQuery?: string
+    /** Only calls served by a usecase's "when unavailable" policy. */
+    fallbackOnly?: boolean
   }
   cursor?: string
   limit: number
@@ -708,6 +717,16 @@ export class AICCModelStore implements AICCMgr {
     await this.refresh()
   }
 
+  async setProviderMarkedFaulty(provider: ProviderView, marked: boolean): Promise<void> {
+    try {
+      await this.provider.setProviderMarkedFaulty(provider, marked)
+    } catch (error) {
+      if (isSettingsRevisionConflict(error)) await this.refresh()
+      throw error
+    }
+    await this.refresh()
+  }
+
   async setProviderRoutingWeight(providerInstanceName: string, weight: number): Promise<void> {
     try {
       await this.provider.setProviderWeight(providerInstanceName, weight)
@@ -783,6 +802,16 @@ export function createAICCMgr(options: { useMock?: boolean } = {}): AICCMgr {
 class MockAiccProvider implements AiccDataProvider {
   private readonly store = new MockDataStore()
   private readonly routing = new MockRoutingWorld()
+
+  constructor() {
+    mockUsecaseWorld().connect((level, kind, message, details) => this.routing.record(level, kind, message, details))
+    if (this.store.getSnapshot().providers.length > 0) {
+      this.routing.record('warning', 'unavailable_fallback', 'claude-sonnet-4.5@anthropic-work was unavailable; gpt-5.1@openai-main served the request', {
+        from: 'claude-sonnet-4.5@anthropic-work', to: 'gpt-5.1@openai-main', policy: 'next_model', reason: 'upstream returned 503', usecase: 'llm.code',
+      })
+    }
+  }
+
   private cloudUpdateSettings: CloudUpdateSettings = {
     enabled: false,
     sourceConfigured: false,
@@ -861,12 +890,24 @@ class MockAiccProvider implements AiccDataProvider {
     this.store.setProviderEnabled(provider.config.id, enabled)
   }
 
+  async setProviderMarkedFaulty(provider: ProviderView, marked: boolean): Promise<void> {
+    this.store.setProviderMarkedFaulty(provider.config.id, marked)
+    const name = provider.config.provider_instance_name
+    this.routing.record(marked ? 'warning' : 'info', marked ? 'provider_marked_faulty' : 'provider_fault_cleared',
+      marked ? `${name} was marked faulty: its usecases use their unavailable policy` : `${name} is no longer marked faulty`,
+      { provider_instance_name: name })
+  }
+
   async setProviderWeight(providerInstanceName: string, weight: number): Promise<void> {
     this.store.setProviderWeight(providerInstanceName, weight)
   }
 
   async validateConnection(draft: WizardDraft): Promise<ValidationResult> {
-    return this.store.validateConnection(draft)
+    const result = this.store.validateConnection(draft)
+    if (!result.auth_valid || !result.base_url_reachable) return result
+    const before = this.store.getSnapshot()
+    const after = this.store.previewWithProvider(withProviderInstanceName(draft, before))
+    return { ...result, usecase_coverage: mockUsecaseWorld().coverage(before, after) }
   }
 
   getUsageSummary(): UsageSummary {
@@ -1168,6 +1209,15 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     this.settingsRevision = asNumber(result.settings_revision, this.settingsRevision)
   }
 
+  async setProviderMarkedFaulty(provider: ProviderView, marked: boolean): Promise<void> {
+    const result = await this.callProviderUpdate({
+      provider_instance_name: provider.config.provider_instance_name,
+      settings_revision: this.settingsRevision,
+      marked_faulty: marked,
+    })
+    this.settingsRevision = asNumber(result.settings_revision, this.settingsRevision)
+  }
+
   async setProviderWeight(providerInstanceName: string, weight: number): Promise<void> {
     const current = await this.call<Record<string, unknown>>('routing.get', {})
     const revision = asNumber(current.settings_revision, this.settingsRevision)
@@ -1192,7 +1242,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
       filtered_capabilities: toFilteredCapabilities(result.filtered_capabilities),
       unmatched_models: Array.isArray(result.unmatched_models) ? result.unmatched_models : [],
       unavailable_presets: Array.isArray(result.unavailable_presets) ? result.unavailable_presets : [],
-      routing_candidates: Object.fromEntries(Object.entries(asRecord(result.routing_candidates)).map(([path, models]) => [path, toStringArray(models)])),
+      usecase_coverage: toUsecaseCoverage(result.usecase_coverage),
       warnings: toStringArray(result.warnings),
       balance_available: asBoolean(result.balance_available, false),
       errors: toStringArray(result.errors),
@@ -1662,6 +1712,7 @@ function toUsageEvents(raw: RawUsageQueryResponse): StoreSnapshot['usageEvents']
       credit: asOptionalString(event.credit),
       credit_status: toCreditStatus(event.credit_status),
       subjects: Array.isArray(event.subjects) ? event.subjects.filter((item): item is string => typeof item === 'string') : undefined,
+      fallback_from: asOptionalString(event.fallback_from),
       status: 'success',
     }
   })
@@ -1749,11 +1800,9 @@ function toRouteTrace(value: unknown, index: number): RouteTrace | null {
     duration_ms: asOptionalNumber(trace.duration_ms),
     ranked_candidates: rankedCandidates,
     filtered_candidates: toFilteredCandidates(trace.filtered_candidates),
-    fallback_applied: asBoolean(trace.fallback_applied, false),
-    fallback_chain: toFallbackChain(trace.fallback_chain),
+    fallback: toRouteFallback(trace.fallback),
     session_sticky_hit: asBoolean(trace.session_sticky_hit, false),
     scheduler_profile: normalizeSchedulerProfile(trace.scheduler_profile) ?? 'balanced',
-    runtime_failover_count: asNumber(trace.runtime_failover_count, 0),
     user_summary: toRouteUserSummary(trace.user_summary),
     warnings: toStringArray(trace.warnings),
   }
@@ -1973,7 +2022,8 @@ function toRoutePreview(path: string, entry: RawRecord): RoutePreview {
       exactModel: asNonEmptyString(candidate.exact_model, ''),
       reasons: toFilterReasons(candidate.reasons),
     })),
-    fallbackChain: toFallbackChain(trace.fallback_chain),
+    fallback: toRouteFallback(trace.fallback),
+    usecaseSource: asOptionalString(asRecord(trace.usecase).usecase_source),
   }
 }
 
@@ -1991,17 +2041,37 @@ function toAiccEvents(value: unknown): AiccEvent[] {
     : []
 }
 
-function toFallbackChain(value: unknown): RouteTrace['fallback_chain'] {
-  return Array.isArray(value)
-    ? value.map((item) => {
-      const fallback = asRecord(item)
-      return {
-        from: asNonEmptyString(fallback.from, ''),
-        to: asNonEmptyString(fallback.to, ''),
-        reason: asNonEmptyString(fallback.reason, 'fallback'),
-      }
-    })
-    : []
+function toRouteFallback(value: unknown): RouteFallback | undefined {
+  const fallback = asRecord(value)
+  const from = asOptionalString(fallback.from)
+  const to = asOptionalString(fallback.to)
+  if (!from || !to || (fallback.kind !== 'coverage' && fallback.kind !== 'unavailable')) return undefined
+  const policy = fallback.policy
+  return {
+    kind: fallback.kind,
+    from,
+    to,
+    policy: policy === 'none' || policy === 'same_model' || policy === 'not_pricier' || policy === 'next_model' ? policy : undefined,
+    reason: asOptionalString(fallback.reason),
+  }
+}
+
+const COVERAGE_STATES = new Set(['covered', 'fallback_llm', 'uncovered'])
+
+function toUsecaseCoverage(value: unknown): UsecaseCoverageChange[] {
+  if (!Array.isArray(value)) return []
+  return value.map(asRecord).flatMap((change) => {
+    const usecase = asOptionalString(change.usecase)
+    if (!usecase) return []
+    const coverage = (raw: unknown) => (typeof raw === 'string' && COVERAGE_STATES.has(raw) ? raw : 'uncovered') as UsecaseCoverageChange['after_coverage']
+    return [{
+      usecase,
+      before: asOptionalString(change.before),
+      before_coverage: coverage(change.before_coverage),
+      after: asOptionalString(change.after),
+      after_coverage: coverage(change.after_coverage),
+    }]
+  })
 }
 
 function toRouteUserSummary(value: unknown): RouteTrace['user_summary'] {
@@ -2089,6 +2159,9 @@ function toRawUsageFilters(filters: UsageEventsQuery['filters'] = {}): Record<st
   if (filters.appQuery?.trim()) {
     result.caller_app_query = filters.appQuery.trim()
   }
+  if (filters.fallbackOnly) {
+    result.fallback_only = true
+  }
   return result
 }
 
@@ -2104,6 +2177,7 @@ function usageEventMatchesQuery(event: StoreSnapshot['usageEvents'][number], par
   const appValue = `${event.app_id ?? 'system'} ${event.agent_id ?? ''}`.trim()
   if (filters.appIds?.length && !filters.appIds.some((id) => id === (event.app_id ?? 'system') || id === event.agent_id)) return false
   if (filters.appQuery?.trim() && !includesFuzzy(appValue, filters.appQuery)) return false
+  if (filters.fallbackOnly && !event.fallback_from) return false
   return true
 }
 
@@ -2119,7 +2193,7 @@ function routeTraceMatchesQuery(trace: RouteTrace, params: RouteTracesQuery): bo
     if (trace.created_at_ms < params.timeRange.startTimeMs) return false
     if (trace.created_at_ms > params.timeRange.endTimeMs) return false
   }
-  if (params.outcome === 'fallback' && !trace.fallback_applied) return false
+  if (params.outcome === 'fallback' && !trace.fallback) return false
   if (params.outcome === 'failed' && trace.selected_exact_model) return false
   if (params.outcome === 'warning' && trace.warnings.length === 0) return false
   if (params.apiTypes?.length && !params.apiTypes.includes(trace.api_type)) return false
@@ -2213,6 +2287,9 @@ function toStoreSnapshot(
     localModels,
     aiStatus: computeAIStatus(cloudProviders, localModels, routingView),
     settingsRevision: asNumber(providerList.settings_revision, 0),
+    usecaseRequirements: Object.fromEntries((directory.logical_definitions ?? [])
+      .filter((definition) => definition.kind === 'task' && typeof definition.path === 'string')
+      .map((definition) => [definition.path as string, toUsecaseRequirement(definition.min_line)])),
   }
 }
 
@@ -2274,6 +2351,7 @@ function toProviderView(raw: RawProviderInstanceView, allModels: RawModelMetadat
     base_url: asNonEmptyString(raw.base_url, ''),
     auto_sync_models: true,
     created_at: new Date(0).toISOString(),
+    marked_faulty: raw.marked_faulty === true,
   }
 
   const status: ProviderStatus = {
@@ -2425,11 +2503,8 @@ function logicalTreeFromDirectory(
       level: 'L3',
       api_type: apiTypeFromLogicalDefinition(definition) ?? inferApiType(path),
       exact_model_weights: {},
-      fallback: toFallback(definition?.fallback) ?? { mode: 'parent' },
       policy: {
         profile: 'balanced',
-        allow_fallback: true,
-        runtime_failover: true,
         ...policy,
       },
       resolved_exact_model: resolveModelForPath(path, modelIndex),
@@ -2467,7 +2542,6 @@ function logicalTreeFromDirectory(
     const definition = definitionsByPath.get(path)
     node.items = toLogicalItems(items)
     node.api_type = apiTypeFromLogicalDefinition(definition) ?? inferApiType(path)
-    node.fallback = toFallback(definition?.fallback) ?? node.fallback
     node.policy = {
       ...node.policy,
       ...toLogicalDefinitionPolicy(definition),
@@ -2739,31 +2813,11 @@ function toRoutePolicy(raw: unknown): RoutePolicy {
   return {
     profile: normalizeSchedulerProfile(profileValue),
     local_only: asOptionalBoolean(lockedValue(value.local_only)),
-    allow_fallback: asOptionalBoolean(lockedValue(value.allow_fallback)),
-    runtime_failover: asOptionalBoolean(lockedValue(value.runtime_failover)),
     required_features: requiredFeatures(required),
     allowed_provider_instances: toStringArray(lockedValue(value.allowed_provider_instances)),
     blocked_provider_instances: toStringArray(lockedValue(value.blocked_provider_instances)),
     max_estimated_cost_usd: asOptionalNumber(lockedValue(value.max_estimated_cost_usd)),
   }
-}
-
-function toFallback(raw: unknown): LogicalNode['fallback'] {
-  const value = asRecord(raw)
-  const mode = asOptionalString(value.mode)
-  if (
-    mode === 'parent' ||
-    mode === 'strict' ||
-    mode === 'disabled' ||
-    mode === 'target_logical' ||
-    mode === 'target_exact'
-  ) {
-    return {
-      mode,
-      target: asOptionalString(value.target),
-    }
-  }
-  return undefined
 }
 
 function requiredFeatures(raw: RawRecord): string[] {
@@ -3044,7 +3098,6 @@ function normalizeTier(value: unknown): ModelMetadata['attributes']['tier'] {
 
 function normalizeSchedulerProfile(value: unknown): SchedulerProfile | undefined {
   if (
-    value === 'cost_first' ||
     value === 'latency_first' ||
     value === 'quality_first' ||
     value === 'balanced' ||

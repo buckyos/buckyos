@@ -265,6 +265,7 @@ const buildFixtures = () => {
       state: state(ui, {
         current_behavior: 'ui_chat',
         reply: { tunnel: 'msg_center', to: 'did:bns:devtest' },
+        route_fallbacks: [{ kind: 'coverage', usecase: 'llm.plan', model: 'qwen3-8b@local', turn: 2, at_ms: ago(4200) }],
         outbox: [
           { key: 'reply:t2', msg: { kind: 'chat', content: 'Done, 3 files moved.' }, turn: 2, status: 'sent', msg_id: 'msg:9f01', deliveries: ['did:bns:devtest'], attempts: 1, updated_at_ms: ago(4000) },
           { key: 'reply:t3', msg: { kind: 'chat', content: 'On it. I started a task…' }, turn: 3, status: 'failed', error: 'msg-center: post_send timeout after 30s', attempts: 3, updated_at_ms: ago(360) },
@@ -1448,8 +1449,15 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
     session: async (sid, worklog = 40) => {
       await delay()
       const e = find(sid)
+      // The group in force: the session's own, else the nearest parent's.
+      let routeGroup: { group_id: string; session_id: string } | null = null
+      for (let at: string | undefined = sid; at && !routeGroup; at = fx.entries.find((x) => x.session_id === at)?.origin?.parent_session) {
+        const own = fx.details[at]?.config?.route_group
+        if (own) routeGroup = { group_id: own, session_id: at }
+      }
       return structuredClone({
         ...fx.details[sid],
+        route_group: routeGroup,
         entry: withRuntimeMark(e),
         worklog: (fx.worklogs[sid] ?? []).slice(-worklog),
         children: fx.entries.filter((c) => c.origin?.parent_session === sid).map((c) => c.session_id),
@@ -1481,6 +1489,24 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
         if (st) Object.assign(st, { open_turn: undefined, wait_children: undefined, stop_requested: true })
       }
       return { index: inputIndex }
+    },
+
+    setRouteGroup: async (sid, routeGroup) => {
+      await delay()
+      find(sid)
+      inputIndex += 1
+      const config = fx.details[sid]?.config
+      log(sid, { t: 'control_applied', input: { src: 'queue', index: inputIndex, kind: 'control' }, command: 'route_group', detail: { route_group: routeGroup, before: config?.route_group ?? null } })
+      if (config) config.route_group = routeGroup
+      return { index: inputIndex }
+    },
+
+    routeGroups: async () => {
+      await delay()
+      return [
+        { group_id: 'rg-fast', name: 'Fast and cheap', version: 2, updated_at_ms: ago(86400), app_ids: [] },
+        { group_id: 'rg-coding', name: 'Coding', version: 1, updated_at_ms: ago(3600), app_ids: ['jarvis'] },
+      ]
     },
 
     resumeSession: async (sid) => {

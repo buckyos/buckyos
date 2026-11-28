@@ -23,14 +23,14 @@ import type { EntityPreferencePatch } from '../EntityList'
 import { HeaderMenu, type HeaderMenuItem } from '../EntityListHeader'
 import { HubAvatar } from '../HubAvatar'
 import { messageObjId, type MessageObject } from '../../../components/conversation/model/msgobj'
-import { hubButtonClass } from '../../../components/conversation/DialogFocus'
+import { hubButtonClass, hubInputClass } from '../../../components/conversation/DialogFocus'
 import { relativeActivity } from '../../../components/conversation/model/activity'
 import { sessionDescription } from '../sessionModel'
 import { useMessageHubClock, useMessageHubStore } from '../store'
 import type { EntityDetail, MessageHubContext, Session } from '../types'
 import { rememberGenerationBreaks } from '../../../components/conversation/history/breaks'
 import { usePanelAction, usePanelResource, type PanelResource } from './hooks'
-import { agentConversationState, formatSize, generationBreaks, generationNumber, type AgentSummary, type Delivery, type UiConversation } from './model'
+import { agentConversationState, formatSize, generationBreaks, generationNumber, type AgentSummary, type Delivery, type RouteFallbackNote, type RouteGroup, type UiConversation } from './model'
 import { getAgentPanelSource } from './source'
 
 const sectionTitleClass = 'text-[13px] font-medium text-[color:var(--cp-muted)]'
@@ -93,6 +93,7 @@ export function AgentSessionPanel({ entity, session, context, answering, timelin
         <hr className="border-[color:var(--cp-border)]" />
         {session ? <>
           <ConversationState session={session} context={context} conversation={conversation} answering={answering} />
+          <ConversationRouting agentDid={agentDid} context={context} conversation={conversation} />
           {agentSessionEntries().map(({ id, Entry }) => <Suspense key={id} fallback={null}><Entry agentDid={agentDid} agentName={entity.name} sessionId={session.id} hintTaskId={turnTaskId} signal={timeline.length} /></Suspense>)}
           <SubSessions agentDid={agentDid} context={context} sessionId={session.id} uiSessionId={current?.session_id ?? null} hintTaskId={current?.open_turn?.task_id ?? turnTaskId} signal={`${timeline.length}:${current?.unfinished_works ?? 0}:${current?.paused ?? ''}`} onOpenWorklog={onOpenWorklog} onChanged={conversation.refresh} />
           <NewConversation agentDid={agentDid} session={session} conversation={conversation} onRotating={onRotating} />
@@ -207,6 +208,51 @@ function ConversationState({ session, context, conversation, answering }: { sess
           {status && state === 'working' ? <p className="truncate text-xs text-[color:var(--cp-muted)]" title={status} data-testid="agent-status-line">{status}</p> : null}
           <p className="text-xs text-[color:var(--cp-muted)]" data-testid="agent-generation">{t('messagehub.agentPanel.generation', undefined, { number: generationNumber(value) })}</p>
         </div>}
+    </section>
+  )
+}
+
+/** What a fallback note says, in the viewer's language. */
+function routeFallbackText(t: ReturnType<typeof useI18n>['t'], note: RouteFallbackNote): string {
+  return note.kind === 'coverage'
+    ? t('messagehub.agentPanel.routeFallbackCoverage', undefined, { usecase: note.usecase, model: note.model })
+    : t('messagehub.agentPanel.routeFallbackUnavailable', undefined, { usecase: note.usecase, model: note.model, replaced: note.replaced ?? '' })
+}
+
+/**
+ * Which of the viewer's AI routing groups this conversation uses (the work it
+ * starts follows it), and the answers that came from a fallback model.
+ */
+function ConversationRouting({ agentDid, context, conversation }: { agentDid: string; context: MessageHubContext; conversation: PanelResource<UiConversation> }) {
+  const { t } = useI18n()
+  const source = getAgentPanelSource()
+  const current = conversation.value?.current ?? null
+  const groups = usePanelResource<RouteGroup[]>(current ? `route-groups:${context.viewerDid}` : null, () => source.routeGroups(), { live: () => false })
+  const action = usePanelAction()
+  // The Agent applies the choice at its next step: shown until the conversation reads back a change.
+  const [chosen, setChosen] = useState<{ sid: string; before: string; value: string } | null>(null)
+  const own = current?.route_group ?? ''
+  if (!current) return null
+  const value = chosen && chosen.sid === current.session_id && chosen.before === own ? chosen.value : own
+  const known = groups.value ?? []
+  const options = value && !known.some(group => group.group_id === value) ? [...known, { group_id: value, name: value }] : known
+  const choose = (next: string) => action.run('route-group', async () => {
+    await source.setRouteGroup(agentDid, current.session_id, next || null)
+    setChosen({ sid: current.session_id, before: own, value: next })
+    setTimeout(() => conversation.refresh(), 1_000)
+  })
+  const fallbacks = current.route_fallbacks ?? []
+  return (
+    <section className="space-y-2" data-testid="agent-route-group">
+      <label className="block text-[13px]"><span className={sectionTitleClass}>{t('messagehub.agentPanel.routeGroup')}</span>
+        <select className={hubInputClass} value={value} disabled={context.mode === 'observe' || !!action.pending || groups.status === 'loading'} onChange={event => void choose(event.target.value)} data-testid="agent-route-group-select">
+          <option value="">{t('messagehub.agentPanel.routeGroupNone')}</option>
+          {options.map(group => <option key={group.group_id} value={group.group_id}>{group.name}</option>)}
+        </select>
+      </label>
+      <p className="text-xs text-[color:var(--cp-muted)]" data-testid="agent-route-group-note">{t(groups.status === 'unavailable' ? 'messagehub.agentPanel.routeGroupsUnavailable' : 'messagehub.agentPanel.routeGroupHint')}</p>
+      {fallbacks.map(note => <p key={`${note.usecase}:${note.model}`} role="note" className="rounded-lg bg-[color:color-mix(in_srgb,var(--cp-warning)_12%,transparent)] px-2 py-1.5 text-xs text-[color:var(--cp-warning)]" data-testid="agent-route-fallback">{routeFallbackText(t, note)}</p>)}
+      {action.error ? <p role="alert" className="break-words text-xs text-[color:var(--cp-danger)]">{t('messagehub.agentPanel.routeGroupFailed')}</p> : null}
     </section>
   )
 }

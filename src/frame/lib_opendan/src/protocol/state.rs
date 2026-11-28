@@ -279,12 +279,43 @@ pub enum OutboxPurpose {
     Placeholder,
     /// The reply of a Turn as an edit of its placeholder.
     FinalEdit,
+    /// Told to the other side once, outside any reply (a fallback model
+    /// answered, `state.route_fallbacks`).
+    Notice,
 }
 
 impl OutboxPurpose {
     fn is_reply(&self) -> bool {
         *self == OutboxPurpose::Reply
     }
+}
+
+/// Why an answer did not come from the usecase's own model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteFallbackKind {
+    /// No model is set up for the usecase: the fallback LLM answered.
+    Coverage,
+    /// The usecase's model was unavailable: its "when unavailable" policy
+    /// chose another one.
+    Unavailable,
+}
+
+/// One kind of fallback a session ran into (`state.route_fallbacks`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RouteFallbackNote {
+    pub kind: RouteFallbackKind,
+    /// The usecase the session asked for (`llm.plan`).
+    pub usecase: String,
+    /// The exact model that answered.
+    pub model: String,
+    /// `unavailable`: the exact model that failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced: Option<String>,
+    /// The Turn it was first seen in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u64>,
+    pub at_ms: u64,
 }
 
 /// One outbound message of a session.
@@ -758,6 +789,10 @@ pub struct SessionState {
     /// ledger, see `agent_tool::hints`).
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub hints_once: BTreeSet<String>,
+    /// Answers that did not come from the usecase's own model (AICC
+    /// `route_trace.fallback`), one per usecase and model, first seen.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub route_fallbacks: Vec<RouteFallbackNote>,
     /// When the commit that finished the session was made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at_ms: Option<u64>,
@@ -945,6 +980,7 @@ impl SessionState {
             nudge: Nudge::default(),
             retry: None,
             hints_once: BTreeSet::new(),
+            route_fallbacks: Vec::new(),
             finished_at_ms: None,
             updated_at_ms: now_ms,
         }

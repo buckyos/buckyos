@@ -651,6 +651,8 @@ function agentWorkSeeds(sessionId: string): MessageObject[] {
     agent('msg-cw-2', 'I planned the audit as one Todo per section.', 70, MOCK_AGENT_TASKS.workDone),
     you('msg-cw-3', 'Rewrite the llm_context design doc against the current source.', 7),
     agent('msg-cw-4', 'I made a plan for the rewrite; the Todos run one after another.', 6.4, MOCK_AGENT_TASKS.workPlan),
+    // The plan was answered by the fallback LLM: the Agent says so once (OpenDAN `opendan.route_fallback`).
+    createChatMessage({ id: 'msg-cw-4n', from: participantDids.codeAssistant, to: [participantDids.you], senderName: 'CodeAssistant', content: '', createdAtMs: Date.now() - 6.3 * 60_000, sessionId, contentOverride: { format: 'text/plain', content: 'No model is set up for Planning, so the fallback model qwen3-8b@local is answering. Choose a model for it in AI Center › Usecases.', machine: { intent: 'opendan.route_fallback', data: { kind: 'coverage', usecase: 'llm.plan', model: 'qwen3-8b@local', turn: 2, at_ms: 0 } } } }),
     you('msg-cw-5', 'Run both slow builds in parallel and tell me when they finish.', 4.5),
     agent('msg-cw-6', 'I started a work session for the two builds.', 4.3, MOCK_AGENT_TASKS.workSimple),
     you('msg-cw-7', 'Clean up the deploy scripts.', 1),

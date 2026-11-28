@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { useI18n } from '../../../../i18n/provider'
 
 interface ConfirmDialogProps {
@@ -10,6 +11,8 @@ interface ConfirmDialogProps {
   error?: string | null
   onConfirm: () => void
   onCancel: () => void
+  /** Extra content below the message, such as what the action affects. */
+  children?: ReactNode
 }
 
 export function ConfirmDialog({
@@ -22,6 +25,7 @@ export function ConfirmDialog({
   error,
   onConfirm,
   onCancel,
+  children,
 }: ConfirmDialogProps) {
   const { t } = useI18n()
 
@@ -44,9 +48,10 @@ export function ConfirmDialog({
         >
           {title}
         </h3>
-        <p className="text-sm mb-6" style={{ color: 'var(--cp-muted)' }}>
+        <p className={`text-sm ${children ? 'mb-3' : 'mb-6'}`} style={{ color: 'var(--cp-muted)' }}>
           {message}
         </p>
+        {children && <div className="mb-6">{children}</div>}
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:gap-3">
           <button
             type="button"

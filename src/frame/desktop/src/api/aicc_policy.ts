@@ -34,6 +34,18 @@ export class PolicyApiError extends Error {
   }
 }
 
+/** An AICC kRPC failure with its wire code: AICC errors carry their structured JSON body (`AiccError`) after
+ * the kRPC prefix. */
+export function toPolicyApiError(error: unknown): PolicyApiError {
+  const e = error as { message?: string; code?: unknown; data?: unknown }
+  const message = typeof e.message === 'string' ? e.message : ''
+  const start = message.indexOf('{')
+  const end = message.lastIndexOf('}')
+  let parsed: { code?: string; message?: string } | undefined
+  try { parsed = start >= 0 && end > start ? JSON.parse(message.slice(start, end + 1)) : undefined } catch { parsed = undefined }
+  return new PolicyApiError(parsed?.message ?? e.message ?? String(error), typeof e.code === 'string' ? e.code : parsed?.code, e.data ?? parsed)
+}
+
 export interface EffectiveQuery { userId?: string; appId?: string; draft?: PolicyDraft }
 
 export interface PolicyApi {
@@ -64,14 +76,7 @@ class RpcPolicyApi implements PolicyApi {
     try {
       return await this.client.call(method, params, toAiccRpcCallOptions(sessionToken)) as T
     } catch (error) {
-      const e = error as { message?: string; code?: unknown; data?: unknown }
-      // AICC errors carry their structured JSON body (`AiccError`) after the kRPC prefix.
-      const message = typeof e.message === 'string' ? e.message : ''
-      const start = message.indexOf('{')
-      const end = message.lastIndexOf('}')
-      let parsed: { code?: string; message?: string } | undefined
-      try { parsed = start >= 0 && end > start ? JSON.parse(message.slice(start, end + 1)) : undefined } catch { parsed = undefined }
-      throw new PolicyApiError(parsed?.message ?? e.message ?? String(error), typeof e.code === 'string' ? e.code : parsed?.code, e.data ?? parsed)
+      throw toPolicyApiError(error)
     }
   }
 

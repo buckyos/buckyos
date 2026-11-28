@@ -74,7 +74,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| `cases/cases_l1_routing_scheduler.md` | L1 路由、fallback、调度、overlay、硬过滤、trace |
+| `cases/cases_l1_routing_scheduler.md` | L1 路由、用途表、不可用时策略与兜底、调度、硬过滤、trace |
 | `cases/cases_l1_provider_protocol_openai.md` | L1 Provider adapter 协议转换 |
 | `cases/cases_l1_resources_tasks_usage_security.md` | L1 ResourceRef、artifact、task、usage、安全 |
 | `cases/cases_l2_aicc_client.md` | L2 AiccClient 黑盒测试 |

@@ -19,7 +19,7 @@ test('routing observation, manual and simple adjustments, events', async ({ page
   page.on('pageerror', (error) => errors.push(error.message))
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
   await openAiCenter(page)
-  await openPage(page, 'Routing')
+  await openPage(page, 'Routing details')
 
   const rows = page.getByTestId('routing-directory')
   await expect(rows.first()).toBeVisible()
@@ -62,7 +62,7 @@ test('routing observation, manual and simple adjustments, events', async ({ page
   await vendorFactor.getByRole('button', { name: 'Apply' }).click()
   await expect(vendorFactor.getByTestId('weight-factor-value')).toHaveText('× 2.0')
 
-  await openPage(page, 'Routing')
+  await openPage(page, 'Routing details')
   await page.getByRole('radio', { name: 'Use cases', exact: true }).click()
   await directory(page, 'llm.chat').click()
   await expect(winner).toHaveText('claude-sonnet-4.5')
@@ -78,8 +78,8 @@ test('routing observation, manual and simple adjustments, events', async ({ page
 
 test('routing page is localized', async ({ page }) => {
   await openAiCenter(page, true)
-  await openPage(page, '路由')
-  await expect(page.getByRole('heading', { name: '路由', exact: true })).toBeVisible()
+  await openPage(page, '路由细节')
+  await expect(page.getByRole('heading', { name: '路由细节', exact: true })).toBeVisible()
   await expect(page.getByRole('radio', { name: '用途', exact: true })).toHaveAttribute('aria-checked', 'true')
   await page.locator('[data-testid="routing-directory"][data-path="llm.chat"]').click()
   await expect(page.getByText('当前胜出模型')).toBeVisible()

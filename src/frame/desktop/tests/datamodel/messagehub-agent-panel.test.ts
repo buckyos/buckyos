@@ -1,7 +1,7 @@
 import { foregroundState, latestTurnAnchor, turnInputMessage, turnMode } from '../../src/components/conversation/input/foregroundState.ts'
 import { flattenWork, interruptedRoots, localizeLine, parseWorkCards, parseWorkTree, workControls, type WorkCard } from '../../src/components/conversation/worksessions/model.ts'
 import { taskAreaView, taskNodeState } from '../../src/components/conversation/tasks/taskView.ts'
-import { agentConversationState, formatSize, generationBreaks, generationNumber, parseAgentSummary, parseDeliveries, parseUiConversation, type UiSessionView } from '../../src/app/messagehub/agentpanel/model.ts'
+import { agentConversationState, formatSize, generationBreaks, generationNumber, parseAgentSummary, parseDeliveries, parseRouteGroups, parseUiConversation, type UiSessionView } from '../../src/app/messagehub/agentpanel/model.ts'
 import { rowsWithBreaks } from '../../src/components/conversation/history/breaks.ts'
 import type { MessageObject } from '../../src/components/conversation/model/msgobj.ts'
 
@@ -135,6 +135,22 @@ Deno.test('ui.conversation: state in the panel\'s words, the generation number a
   equal(parseUiConversation({ current: { paused: true } , generations: [] })?.current, null)
   equal(parseUiConversation({ current: { session_id: 'ui-3', open_turn: { turn: 2, task_id: null } }, generations: [] })?.current?.open_turn, { turn: 2, task_id: null })
   equal(parseUiConversation({ current: null }), null)
+})
+
+Deno.test('the routing group and the fallback notes of a conversation parse defensively', () => {
+  const current = parseUiConversation({ current: { session_id: 'ui-4', route_group: 'rg-1', route_fallbacks: [
+    { kind: 'coverage', usecase: 'llm.plan', model: 'small@local', turn: 2, at_ms: 5 },
+    { kind: 'unavailable', usecase: 'llm.code', model: 'b@two', replaced: 'a@one', at_ms: 6 },
+    { kind: 'other', usecase: 'x', model: 'y' },
+  ] }, generations: [] })!.current!
+  equal([current.route_group, current.route_fallbacks], ['rg-1', [
+    { kind: 'coverage', usecase: 'llm.plan', model: 'small@local' },
+    { kind: 'unavailable', usecase: 'llm.code', model: 'b@two', replaced: 'a@one' },
+  ]])
+  const plain = parseUiConversation({ current: { session_id: 'ui-5', route_group: '', route_fallbacks: [] }, generations: [] })!.current!
+  equal(['route_group' in plain, 'route_fallbacks' in plain], [false, false])
+  equal(parseRouteGroups({ groups: [{ group_id: 'rg-1', name: 'Fast' }, { group_id: 'rg-2' }, { name: 'no id' }] }), [{ group_id: 'rg-1', name: 'Fast' }, { group_id: 'rg-2', name: 'rg-2' }])
+  equal(parseRouteGroups({}), null)
 })
 
 Deno.test('summary, deliveries and sizes parse defensively', () => {

@@ -1,6 +1,6 @@
 use crate::{
     validate_exact_model_name, validate_logical_model_name, AiTaskOptions, AiccError,
-    AiccErrorCode, AiccExecutionMode, AiccRouteOverlay, HelperModelRequirement, ModelDisable,
+    AiccErrorCode, AiccExecutionMode, HelperModelRequirement, ModelDisable,
     ResourceRef, RoutePolicy, TimeRange,
 };
 use ::kRPC::RPCErrors;
@@ -676,8 +676,6 @@ pub struct VideoGenerateRequest {
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_options: Option<AiTaskOptions>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
 }
 
 impl VideoGenerateRequest {
@@ -693,7 +691,6 @@ impl VideoGenerateRequest {
             seed: None,
             idempotency_key: None,
             task_options: None,
-            session_id: None,
         }
     }
 
@@ -761,9 +758,7 @@ pub struct VideoGenerateHelperRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_options: Option<AiTaskOptions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_overlay: Option<AiccRouteOverlay>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
+    pub route_group: Option<String>,
 }
 
 impl VideoGenerateHelperRequest {
@@ -782,8 +777,7 @@ impl VideoGenerateHelperRequest {
             seed: None,
             idempotency_key: None,
             task_options: None,
-            session_overlay: None,
-            session_id: None,
+            route_group: None,
         }
     }
 
@@ -836,7 +830,6 @@ impl VideoGenerateHelperRequest {
             seed: self.seed,
             idempotency_key: self.idempotency_key.clone(),
             task_options: self.task_options.clone(),
-            session_id: self.session_id.clone(),
         }
     }
 }

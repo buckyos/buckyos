@@ -687,6 +687,7 @@ export type ConversationStatusType =
 | `renderTextMessage` | `content.format` ∈ `text/plain` / `text/markdown` / `text/html` | `content.content` |
 | `renderFallbackMessage` | 其余 | `content.format`、`content.content` |
 | 通知卡片 `NotifyCard` | `kind === 'notify'` 且 `content.machine.intent === 'buckyos.notify'`（`messageNotify()` 能读出数据） | `machine.data`（`NotifyMessageData`）+ `notify.get` 的状态，见 §3.5.6 |
+| 兜底提示 `RouteFallbackMessage` | Agent 发来的消息，`content.machine.intent === 'opendan.route_fallback'`（OpenDAN 在会话里第一次遇到某用途由兜底 / 备选模型回答时发一次） | `content.content`（Agent 语言的提示文案，警告色）；`machine.data` 是 `{kind, usecase, model, replaced?, turn?, at_ms}` |
 | 状态 pill | 其余 `kind === 'notify'`，或 `ui_item_kind === 'status'` | 仅保留 status/content |
 
 `text/markdown` 由 `MessageMarkdown.tsx` 渲染（段落与单换行、标题、列表、引用、代码块、表格、强调、链接；链接仅允许 http(s) / mailto）。
@@ -980,7 +981,8 @@ UI Turn 建出 work session 后，气泡附属 UI 以 work session 为主：`ren
 | 读取 | 方法 | UI 类型 |
 |---|---|---|
 | Agent 全局摘要 | `home.summary {}` | `AgentSummary`：`sessions {working, waiting, failed, interrupted, total}`、`memory {perceptions, pending, cognitions, last_consolidation_at_ms}`、`goals`、`skills`、`runtimes` |
-| 本会话的 Agent 侧状态 | `ui.conversation {peer_did, session_id}`（`peer_did` 是 owner 的 DID，`session_id` 是 MessageHub 会话 id） | `UiConversation {current: UiSessionView \| null, generations[], route_key}`（`route_key` 取自 `current.route_key`，没有当前一代时为空，「当前会话」页签不可用）；`UiSessionView {session_id, run_state, paused: PauseSource \| null, needs_input, one_line_status, open_turn?, unfinished_works, prompt {frozen_at_ms, current, changed[]}}` |
+| 本会话的 Agent 侧状态 | `ui.conversation {peer_did, session_id}`（`peer_did` 是 owner 的 DID，`session_id` 是 MessageHub 会话 id） | `UiConversation {current: UiSessionView \| null, generations[], route_key}`（`route_key` 取自 `current.route_key`，没有当前一代时为空，「当前会话」页签不可用）；`UiSessionView {session_id, run_state, paused: PauseSource \| null, needs_input, one_line_status, open_turn?, unfinished_works, prompt {frozen_at_ms, current, changed[]}, route_group?, route_fallbacks?: RouteFallbackNote[]}`（`route_group` 是这一代自己的 AICC 路由策略组，`route_fallbacks` 是 `{kind: coverage \| unavailable, usecase, model, replaced?}`，每个用途和模型一条） |
+| 路由策略组 | AICC `routing.groups.list {}`（不经 Agent，viewer 自己的组） | `RouteGroup {group_id, name}`；面板「AI 路由策略组」用 `session.route_group {sid, route_group \| null}` 设到当前这一代 UI Session，它发起的工作沿父链沿用 |
 | 未结束的后台工作 | `session.work_tree {sid, unfinished_only: true}`（`sid` 是当前这一代 UI Session） | `WorkTree {agent_did, session_id, complete, sessions: WorkNode[]}`；`WorkNode` 是 `WorkCard` 加 `children`，Todo 绑定的卡片同样带 `todos` / `children`；超过 4 层（`WORK_TREE_DEPTH`）的丢弃 |
 | 近期产物 | `deliveries.recent {limit, before?, route_key?}` | `DeliveryPage {entries: Delivery[], next_before?}`；`before` / `next_before` 是索引里的行位置；`url` / `mime` / `size` 可能缺省，没有 `url` 的条目不能预览和下载 |
 

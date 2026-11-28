@@ -318,7 +318,7 @@ interface RawArticle {
 ### 5.2 翻译与归类
 
 - 一篇一次请求：标题、摘要、各块、评论、链接文字的原文数组进去，等长的译文数组出来，用 `json_schema` 约束；同一次请求给出至多 3 个 `topics` 里的标签，原文没有摘要时补一条。数组长度对不上重试一次，再不行这一篇留到下次。不在 `topics` 里的标签丢掉。
-- AICC `helper.llm_chat`，模型 `llm.translate`，`policy: { allow_fallback: false, runtime_failover: false }`。没有可用模型、额度、权限的拒绝是配置问题（`pending.reason = translate_config`），不重试，等下一次同步。
+- AICC `helper.llm_chat`，模型 `llm.translate`，`policy: { no_fallback: true }`。没有可用模型、额度、权限的拒绝是配置问题（`pending.reason = translate_config`），不重试，等下一次同步。
 - 原文语言和站点语言相同时不译，只归类和补摘要。
 - 按原文块的 SHA-256 缓存在作业的 `data/tr/`，更正文章时只译变了的块。
 - 用量：每次调用往 `OPENDAN_USAGE_LOG` 追加一行 `{ at_ms, model, run_id, input_tokens, output_tokens, total_tokens }`（和 `xllm` 同一格式，`run_id` 是 `OPENDAN_JOB_RUN_ID`）。没有这个变量时（Work 里试跑）不记。

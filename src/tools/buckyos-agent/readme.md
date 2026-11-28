@@ -115,7 +115,7 @@ site reading [--compact] | visits [--days 7]
   站里收的图片（SVG 图标、ICO、回 200 的错误页……）当场去掉这一块，不重试、不留占位，文章在这一次同步里照常发布；地址以 `.svg` 结尾的
   根本不去取（`ctx.blocks` 也不把它们和 `data:` 图片变成块）；取到了、是图片但存不下的（太大、转换失败）当场按 `missing` 发布。每去掉一张，
   日志里有一行。
-- **翻译**：一篇一次 `helper.llm_chat`，模型 `llm.translate`，`json_schema`，`policy: { allow_fallback: false, runtime_failover: false }`。
+- **翻译**：一篇一次 `helper.llm_chat`，模型 `llm.translate`，`json_schema`，`policy: { no_fallback: true }`。
   译文按原文块的 SHA-256 缓存在 `data/tr/<article>.json`。用量按 `xllm` 的格式追加到 `$OPENDAN_USAGE_LOG`，受 `$OPENDAN_MODEL_BUDGET` 和
   `site.json` 的 `limits.translate_tokens_per_day` 约束；被拒绝时不发布未翻译的文章，`feed` 的 `status.pending` 说明原因
   （`translate_budget` / `translate_config`；译文长度对不上、模型临时出错是 `translate_failed`，连续三次同步都失败就放弃这一篇），退出码仍是 0。
@@ -273,5 +273,5 @@ CLI 始终将 `AgentToolResult` JSON 写到 stdout（与 `src/frame/agent_tool` 
 - `BUCKYOS_OWNER_USER_ID`：当前 Zone owner 用户 ID（默认 `devtest`）
 - `BUCKYOS_ZONE_HOST`（默认 `test.buckyos.io`，兼容 `BUCKYOS_TEST_ZONE_HOST`）
 - `BUCKYOS_APP_CLIENT_DIR` / `BUCKYOS_TEST_APP_CLIENT_DIR`：额外私钥搜索目录
-- `AICC_DEFAULT_PROFILE`：`balanced|cheap|fast|quality`（默认 `balanced`）
+- `AICC_DEFAULT_PROFILE`：`balanced|fast|quality`（默认 `balanced`）
 - `AICC_DEFAULT_TIMEOUT`：等待 task 完成的毫秒上限（默认 `900000`）

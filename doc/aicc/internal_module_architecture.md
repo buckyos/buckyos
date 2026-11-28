@@ -129,11 +129,11 @@ aicc
 ├── model            ModelUID、能力、variant、ModelRegistry
 ├── provider         Profile、Rules、内置装配、discovery、inventory、生命周期
 ├── protocol         transport、canonical IR、基础 codec、dialect、原生协议
-├── routing          候选、过滤、调度、fallback、trace
+├── routing          候选、过滤、调度、用途表（usecase.rs）与“不可用时”备选、trace
 ├── call             RouteDecision 到 ResolvedProviderCall 的唯一 lowering
-├── execution        immediate/stream/task、取消、幂等、TaskMgr bridge
+├── execution        immediate/stream/task、取消、幂等、失败分类与一次切换、TaskMgr bridge
 ├── resource         ResourceRef 鉴权、限制和最后一跳物化
-├── storage          inventory LKGS、usage/audit/task、session exact-model 历史与 AICC artifact 租户归属
+├── storage          inventory LKGS、usage/audit/task、session exact-model 历史、用途表用户层/策略组/App 绑定与 AICC artifact 租户归属
 └── observability    metrics、trace、审计、诊断和脱敏
 ```
 
@@ -365,7 +365,7 @@ tests/
 ├── dialect_contract       基础合同复用 + 仅厂商差异断言
 ├── provider_builtin       11 家装配、credential、base_url、discovery fixture
 ├── provider_inventory     LKGS、seq、refresh、Stop、迟到写
-├── routing                exact/logical、能力过滤、fallback、trace
+├── routing                exact/logical、能力过滤、用途表、“不可用时”策略、trace
 ├── runtime_snapshot       add/reload/refresh 与并发请求
 ├── execution              immediate/stream/task/cancel/idempotency
 └── resource_security      鉴权、限制、上传和脱敏

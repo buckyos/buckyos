@@ -16,6 +16,7 @@ import {
   Trophy,
 } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
+import { useViewerIsAdmin } from '../settings/hooks/use-viewer-is-admin'
 import { useAICCStore } from './hooks/use-aicc-store'
 import { LongField } from './components/shared/LongField'
 import { CommandLabel, KindIcon } from './components/routing/RoutingKind'
@@ -64,6 +65,7 @@ export function RoutingPage() {
   const store = useAICCStore()
   const version = useSyncExternalStore(store.subscribe, store.getSnapshotVersion)
   const isMobile = useMediaQuery('(max-width: 767px)')
+  const isAdmin = useViewerIsAdmin() === true
   const { data, error, isLoading, isValidating, mutate } = useSWR(
     ['aicc-routing-workspace', store, version],
     () => store.fetchRoutingWorkspace(),
@@ -110,9 +112,9 @@ export function RoutingPage() {
   const header = (
     <header className="flex items-start justify-between gap-3">
       <div className="min-w-0">
-        <h2 className="text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.routing.title', 'Routing')}</h2>
+        <h2 className="text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.routing.title', 'Routing details')}</h2>
         <p className="mt-1 max-w-3xl text-sm leading-6" style={muted}>
-          {t('aiCenter.routing.subtitle', 'See which model each directory routes to right now and why. Adjustments are saved as commands that are re-applied whenever the logical tree is rebuilt.')}
+          {t('aiCenter.routing.subtitle', 'The candidate tree, weights and traces behind the default route of each directory. Choose a usecase’s model on the Usecases page; weight adjustments here are for administrators and are re-applied whenever the tree is rebuilt.')}
         </p>
       </div>
       <button
@@ -158,6 +160,7 @@ export function RoutingPage() {
       workspace={data}
       directories={directories}
       saving={saving}
+      canEdit={isAdmin}
       onSave={saveCommands}
       onOpen={(path) => setSelectedPath(path)}
     />
@@ -172,7 +175,7 @@ export function RoutingPage() {
           <span className="min-w-0 break-words">{t('aiCenter.routing.saveFailed', 'Saving the adjustment failed: {{error}}', { error: saveError })}</span>
         </div>
       )}
-      {data && <AdjustmentsPanel workspace={data} saving={saving} onSave={saveCommands} onOpen={setSelectedPath} />}
+      {data && <AdjustmentsPanel workspace={data} saving={saving} canEdit={isAdmin} onSave={saveCommands} onOpen={setSelectedPath} />}
       {isMobile && selected ? (
         <div className="flex flex-col gap-3">
           <button type="button" onClick={() => setSelectedPath(null)} className="inline-flex min-h-11 items-center gap-1 self-start text-sm" style={{ color: 'var(--cp-accent)' }}>
@@ -354,6 +357,7 @@ function DirectoryDetail({
   workspace,
   directories,
   saving,
+  canEdit,
   onSave,
   onOpen,
 }: {
@@ -361,6 +365,7 @@ function DirectoryDetail({
   workspace: RoutingWorkspace
   directories: RoutingDirectory[]
   saving: boolean
+  canEdit: boolean
   onSave: (commands: RoutingCommand[]) => Promise<void>
   onOpen: (path: string) => void
 }) {
@@ -437,7 +442,7 @@ function DirectoryDetail({
             </div>
           </div>
           {mode === 'advanced' ? (
-            <ItemsEditor directory={directory} workspace={workspace} preview={preview} kinds={kinds} saving={saving} onSave={onSave} onOpen={onOpen} />
+            <ItemsEditor directory={directory} workspace={workspace} preview={preview} kinds={kinds} saving={saving} canEdit={canEdit} onSave={onSave} onOpen={onOpen} />
           ) : preview ? (
             <CandidateTreeView preview={preview} kinds={kinds} showSkipped={showSkipped} onOpen={onOpen} />
           ) : (
@@ -524,9 +529,11 @@ function winReasonText(preview: RoutePreview, t: Translate): string {
   const reason = winReason(preview)
   const count = preview.ranked.length
   const profile = t(`aiCenter.routing.profile.${preview.schedulerProfile ?? 'balanced'}`, preview.schedulerProfile ?? 'balanced')
-  const fallback = preview.fallbackChain.length
-    ? `${t('aiCenter.routing.reason.fallback', 'Reached through fallback {{chain}}.', { chain: preview.fallbackChain.map((step) => `${step.from} → ${step.to}`).join(', ') })} `
-    : ''
+  const fallback = preview.fallback?.kind === 'coverage'
+    ? `${t('aiCenter.routing.reason.coverage', '{{usecase}} has no model of its own, so the fallback LLM ({{target}}) was routed instead.', { usecase: preview.fallback.from, target: preview.fallback.to })} `
+    : preview.usecaseSource && preview.usecaseSource !== 'default'
+      ? `${t('aiCenter.routing.reason.usecaseTable', 'The usecase table chose this model ({{source}}).', { source: usecaseSourceText(preview.usecaseSource, t) })} `
+      : ''
   switch (reason.code) {
     case 'only_candidate':
       return fallback + t('aiCenter.routing.reason.only', 'It is the only available candidate left after each level expanded its highest-weight items.')
@@ -545,6 +552,13 @@ function winReasonText(preview: RoutePreview, t: Translate): string {
     default:
       return fallback
   }
+}
+
+function usecaseSourceText(source: string, t: Translate): string {
+  if (source === 'zone') return t('aiCenter.usecases.source.zone', 'Zone default')
+  if (source === 'user') return t('aiCenter.usecases.source.user', 'Me')
+  if (source.startsWith('group:')) return t('aiCenter.usecases.source.group', 'Group {{name}}', { name: source.slice('group:'.length) })
+  return source
 }
 
 function CandidateTreeView({
@@ -665,6 +679,7 @@ function ItemsEditor({
   preview,
   kinds,
   saving,
+  canEdit,
   onSave,
   onOpen,
 }: {
@@ -673,6 +688,7 @@ function ItemsEditor({
   preview?: RoutePreview
   kinds: Map<string, DirectoryKind>
   saving: boolean
+  canEdit: boolean
   onSave: (commands: RoutingCommand[]) => Promise<void>
   onOpen: (path: string) => void
 }) {
@@ -697,6 +713,7 @@ function ItemsEditor({
       <p className="text-xs leading-5" style={muted}>
         {t('aiCenter.routing.manualHint', 'Each level only expands its highest-weight available items. Set a child weight here to change which one wins at this level; the value is saved as a command and re-applied after every tree update.')}
       </p>
+      {!canEdit && <p className="text-xs leading-5" data-testid="routing-readonly" style={muted}>{t('aiCenter.routing.adminOnly', 'Only administrators change weights. To use another model yourself, change it on the Usecases page.')}</p>}
       {stale.map((status) => (
         <p key={commandSubject(status.command)} className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--cp-warning)' }}>
           <AlertTriangle size={13} className="mt-0.5 shrink-0" />{status.staleReason}
@@ -730,7 +747,7 @@ function ItemsEditor({
               <span className="w-14 text-right font-mono text-sm tabular-nums" style={{ color: item.weight === maxWeight && item.weight > 0 ? 'var(--cp-success)' : 'var(--cp-text)' }}>
                 {formatWeight(item.weight)}
               </span>
-              <form
+              {canEdit && <form
                 className="flex items-center gap-1"
                 onSubmit={(event) => {
                   event.preventDefault()
@@ -774,7 +791,7 @@ function ItemsEditor({
                     <RotateCcw size={13} />
                   </button>
                 )}
-              </form>
+              </form>}
             </div>
           )
         })}
@@ -786,11 +803,13 @@ function ItemsEditor({
 function AdjustmentsPanel({
   workspace,
   saving,
+  canEdit,
   onSave,
   onOpen,
 }: {
   workspace: RoutingWorkspace
   saving: boolean
+  canEdit: boolean
   onSave: (commands: RoutingCommand[]) => Promise<void>
   onOpen: (path: string) => void
 }) {
@@ -826,7 +845,7 @@ function AdjustmentsPanel({
                   ) : null}
                 </span>
                 <span className="font-mono tabular-nums">{command.kind === 'item_weight' ? `= ${formatWeight(command.weight)}` : `× ${formatWeight(command.factor)}`}</span>
-                <button
+                {canEdit && <button
                   type="button"
                   disabled={saving}
                   onClick={() => void onSave(upsertCommand(workspace.commands, command, true))}
@@ -836,7 +855,7 @@ function AdjustmentsPanel({
                   style={{ color: 'var(--cp-danger)' }}
                 >
                   <Trash2 size={13} />
-                </button>
+                </button>}
               </div>
             )
           })}

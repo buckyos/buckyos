@@ -155,8 +155,6 @@ export async function callChatCompletions(
     temperature: input?.temperature ?? options?.temperature,
     max_output_tokens: input?.max_output_tokens ?? options?.max_output_tokens,
     idempotency_key: request.idempotency_key,
-    session_overlay: request.session_overlay,
-    session_id: options?.session_id,
   }) as Record<string, unknown>;
   return normalizeChatResponse(raw);
 }
@@ -180,8 +178,7 @@ export async function callLlmChatHelper(
     temperature: input?.temperature ?? options?.temperature,
     max_output_tokens: input?.max_output_tokens ?? options?.max_output_tokens,
     idempotency_key: request.idempotency_key,
-    session_overlay: request.session_overlay,
-    session_id: options?.session_id,
+    route_group: request.route_group,
   }) as Record<string, unknown>;
   return normalizeChatResponse(raw);
 }
@@ -205,7 +202,6 @@ export async function callImagesGenerate(
     seed: input?.seed,
     output: input?.output,
     idempotency_key: request.idempotency_key,
-    session_id: (payload?.options as Record<string, unknown> | undefined)?.session_id,
   }) as Record<string, unknown>;
   if (raw.status !== "succeeded") return raw;
   const artifacts = Array.isArray(raw.artifacts) ? raw.artifacts : [];
@@ -248,7 +244,6 @@ export function callInference(
     exact_model: model?.alias,
     execution_mode: input.execution_mode ?? "immediate",
     idempotency_key: request.idempotency_key,
-    session_id: (payload?.options as Record<string, unknown> | undefined)?.session_id,
   };
   let params: Record<string, unknown>;
   switch (method) {

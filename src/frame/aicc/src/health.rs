@@ -37,14 +37,39 @@ struct HealthEntry {
     consecutive_failures: u32,
     circuit_open_until_ms: Option<u64>,
     model_unavailable_until_ms: Option<u64>,
+    /// A failing state was reported and has not recovered yet.
+    reported: bool,
 }
 
+/// A model started failing (`reason`) or succeeded again after that.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HealthTransition {
+    Failing {
+        exact_model: String,
+        reason: &'static str,
+    },
+    Recovered {
+        exact_model: String,
+    },
+}
+
+pub(crate) type HealthObserver = Arc<dyn Fn(HealthTransition) + Send + Sync>;
+
+/// Observed failures and latency of each exact model. Only for display,
+/// alerts and a request's `max_latency_ms`: it never changes the route.
 #[derive(Clone, Default)]
 pub(crate) struct ModelHealthRegistry {
     entries: Arc<Mutex<BTreeMap<String, HealthEntry>>>,
+    observer: Option<HealthObserver>,
 }
 
 impl ModelHealthRegistry {
+    /// Report each start and end of a failing period once.
+    pub(crate) fn with_observer(mut self, observer: HealthObserver) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
     pub(crate) fn record_success(
         &self,
         exact_model: &str,
@@ -67,6 +92,13 @@ impl ModelHealthRegistry {
             entry.consecutive_failures = 0;
             entry.circuit_open_until_ms = None;
             entry.model_unavailable_until_ms = None;
+            if std::mem::take(&mut entry.reported) {
+                if let Some(observer) = &self.observer {
+                    observer(HealthTransition::Recovered {
+                        exact_model: exact_model.to_owned(),
+                    });
+                }
+            }
         }
     }
 
@@ -95,12 +127,35 @@ impl ModelHealthRegistry {
                 failed: true,
             });
             entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
-            if kind == HealthFailureKind::ModelUnavailable {
+            let reason = if kind == HealthFailureKind::ModelUnavailable {
                 entry.model_unavailable_until_ms = Some(at_ms.saturating_add(MODEL_UNAVAILABLE_MS));
+                Some("model_unavailable")
             } else if entry.consecutive_failures >= CIRCUIT_FAILURE_THRESHOLD {
                 entry.circuit_open_until_ms = Some(at_ms.saturating_add(CIRCUIT_OPEN_MS));
+                Some("consecutive_failures")
+            } else {
+                None
+            };
+            if let Some(reason) = reason.filter(|_| !entry.reported) {
+                entry.reported = true;
+                if let Some(observer) = &self.observer {
+                    observer(HealthTransition::Failing {
+                        exact_model: exact_model.to_owned(),
+                        reason,
+                    });
+                }
             }
         }
+    }
+
+    /// Forget what was observed about a Provider's models, after an
+    /// administrator changed its configuration.
+    pub(crate) fn clear_provider(&self, provider_instance_name: &str) {
+        let suffix = format!("@{provider_instance_name}");
+        self.entries
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retain(|key, _| !key.ends_with(&suffix));
     }
 
     pub(crate) fn snapshot(
@@ -250,4 +305,33 @@ mod tests {
                 .model_available
         );
     }
+
+    #[test]
+    fn a_failing_period_is_reported_once_and_closed_by_a_success() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let health = ModelHealthRegistry::default()
+            .with_observer(Arc::new(move |transition| sink.lock().unwrap().push(transition)));
+        for at in 0..6 {
+            health.record_failure("m@p", "p", 10.0, HealthFailureKind::Transient, at);
+        }
+        health.record_failure("m@p", "p", 10.0, HealthFailureKind::ModelUnavailable, 7);
+        health.record_success("m@p", "p", 10.0, 8);
+        health.record_success("m@p", "p", 10.0, 9);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [
+                HealthTransition::Failing {
+                    exact_model: "m@p".into(),
+                    reason: "consecutive_failures"
+                },
+                HealthTransition::Recovered {
+                    exact_model: "m@p".into()
+                },
+            ]
+        );
+        health.clear_provider("p");
+        assert!(health.snapshot("m@p", "p", 10).model_available);
+    }
+
 }

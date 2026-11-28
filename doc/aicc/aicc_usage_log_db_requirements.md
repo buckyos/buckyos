@@ -75,6 +75,7 @@ Table: `aicc_usage_event`
 | `usage_json` | TEXT | NO | Serialized normalized usage object for full detail and future extension. |
 | `finance_snapshot_json` | TEXT | YES | Optional provider/server reported finance snapshot. Non-authoritative. |
 | `created_at_ms` | INTEGER | NO | Event creation time in Unix milliseconds. |
+| `fallback_from` | TEXT | YES | Set when the usecase's "when unavailable" policy replaced the selected model: the exact model that failed. `provider_model` is the model that actually ran ([aicc_router.md §9.3](aicc_router.md#93-不可用时策略on_unavailable)). |
 
 Indexes:
 
@@ -118,6 +119,7 @@ Input:
   - `capabilities`
   - `task_ids`
   - `idempotency_keys`
+  - `fallback_only`: only events with `fallback_from`
 
 Array filter fields use exact multi-value matching. Empty arrays mean no filter on that dimension. `*_query` fields use case-insensitive fuzzy matching for UI text filters, such as selecting all provider models whose name contains `gpt5`.
 - optional grouping

@@ -127,7 +127,7 @@ deno test --node-modules-dir=manual --unstable-sloppy-imports tests/datamodel/mo
 - ResourceRef 支持 HTTP(S) URL、Base64（含粘贴 data URL 的解析）、文件和 `named_object`。本地文件通过 WebSDK `importFiles` / `ensureUploaded` 导入，等待对象 ready 后提交 `{kind: "named_object", obj_id}`；不在浏览器转 Base64。单文件限制仍为非空且 ≤20 MiB；提供真实传输进度、取消和失败重试。取消、切换模式/API 或重新选择后旧任务不得覆盖新输入；导入未完成时禁止提交。Base64 和 URL 仍为用户明确选择的输入方式。
 - AICC 对上传对象以请求原始用户 token 向 NDM `get_object` 重新验权；不能凭 ObjId 获得服务身份读权限。SDK FileObject 不添加 MIME 元数据，AICC 在授权后读取少量内容头识别常见图片/音频/视频/PDF/ZIP，对 `.txt` 验证 UTF-8。无法满足所选 API MIME 约束时拒绝请求。
 - AICC 使用任务自有的 Recursive pin（24 小时 TTL，运行中每 5 分钟续租）保护 FileObject 及内容依赖。同步调用结束/失败释放；native provider task 将 pin 描述随任务恢复信息持久化，完成/确认取消后释放。提交是否已被 provider 接受不明确时停止续租并保留有界 TTL，不删除其他业务的引用。
-- 高级模式接受 `{method, params}`、完整 TaskMgr task、`input.request.request`、request 包装和裸 canonical 参数。包装内的方法决定 API Type；裸参数使用当前选择的 API Type。导入不自动执行，找不到模型时需重新选择。移除旧 `idempotency_key`、`trace_id`、`task_options`，保留 `session_id` 和业务参数，防止重用旧调用或旧父任务。
+- 高级模式接受 `{method, params}`、完整 TaskMgr task、`input.request.request`、request 包装和裸 canonical 参数。包装内的方法决定 API Type；裸参数使用当前选择的 API Type。导入不自动执行，找不到模型时需重新选择。移除旧 `idempotency_key`、`trace_id`、`task_options`，保留业务参数，防止重用旧调用或旧父任务。
 - Task Center 的 `Task.aiccRequest` 从 AICC task 的不可变 `input.request.request` 提取，方法来自 `AICC <method>` 任务名；即使任务已经有 result，原始请求仍独立展示并可复制。序列化超过 256 KiB 的请求 AICC 不存原文，只写 `input.request.request_summary`（字节数、指纹、消息按 role 计数、工具名、标量参数）；此时 Task Center 给出 `Task.aiccRequestSummary`，展示摘要与 `trace_id`、不提供“复制到 Playground”。
 
 ### 调用与结果

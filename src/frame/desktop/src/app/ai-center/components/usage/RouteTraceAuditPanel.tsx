@@ -481,6 +481,14 @@ function TraceAuditCard({
         )}
       </div>
       <p className="mt-2 text-sm" style={{ color: 'var(--cp-text)' }}>{trace.user_summary?.reason_short}</p>
+      {trace.fallback && (
+        <p className="mt-1 break-words text-xs" data-testid="trace-fallback" data-kind={trace.fallback.kind} style={{ color: 'var(--cp-warning)' }}>
+          {trace.fallback.kind === 'coverage'
+            ? t('aiCenter.routing.traceCoverage', '{{usecase}} has no model; the fallback LLM served it.', { usecase: trace.fallback.from })
+            : t('aiCenter.routing.traceSwitched', '{{from}} was unavailable; {{to}} served it.', { from: trace.fallback.from, to: trace.fallback.to })}
+          {trace.fallback.reason ? ` ${trace.fallback.reason}` : ''}
+        </p>
+      )}
       {selectedCandidate && (
         <div className="mt-2 rounded-md p-2 text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)' }}>
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -527,7 +535,7 @@ function TraceAuditCard({
                   candidate={candidate}
                   rank={rankedCandidateRank(trace, candidate, index)}
                   selected={candidate.selected}
-                  reason={candidate.selected ? 'selected' : trace.fallback_applied && candidate.exact_model === trace.selected_exact_model ? 'fallback' : 'ranked'}
+                  reason={candidate.selected ? 'selected' : trace.fallback && candidate.exact_model === trace.selected_exact_model ? 'fallback' : 'ranked'}
                 />
               ))}
             </div>
@@ -886,7 +894,7 @@ function selectedTraceCandidate(trace: RouteTrace): RouteTrace['ranked_candidate
 function traceStatus(trace: RouteTrace): 'selected' | 'fallback' | 'failed' {
   if (trace.outcome === 'failed' || trace.outcome === 'cancelled') return 'failed'
   if (!trace.selected_exact_model) return 'failed'
-  return trace.fallback_applied ? 'fallback' : 'selected'
+  return trace.fallback ? 'fallback' : 'selected'
 }
 
 function rankedCandidateRank(trace: RouteTrace, candidate: RouteTrace['ranked_candidates'][number], fallbackIndex: number): number {

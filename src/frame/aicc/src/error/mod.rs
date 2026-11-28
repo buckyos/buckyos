@@ -229,11 +229,7 @@ pub(crate) enum ModelRegistryError {
         path: String,
         item: String,
     },
-    UnknownLogicalProfile(String),
-    InvalidFallbackRule(String),
     LogicalTreeLoop(String),
-    FallbackLoop(String),
-    FallbackDepthExceeded(usize),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -373,9 +369,6 @@ pub(crate) enum RoutingError {
         model: String,
         filtered: Vec<FilteredCandidateTrace>,
     },
-    FallbackNotAllowed(String),
-    InvalidFallback(String),
-    FallbackDepthExceeded(usize),
     Registry(ModelRegistryError),
 }
 

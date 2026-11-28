@@ -24,6 +24,18 @@ convert_failed = "I produced a reply but could not turn it into a message. Pleas
 accepted = "Got it — working on it…"
 stopped = "Stopped."
 finished = "Done."
+route_fallback_coverage = "No model is set up for {usecase}, so the fallback model {model} is answering. Choose a model for it in AI Center › Usecases."
+route_fallback_unavailable = "The model for {usecase} ({replaced}) is unavailable, so {model} is answering instead."
+
+[usecase]
+llm_chat = "Chat"
+llm_plan = "Planning"
+llm_code = "Coding"
+llm_swift = "Quick tasks"
+llm_summarize = "Summaries"
+llm_translate = "Translation"
+llm_vision = "Image understanding"
+decision = "Decisions"
 
 [commands]
 nothing_to_stop = "Nothing is in progress."

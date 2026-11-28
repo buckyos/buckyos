@@ -79,8 +79,8 @@ function customDiscovery(
 }
 
 function installRoutingFixtures(settings: JsonObject, suffix: string): void {
-  const session = object(settings.session_config);
-  const logicalTree = object(session.logical_tree);
+  const routing = object(settings.routing);
+  const logicalTree = object(routing.logical_tree);
   const llm = object(logicalTree.llm);
   const llmChildren = object(llm.children);
   const acceptance = object(llmChildren.dv_acceptance);
@@ -103,13 +103,31 @@ function installRoutingFixtures(settings: JsonObject, suffix: string): void {
     }],
     source: "dv_system_routing_fixture",
   };
+  acceptanceChildren.unmounted = {
+    items: [{
+      name: "disabled",
+      target: "llm.gpt-pro",
+      weight: 0,
+    }],
+    source: "dv_system_routing_fixture",
+  };
+  acceptanceChildren.locked = {
+    items: [{
+      name: "primary",
+      target: "llm.gpt-pro",
+      weight: 1,
+    }],
+    policy: {
+      allowed_provider_instances: { value: [`dv-openai-a-${suffix}`], locked: true },
+    },
+    source: "dv_system_routing_fixture",
+  };
   acceptance.children = acceptanceChildren;
   llmChildren.dv_acceptance = acceptance;
   llm.children = llmChildren;
   logicalTree.llm = llm;
-  session.logical_tree = logicalTree;
-  session.revision = `dv-routing-${suffix}`;
-  settings.session_config = session;
+  routing.logical_tree = logicalTree;
+  settings.routing = routing;
 }
 
 function speechDiscovery(): JsonObject {

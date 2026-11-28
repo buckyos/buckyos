@@ -27,7 +27,7 @@
 }
 ```
 
-`server_default_routes` 的键是端点原始模型 ID，值是已存在的 LLM 任务路径。它不接受通配符、未知任务、规格或家族路径。模型须已被识别并支持 LLM；缺少 LLM metadata 或仅供直连的规格不能通过默认模式绕过准入。实验模型、能力、地域、权限、健康度和额度检查继续生效。
+`server_default_routes` 的键是端点原始模型 ID，值是已存在的 LLM 任务路径。它不接受通配符、未知任务、规格或家族路径。模型须已被识别并支持 LLM；缺少 LLM metadata 或仅供直连的规格不能通过默认模式绕过准入。实验模型、能力、地域、权限和额度检查继续生效（健康度不参与路由）。
 
 默认模式将无 variant 的基础 exact model 显式加入所选用途，标记来源 `provider_default`。它不制造 `native`、`reasoning-none` 或其他 effort。执行时省略思考档位控制参数；不会把“使用端点默认行为”解释为“关闭思考”。调用者显式给出的其他 canonical 参数及协议必填字段仍被处理，渠道的 operation、请求转换和约束仍适用。该模式不是可复现的固定 effort 承诺。
 
@@ -37,7 +37,7 @@
 
 `provider.add/validate` 使用现有 `instance_rules`；`provider.update` 支持 `provider_rules_id`，空字符串清除所选渠道规则，省略保持原值。`provider.list` 返回渠道规则及实例规则，以便编辑回读。设置仍存于 `services/aicc/settings`，通过既有 revision CAS 更新；库存快照保存默认用途并沿现有 LKGS 加载链恢复，不新增存储服务或文件路径。
 
-`provider.validate` 返回模型发现、`models_recognized`、`unmatched_models`、`unavailable_presets`、`routing_candidates` 和 `warnings`。候选来自该实例库存与内置用途树的配置检查，不代表当前租户策略放行，也不证明上游支持真实推理。未知渠道规则、无效任务和模型身份问题应分别定位；余额能力也不能仅由模型发现成功推断。
+`provider.validate` 返回模型发现、`models_recognized`、`unmatched_models`、`unavailable_presets`、`usecase_coverage` 和 `warnings`。`usecase_coverage` 是整个 Zone 29 个用途在加上该实例前后的模型与覆盖状态（现有库存加上该实例库存、按管理员层的用途表预演），不代表当前租户策略放行，也不证明上游支持真实推理。未知渠道规则、无效任务和模型身份问题应分别定位；余额能力也不能仅由模型发现成功推断。
 
 ## 验收与关闭条件
 

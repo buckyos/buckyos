@@ -10,10 +10,12 @@ AICC 不是简单的 `model_name -> provider` 映射。一个调用方传入的 
 - 系统内置的逻辑目录定义；
 - driver metadata 对 provider 模型名的语义解释；
 - provider 当前可用模型 inventory；
-- session 或 agent 对逻辑目录的 overlay；
-- 用户对权重、provider、预算、本地优先等策略的配置；
-- provider 运行时状态、价格、延迟、错误率和配额；
+- 用途表的各层：管理员为 Zone 设的默认、用户自己的选择、绑定到 App 或会话的路由策略组；
+- 管理员对权重、provider、预算、本地优先等策略的配置，以及请求自身的硬约束；
+- provider 的静态价格（候选池排序的成本分量）；
 - tenant/user/app/session 隔离的上次 exact-model 路由历史。
+
+Provider 的运行状态（健康、熔断、冷却、延迟观测、错误率、上游配额余量）不影响路由，只用于展示、告警和请求显式给出的 `max_latency_ms` 门槛，见 [aicc_router.md §9.1](aicc_router.md#9-fallback-与失败处理)。
 
 因此需要把概念分层，否则 provider、driver、逻辑目录、用户配置会互相假设彼此存在，导致路由结果不可解释。
 
@@ -26,7 +28,7 @@ Model Driver 负责解释“原厂模型有什么固有能力、属于哪个家�
 Protocol Adapter 只执行已经解析好的 operation
 逻辑目录负责表达“调用方想要什么用途/能力”
 权重和 policy 负责表达“多个可选结果里更偏好谁”
-用户/session 配置只做 overlay，不改系统基础语义
+用途表的各层只选用途的模型和“不可用时”策略，不改系统基础语义
 ```
 
 ## 2. 目标架构基线
@@ -37,7 +39,7 @@ Protocol Adapter 只执行已经解析好的 operation
 - Provider Instance：system-config 中的实例私有配置。
 - Provider inventory：实例级 discovery 动态事实与静态能力交集，并保存 LKGS。
 - ModelRegistry：建立 exact model 和逻辑目录索引。
-- ModelRouter/ModelScheduler：执行 hard filter、权重、policy、fallback 和排序。
+- ModelRouter/ModelScheduler：执行 hard filter、权重、policy 和排序；用途表求值（`routing/usecase.rs`）在它之上选出用途的模型，并在执行失败时按“不可用时”策略算备选。
 - Provider Call Resolver：产生内部 `ResolvedProviderCall`。
 - Protocol Adapter registry：注册可执行 operation，执行层不解释模型家族。
 
@@ -199,7 +201,7 @@ llm.summarize  # 总结压缩
 llm.reason     # 显式推理
 llm.vision     # 视觉输入
 llm.long       # 长上下文
-llm.fallback   # 默认空，只接收管理员显式配置
+llm.fallback   # 兜底 LLM：默认关闭；管理员打开后为没有模型的 LLM 用途兜底
 ```
 
 用途目录里放的是 items。每个 item 指向一个家族目录、另一个逻辑目录或精确模型，并带有权重。用途树不是当前库存快照，而是模型挂载到逻辑目录树时的静态参照策略；它可以引用暂时没有库存的家族目录，这些分支在展开时自然为空，不会产生候选。后续 Provider inventory 把模型挂到该 family path 时，会自动继承用途目录中已经配置好的路径权重。
@@ -215,6 +217,8 @@ llm.plan
 ```
 
 这表示 `llm.plan` 首先是一个“用途目录”，它不直接关心 provider。它只说：规划任务优先考虑哪些家族，以及这些家族之间的默认偏好。
+
+用途目录的展开结果是用途的**默认**模型。用户在 AI Center 看到和调整的是用途表：29 个用途（`decision`、`llm.chat` … `agent_runtime.computer_use`）每个路由到一个精确模型 `model@provider`，管理员、用户和路由策略组可以为某个用途直接选一个精确模型，没选时才用这里的默认展开，见 [aicc_router.md §11](aicc_router.md#11-用途表与配置层次)。
 
 ### 3.6 Mini Line
 
@@ -274,24 +278,23 @@ logical_node.exact_model_weights
 
 ```text
 cost
-latency
-reliability
 quality
 preference
 cache
 local
 ```
 
-它影响候选集合内部的最终选择。当前内置 profile 包括：
+它影响候选集合内部的最终选择。当前内置 profile 包括（默认 `balanced`，`cost_first` 已删除）：
 
 ```text
-cost_first
 latency_first
 quality_first
 balanced
 local_first
 strict_local
 ```
+
+各 profile 都不含价格分量，也不看会话历史（2026-11-28 定）：池内只按偏好权重、规范字段匹配质量和本地优先排序，最后按默认顺序（[aicc_router.md §10.3–§10.4](aicc_router.md)）。价格只用于 `not_pricier`、成本上限和展示。
 
 需要区分：
 
@@ -304,46 +307,57 @@ strict_local
 
 ### 3.8 用户自定义配置
 
-用户自定义配置不应该修改系统内置基础逻辑，而应该通过 overlay 表达偏好。
+用户自定义配置不修改系统内置基础逻辑。用户能理解、能调整的是用途表：每个用途的“模型”和“不可用时”两格，由设了它的最高一层决定。
 
-当前可用的配置层包括：
+当前的配置层：
 
 ```text
-系统基础逻辑目录       # 随系统升级，不可直接修改
-系统级 routing config      # services/aicc/settings.session_config，名称保留但语义是 Zone 全局配置
-应用/Agent/会话配置    # 由调用方保存并合成
-Request session_overlay    # 调用方每次 RPC 传入，AICC 不持久化
-Request policy         # 单次请求附带的约束
+系统基础逻辑目录       # 随系统升级，不可直接修改；用途的默认展开
+管理员层               # services/aicc/settings.routing.usecases，Zone 默认，可锁定格子
+用户层                 # AICC RDB aicc_routing_layer（user:<user_id>），总是对该用户生效
+App 绑定的策略组       # AICC RDB aicc_routing_group + aicc_routing_binding（app:<app_id>）
+会话绑定的策略组       # lib_opendan 会话配置的 route_group，请求携带 route_group
+Request policy         # 单次请求附带的约束，只能收紧
 AICC session 路由历史  # 只保存上次 selected exact model，不是配置层
 ```
 
-当前 `AiccRouteOverlay`（settings 内部字段仍名为 `session_config`）支持：
+优先级是 默认 < 管理员层 < 用户层 < App 绑定的策略组 < 会话绑定的策略组。管理员层 `locked` 的格子任何更高层都不能改；某一层选的模型不在库存、对调用者不可见或不满足用途要求时，这一格跟随下一层。详见 [aicc_router.md §11.2](aicc_router.md#11-用途表与配置层次)。
 
-- `logical_tree`：直接定义逻辑目录树；
-- `logical_profile` / `logical_profiles`：一组 overlay；
-- `active_logical_profile`：选择哪个 profile；
+每一格的内容：
+
+```json
+{
+  "llm.code": {
+    "model": { "value": "gpt-codex-5.2@openai", "locked": true },
+    "on_unavailable": "same_model"
+  },
+  "llm.summarize": { "on_unavailable": "not_pricier" },
+  "llm.fallback": { "enabled": true }
+}
+```
+
+- `model`：精确模型 `model@provider`；
+- `on_unavailable`：`none`（默认，不切换）/ `same_model`（同一个模型换 Provider）/ `not_pricier`（换下一个不更贵的模型）/ `next_model`（换下一个模型），见 [aicc_router.md §9.3](aicc_router.md#9-fallback-与失败处理)；
+- `enabled`：只用于兜底 LLM `llm.fallback`，只能写在管理员层；
+- `locked`：只在管理员层有效。
+
+读写入口是 `routing.usecases` / `routing.usecase.set`，策略组和 App 绑定是 `routing.groups.*` / `routing.bindings.*`（[aicc_api设计.md §2.12](aicc_api设计.md)）。
+
+管理员层所在的 settings 字段 `routing`（原名 `session_config`）是一份 `AiccRouteOverlay`，除 `usecases` 外还有管理员的高级调权手段，只影响默认展开，用户层和策略组不开放：
+
+- `logical_tree`：逻辑目录节点的 `items` / `item_overrides` / `exact_model_weights` / `disable_line` / `policy`；节点没有 fallback 设置；
 - `global_exact_model_weights`：全局精确模型权重；
 - `provider_weights`：全局 provider instance 权重，`1.0` 为默认，`0.0` 表示禁用该 provider 参与路由；
-- `policy`：全局路由策略；
-- `ttl_seconds` / `revision`：调用方 overlay 元数据；AICC 不持久 request overlay，也不用它们管理 session 历史。
+- `routing_commands`：路由调整命令；
+- `policy`：全局路由策略（profile、`local_only`、Provider allow/block、成本上限等），可用 `locked` 锁定。
 
-系统级 Provider 权重的持久位置是 `services/aicc/settings.session_config.provider_weights`。该字段名是现有 settings schema 的内部命名，语义是 Zone 全局 routing config，不是某个应用 session。Control Panel 通过 `routing.get` / `routing.update` 读写 Provider 权重，使用 settings revision CAS，不再使用 `ai.provider.weight.*`。
+Control Panel 通过 `routing.get` / `routing.update` 读写 Provider 权重与路由调整命令，使用 settings revision CAS，不再使用 `ai.provider.weight.*`。
 
-请求携带 `session_id` 时，AICC 另行在平台 RDB 中按 `(tenant_id, user_id, caller_app_id, session_id)` 持久上次已选 exact model。该记录只是硬约束之后的软优先级，不保存逻辑树、policy、overlay revision 或 TTL。
-
-`LogicalTreeOverlay` 支持：
-
-- `merge_mode=inherit`：继承默认目录 items，只覆盖或追加部分 item；
-- `merge_mode=replace`：替换该目录 items，并关闭 fallback；
-- `items`：显式指定目录 items；
-- `item_overrides`：patch 已存在 item 的 target 或 weight；
-- `exact_model_weights`：调整具体物理模型；
-- `fallback`：请求与 session 只能关闭；目标只能由系统级配置指定（[aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)）；
-- `route_policy_override`：调整策略。
+请求不再携带路由 overlay（`session_overlay` 已删除）。请求的 `policy` 只能收紧管理员层：`no_fallback`、`local_only`、屏蔽 Provider、与管理员允许列表取交集、更低的成本上限和延迟门槛；未锁定时可以换 profile（`fast` / `balanced` / `quality`）。请求不能选用途的模型，也不能打开“不可用时”策略。
 
 ## 4. 目录来源与叠加顺序
 
-推荐把目录分成四层。
+系统基础逻辑目录给出每个用途的默认展开；其上是用途表的各层（管理员层、用户层、App 绑定的策略组、会话绑定的策略组），只改用途的两格，不克隆或改写目录树。
 
 ### 4.1 系统基础逻辑目录
 
@@ -354,8 +368,8 @@ AICC session 路由历史  # 只保存上次 selected exact model，不是配置
 - 用途目录：`llm.plan`、`llm.code`、`llm.swift` 等；
 - 默认家族 item 和权重；
 - `min_line`；
-- fallback；
-- scheduler profile。
+- scheduler profile；
+- 兜底 LLM `llm.fallback` 的默认内容（38 个小模型规格；默认关闭，由管理员在用途表里打开）。
 
 这一层的原则：
 
@@ -364,43 +378,34 @@ AICC session 路由历史  # 只保存上次 selected exact model，不是配置
 - 不承载用户个人偏好；
 - 对外应可解释和可审计。
 
-### 4.2 用户自定义逻辑目录
+### 4.2 管理员层与用户层
 
-用户自定义逻辑目录是用户长期偏好的配置层。
+管理员层是 Zone 的默认，存在 system-config `services/aicc/settings.routing.usecases`，管理员在 AI Center 的“Zone 默认”视角或 `routing.usecase.set {target: "zone"}` 修改，可以锁定格子，也只有它能打开兜底 LLM。
 
-它适合表达：
+用户层是用户自己的长期选择，存在 AICC RDB（`aicc_routing_layer`，主体 `user:<user_id>`），总是对这个用户的调用生效。它适合表达：
 
-- 我更偏好某个模型家族；
-- 我不想使用某个 provider；
-- 我想让某个目录走本地优先；
-- 我想把 `llm.chat` 的默认权重调成更便宜；
-- 我想降低某个 provider 的全局权重。
+- 某个用途用我选的精确模型，例如 `llm.code` 用 `gpt-codex-5.2@openai`；
+- 某个用途在 Provider 不可用时换同一个模型的另一个 Provider（`same_model`），或换下一个不更贵的模型（`not_pricier`）。
 
-系统级长期配置保存到 system-config；per-user 或 per-conversation 配置由应用保存，调用时合成一个 request `session_overlay`。AICC 不提供 per-user routing config store。
+家族偏好、Provider 权重、路由调整命令仍是管理员层的高级调权手段（§3.8），用户层不开放。不想使用某个 Provider、只用本地模型等硬约束由管理员策略或请求 `policy` 表达。
 
-### 4.3 Agent 默认逻辑目录
+### 4.3 App 绑定的策略组
 
-Agent 可以定义自己的默认逻辑目录 profile。例如 Jarvis 可以默认：
+用户可以建多个路由策略组，每组是一份“用途 → 模型 + 不可用时”的配置，内容和用户层相同，存在 AICC RDB（`aicc_routing_group`）。
 
-- `llm.plan` 使用高质量 profile；
-- `llm.swift` 使用低延迟 profile；
-- 某些 internal task 使用 `llm.summarize`；
-- 对某些工具调用强制要求 `tool_call`。
+策略组绑定到 App（`aicc_routing_binding`，scope `app:<app_id>`）后，这个用户通过该 App 发出的调用生效。Agent 的 `app_id` 就是 agent_id，所以给某个 Agent 绑一个组就是这个 Agent 的默认用途配置，例如：
 
-Agent 默认逻辑目录应保存在 agent 配置中。发起 AICC 请求前，Agent 把它与应用/会话配置合成最终 `session_overlay`。
+- `llm.plan` 用某个高质量模型；
+- `llm.swift` 用某个低延迟小模型；
+- `llm.summarize` 设 `not_pricier`。
 
-### 4.4 Session 逻辑目录
+策略组只属于建它的用户，只对这个用户的调用生效；删除组同时删除它的 App 绑定。
 
-Session 逻辑目录是会话内临时配置，保存在调用方的 session store 里，不保存在 AICC。
+### 4.4 会话绑定的策略组
 
-它适合表达：
+会话绑定存在 lib_opendan 的会话配置里（`route_group`），不存在 AICC。lib_opendan 调 AICC 时沿 `parent_session` 链找最近一个设了 `route_group` 的会话，把组 ID 放进请求的 `route_group`；因此给父会话改组立刻对已有的子会话生效，子会话自己绑了别的组就用自己的。
 
-- 这个 session 临时使用 `quality_first`；
-- 这个 session 临时禁用某个 provider；
-- 这个 session 临时把 `llm.chat` 指向某个模型；
-- 这个 session 对某些模型或 Provider 的显式偏好。
-
-调用方可在自己的 session store 中实现 revision 和 TTL，并在每次 RPC 传入合成后的 overlay。AICC 只按 `session_id` 保留上次 exact model 软偏好，当前没有该历史的 TTL。
+同一个调用同时命中 App 绑定和会话绑定时，会话绑定优先。组不属于这次调用的用户时被忽略，并在 trace 中标出，不报错。AICC 不记会话历史，请求也没有 `session_id`。
 
 ## 5. Provider 刷新与挂载流程
 
@@ -412,7 +417,7 @@ Provider discovery
   -> ProviderInventory
   -> ModelRegistry
   -> 默认家族目录 / 用途目录 items
-  -> Session/User overlay
+  -> 用途表各层（管理员 / 用户 / 策略组）
   -> Route resolve
 ```
 
@@ -560,14 +565,14 @@ llm.swift -> llm.haiku / llm.gemini-flash-lite / llm.qwen-flash
 5. `ModelRegistry::apply_inventory()` 以 provider instance 为单位全量替换 inventory。
 6. Registry 重新建立 exact model 索引。
 7. 对每个逻辑目录，Registry 根据模型的 `logical_mounts` 和目录 `min_line` 生成默认 items。
-8. 用户/session overlay 在 route 时叠加到默认 items 上。
+8. 请求用途时，用途表各层选的精确模型优先于默认展开；没有选时按默认 items 展开。
 
 新版生产实现中，服务构建 `ModelRegistry` 时必须同时注入两类内置路由材料：
 
-1. 内置 `LogicalModelDefinition`：定义 `llm.chat`、`llm.plan`、`llm.code`、`image.txt2img`、`audio.asr` 等标准目录的 `api_type`、`min_line`、`mount_mode`、fallback 和调度 profile。
+1. 内置 `LogicalModelDefinition`：定义 `llm.chat`、`llm.plan`、`llm.code`、`image.txt2img`、`audio.asr` 等标准目录的 `api_type`、`min_line`、`mount_mode` 和调度 profile；目录没有 fallback 设置。
 2. 内置 factory logical tree：恢复旧版 `default_logical_tree` 的用途目录到家族目录链接，例如 `llm.chat -> llm.gpt-standard / llm.sonnet / llm.gemini-flash / llm.gpt-mini`。它表达默认用途偏好，不枚举当前支持模型集合；空 family 分支可以存在，家族目录里的 exact model 候选由 Provider inventory / Model Driver metadata 在 registry 构建时物化。
 
-因此 `services/aicc/settings.routing_config` 可以为空。它只用于覆盖默认策略，例如 provider 权重、exact model 权重或局部替换目录 items；不能要求用户手动配置后 `llm.chat` 才可用。
+因此 `services/aicc/settings.routing` 可以为空。它只用于覆盖默认策略，例如 provider 权重、exact model 权重或局部替换目录 items；不能要求用户手动配置后 `llm.chat` 才可用。
 
 如果某个 provider inventory 刷新或校验失败，保持该 provider 的原 inventory 和 `metadata_applied_seq`；其它 provider 只在各自真正完成刷新后推进自己的 applied seq。
 
@@ -587,7 +592,7 @@ llm.swift -> llm.haiku / llm.gemini-flash-lite / llm.qwen-flash
 
 此外，Model Driver catalog 的 `version_rules[].auto_mounts` 会在 Provider inventory 构建阶段追加到匹配模型的 `logical_mounts`。这用于表达“某个版本/tier 的模型按能力事实默认应进入哪些用途目录”，例如 OpenAI GPT 规则中的 `llm`、`llm.gpt`、`llm.plan`、`llm.code`。`llm.gpt-standard`、`llm.gpt-pro`、`llm.gpt-mini`、`llm.gpt-nano` 这类 current family mount 只由对应 tier 的 `current_mount` 产生，不能通过 `auto_mounts` 交叉挂载。这些挂点仍会经过 api type namespace 和 logical definition 的 `min_line` 过滤，不能把 LLM 模型挂入 image/audio/video 目录，也不能让不满足 tool/json/context 要求的模型进入 `llm.plan` / `llm.code`。
 
-`auto_mounts` 不是路径权重策略；它只让匹配模型进入对应目录的候选集合，默认 item weight 仍是 `1.0`。用途目录里不同 family 的优先级仍由内置 factory logical tree 或 `routing_config` 的 items / item_overrides 决定。
+`auto_mounts` 不是路径权重策略；它只让匹配模型进入对应目录的候选集合，默认 item weight 仍是 `1.0`。用途目录里不同 family 的优先级仍由内置 factory logical tree 或 settings `routing.logical_tree` 的 items / item_overrides 决定。
 
 ## 6. 自动权重控制
 
@@ -636,27 +641,26 @@ driver parses version rank
 llm.plan 更偏高质量模型
 llm.swift 更偏低延迟轻量模型
 llm.summarize 更偏低成本长上下文模型
-所有用途默认不 fallback
+所有用途默认不切换（`on_unavailable = none`）
 ```
 
 这些默认权重属于系统基础逻辑目录，应随版本升级维护。
 
 ### 6.3 成本与 provider 状态控制
 
-Scheduler 不只看目录权重，还看候选的运行属性：
+Scheduler 不只看目录权重，还看候选的属性：
 
-- `pricing.estimated_cost` 或动态成本估算；
-- `p95_latency_ms` 或 latency class；
-- `error_rate_5m`；
-- `quality_score`；
+- `pricing.estimated_cost` 或动态成本估算（`cost` 分量）；
+- 规范字段匹配质量；
 - provider type 是否 local；
-- quota 是否 exhausted；
-- health 是否 unavailable。
+- quota 是否 exhausted（本地预算或 Provider 明确报告耗尽）。
+
+健康、熔断、冷却、`p95_latency_ms`、`error_rate_5m` 等运行状态**不参与**过滤和排序；唯一例外是请求显式给出 `max_latency_ms` 时，p95 延迟作为该请求的硬门槛。Provider 长期故障由管理员停用它，临时故障可以手工标记为故障（[aicc_router.md §9.6](aicc_router.md#9-fallback-与失败处理)）。
 
 当前 hard filter 会先移除：
 
 - api type 不匹配；
-- unavailable；
+- Provider 未启用或凭据未配置；
 - quota exhausted；
 - 不满足 request required features；
 - 不满足 `min_line`；
@@ -669,11 +673,11 @@ Scheduler 再在剩余候选中按 profile 打分。
 
 ## 7. 用户如何控制权重
 
-用户控制权重的原则是：不改 driver 语义，不改 provider 发现结果，只通过 overlay 和 policy 改变偏好。
+用户控制权重的原则是：不改 driver 语义，不改 provider 发现结果。普通用户直接在用途表里为用途选精确模型（§3.8）；下面的权重和 policy 是管理员在 settings `routing` 里的高级调权手段，只影响默认展开。
 
 ### 7.1 通过成本影响优先级
 
-相同能力、相同家族或相同优先级候选中，越便宜的模型在 `cost_first` 或 `balanced` 下越容易被选中。
+相同能力、相同家族或相同优先级候选中，越便宜的模型在 `balanced` 等带成本分量的 profile 下越容易被选中。
 
 用户可以通过 provider 侧价格配置或 override 影响：
 
@@ -699,23 +703,23 @@ routing cost override # 路由偏好成本，用于调度打分
 
 ### 7.2 覆写用途目录的家族权重
 
-用户可以在逻辑目录 overlay 中修改 item weight。
+管理员可以在 settings `routing.logical_tree` 中修改 item weight（或用 `routing.update` 的路由调整命令）。
 
-例如，把 `llm.chat` 调成更偏 Claude：
+例如，把 `llm.chat` 的默认展开调成更偏 Claude：
 
 ```yaml
-logical_profile:
-  overlays:
-    - path: llm.chat
-      merge_mode: inherit
-      item_overrides:
-        claude:
-          target: llm.sonnet
-          weight: 3.0
-        gpt:
-          target: llm.gpt-standard
-          weight: 1.5
+logical_tree:
+  llm:
+    children:
+      chat:
+        item_overrides:
+          claude:
+            weight: 3.0
+          gpt:
+            weight: 1.5
 ```
+
+只想让某个用途固定用某个模型时，不必调权重，直接在用途表里选精确模型。
 
 这会影响逻辑目录展开时的 `priority_path`。
 
@@ -761,7 +765,7 @@ global_exact_model_weights:
 
 ### 7.4 用 provider allow/block 做硬约束
 
-如果用户明确不想使用某个 provider，应使用 policy：
+如果明确不想使用某个 provider，应使用 policy（管理员写在 settings `routing.policy`，请求也可以追加屏蔽）：
 
 ```yaml
 policy:
@@ -769,7 +773,7 @@ policy:
     - openai-backup
 ```
 
-如果用户只允许某些 provider：
+如果只允许某些 provider（请求的允许列表与管理员的同时生效）：
 
 ```yaml
 policy:
@@ -815,7 +819,6 @@ policy:
 ```text
 api_type = llm
 model = llm.chat
-session_id = s1
 policy = balanced
 ```
 
@@ -825,12 +828,12 @@ Router 读取：
 
 ```text
 系统基础逻辑目录
-系统级 routing config
-调用方合成的 request session_overlay
+settings routing（管理员层与调权配置）
+用户层、App 绑定的策略组、请求 route_group 指定的会话策略组
 Provider inventory default items
 ```
 
-然后从 `llm.chat` 开始展开 items。
+`llm.chat` 是用途：某一层为它选了精确模型且这个模型可用时，直接用它（仍要通过下面的硬过滤和用途要求），不展开目录。没有选时从 `llm.chat` 开始展开 items。
 
 如果 `llm.chat` 直接有 provider inventory auto admission，可能得到：
 
@@ -860,7 +863,7 @@ llm.chat
 
 ```text
 api_type 是否匹配
-model health 是否 available
+Provider 是否启用、凭据是否已配置
 quota 是否 exhausted
 是否满足 request required_features
 是否满足 logical definition min_line
@@ -872,7 +875,7 @@ quota 是否 exhausted
 exact_model_weight 是否 > 0
 ```
 
-被过滤的原因会进入 route trace。
+被过滤的原因会进入 route trace。健康状态不在其中。
 
 ### 8.4 目录权重选择候选集合
 
@@ -893,9 +896,7 @@ gpt-5.2@openai-primary cost=0.01 latency=1200 quality=0.9
 gpt-5.2@openai-backup  cost=0.008 latency=1500 quality=0.9
 ```
 
-在 `cost_first` 下可能选择 `openai-backup`。在 `latency_first` 下可能选择 `openai-primary`。
-
-如果请求携带 `session_id`，且该 tenant/user/app/session 历史模型在通过全部硬过滤后仍在候选集合中，Scheduler 会把它作为软优先项。选路成功后使用本次 exact model upsert 该历史。
+价格不参与排序，两者偏好权重和匹配质量相同，所以按默认顺序选 `openai-primary`；`openai-backup` 便宜一些不会改变选择。延迟、错误率等运行观测同样不参与排序，`openai-primary` 慢一些也不会改变选择。
 
 ### 8.6 输出
 
@@ -906,12 +907,11 @@ selected_exact_model
 selected_provider_instance_name
 selected_provider_model_id
 operation / resolved options / pricing source
-fallback_attempts
 enabled/disabled capability trace
 route_trace
 ```
 
-数据面只消费 exact model，不再重新做逻辑路由。
+`route.resolve` 不返回备选模型。数据面只消费 exact model，不再重新做逻辑路由，也从不换模型；只有 Helper 在选中模型的 Provider 不可用、且用途设置了“不可用时”策略时，才在 AICC 内部换一次（[aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)）。
 
 ## 9. 关键边界总结
 
@@ -935,9 +935,9 @@ Driver 通常把物理模型挂到家族目录；用途目录引用家族目录�
 
 目录 item weight 先决定最高优先级路径；scheduler profile 再在同一优先级候选内按成本、延迟、质量等打分。
 
-### 9.6 用户配置是 overlay
+### 9.6 用户配置是用途表的一层
 
-用户不改系统基础逻辑，不改 driver 语义，只通过 overlay、exact model weight、provider allow/block、scheduler profile 和成本配置影响结果。
+用户不改系统基础逻辑，不改 driver 语义，只在用途表里为用途选精确模型和“不可用时”策略（用户层或策略组）。exact model weight、provider weight、provider allow/block、scheduler profile 是管理员层的高级调权与策略；请求的 policy 只能收紧。
 
 ## 10. 重构实现约束
 
@@ -949,7 +949,7 @@ Driver 通常把物理模型挂到家族目录；用途目录引用家族目录�
 Provider returns physical models
 Driver metadata owns logical_mounts
 Registry owns admission
-Session/user owns overlay
+Usecase layers own per-usecase choices
 ```
 
 Provider 可以提供 fallback hints，但不应成为逻辑目录真相源。
@@ -1017,8 +1017,8 @@ provider_weights:
 ```text
 driver_metadata_mount
 auto_admission
-session_overlay
 manual_override
+routing_command
 ```
 
 这样用户才能理解“为什么我没手动挂载，它也出现在这个目录里”。
@@ -1027,21 +1027,20 @@ manual_override
 
 ### 11.1 调整 `llm.plan` 家族偏好
 
+管理员在 settings `routing.logical_tree` 里调整默认展开：
+
 ```yaml
-logical_profile:
-  overlays:
-    - path: llm.plan
-      merge_mode: inherit
-      item_overrides:
-        opus:
-          target: llm.opus
-          weight: 3.0
-        gemini:
-          target: llm.gemini-pro
-          weight: 2.0
-        qwen_max:
-          target: llm.qwen-max
-          weight: 1.0
+logical_tree:
+  llm:
+    children:
+      plan:
+        item_overrides:
+          opus:
+            weight: 3.0
+          gemini:
+            weight: 2.0
+          qwen_max:
+            weight: 1.0
 ```
 
 ### 11.2 禁用某个 provider 的某个模型
@@ -1051,12 +1050,28 @@ global_exact_model_weights:
   gpt-5.2@openai-backup: 0.0
 ```
 
-### 11.3 让某个 session 更偏便宜
+### 11.3 让某个会话用更便宜的模型
+
+建一个路由策略组，把这个会话里用到的用途指向便宜的模型，再在会话设置里绑定这个组（lib_opendan 会话配置的 `route_group`）：
+
+```json
+{
+  "method": "routing.groups.create",
+  "params": {
+    "name": "省钱",
+    "usecases": {
+      "llm.chat": { "model": "gpt-5.5-mini@sn" },
+      "llm.summarize": { "model": "gpt-5.5-mini@sn", "on_unavailable": "not_pricier" }
+    }
+  }
+}
+```
+
+单次请求还可以用 `policy.max_cost` 收紧成本上限：
 
 ```yaml
 policy:
-  profile: cost_first
-  max_estimated_cost:
+  max_cost:
     amount: 0.02
     currency: USD
 ```
@@ -1069,20 +1084,23 @@ policy:
   profile: strict_local
 ```
 
-### 11.5 临时替换 `llm.chat`
+### 11.5 替换 `llm.chat`
 
-```yaml
-logical_profile:
-  overlays:
-    - path: llm.chat
-      merge_mode: replace
-      items:
-        - name: local
-          target: qwen3@local-llama
-          weight: 1.0
+在用户层（或某个策略组）为 `llm.chat` 选一个精确模型：
+
+```json
+{
+  "method": "routing.usecase.set",
+  "params": {
+    "target": "user",
+    "usecase": "llm.chat",
+    "model": "qwen3@local-llama",
+    "revision": 0
+  }
+}
 ```
 
-`merge_mode=replace` 会替换该目录 items，并默认禁用 fallback，适合强制指定会话内策略。
+`revision` 取 `routing.usecases` 返回的版本（用户层还没有内容时为 `0`）。`on_unavailable` 没设时跟随下一层，默认 `none`：`local-llama` 不可用时返回真实错误，不换模型。要恢复默认，用 `clear: ["model"]`。
 
 ## 12. 最终模型
 
@@ -1094,12 +1112,13 @@ request model alias
   -> family items with weights
   -> exact physical models from provider inventories
   -> mini line admission
-  -> user/session overlay
+  -> usecase table layers: a layer's exact model, if usable; otherwise the default expansion
   -> per-directory highest available weight group (hard filters applied while expanding)
   -> candidate pool
   -> scheduler score, then default order
-  -> sticky binding
+  -> session history soft preference
   -> selected exact model
+  -> on failure (Helper only): the usecase's on_unavailable policy, at most once
 ```
 
 其中每一层的职责应保持单向：
@@ -1109,7 +1128,7 @@ Provider 发现物理模型
 Driver 解释物理模型
 Registry 生成默认目录候选
 Logical directory 表达用途
-Overlay 表达用户/session 偏好
+用途表各层表达管理员 / 用户 / 策略组的选择
 Router 展开和过滤
 Scheduler 做最终选择
 Executor 调用 provider

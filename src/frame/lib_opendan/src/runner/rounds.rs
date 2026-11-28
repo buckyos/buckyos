@@ -223,6 +223,7 @@ mod tests {
             disable_capabilities: Vec::new(),
             tool_specs: Vec::new(),
             allow_tool_calls: false,
+            route_group: None,
             abort: InferenceAbortToken::noop(),
         }
     }

@@ -14,15 +14,19 @@ import type { ConversationSource } from '../../components/conversation/source'
 import { getAgentPanelSource } from './agentpanel/source'
 import { friendlyDidName } from './api/projection'
 import { releaseAttachmentUploads } from './api/upload'
-import { FriendRequestMessage, GroupNoticeMessage, NotifyMessage } from './conversationCards'
+import { FriendRequestMessage, GroupNoticeMessage, NotifyMessage, RouteFallbackMessage } from './conversationCards'
 import { SenderAvatar } from './HubAvatar'
 import { channelAccess, isChannelSession, readingContext } from './sessionModel'
 import { getMessageHubStore, useMessageHubStore, type MessageHubStore } from './store'
 import type { MessageHubContext, Session } from './types'
 
+/** `content.machine.intent` of an Agent's note that a fallback model answered (OpenDAN, once per usecase and model). */
+const ROUTE_FALLBACK_INTENT = 'opendan.route_fallback'
+
 registerMessageRenderer('notice', (message, context) => parseFriendNotice(message) ? <FriendRequestMessage message={message} context={context} /> : null)
 registerMessageRenderer('notice', (message, context) => parseGroupNotice(message) ? <GroupNoticeMessage message={message} context={context} /> : null)
 registerMessageRenderer('card', (message, context) => messageNotify(message) ? <NotifyMessage message={message} context={context} /> : null)
+registerMessageRenderer('card', (message, context) => message.content.machine?.intent === ROUTE_FALLBACK_INTENT ? <RouteFallbackMessage message={message} context={context} /> : null)
 
 const EMPTY_READER = InMemoryConversationMessageReader.empty()
 const clocks = new WeakMap<MessageHubStore, ConversationClock>()

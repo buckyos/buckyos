@@ -29,16 +29,14 @@
 //    也不能把所有符合能力门槛的 LLM 塞入规格。
 //    家族候选是否可执行还须检查能力、库存、Provider 状态及调用策略。
 //    llm 根只作命名空间，不使用 Auto 收集模型；通用请求须明确选 llm.chat 等任务。
-//    任务、规格、家族均禁止隐式 Parent fallback。任务无合格候选时，只执行显式配置的
-//    fallback，否则返回无候选；回退仍保留原请求及原任务的能力约束，不绕过任务编排。
-//    内置用途（chat/plan/code/swift/summarize/translate/vision）默认显式 target_logical
-//    到 llm.fallback；llm.fallback 自身 disabled，是回退链终点。llm.fallback 只引用
-//    非 direct_only 规格，按“廉价快速档 4.0 > 通用性价比档 3.0 > 标准档 2.0 > 高档/特化 1.0”
-//    分层；每层取第一个仍有合格候选的权重组，组内由调度策略排序。直接请求 llm.fallback
-//    用 cost_first；从用途回退时沿用原用途的 scheduler、能力门槛和禁用项，分层顺序不变。
-//    用户 overlay 替换用途 items 而未声明 fallback 时回退关闭；显式 strict/disabled 同样关闭。
-//    家族、规格直选为 disabled，不升级到其他家族；目录回退只发生在路由阶段，运行期 failover
-//    只在已选中的候选池内换实例，不会因上游错误重新解析到 llm.fallback。
+//    目录之间没有 fallback：任务无合格候选时返回无候选，不回退到父目录或其他目录。
+//    唯一的例外是兜底 LLM（llm.fallback）：默认关闭；管理员在用途表里打开后，七个内置
+//    LLM 用途（chat/plan/code/swift/summarize/translate/vision）静态上没有候选时改用
+//    llm.fallback，只带请求自身的硬要求，不带原用途的门槛；Provider 故障不会转到兜底。
+//    这一步在用途表求值（routing/usecase.rs）里做，注册表本身不含回退边。
+//    llm.fallback 只引用非 direct_only 规格，按“廉价快速档 4.0 > 通用性价比档 3.0 >
+//    标准档 2.0 > 高档/特化 1.0”分层；每层取第一个仍有合格候选的权重组，组内由调度策略排序。
+//    选中的模型执行失败时不换模型，只有用途配置了“不可用时”策略才换一次（router §9）。
 // 7. 契约校验（替代固定档位提供的结构保证）：
 //    - 功能目录引用的每个规格都必须由某个内置 metadata 声明，否则构建失败，
 //      防止厂商改名后留下悬空引用。
@@ -200,7 +198,7 @@
 //
 // logical root（预定义结构；LLM 规格目录初始为空）
 // ├── llm
-// │   ├── chat [无候选时回退到 llm.fallback]
+// │   ├── chat [无候选且兜底 LLM 打开时由 llm.fallback 提供]
 // │   │   ├── gpt_standard -> llm.gpt-standard (2.2)
 // │   │   ├── claude_sonnet -> llm.claude-sonnet (2.1)
 // │   │   ├── gemini_flash -> llm.gemini-flash (1.9)
@@ -218,7 +216,7 @@
 // │   │   ├── doubao_lite -> llm.doubao-lite (1.0)
 // │   │   ├── qwen_moe_35b -> llm.qwen-moe-35b (1.0)
 // │   │   └── minimax_standard -> llm.minimax-standard (0.9)
-// │   ├── plan [无候选时回退到 llm.fallback]
+// │   ├── plan [无候选且兜底 LLM 打开时由 llm.fallback 提供]
 // │   │   ├── gpt_max -> llm.gpt-max (3.2) [初始值]
 // │   │   ├── gpt_pro -> llm.gpt-pro (3.1)
 // │   │   ├── gpt_standard -> llm.gpt-standard (3.0)
@@ -237,7 +235,7 @@
 // │   │   ├── minimax_standard -> llm.minimax-standard (1.1)
 // │   │   ├── qwen_moe_120b -> llm.qwen-moe-120b (1.05)
 // │   │   └── claude_sonnet -> llm.claude-sonnet (1.0) [低优先级候补]
-// │   ├── code [无候选时回退到 llm.fallback]
+// │   ├── code [无候选且兜底 LLM 打开时由 llm.fallback 提供]
 // │   │   ├── gpt_codex -> llm.gpt-codex (3.2) [初始值]
 // │   │   ├── gpt_standard -> llm.gpt-standard (3.0)
 // │   │   ├── claude_opus -> llm.claude-opus (2.4)
@@ -258,7 +256,7 @@
 // │   │   ├── qwen_moe_120b -> llm.qwen-moe-120b (1.2)
 // │   │   ├── qwen_moe_35b -> llm.qwen-moe-35b (1.1)
 // │   │   └── claude_sonnet -> llm.claude-sonnet (1.05) [低优先级候补]
-// │   ├── swift [无候选时回退到 llm.fallback]
+// │   ├── swift [无候选且兜底 LLM 打开时由 llm.fallback 提供]
 // │   │   ├── gpt_mini -> llm.gpt-mini (2.0)
 // │   │   ├── claude_haiku -> llm.claude-haiku (1.9)
 // │   │   ├── gemini_flash -> llm.gemini-flash (1.8)
@@ -269,7 +267,7 @@
 // │   │   ├── minimax_highspeed -> llm.minimax-highspeed (1.2)
 // │   │   ├── qwen_moe_35b -> llm.qwen-moe-35b (1.2)
 // │   │   └── gpt_nano -> llm.gpt-nano (1.1) [初始值]
-// │   ├── summarize [无候选时回退到 llm.fallback]
+// │   ├── summarize [无候选且兜底 LLM 打开时由 llm.fallback 提供]
 // │   │   ├── gpt_mini -> llm.gpt-mini (2.0)
 // │   │   ├── gemini_flash -> llm.gemini-flash (1.8)
 // │   │   ├── claude_haiku -> llm.claude-haiku (1.6)
@@ -279,7 +277,7 @@
 // │   │   ├── minimax_highspeed -> llm.minimax-highspeed (1.2)
 // │   │   ├── qwen_moe_35b -> llm.qwen-moe-35b (1.2)
 // │   │   └── qwen_dense_27b -> llm.qwen-dense-27b (1.1)
-// │   ├── translate [无候选时回退到 llm.fallback]
+// │   ├── translate [无候选且兜底 LLM 打开时由 llm.fallback 提供]
 // │   │   ├── gemini_flash -> llm.gemini-flash (1.9)
 // │   │   ├── gpt_mini -> llm.gpt-mini (1.8)
 // │   │   ├── claude_haiku -> llm.claude-haiku (1.6)
@@ -289,7 +287,7 @@
 // │   │   ├── minimax_highspeed -> llm.minimax-highspeed (1.2)
 // │   │   ├── qwen_dense_27b -> llm.qwen-dense-27b (1.1)
 // │   │   └── qwen_moe_35b -> llm.qwen-moe-35b (1.1)
-// │   ├── vision [无候选时回退到 llm.fallback]
+// │   ├── vision [无候选且兜底 LLM 打开时由 llm.fallback 提供]
 // │   │   ├── gpt_standard -> llm.gpt-standard (2.2)
 // │   │   ├── kimi_flagship -> llm.kimi-flagship (2.2)
 // │   │   ├── gemini_pro -> llm.gemini-pro (2.1)
@@ -491,12 +489,12 @@
 // 此时 llm.plan 跳过其他空规格，选择 llm.gpt-pro -> llm.gpt-5-6-sol:high，版本值 560 优先。
 // 若只剩旧版满足约束，则选择版本值 550 的家族预设；两者都不在有效 inventory 时，
 // llm.gpt-pro 恢复为空，llm.plan 到 llm.gpt-pro 的引用及其权重 3.1 继续保留。
-// 若 plan 的所有规格都无合格候选且没有显式 fallback，则返回无候选，不回退到 llm 根。
+// 若 plan 的所有规格都无合格候选，则返回无候选（兜底 LLM 打开时由 llm.fallback 提供），不回退到 llm 根。
 
 use async_trait::async_trait;
 use buckyos_api::{
-    AiccFallbackMode, AiccFallbackRule, AiccLogicalNodeOverlay, AiccRouteOverlay,
-    AiccSchedulerProfile, ApiType, LogicalItem, ModelDisable, ModelRequirement,
+    AiccLogicalNodeOverlay, AiccRouteOverlay, AiccSchedulerProfile, ApiType, LogicalItem,
+    ModelDisable, ModelRequirement,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -512,7 +510,7 @@ use crate::runtime::ModelRegistryAssembler;
 use super::events::AiccEventLog;
 
 pub(super) struct ServiceModelAssembler {
-    pub(super) session: Option<buckyos_api::AiccRouteOverlay>,
+    pub(super) system: Option<buckyos_api::AiccRouteOverlay>,
     pub(super) events: Option<Arc<AiccEventLog>>,
 }
 
@@ -523,19 +521,25 @@ impl ModelRegistryAssembler for ServiceModelAssembler {
         catalog: Arc<CatalogSnapshot>,
         inventories: Vec<ModelProviderInventory>,
     ) -> Result<Arc<ModelRegistry>, RuntimeError> {
-        let built = ModelRegistry::build(
-            catalog.as_ref(),
-            &inventories,
-            builtin_logical_model_definitions(),
-            RegistryLayers {
-                factory: Some(&builtin_logical_tree_overlay()),
-                session: self.session.as_ref(),
-                ..RegistryLayers::default()
-            },
-        );
+        let built = assemble_registry(catalog.as_ref(), &inventories, self.system.as_ref());
         if let Some(events) = &self.events {
             match &built {
-                Ok(registry) => events.observe_routing_commands(registry.routing_command_status()),
+                Ok(registry) => {
+                    events.observe_routing_commands(registry.routing_command_status());
+                    events.observe_usecase_models(
+                        self.system
+                            .iter()
+                            .flat_map(|routing| &routing.usecases)
+                            .filter_map(|(usecase, route)| {
+                                let model = &route.model.as_ref()?.value;
+                                registry
+                                    .exact_model(model)
+                                    .is_none()
+                                    .then(|| (usecase.clone(), model.clone()))
+                            })
+                            .collect(),
+                    );
+                }
                 Err(error) => events.observe_registry_error(&error.to_string()),
             }
         }
@@ -543,6 +547,24 @@ impl ModelRegistryAssembler for ServiceModelAssembler {
             .map(Arc::new)
             .map_err(|error| RuntimeError::Backend(error.to_string()))
     }
+}
+
+/// The registry of the built-in catalog over `inventories` with the
+/// administrator's routing on top.
+pub(super) fn assemble_registry(
+    catalog: &CatalogSnapshot,
+    inventories: &[ModelProviderInventory],
+    system: Option<&AiccRouteOverlay>,
+) -> Result<ModelRegistry, crate::error::ModelRegistryError> {
+    ModelRegistry::build(
+        catalog,
+        inventories,
+        builtin_logical_model_definitions(),
+        RegistryLayers {
+            factory: Some(&builtin_logical_tree_overlay()),
+            system,
+        },
+    )
 }
 
 const MEDIA_FAMILIES: &[(&str, &str, f64)] = &[
@@ -598,8 +620,7 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ApiType::Decision,
             ModelRequirement::default(),
             MountMode::Hybrid,
-            AiccSchedulerProfile::CostFirst,
-            strict_fallback(),
+            AiccSchedulerProfile::Balanced,
             Some("general"),
         ),
         llm_logical_definition(
@@ -607,10 +628,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Manual,
             AiccSchedulerProfile::Balanced,
-            Some(AiccFallbackRule {
-                mode: AiccFallbackMode::Strict,
-                target: None,
-            }),
             Some("general"),
         ),
         logical_definition(
@@ -619,7 +636,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::LatencyFirst,
-            strict_fallback(),
             Some("general"),
         ),
         logical_definition(
@@ -628,7 +644,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::LatencyFirst,
-            strict_fallback(),
             Some("multimodal"),
         ),
         logical_definition(
@@ -637,7 +652,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::LatencyFirst,
-            strict_fallback(),
             Some("general"),
         ),
     ];
@@ -647,7 +661,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Manual,
             AiccSchedulerProfile::Balanced,
-            llm_usecase_fallback(),
             Some("general"),
         ),
         llm_logical_definition(
@@ -655,7 +668,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             tool_json_requirement(32_768),
             MountMode::Manual,
             AiccSchedulerProfile::QualityFirst,
-            llm_usecase_fallback(),
             Some("pro"),
         ),
         llm_logical_definition(
@@ -663,7 +675,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             tool_json_requirement(32_768),
             MountMode::Manual,
             AiccSchedulerProfile::Balanced,
-            llm_usecase_fallback(),
             Some("pro"),
         ),
         llm_logical_definition(
@@ -671,23 +682,20 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Manual,
             AiccSchedulerProfile::LatencyFirst,
-            llm_usecase_fallback(),
             Some("fast"),
         ),
         llm_logical_definition(
             "llm.summarize",
             context_requirement(16_384),
             MountMode::Manual,
-            AiccSchedulerProfile::CostFirst,
-            llm_usecase_fallback(),
+            AiccSchedulerProfile::Balanced,
             Some("utility"),
         ),
         llm_logical_definition(
             "llm.translate",
             ModelRequirement::default(),
             MountMode::Manual,
-            AiccSchedulerProfile::CostFirst,
-            llm_usecase_fallback(),
+            AiccSchedulerProfile::Balanced,
             Some("utility"),
         ),
         llm_logical_definition(
@@ -695,15 +703,13 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             vision_requirement(32_768),
             MountMode::Manual,
             AiccSchedulerProfile::Balanced,
-            llm_usecase_fallback(),
             Some("multimodal"),
         ),
         llm_logical_definition(
             "llm.fallback",
             ModelRequirement::default(),
             MountMode::Manual,
-            AiccSchedulerProfile::CostFirst,
-            disabled_fallback(),
+            AiccSchedulerProfile::Balanced,
             Some("fallback"),
         ),
     ]);
@@ -714,7 +720,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::QualityFirst,
-            parent_fallback(),
             Some("general"),
         ),
         logical_definition(
@@ -723,7 +728,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::QualityFirst,
-            parent_fallback(),
             Some("general"),
         ),
         logical_definition(
@@ -732,7 +736,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::QualityFirst,
-            parent_fallback(),
             Some("edit"),
         ),
         logical_definition(
@@ -741,7 +744,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::QualityFirst,
-            parent_fallback(),
             Some("edit"),
         ),
         logical_definition(
@@ -750,7 +752,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::LatencyFirst,
-            parent_fallback(),
             Some("utility"),
         ),
         logical_definition(
@@ -759,7 +760,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::LatencyFirst,
-            strict_fallback(),
             Some("vision"),
         ),
         logical_definition(
@@ -768,7 +768,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::LatencyFirst,
-            strict_fallback(),
             Some("vision"),
         ),
         logical_definition(
@@ -777,7 +776,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::LatencyFirst,
-            strict_fallback(),
             Some("vision"),
         ),
         logical_definition(
@@ -786,7 +784,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::LatencyFirst,
-            strict_fallback(),
             Some("vision"),
         ),
         logical_definition(
@@ -795,7 +792,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::LatencyFirst,
-            strict_fallback(),
             Some("audio"),
         ),
         logical_definition(
@@ -804,7 +800,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::LatencyFirst,
-            strict_fallback(),
             Some("audio"),
         ),
         logical_definition(
@@ -813,7 +808,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::QualityFirst,
-            strict_fallback(),
             Some("audio"),
         ),
         logical_definition(
@@ -822,7 +816,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::QualityFirst,
-            strict_fallback(),
             Some("audio"),
         ),
         logical_definition(
@@ -831,7 +824,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::QualityFirst,
-            parent_fallback(),
             Some("video"),
         ),
         logical_definition(
@@ -840,7 +832,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::QualityFirst,
-            parent_fallback(),
             Some("video"),
         ),
         logical_definition(
@@ -849,7 +840,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::QualityFirst,
-            parent_fallback(),
             Some("video"),
         ),
         logical_definition(
@@ -858,7 +848,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::QualityFirst,
-            parent_fallback(),
             Some("video"),
         ),
         logical_definition(
@@ -867,7 +856,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             vision_requirement(8_192),
             MountMode::Hybrid,
             AiccSchedulerProfile::Balanced,
-            parent_fallback(),
             Some("agent"),
         ),
     ]);
@@ -884,7 +872,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             ModelRequirement::default(),
             MountMode::Manual,
             AiccSchedulerProfile::QualityFirst,
-            strict_fallback(),
             None,
         ));
     }
@@ -894,7 +881,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             .any(|(_, path, _)| path.rsplit_once('.').unwrap().0 == definition.path)
         {
             definition.mount_mode = MountMode::Manual;
-            definition.fallback = strict_fallback();
         }
     }
     definitions
@@ -905,18 +891,9 @@ fn llm_logical_definition(
     min_line: ModelRequirement,
     mount_mode: MountMode,
     scheduler_profile: AiccSchedulerProfile,
-    fallback: Option<AiccFallbackRule>,
     tier: Option<&str>,
 ) -> LogicalModelDefinition {
-    logical_definition(
-        path,
-        ApiType::Llm,
-        min_line,
-        mount_mode,
-        scheduler_profile,
-        fallback,
-        tier,
-    )
+    logical_definition(path, ApiType::Llm, min_line, mount_mode, scheduler_profile, tier)
 }
 
 fn logical_definition(
@@ -925,7 +902,6 @@ fn logical_definition(
     min_line: ModelRequirement,
     mount_mode: MountMode,
     scheduler_profile: AiccSchedulerProfile,
-    fallback: Option<AiccFallbackRule>,
     tier: Option<&str>,
 ) -> LogicalModelDefinition {
     LogicalModelDefinition {
@@ -936,38 +912,9 @@ fn logical_definition(
         default_options: BTreeMap::new(),
         mount_mode,
         scheduler_profile,
-        fallback,
         route_policy: buckyos_api::AiccPolicyConfig::default(),
         user_visible_tier: tier.map(str::to_owned),
     }
-}
-
-fn parent_fallback() -> Option<AiccFallbackRule> {
-    Some(AiccFallbackRule {
-        mode: AiccFallbackMode::Parent,
-        target: None,
-    })
-}
-
-fn strict_fallback() -> Option<AiccFallbackRule> {
-    Some(AiccFallbackRule {
-        mode: AiccFallbackMode::Strict,
-        target: None,
-    })
-}
-
-fn disabled_fallback() -> Option<AiccFallbackRule> {
-    Some(AiccFallbackRule {
-        mode: AiccFallbackMode::Disabled,
-        target: None,
-    })
-}
-
-fn llm_usecase_fallback() -> Option<AiccFallbackRule> {
-    Some(AiccFallbackRule {
-        mode: AiccFallbackMode::TargetLogical,
-        target: Some("llm.fallback".into()),
-    })
 }
 
 fn tool_json_requirement(min_context_tokens: u64) -> ModelRequirement {

@@ -82,11 +82,11 @@
 
 **状态**（`PriceList::state`）：系数乘积为 0 → `free`；条目价格全为 0、或汇率为 0、或 Provider 价格全为 0 → `free`；有价 → `priced`；否则 `unpriced`。**没有价格不等于免费**：`unpriced` 的模型对这个调用者不可用，`models.list` 照常列出（`credit_price.state = "unpriced"`），逻辑路由不选它，直接调用返回 `resource_not_permitted`，`details.reason = "unpriced"`。
 
-**一次 usage 的扣费**（`PinnedCreditPrice::charge`）：`credit = 价格(usage) × Provider 系数 × 模型系数`，四舍五入到 1e-6 Credit，存为整数（micro-Credit）。价格按 Credit 条目时用 `PinnedPricingSnapshot::completion_cost`（与 Provider 成本同一套代码）；按汇率时用这次的 Provider 成本（上报费用优先），币种必须与汇率的币种一致。算不出金额（usage 缺价格需要的维度，或按汇率时 Provider 没给出成本）记 `unpriced`、金额 0。Credit 与 Provider 成本是两套数：usage 两个都存，路由的 `cost_first` / `max_estimated_cost` 只看 Provider 成本。
+**一次 usage 的扣费**（`PinnedCreditPrice::charge`）：`credit = 价格(usage) × Provider 系数 × 模型系数`，四舍五入到 1e-6 Credit，存为整数（micro-Credit）。价格按 Credit 条目时用 `PinnedPricingSnapshot::completion_cost`（与 Provider 成本同一套代码）；按汇率时用这次的 Provider 成本（上报费用优先），币种必须与汇率的币种一致。算不出金额（usage 缺价格需要的维度，或按汇率时 Provider 没给出成本）记 `unpriced`、金额 0。Credit 与 Provider 成本是两套数：usage 两个都存，路由的成本评分、`max_estimated_cost` 和 `not_pricier` 的价格比较只看 Provider 成本。
 
 ## 4. 准入与扣费
 
-**准入**（`PolicyService::evaluate_call`，只读，不写数据库）在推理入口对主模型和 fallback 候选各做一次（`precheck`），并在每次上游尝试前再做一次（`AdmissionPort::admit`）：
+**准入**（`PolicyService::evaluate_call`，只读，不写数据库）在推理入口对选中的模型做一次（`precheck`；被拒绝且用途配置了“不可用时”策略时，对算出的备选再做一次），并在每次上游尝试前再做一次（`AdmissionPort::admit`）：
 
 1. 不可见 → `resource_not_permitted`（不带资源身份）。
 2. 钉价（`pin_price`）：Credit 条目在这时用请求参数匹配 `rules`（`call.pricing_context`）；系数乘积不为 0 而没有价格 → `resource_not_permitted`（`reason: "unpriced"`）。
@@ -180,6 +180,6 @@
 - 不预占：并发或大调用可以把余额、窗口扣过头（预期行为）。
 - 准入在每次尝试前读一次策略、价目表、计数器与余额（SQLite 内的小表），不做缓存。
 - 进程在准入之后、`set_running` 持久化 binding 之前崩溃时，这次尝试没有扣费记录；已持久化 binding 的任务在恢复时会以真实 usage 或 `unknown_usage` 结算。
-- 一个任务只有一条用量事件：fallback 前失败但已上报 usage 的尝试有扣费记录，但不单独出现在 usage 明细里。
+- 一个任务只有一条用量事件，记在实际执行的模型上（由“不可用时”策略切换而来时带 `fallback_from`）；失败但已上报 usage 的尝试有扣费记录，但不单独出现在 usage 明细里（这类失败不会触发切换）。
 - 未代表他人的 System / Device 主体不受策略约束、不扣费。
 - 用户目录除 Agent owner 外不缓存，每次准入读取 system-config。

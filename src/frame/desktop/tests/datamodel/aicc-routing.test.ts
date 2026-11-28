@@ -9,7 +9,7 @@ function preview(scores: [string, number][]): RoutePreview {
     path: 'llm.chat',
     available: true,
     selectedExactModel: scores[0][0],
-    schedulerProfile: 'cost_first',
+    schedulerProfile: 'balanced',
     expansion: [
       { path: 'llm.chat', maxWeight: 2, items: [
         { name: 'pro', target: 'llm.gpt-pro', weight: 2, weightSource: 'builtin_definition', state: 'expanded' },
@@ -26,7 +26,6 @@ function preview(scores: [string, number][]): RoutePreview {
       scoreInputs: { cost: finalScore, quality: 0, preference: 0, cache: 0, local: 0 },
     })),
     filtered: [],
-    fallbackChain: [],
   }
 }
 

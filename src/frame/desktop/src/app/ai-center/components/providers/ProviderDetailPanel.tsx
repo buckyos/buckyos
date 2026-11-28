@@ -4,8 +4,11 @@ import { useMediaQuery } from '@mui/material'
 import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Filter, MoreHorizontal, Power, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore } from '../../hooks/use-aicc-store'
+import { useViewerIsAdmin } from '../../../settings/hooks/use-viewer-is-admin'
 import { StatusBadge } from '../shared/StatusBadge'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
+import { Switch } from '../shared/Switch'
+import { ProviderImpactList } from './ProviderImpactList'
 import { LongField } from '../shared/LongField'
 import { isManagedSnProvider, isSettingsRevisionConflict, type AuthStatus, type ModelMetadata, type ProviderSetupCatalog, type ProviderView } from '../../../../api/aicc_mgr'
 import { providerProtocolClients } from '../../../../api/custom_provider_rules'
@@ -93,6 +96,9 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [confirmDisable, setConfirmDisable] = useState(false)
+  const [updatingFaulty, setUpdatingFaulty] = useState(false)
+  const [faultyError, setFaultyError] = useState<string | null>(null)
+  const isAdmin = useViewerIsAdmin() === true
   const [updatingEnabled, setUpdatingEnabled] = useState(false)
   const [enabledError, setEnabledError] = useState<string | null>(null)
   const [enabledFeedback, setEnabledFeedback] = useState<string | null>(null)
@@ -234,6 +240,19 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
       setEnabledError(isSettingsRevisionConflict(error) ? t('aiCenter.providers.settingsConflict', 'Settings changed elsewhere. The latest values have been loaded; please try again.') : errorMessage(error, t('aiCenter.providers.toggleFailed', 'Could not update Provider status.')))
     } finally {
       setUpdatingEnabled(false)
+    }
+  }
+
+  const handleMarkFaulty = async (marked: boolean) => {
+    setUpdatingFaulty(true)
+    setFaultyError(null)
+    try {
+      await store.setProviderMarkedFaulty(provider, marked)
+    } catch (error) {
+      console.error('aicc.setProviderMarkedFaulty failed', error)
+      setFaultyError(isSettingsRevisionConflict(error) ? t('aiCenter.providers.settingsConflict', 'Settings changed elsewhere. The latest values have been loaded; please try again.') : errorMessage(error, t('aiCenter.providers.faultyFailed', 'Could not change the faulty mark.')))
+    } finally {
+      setUpdatingFaulty(false)
     }
   }
 
@@ -471,6 +490,12 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
             : t('aiCenter.providers.disabledNotice', 'This Provider is disabled and does not participate in model routing.')}
         </span>
       </InlineNotice>
+      {config.marked_faulty && (
+        <InlineNotice tone="warning">
+          <AlertTriangle size={16} style={{ color: 'var(--cp-warning)' }} />
+          <span data-testid="provider-faulty-notice">{t('aiCenter.providers.faultyNotice', 'Marked faulty: no call is sent to it. Usecases with an unavailable policy use their backup; the others fail at once.')}</span>
+        </InlineNotice>
+      )}
       <div className="md:hidden">
         <MetricCarousel metrics={providerMetrics} />
       </div>
@@ -518,6 +543,30 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
 
       {visibleSection === 'routing' && (
       <>
+      <div
+        className="rounded-xl p-4 flex flex-col gap-2"
+        data-testid="provider-faulty"
+        data-marked={config.marked_faulty === true}
+        style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.providers.markFaulty', 'Mark as faulty')}</div>
+            <div className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
+              {t('aiCenter.providers.markFaultyHint', 'Routing does not change. Usecases with an unavailable policy switch to their backup at once; the others fail immediately. For a long outage, disable the Provider instead.')}
+            </div>
+          </div>
+          <Switch
+            checked={config.marked_faulty === true}
+            disabled={!isAdmin || updatingFaulty}
+            onChange={(marked) => void handleMarkFaulty(marked)}
+            label={t('aiCenter.providers.markFaulty', 'Mark as faulty')}
+            testId="provider-faulty-switch"
+          />
+        </div>
+        {!isAdmin && <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.providers.markFaultyAdmin', 'Only an administrator can change it.')}</div>}
+        {faultyError && <div className="text-xs" style={{ color: 'var(--cp-danger)' }}>{faultyError}</div>}
+      </div>
       <div
         className="rounded-xl p-4 flex flex-col gap-3"
         style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
@@ -677,7 +726,9 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         onCancel={() => {
           if (!deleting) setConfirmDelete(false)
         }}
-      />}
+      >
+        {isAdmin && confirmDelete && <ProviderImpactList provider={config.provider_instance_name} />}
+      </ConfirmDialog>}
       <ConfirmDialog
         open={confirmDisable}
         title={t('aiCenter.providers.disableTitle', 'Disable Provider')}
@@ -690,7 +741,9 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         onCancel={() => {
           if (!updatingEnabled) setConfirmDisable(false)
         }}
-      />
+      >
+        {isAdmin && confirmDisable && <ProviderImpactList provider={config.provider_instance_name} />}
+      </ConfirmDialog>
     </div>
   )
 }

@@ -576,6 +576,7 @@ impl ExecutableProviderInstance {
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn health(&self) -> ProviderHealth {
         self.runtime.health.read().await.clone()
     }

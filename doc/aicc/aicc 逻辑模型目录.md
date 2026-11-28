@@ -71,19 +71,19 @@ API Type 决定 request/response schema。**Provider 不能自定义 api_type**,
 
 ## 二、一级逻辑目录与 API Type 对应
 
-每个一级目录是一个 namespace,声明该 namespace 下叶子节点支持的 api_type 集合。所有目录默认 `strict`，不自动换模型；fallback 只来自系统管理员手工配置，且只能在同 api_type 内进行（原则见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)；代码尚未完全跟上，见 [显式 fallback 改造 TODO](../../notepads/aicc-explicit-fallback-todo.md)）。
+每个一级目录是一个 namespace,声明该 namespace 下叶子节点支持的 api_type 集合。目录之间没有 fallback：目录无候选就返回无候选，不扩大到父目录或其他目录；唯一内置的例外是默认关闭的兜底 LLM `llm.fallback`。其中 kind 为 `task` 的 29 个节点是用户在用途表里看到和调整的“用途”；系统不自动换模型，换模型只来自用途上手工打开的“不可用时”策略，且只在同 api_type 内进行（见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)、[§11](aicc_router.md#11-用途表与配置层次)）。
 
-| 一级目录 | 默认 api_type | fallback 策略 | 默认调度 profile |
+| 一级目录 | 默认 api_type | 换模型的注意事项 | 默认调度 profile |
 |---|---|---|---|
-| `llm` | `llm` | namespace-only；各功能目录 strict | 功能目录分别配置 |
-| `embedding` | `embedding.text`、`embedding.multimodal` | **strict**(向量空间不通用) | latency_first |
-| `decision` | `decision` | strict | cost_first |
-| `rerank` | `rerank` | strict | latency_first |
-| `image` | `image.*`、`vision.*` | strict | quality_first |
-| `audio` | `audio.*` | strict(音色/语种不能跨) | latency_first(tts/asr)、quality_first(music) |
-| `video` | `video.*` | strict | quality_first |
-| `multimodal` | (any-to-any,占位) | disabled | — |
-| `agent_runtime` | `agent.*` | strict | reliability_first |
+| `llm` | `llm` | namespace-only；七个功能目录是用途，静态无模型时可由兜底 LLM 提供 | 功能目录分别配置 |
+| `embedding` | `embedding.text`、`embedding.multimodal` | 向量空间不通用：不可用时策略宜只用 `same_model` | latency_first |
+| `decision` | `decision` | — | balanced |
+| `rerank` | `rerank` | — | latency_first |
+| `image` | `image.*`、`vision.*` | — | quality_first |
+| `audio` | `audio.*` | 音色/语种不能跨：`audio.tts` 宜只用 `same_model` | latency_first(tts/asr)、quality_first(music) |
+| `video` | `video.*` | 异步任务只在拿到 remote task ID 之前允许切换 | quality_first |
+| `multimodal` | (any-to-any,占位) | — | — |
+| `agent_runtime` | `agent.*` | 跨 sandbox 环境状态不通用：宜保持 `none` | reliability_first |
 
 ### 2.1 `llm` 子目录
 
@@ -96,7 +96,7 @@ llm
 ├── swift      # 极速响应(短回复、低延迟)
 ├── summarize  # 总结/抽取，通过规格选择
 ├── translate  # 翻译
-└── fallback   # 默认空，只接收系统管理员显式配置
+└── fallback   # 兜底 LLM：默认关闭；管理员打开后为静态无模型的 LLM 用途提供模型
 ```
 
 支持的 api_type：`llm`。纯文本 completion 由调用方转换为单条 message，不定义独立 api_type。
@@ -205,9 +205,9 @@ llm
 
 零 Provider 时只保留功能目录、声明的规格及功能到规格的引用。metadata 与有效 inventory 相交后才创建家族及预设；最后一个对应实例消失时删除动态家族和引用，规格恢复为空。官方 Provider 下线不删除其他渠道仍可提供的家族，也不删除其模型定义。
 
-选择分两阶段。阶段一逐层展开：功能目录、规格、家族预设各自只展开本层可用 item 中权重最大的一组，并列全部展开；某组没有任何静态可用的候选（无库存、admission 不满足、未启用、凭据未配置或被策略硬过滤）时才尝试同层下一权重组，全部不可用则该目录为空；健康、熔断、冷却等运行状态不参与，权重不是故障时的切换顺序。同权重规格不按规格 ID 提前淘汰，而是各自展开后共同进入阶段二。阶段二把展开得到的合格 instance 合并成候选池，按调度 profile（默认成本优先）选择，策略项全部相同时按默认顺序（配置书写顺序；家族按路径、instance 按 exact model 名）。`stability = experimental` 只是准入条件：请求未允许实验版时硬过滤，允许后不再被隐式排在稳定版之后。执行失败后不切换到池内其它候选。
+选择分两阶段。阶段一逐层展开：功能目录、规格、家族预设各自只展开本层可用 item 中权重最大的一组，并列全部展开；某组没有任何静态可用的候选（无库存、admission 不满足、未启用、凭据未配置或被策略硬过滤）时才尝试同层下一权重组，全部不可用则该目录为空；健康、熔断、冷却等运行状态不参与，权重不是故障时的切换顺序。同权重规格不按规格 ID 提前淘汰，而是各自展开后共同进入阶段二。阶段二把展开得到的合格 instance 合并成候选池，按调度 profile（默认 `balanced`；`llm.summarize`、`llm.translate`、`llm.fallback` 原来的 `cost_first` 已删除，改为 `balanced`）选择，策略项全部相同时按默认顺序（配置书写顺序；家族按路径、instance 按 exact model 名）。`stability = experimental` 只是准入条件：请求未允许实验版时硬过滤，允许后不再被隐式排在稳定版之后。执行失败后不切换到池内其它候选；只有用途打开了“不可用时”策略，才把原 Provider 当作停用重新路由一次。用户层或策略组为用途选定的精确模型不经过这两个阶段（[aicc_router.md §11.3](aicc_router.md#113-求值)）。
 
-任务、规格、家族没有隐式 Parent fallback；`llm` 不收集模型。所有用途默认 strict，`llm.fallback` 默认为空；只有系统管理员为某个用途手工配置了目标，该用途才会 fallback，并沿用原用途的能力门槛和禁用项。家族、规格直选使用声明的预设，不自动升级其他家族。每个规格须被功能引用或标记 `direct_only`，后者不能通过功能或 fallback 暗中接入。
+任务、规格、家族之间没有 fallback；`llm` 不收集模型。所有用途的“不可用时”默认 `none`。`llm.fallback`（兜底 LLM）默认关闭，内容是内置的小模型规格（按“廉价快速档 4.0 > 性价比档 3.0 > 标准档 2.0 > 高档/特化 1.0”分层）；管理员打开后，七个 LLM 用途中静态上没有候选的改由它提供，只带请求自身的硬要求，不带原用途的门槛；Provider 故障不会转到它。家族、规格直选使用声明的预设，不自动升级其他家族。每个规格须被功能引用或标记 `direct_only`，后者不能通过功能或兜底 LLM 暗中接入（`llm.fallback` 只引用非 `direct_only` 规格）。
 
 以下非 LLM 家族目录保留原有设计，不套用本节的规格规则。
 
@@ -366,7 +366,7 @@ video
 
 ## 四、全局 routing config 示意
 
-以下沿用本文 YAML 展示形式说明功能到规格的偏好，不是当前公共 DTO 的可直接写入配置；LLM 部分为新设计，非 LLM 示例保留原基线。实际 overlay 结构与 factory/system/user/session 顺序见 [冻结设计](frozen_model_driver_and_logical_model_fs.md)。规格及动态家族由 metadata/inventory 生成，无须在路由偏好里重复声明。
+以下沿用本文 YAML 展示形式说明功能到规格的偏好，不是当前公共 DTO 的可直接写入配置；LLM 部分为新设计，非 LLM 示例保留原基线。实际配置是 `services/aicc/settings.routing`，模型树只有 factory / system 两层，见 [冻结设计](frozen_model_driver_and_logical_model_fs.md)；用户层和策略组只改用途的两格，见 [aicc_router.md §11](aicc_router.md#11-用途表与配置层次)。规格及动态家族由 metadata/inventory 生成，无须在路由偏好里重复声明。
 
 ```yaml
 routing_config:
@@ -391,8 +391,6 @@ routing_config:
       items:
         - { name: gpt_codex, target: llm.gpt-codex, weight: 3.2 }
         - { name: gpt_standard, target: llm.gpt-standard, weight: 3.0 }
-      # 管理员手工配置 fallback 的写法；默认没有这一行
-      fallback: { mode: target_logical, target: llm.gpt-mini }
 
     llm.swift:
       items:
@@ -405,7 +403,6 @@ routing_config:
         - { name: bge, target: bge-m3@local, weight: 2.0 }
         - { name: voyage, target: voyage-3@voyageai, weight: 2.0 }
         - { name: openai, target: text-embedding-3-large@openai, weight: 1.0 }
-      fallback: { mode: strict }   # 默认即 strict；向量空间不通用
 
     # ===== Image =====
     image.txt2img:
@@ -429,7 +426,6 @@ routing_config:
         - { name: eleven, target: eleven-v3@elevenlabs, weight: 2.5 }
         - { name: openai, target: tts-1-hd@openai, weight: 2.0 }
         - { name: kokoro, target: kokoro-82m@local, weight: 1.0 }
-      fallback: { mode: strict }   # 默认即 strict；音色不能换
       profile: latency_first
 
     audio.asr:
@@ -452,9 +448,18 @@ routing_config:
   policy:
     local_only: false
     blocked_provider_instances: []
+
+  # 管理员层的用途表（routing.usecases）；用户层和策略组同形状，存 AICC RDB
+  usecases:
+    llm.code:
+      on_unavailable: next_model     # 默认 none；不另配目标，按默认路由停用原 Provider 后重算
+    embedding.text:
+      on_unavailable: same_model     # 向量空间不通用，只换 Provider 不换模型
+    llm.fallback:
+      enabled: true                  # 兜底 LLM，默认关闭
 ```
 
-LLM 目标中，功能 item 只引用已声明规格；Provider inventory 的物理实例归入动态家族预设，不直接挂入功能目录。显式 overlay 调整偏好后仍须通过规格引用和图校验。
+LLM 目标中，功能 item 只引用已声明规格；Provider inventory 的物理实例归入动态家族预设，不直接挂入功能目录。管理员调整偏好后仍须通过规格引用和图校验。
 
 ---
 
@@ -462,9 +467,9 @@ LLM 目标中，功能 item 只引用已声明规格；Provider inventory 的物
 
 1. **多语种 TTS 的目录细分**:`audio.tts` 当前没有按语种区分,但 `eleven-v3` 和 `kokoro-82m` 的语种支持差异巨大。考虑在 `attributes.languages` 上做硬过滤。
 2. **图像家族中模型变体的层级**:如 `flux-dev` / `flux-schnell` / `flux-1.1-pro` 都属于 `flux` 家族,但延迟和质量差一档。应在 attributes 中加 `tier: flagship/mid/swift`。
-3. **`agent_runtime` 的 fallback 语义**:跨 sandbox 的环境状态不通用(local Docker 启动的容器在云端 E2B 看不到),因此只用 strict,并在 Provider 层做"会话级 sandbox 粘性"。
+3. **`agent_runtime` 的切换语义**:跨 sandbox 的环境状态不通用(local Docker 启动的容器在云端 E2B 看不到),因此“不可用时”宜保持 `none`,并在 Provider 层做"会话级 sandbox 粘性"。
 4. **多模态 any-to-any 的 schema 收敛**:暂时让 OpenAI GPT 角色挂点、`llm.gemini-pro`、`llm.qwen-max` 这类逻辑挂点各自挂多个目录。等业界 API 形态收敛后再考虑合并 namespace。
 
 ## Decision 逻辑入口（2026-09-25）
 
-一级入口新增 `decision`，采用非 LLM Hybrid 挂点、strict 回退和 cost_first 调度。零 Provider 时保留目录但无候选。TypeSafe 模型挂点为 `decision`、`decision.typesafe` 与模型子路径，不归入 LLM 规格或 effort。题型、结构化输入与容量约束在逻辑、exact 和 preview 路由均生效。完整契约、示例及核验来源见 [Decision API](decision_api.md)。
+一级入口新增 `decision`，采用非 LLM Hybrid 挂点，不回退，调度 profile 为 `balanced`（2026-11-27 前为 `cost_first`）。零 Provider 时保留目录但无候选。TypeSafe 模型挂点为 `decision`、`decision.typesafe` 与模型子路径，不归入 LLM 规格或 effort。题型、结构化输入与容量约束在逻辑、exact 和 preview 路由均生效。完整契约、示例及核验来源见 [Decision API](decision_api.md)。

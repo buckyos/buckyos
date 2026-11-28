@@ -389,6 +389,7 @@ Compress the supplied work history of an agent session into a summary that lets 
         disable_capabilities: Vec::new(),
         tool_specs: Vec::new(),
         allow_tool_calls: false,
+        route_group: None,
         abort: llm_context::InferenceAbortToken::noop(),
     };
     let started = Instant::now();

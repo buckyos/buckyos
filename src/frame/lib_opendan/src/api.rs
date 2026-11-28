@@ -465,6 +465,7 @@ pub async fn create_session(
             }),
         artifact_id: spec.artifact_id.clone(),
         subscriptions: spec.subscriptions.clone(),
+        route_group: None,
         channels: Channels {
             inputs,
             outbound: spec.outbound.clone(),
@@ -826,6 +827,36 @@ pub fn dialogue_excerpt(sd: &SessionDir, n: usize) -> Result<String> {
     }
     lines.reverse();
     Ok(lines.join("\n"))
+}
+
+/// The routing group in force for a session and the session that set it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteGroupRef {
+    pub group_id: String,
+    pub session_id: String,
+}
+
+/// The routing group in force for `sid`: its own `route_group`, else the
+/// nearest one along `origin.parent_session`. Read at every call, so a
+/// parent's change reaches the sub sessions it already has.
+pub async fn route_group_of(agent: &dyn AgentStateClient, sid: &str) -> Result<Option<RouteGroupRef>> {
+    let mut cur = Some(sid.to_string());
+    let mut depth = 0;
+    while let Some(id) = cur {
+        depth += 1;
+        if depth > 33 {
+            break;
+        }
+        let Some(entry) = agent.sessions().lookup(&id).await? else {
+            break;
+        };
+        let cfg = SessionDir::open(&entry.location)?.config()?;
+        if let Some(group_id) = cfg.route_group.filter(|g| !g.is_empty()) {
+            return Ok(Some(RouteGroupRef { group_id, session_id: id }));
+        }
+        cur = entry.origin.and_then(|o| o.parent_session);
+    }
+    Ok(None)
 }
 
 /// Nesting depth of `sid` below its root session.

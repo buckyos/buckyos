@@ -1219,6 +1219,7 @@ impl LLMContext {
             disable_capabilities: self.request.tool_policy.disable_capabilities.clone(),
             tool_specs,
             allow_tool_calls,
+            route_group: None,
             abort: self.abort_token(),
         }
     }

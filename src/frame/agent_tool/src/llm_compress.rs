@@ -739,6 +739,7 @@ async fn summarize_once(
         allow_tool_calls: false,
         // Internal summariser call — no scheduler-side interrupt handle is
         // exposed for it.
+        route_group: None,
         abort: llm_context::InferenceAbortToken::noop(),
     };
     let resp = deps.llm.infer(req).await?;

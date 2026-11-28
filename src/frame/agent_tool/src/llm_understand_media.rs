@@ -1974,7 +1974,6 @@ async fn prepare_media_content(
     opts: &RunOpts,
     model_alias: &str,
 ) -> Result<PreparedMedia, PrepareError> {
-    let session_id = opts.session_id.as_deref();
     let failed = |decision: &MediaDecision, message: String| {
         PrepareError::new(decision.clone().with_kind("failed"), message)
     };
@@ -1987,7 +1986,7 @@ async fn prepare_media_content(
     if is_audio_mime(&media.mime) {
         let decision = MediaDecision::direct(media, "audio goes through AICC speech recognition");
         let source = media.model_source().await.map_err(|e| failed(&decision, e))?;
-        let transcript = transcribe_audio(source, session_id)
+        let transcript = transcribe_audio(source)
             .await
             .map_err(|e| failed(&decision, e))?;
         let mut prepared = PreparedMedia::new(audio_transcript_content(&transcript), decision);
@@ -2037,7 +2036,7 @@ async fn prepare_media_content(
             decision,
         ));
     }
-    let route = resolve_document_route(model_alias, session_id).await;
+    let route = resolve_document_route(model_alias).await;
     if route.accepts_documents && media.size <= DocumentLimits::from_env().direct_max_bytes {
         let decision = MediaDecision::direct(media, "the model route accepts documents");
         return direct_document(media, decision).await;
@@ -2076,7 +2075,7 @@ async fn prepare_pdf(
     model_alias: &str,
 ) -> Result<PreparedMedia, PrepareError> {
     let limits = DocumentLimits::from_env();
-    let route = resolve_document_route(model_alias, opts.session_id.as_deref()).await;
+    let route = resolve_document_route(model_alias).await;
     if !route.accepts_documents {
         let reason = format!("model route `{}` does not take documents", route.label);
         return prepare_document(media, opts, None, reason).await;
@@ -2121,12 +2120,11 @@ struct DocumentRoute {
 
 /// Whether the LLM route AICC picks for `model_alias` takes document parts:
 /// the model, its protocol client and the Provider all allow `document`.
-async fn resolve_document_route(model_alias: &str, session_id: Option<&str>) -> DocumentRoute {
+async fn resolve_document_route(model_alias: &str) -> DocumentRoute {
     let route = async {
         let runtime = get_buckyos_api_runtime().ok()?;
         let client = runtime.get_aicc_client().await.ok()?;
-        let mut request = RouteResolveRequest::new(ApiType::Llm, model_alias);
-        request.session_id = session_id.map(str::to_string);
+        let request = RouteResolveRequest::new(ApiType::Llm, model_alias);
         client.route_resolve(request).await.ok()
     }
     .await;
@@ -2751,7 +2749,7 @@ async fn prepare_video(media: &ResolvedMedia, opts: &RunOpts) -> Result<Prepared
         Some(entry) => match entry.audio_obj_id.as_ref() {
             Some(audio_id) => {
                 let result = match named_object(audio_id) {
-                    Ok(source) => transcribe_audio(source, opts.session_id.as_deref()).await,
+                    Ok(source) => transcribe_audio(source).await,
                     Err(err) => Err(err),
                 };
                 match result {
@@ -2788,7 +2786,7 @@ async fn prepare_video(media: &ResolvedMedia, opts: &RunOpts) -> Result<Prepared
     Ok(prepared)
 }
 
-async fn transcribe_audio(source: ResourceRef, session_id: Option<&str>) -> Result<String, String> {
+async fn transcribe_audio(source: ResourceRef) -> Result<String, String> {
     let runtime = get_buckyos_api_runtime()
         .map_err(|err| format!("get buckyos runtime for audio transcription failed: {err}"))?;
     let client = runtime
@@ -2796,18 +2794,16 @@ async fn transcribe_audio(source: ResourceRef, session_id: Option<&str>) -> Resu
         .await
         .map_err(|err| format!("get aicc client for audio transcription failed: {err}"))?;
 
-    let mut route_request = RouteResolveRequest::new(
+    let route_request = RouteResolveRequest::new(
         ApiType::AudioSpeechRecognition,
         DEFAULT_AUDIO_ASR_MODEL_ALIAS,
     );
-    route_request.session_id = session_id.map(str::to_string);
     let route = client
         .route_resolve(route_request)
         .await
         .map_err(|err| format!("resolve audio.asr model failed: {err}"))?;
 
-    let mut request = AudioSpeechRecognitionRequest::new(route.selected_exact_model, source);
-    request.session_id = session_id.map(str::to_string);
+    let request = AudioSpeechRecognitionRequest::new(route.selected_exact_model, source);
     let response = client
         .audio_speech_recognition(request)
         .await

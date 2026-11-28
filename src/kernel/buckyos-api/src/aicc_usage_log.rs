@@ -98,6 +98,9 @@ pub struct AiccUsageEvent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subjects: Vec<String>,
     pub created_at_ms: i64,
+    /// The exact model the usecase's "when unavailable" policy replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_from: Option<String>,
 }
 
 fn serialize_canonical_typed_method<S>(method: &String, serializer: S) -> Result<S::Ok, S::Error>
@@ -243,6 +246,9 @@ pub struct UsageQueryFilters {
     /// time of the call (administrators only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_groups: Vec<String>,
+    /// Only usage served by a usecase's "when unavailable" policy.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fallback_only: bool,
 }
 
 /// Group dimensions supported by `query_usage`. Multiple values produce a
@@ -457,6 +463,7 @@ mod tests {
             credit_status: Some(CreditChargeStatus::Charged),
             subjects: vec!["type:user".to_string()],
             created_at_ms: 1_750_000_000_000,
+            fallback_from: None,
         }
     }
 

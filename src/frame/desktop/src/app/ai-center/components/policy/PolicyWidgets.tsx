@@ -1,6 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { useMediaQuery } from '@mui/material'
 import { Plus, Trash2, X } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
+import { useMobileBackHandler, useMobileTitleOverride } from '../../../../desktop/windows/MobileNavContext'
 import {
   LIMIT_PERIODS,
   LIMIT_UNITS,
@@ -137,9 +139,12 @@ export function CreditPriceBadge({ price, testId = 'credit-price' }: { price: Mo
   return <StatusDot testId={testId} status={price.state} tone={tone} label={text(price)} />
 }
 
-/** Right-hand drawer on desktop, full screen on phones. */
+/** Right-hand drawer on desktop, full screen on phones, where the shell's status bar shows its title and Back. */
 export function SidePanel({ title, onClose, children, testId, wide = false }: { title: string; onClose: () => void; children: ReactNode; testId?: string; wide?: boolean }) {
   const { t } = useI18n()
+  const isMobile = useMediaQuery('(max-width: 767px)')
+  useMobileBackHandler(isMobile ? onClose : null)
+  useMobileTitleOverride(isMobile ? { title } : null)
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)

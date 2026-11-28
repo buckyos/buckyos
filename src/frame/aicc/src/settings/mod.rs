@@ -30,8 +30,10 @@ include!(concat!(env!("OUT_DIR"), "/builtin_metadata.rs"));
 pub(crate) struct AiccSettings {
     #[serde(default)]
     pub providers: Vec<ProviderSettings>,
+    /// The administrator's routing: the usecase layer, weights and
+    /// commands (doc/aicc/aicc_router.md §11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_config: Option<AiccRouteOverlay>,
+    pub routing: Option<AiccRouteOverlay>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_named_object_base_url: Option<String>,
 }
@@ -74,6 +76,9 @@ pub(crate) struct ProviderSettings {
     pub auto_sync_models: Option<bool>,
     #[serde(default)]
     pub lifecycle: ProviderLifecyclePolicy,
+    /// Marked faulty by an administrator: still routed, never called.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub marked_faulty: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +117,7 @@ impl fmt::Debug for ProviderSettings {
             .field("timeout_ms", &self.timeout_ms)
             .field("auto_sync_models", &self.auto_sync_models)
             .field("lifecycle", &self.lifecycle)
+            .field("marked_faulty", &self.marked_faulty)
             .finish()
     }
 }
@@ -822,7 +828,7 @@ mod tests {
     fn parses_only_unified_provider_array() {
         let document = parse_payload(
             12,
-            json!({"providers": [provider("primary")], "session_config": {}}),
+            json!({"providers": [provider("primary")], "routing": {}}),
         )
         .unwrap();
         assert_eq!(document.revision, 12);

@@ -32,7 +32,7 @@ pub use context_loop::LLMContext;
 pub use context_window::ContextLimits;
 pub use deps::{
     AllowAllPolicy, ByteHeuristicTokenizer, CancelCause, CheckpointHook, Injection,
-    InjectionPosition, LLMContextDeps, LlmClient, LlmInferenceRequest, NoopWorklogSink,
+    InjectionPosition, LLMContextDeps, LlmClient, LlmInference, LlmInferenceRequest, NoopWorklogSink,
     OutputValidator, PolicyEngine, Tokenizer, ToolCallCtx, ToolDispatchError, ToolManager,
     ToolSpecLite, WorkEvent, WorklogSink, MAX_INJECTIONS_PER_BOUNDARY,
 };

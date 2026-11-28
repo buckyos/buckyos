@@ -546,6 +546,27 @@
       "type": "object"
     },
     {
+      "description": "The AICC routing group of the session and of its sub sessions without their own (`session_config.route_group`; `None` clears it). Takes effect at the next inference.",
+      "properties": {
+        "command": {
+          "enum": [
+            "route_group"
+          ],
+          "type": "string"
+        },
+        "route_group": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    {
       "description": "Goal Sessions: change the Goal's current skills (applied by the driver to the Goal State it owns).",
       "properties": {
         "add": {

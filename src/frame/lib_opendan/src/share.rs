@@ -227,6 +227,7 @@ pub async fn compose(
         ],
         tool_specs: Vec::new(),
         allow_tool_calls: false,
+        route_group: None,
         abort: InferenceAbortToken::noop(),
     };
     let resp = llm

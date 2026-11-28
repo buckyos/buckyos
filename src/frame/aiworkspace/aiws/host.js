@@ -28,7 +28,6 @@ const DEFAULT_COMPLETE_TOKENS = 4096
 const MAP_TOKENS = 4096
 const MEDIA_DEFAULTS = { image: { model: 'image.txt2img', max_calls: 20 }, video: { model: 'video.generate', max_calls: 2 } }
 const DEFAULT_MEDIA_TIMEOUT_SECS = 900
-const MEDIA_POLICY = { profile: 'balanced', allow_fallback: true, runtime_failover: true }
 const FORMATS = { png: 'image/png', jpeg: 'image/jpeg', jpg: 'image/jpeg', webp: 'image/webp' }
 const OBJECT_ID = /^cyfile:[0-9a-f]{16,}$/
 
@@ -384,15 +383,15 @@ export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = n
   async function generate(kind, model, request) {
     let response
     if (kind === 'video') {
-      response = await aicc('helper.video_generate', { ...request, logical_model: model, requirements: {}, disable: {}, policy: MEDIA_POLICY })
+      response = await aicc('helper.video_generate', { ...request, logical_model: model, requirements: {}, disable: {} })
     } else if (request.images) {
       const logical = model.replace(/^image\.txt2img/, 'image.img2img')
       const exact = logical.includes('@') ? logical
-        : (await aicc('route.resolve', { api_type: 'image.img2img', logical_model: logical, requirements: {}, disable: {}, policy: MEDIA_POLICY }))?.selected_exact_model
+        : (await aicc('route.resolve', { api_type: 'image.img2img', logical_model: logical, requirements: {}, disable: {} }))?.selected_exact_model
       if (!exact) throw new Error(`no model serves image.img2img for ${logical}`)
       response = await aicc('image.img2img', { ...request, exact_model: exact })
     } else {
-      response = await aicc('helper.text_to_image', { ...request, logical_model: model, requirements: {}, disable: {}, policy: MEDIA_POLICY })
+      response = await aicc('helper.text_to_image', { ...request, logical_model: model, requirements: {}, disable: {} })
     }
     if (response?.status === 'succeeded') return response
     if (response?.status === 'failed') throw new Error(`the AI service failed: ${JSON.stringify(response.error ?? response.message ?? response)}`)

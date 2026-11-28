@@ -1319,6 +1319,8 @@ async fn commit_run_end(
 ) -> Result<RunEnded> {
     let run_id = run.run_id().to_string();
     let sid = s.sid().to_string();
+    // Notices go out before the reply of the Turn they were seen in.
+    super::shared::store_route_notes(sh, s).await;
     // The run's unwritten history (after what a suspension already flushed).
     let marks = s
         .state

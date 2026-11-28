@@ -103,6 +103,19 @@ pub trait OutboundSink: Send + Sync {
         None
     }
 
+    /// The message telling the other side that a fallback model answered
+    /// (`note`, once per usecase and model of the session), on the envelope
+    /// `base`. `None` (the default): the host has no such text.
+    async fn notice(
+        &self,
+        cfg: &SessionConfig,
+        base: MsgObject,
+        note: &RouteFallbackNote,
+    ) -> Option<MsgObject> {
+        let _ = (cfg, base, note);
+        None
+    }
+
     async fn send(&self, sid: &str, record: &OutboundRecord) -> SendResult;
 }
 
@@ -398,6 +411,42 @@ fn route_mismatch(route: &ReplyRoute, binding: &OutboundBinding) -> Option<Strin
             binding.kind
         )
     })
+}
+
+/// Queue the notices of fallbacks first seen now (uncommitted; they leave
+/// with the next hand-over, at the latest with the Turn's reply). A session
+/// without a message route (a sub session) only keeps the notes.
+pub(super) async fn push_route_notices(sh: &Shared, s: &mut Session, notes: &[RouteFallbackNote]) {
+    let Some(sink) = sh.deps.outbound.clone() else {
+        return;
+    };
+    for note in notes {
+        let key = format!("{}:route_fallback:{}:{}", s.sid(), note.usecase, note.model);
+        if s.state.outbox.iter().any(|e| e.key == key) {
+            continue;
+        }
+        let Some((route, base)) = reply_base(s) else {
+            return;
+        };
+        if binding_mismatch(s, &route).is_some() {
+            return;
+        }
+        let Some(msg) = sink.notice(&s.config, base, note).await else {
+            continue;
+        };
+        s.state.outbox.push(OutboxEntry {
+            key,
+            msg,
+            turn: note.turn.unwrap_or_default(),
+            purpose: OutboxPurpose::Notice,
+            status: OutboxStatus::Pending,
+            msg_id: None,
+            deliveries: Vec::new(),
+            error: None,
+            attempts: 0,
+            updated_at_ms: crate::now_ms(),
+        });
+    }
 }
 
 /// Called inside the commit that closes a Turn: the reply joins

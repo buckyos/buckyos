@@ -1,6 +1,6 @@
 import { buckyos, getActiveSessionToken, RuntimeType } from 'buckyos'
 import { OpenDanError, type LoginState, type OpenDanDataModel } from './datamodel'
-import type { AgentProfile, LoaderStatus } from './types'
+import type { AgentProfile, LoaderStatus, RouteGroup } from './types'
 
 const SERVICE_URL = '/api/opendan'
 
@@ -153,6 +153,17 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     resumeSession: (sid) => call('session.resume', { sid }),
     deleteSession: (sid) => call('sessions.delete', { sid }),
     decideSession: (sid, decision, note) => call('session.decide', { sid, decision, ...(note ? { note } : {}) }),
+    setRouteGroup: (sid, routeGroup) => call('session.route_group', { sid, route_group: routeGroup }),
+    routeGroups: async () => {
+      // AICC with the same zone login (`/kapi/aicc`); outside a zone there is none.
+      if (!(await sessionToken())) return null
+      const aicc = new buckyos.kRPCClient('/kapi/aicc/', null, null, { sessionTokenProvider: sessionToken })
+      try {
+        return (await aicc.call<{ groups: RouteGroup[] }, Record<string, unknown>>('routing.groups.list', {})).groups ?? []
+      } catch (error) {
+        throw toError(error)
+      }
+    },
     postMessage: (sid, text) => call('session.post', { sid, text }),
     artifacts: () => call('artifacts.list'),
     artifactVersions: (aid) => call('artifacts.versions', { aid }),

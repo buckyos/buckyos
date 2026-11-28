@@ -24,6 +24,8 @@
 
 - **2026-05-29 概念对齐**：本 PRD 初版在定义阶段对 AICC 的理解落后于工程实现。原文把 AICC 当作"带 fallback 链的模型聚合器"，实际 AICC 已是"**任务化逻辑目录 + 调度器 + 运行时可观测平面**"。本次修订按工程真相源重写了核心概念（§3）、信息架构（§4）、用量分类（§6.5）、Providers/Models 概念边界（§7/§8）、整个 Routing（§9）与数据模型（§10），并新增 Route Trace 可观测能力。**交互设计（尤其 Routing 与 Models 页）需据此重做。**
   - 概念真相源：`doc/aicc/aicc 逻辑模型目录.md`、`doc/aicc/aicc_router.md`、`src/frame/aicc/src/model_types.rs`、`src/frame/aicc/src/model_session.rs`、`src/frame/aicc/src/default_logical_tree.rs`。
+- **2026-11-27 用户视角的路由**：路由对用户来说是一张**用途表**（用途 → 一个精确模型 `model@provider`），默认路由稳定，Provider 不可用不改变路由、系统不自动换模型；换模型只来自手工配置的“不可用时”策略。删除 fallback 模式（`parent` / `target_*` 等）、`runtime_failover`、`allow_fallback`、`cost_first` 和请求携带的 `session_overlay`；`llm.fallback` 改为默认关闭的“兜底 LLM”。新增用途页、路由策略组、添加 Provider 时的用途覆盖步骤、Provider 的“标记为故障”。改动见 §3.5、§3.6、§3.8、§3.10、§4.1、§5.2、§5.5、§6.3、§7、§9、§10、§12。
+  - 规范：[aicc_router.md](../../doc/aicc/aicc_router.md) §9、§11、§12；设计与裁决：[AICC 用户视角的模型路由改进 TODO](../../notepads/aicc-user-centric-routing-todo.md)。
 
 ---
 
@@ -115,7 +117,7 @@ AI Center 是 BuckyOS 中的 **系统级 AI 能力控制中心**，用于统一�
 
 - 能理解 Provider、API Key、Endpoint、Logical Model
 - 可能接入多个 Provider、多个 Key、多个模型
-- 需要自定义逻辑名、优先级、Fallback、模型策略
+- 需要按用途选模型、设置 Provider 不可用时的策略、为不同 App / 会话准备不同的路由策略组
 
 需求：
 
@@ -201,16 +203,18 @@ Provider 通过 **inventory** 声明自己提供哪些模型（`ProviderInventor
 
 ---
 
-## 3.5 逻辑目录树（Logical Directory / SessionConfig）
+## 3.5 逻辑目录树（Logical Directory / routing 配置）
 
-路由的真相源是一棵**树**而非列表：
+默认路由由一棵**树**展开得出，而非列表：
 
-- `SessionConfig.logical_tree`：`path -> LogicalNode`
-- `LogicalNode`：`children`（子节点）、`items`（候选，`name -> {target, weight}`）、`item_overrides`、`exact_model_weights`、`fallback`（规则）、`policy`
+- 系统配置 `services/aicc/settings` 的 `routing`（原字段名 `session_config`）：`logical_tree`（`path -> LogicalNode`）、`global_exact_model_weights`、`provider_weights`、`routing_commands`、`policy`，以及管理员层的用途配置 `usecases`（§3.10）
+- `LogicalNode`：`children`（子节点）、`items`（候选，`name -> {target, weight}`）、`item_overrides`、`exact_model_weights`、`policy`
 - 候选 `target` 可以指向**另一个逻辑路径**（递归），也可以是精确型号
-- 选择靠**权重（weight）**，不是简单优先级排序
-- `fallback.mode`：`parent`（回退上级）/ `strict` / `disabled` / `target_logical` / `target_exact`；**fallback 只能在同 api_type 内**
-- 支持分层继承（`inherit`）与 `locked` 锁定：admin 锁定的策略，下层会话不能改
+- 选择靠**权重（weight）**，不是简单优先级排序；展开只看静态条件（库存、能力、Provider 启用、凭据、策略），不看健康状态
+- **目录之间没有回退**：目录没有候选就返回无候选，不回退到父目录或别的目录。唯一的例外是默认关闭的兜底 LLM（§3.10）
+- `locked` 锁定：管理员锁定的策略或用途格子，用户层、策略组和请求都不能改
+
+这棵树是内部结构，只在“路由细节”（§9.4）里出现；用户看到和调整的是用途表（§3.10、§9.3）。
 
 内置默认树见 `default_logical_tree.rs`（revision `builtin-aicc-router-v2`）。Provider inventory 可用 `item_overrides` 把精确模型挂到角色目录，而不被内置树覆盖。
 
@@ -218,11 +222,11 @@ Provider 通过 **inventory** 声明自己提供哪些模型（`ProviderInventor
 
 ## 3.6 调度 Profile 与 Policy
 
-"在候选里怎么选"由 profile + policy 控制，这才是用户该调的旋钮（**不是拖优先级**）：
+默认路由"在候选里怎么选"由 profile + policy 控制（**不是拖优先级**）。它们是路由细节里的高级旋钮；普通用户直接在用途表里选模型（§3.10）：
 
-- `SchedulerProfile`：`cost_first` | `latency_first` | `quality_first` | `balanced` | `local_first` | `strict_local`
-- 每个 profile 是一组权重：`cost / latency / reliability / quality / preference / cache / local`
-- `RoutePolicy`：`local_only`、`allow_fallback`、`runtime_failover`、`required_features`（按能力硬过滤）、`allowed / blocked_provider_instances`、`max_estimated_cost_usd`
+- `SchedulerProfile`：`latency_first` | `quality_first` | `balanced`（默认）| `local_first` | `strict_local`；`cost_first` 已删除
+- 每个 profile 是一组权重：`cost / quality / preference / cache / local`；健康、延迟等运行观测不参与排序
+- 请求携带的 `RoutePolicy` **只能收紧**：`local_only`、`no_fallback`（本次关闭用途的“不可用时”策略）、`allowed / blocked_provider_instances`（允许列表与管理员的取交集）、更低的 `max_cost`、`max_latency_ms`（按观测延迟的硬门槛）；未被管理员锁定时可选 `fast` / `balanced` / `quality` profile。请求不能选用途的模型，也不能打开“不可用时”策略
 
 ---
 
@@ -242,8 +246,10 @@ Provider 通过 **inventory** 声明自己提供哪些模型（`ProviderInventor
 
 - `requested_model` + `requested_model_type`(exact/logical) → `resolved_logical_path` → `selected_exact_model` + `selected_provider_instance_name`
 - `ranked_candidates[]`（每个候选的打分与是否选中）、`filtered_candidates[]`（被过滤原因）
-- `fallback_applied` + `fallback_chain[]`、`runtime_failover_count`、`session_sticky_hit`、`scheduler_profile`
-- `user_summary`：面向普通用户的人话版（"用了 Claude Opus，因为这是规划任务的高质量首选；曾因限流从 X 切换"）
+- 用途来源：这次用的模型来自哪一层（默认 / 管理员 / 我 / 某个策略组）、命中的 App 或会话策略组、“不可用时”策略及其来源
+- `fallback`：答复不是来自用途自己的模型时出现。`kind = coverage` 表示用途没有模型、由兜底 LLM 提供；`kind = unavailable` 表示原模型不可用、按“不可用时”策略换成了另一个模型（`from` / `to` / `policy`）
+- `scheduler_profile`
+- `user_summary`：面向普通用户的人话版（"用了 Claude Opus，因为这是规划任务的高质量首选"；"gpt-codex@openai 不可用，按‘同一个模型换 Provider’改用 gpt-codex@openrouter"）
 
 ---
 
@@ -255,6 +261,29 @@ Provider 通过 **inventory** 声明自己提供哪些模型（`ProviderInventor
 
 ---
 
+## 3.10 用途表、不可用时策略与路由策略组（2026-11-27 新增）
+
+> 这是用户理解和调整路由的唯一入口。规范见 [aicc_router.md](../../doc/aicc/aicc_router.md) §9、§11、§12。
+
+- **用途（usecase）**：逻辑目录里的 29 个任务入口（`llm.chat`、`llm.code`、`image.txt2img`、`audio.tts`……，完整列表见 §9.5）。每个用途路由到**一个精确模型** `model@provider`。
+- **默认路由是稳定的**：相同的配置和库存得到相同的模型。只有添加、删除、启用、停用 Provider，Provider 模型列表刷新、Model Driver metadata 更新，以及管理员的权重命令会改变它；Provider 故障、健康、延迟、价格估算、请求大小都不会。
+- **层次**：`默认 < 管理员层（Zone 默认）< 用户层（我）< App 绑定的策略组 < 会话绑定的策略组`。每个用途有两格——“模型”和“不可用时”——各由设了它的最高一层决定；没设就跟随下一层。管理员可以锁定格子，锁定后更高的层不能改。某一层选的模型已不在库存、对当前用户不可见或不满足用途要求时，这一格跟随下一层，并在用途表上标出。
+- **“不可用时”策略（`on_unavailable`）**：
+
+| 值 | 界面文案 | 含义 |
+|---|---|---|
+| `none` | 不切换（默认） | 返回 Provider 的真实错误 |
+| `same_model` | 同一个模型换 Provider | 换到别的 Provider 上的同一个模型 |
+| `not_pricier` | 换下一个不更贵的模型 | 把出故障的 Provider 视作停用、重新路由；只接受每项单价都已知且不更高的模型，价格未知的不算 |
+| `next_model` | 换下一个模型 | 把出故障的 Provider 视作停用、重新路由，用得到的第一个模型 |
+
+每次请求最多换一次，只在同模型重试之后、因超时 / 5xx / 连接失败、模型下线、上游额度耗尽、用户额度规则拒绝或 Provider 被标记为故障而失败时触发；参数错误、认证失败、权限拒绝、取消和已产生用量的失败从不切换。请求直接写精确模型时从不切换。只接了一个 Provider 时没有可换的，这是预期的。
+- **兜底 LLM（`llm.fallback`）**：默认关闭，只有管理员能打开。打开后，七个 LLM 用途中没有任何模型的由它提供，并在会话里显示警告；已覆盖的用途不受影响，Provider 故障也不会转到它。
+- **标记为故障**：管理员对出问题的 Provider 手工标记。路由和用途表都不变，但请求不再发给它：配置了“不可用时”策略的用途直接用备选，没配置的立即报错。长期故障应停用 Provider（默认路由随之重算）。
+- **路由策略组**：用户可以建多个策略组，每组是一份“用途 → 模型 + 不可用时”的配置，内容和用户层相同。策略组绑定到 App（或 Agent）后对通过它发出的调用生效；绑定到 LLM 会话后对该会话和它的子会话生效，会话绑定优先于 App 绑定。策略组只属于建它的用户、只对这个用户的调用生效。
+
+---
+
 ## 4. 产品边界与整体结构
 
 ## 4.1 总体信息架构（IA）
@@ -262,7 +291,7 @@ Provider 通过 **inventory** 声明自己提供哪些模型（`ProviderInventor
 ```text
 AI Center
 ├── Home / Usage（默认首页）
-│   ├── AI Status（含 Provider/Model 健康 health、配额 quota）
+│   ├── AI Status（含 Provider/Model 健康 health、配额 quota；未覆盖的用途、被标记故障的 Provider、最近的策略切换）
 │   ├── Balance / Credit
 │   ├── Usage Summary（按 api_type namespace 分类）
 │   ├── Time Series
@@ -273,21 +302,30 @@ AI Center
 ├── Providers（云端 Provider 实例视图：provider_type = cloud_api）
 │   ├── Provider List
 │   ├── Add Provider Wizard
-│   └── Provider Detail（inventory / 模型富信息 / 健康）
+│   └── Provider Detail（inventory / 模型富信息 / 健康 / 标记为故障）
 │
 ├── Models（本地模型视图：同一份 inventory 中 provider_type = local_inference 的实例）
 │   ├── Local Models List
 │   ├── Empty State
 │   └── Jump to Store
 │
-└── Routing（逻辑目录树，高级）
+├── 用途（Usecases，普通用户可见，放在 Routing 前面）
+│   ├── 用途表（视角：我 / 某个策略组 / 某个 App；管理员另有“Zone 默认”）
+│   ├── 编辑面板（选模型、选“不可用时”策略、恢复为跟随下一层）
+│   └── 兜底 LLM（管理员开关）
+│
+├── 路由策略组（Routing Groups）
+│   ├── 策略组列表与编辑（复用用途表）
+│   └── 绑定到 App / Agent
+│
+└── 路由细节（Routing，逻辑目录树，高级；写操作只对管理员显示）
     ├── Directory Overview（三层目录树，只读）
-    ├── Role Path 配置（候选 items + 权重 weight）
-    ├── Scheduler Profile / Policy（含 Fallback mode）
+    ├── 权重（items weight、Provider 权重、routing commands）
+    ├── Scheduler Profile / Policy
     └── Route Trace Explorer
 ```
 
-> **重要**：Providers 与 Models 不是两套独立数据，而是对同一份 Provider inventory 的两个视图切分（按 `provider_type` / `attributes.local`）。详见 §3.7。Routing 操作的对象是 §3.1 的三层目录树，不是扁平候选列表。
+> **重要**：Providers 与 Models 不是两套独立数据，而是对同一份 Provider inventory 的两个视图切分（按 `provider_type` / `attributes.local`）。详见 §3.7。用户调整路由的对象是用途表（§3.10、§9.3）；三层目录树只在“路由细节”里作为默认路由的解释出现。
 
 ---
 
@@ -320,13 +358,13 @@ AI Center
 
 - 首页可查看用量与余额
 - Providers 中可继续新增 Provider
-- Routing 用默认逻辑模型配置
+- 用途表使用默认路由；只接一个 Provider 时“不可用时”策略没有可换的模型
 
 ### 状态 C：已启用（多 Provider / 多模型）
 表现：
 
 - Usage 中出现多维度统计
-- Routing 高级能力开放
+- 用途页可以为每个用途选模型、设置“不可用时”策略；策略组与路由细节开放
 - 支持 Provider、Model、App、Session 的深度观察
 
 ---
@@ -371,8 +409,18 @@ AI Center
 - 配置
 - 校验
 - 模型发现
+- 用途覆盖：添加 Provider 的首要目标是让每个用途都有模型
 - 同步策略确认
 - 加入系统资源池
+
+### 用途覆盖
+在验证之后、确认之前，向导对比“现在”和“加上这个 Provider 以后”整个 Zone 的用途表（全部 29 个用途，数据来自 `provider.validate` 的 `usecase_coverage`），分三组列出：
+
+- **新覆盖的用途**：原来没有模型，加上以后有了
+- **默认模型会变的用途**：显示旧模型 → 新模型。每条可以取消勾选，取消就把旧模型写进管理员层，这个用途保持原样（来源显示“管理员”）
+- **仍未覆盖的用途**：给出原因（没有接入该类模型 / 有模型但不满足用途要求，例如上下文不够、没有 tool call）
+
+确认页显示摘要（新覆盖几个、变化几个、仍未覆盖几个）。添加之后默认路由直接按新库存生效，不需要另外确认。
 
 ---
 
@@ -407,17 +455,17 @@ AI Center
 
 ## 5.5 管理逻辑模型与路由
 
-### 普通模式
-- 默认隐藏复杂路由逻辑
-- 系统自动生成默认逻辑模型映射
-- 用户只感知“默认可用模型策略”
+### 普通模式（用途页）
+- 任何能使用 AI 的用户都能打开用途页，看到**对自己生效的**用途表：每个用途现在用哪个模型、这个选择来自哪一层、Provider 出问题时会发生什么、是否已覆盖（§9.3）
+- 系统按默认路由给每个用途选好模型；用户不改也能用
+- 用户可以为自己改某个用途的模型或“不可用时”策略，也可以恢复为跟随下一层；管理员锁定的格子显示锁、不能改
+- 管理员在“Zone 默认”视角编辑管理员层，并管理兜底 LLM 开关
 
 ### 高级模式
-- 开放三层逻辑目录树（L3 任务目录 / L2 Provider 挂点 / L1 精确型号，见 §3.1）
-- 可管理候选 **weight**、**Scheduler Profile**、**Fallback mode** 与 Policy（非"优先级排序"，见 §9.4）
-- 可把任务目录映射到多个 Provider 挂点/精确型号
-- 通过 Route Trace 解释每次实际路由结果
-- 支持未来的多 Key / 多账号 / 多路由策略
+- 路由策略组：建多份用途配置，绑定到 App / Agent，或在会话设置里绑定到 LLM 会话（§9.4）
+- 路由细节：三层逻辑目录树（L3 任务目录 / L2 Provider 挂点 / L1 精确型号，见 §3.1）、候选 **weight**、Provider 权重、**Scheduler Profile** 与 Policy（非"优先级排序"），只对管理员显示写操作
+- 通过 Route Trace 解释每次实际路由结果，包括来源层、是否由兜底 LLM 提供、是否按策略切换
+- 支持未来的多 Key / 多账号
 
 ---
 
@@ -466,7 +514,9 @@ Home / Usage 是 AI Center 的默认首页，也是用户感知价值最高的�
 - 当前可用 Model 数
 - **模型健康概览**：available / degraded / unavailable 各计数（来自 `ModelHealth.status`）
 - **配额预警**：处于 near_limit / exhausted 的模型/实例数（来自 `QuotaState`）
-- 默认路由状态（可选）
+- **未覆盖的用途**：数量，以及其中由兜底 LLM 提供的数量；点进用途页
+- **被标记故障的 Provider**：名称与标记时间；点进 Provider 详情
+- **最近的策略切换**：最近一次“不可用时”策略切换的用途、原模型 → 实际模型、原因；点进用量明细（按“由策略切换”筛选）
 - 最近一次 inventory 刷新是否正常（可选）
 
 ---
@@ -626,6 +676,8 @@ App
 ### Provider 失效
 - 卡片显示授权失效
 - 提供“重新授权 / 更新 Key”
+- 调用失败时显示 Provider 返回的真实原因（Provider、精确模型、上游状态与原文）；系统不会自动换到别的模型
+- 临时故障可以“标记为故障”，长期故障建议停用（§7.4）
 
 ### 成本不可用
 - 允许显示 Token 统计
@@ -658,6 +710,7 @@ Providers 模块用于接入和管理**云端 Provider 实例**（`provider_type
 - 模型数量
 - 最近同步时间
 - 余额 / Credit 摘要（如可用）
+- 是否已被标记为故障
 - 操作入口
 
 操作包括：
@@ -666,7 +719,7 @@ Providers 模块用于接入和管理**云端 Provider 实例**（`provider_type
 - 刷新模型列表
 - 更新认证信息
 - 重新授权
-- 删除 Provider
+- 停用 / 删除 Provider：确认框先列出会受影响的用途——由谁接替、哪些会变成未覆盖（用 `routing.usecases` 的 `without_provider` 预演“没有这个 Provider 时”的用途表，和当前表对比）
 
 ---
 
@@ -677,6 +730,7 @@ Providers 模块用于接入和管理**云端 Provider 实例**（`provider_type
 - 必须是向导，不是一次性大表单
 - 先选类型，再展开字段
 - 创建前必须做连接验证和模型发现
+- 创建前展示用途覆盖的变化（§5.2）
 - 创建时默认开启模型列表自动同步
 
 ---
@@ -771,7 +825,19 @@ Providers 模块用于接入和管理**云端 Provider 实例**（`provider_type
 
 ---
 
-### Step 4：创建确认
+### Step 4：用途覆盖
+
+对比“现在”和“加上以后”整个 Zone 的用途表（§5.2）：
+
+- 新覆盖的用途
+- 默认模型会变的用途（旧模型 → 新模型），每条可以取消勾选；取消的条目在创建时把旧模型写进管理员层
+- 仍未覆盖的用途及原因
+
+窄屏下每个用途一张卡片，旧模型和新模型竖排。
+
+---
+
+### Step 5：创建确认
 
 确认页显示：
 
@@ -779,6 +845,7 @@ Providers 模块用于接入和管理**云端 Provider 实例**（`provider_type
 - 认证方式
 - 连接状态
 - 已发现模型数量
+- 用途覆盖摘要：新覆盖 / 变化（其中保持旧模型的条数）/ 仍未覆盖
 - 自动同步模型列表：开 / 关（默认开）
 
 完成后：
@@ -842,6 +909,8 @@ Provider 详情页中需显示：
 - 上次验证时间
 - 上次模型同步时间
 - 模型同步状态
+- 健康状态与最近的失败（只用于展示和告警，不改变路由）
+- 是否已被标记为故障
 
 ### 模型信息
 - 已发现模型列表
@@ -859,7 +928,8 @@ Provider 详情页中需显示：
 - 重新授权
 - 刷新模型
 - 进入充值页（如适用）
-- 删除 Provider
+- **标记为故障**（开关，管理员）：说明文案“路由不变；配置了不可用策略的用途直接改用备选，其余直接报错；长期故障请停用 Provider”。标记和清除都会记事件
+- 停用 / 删除 Provider（确认框列出受影响的用途，见 §7.2）
 
 ---
 
@@ -912,31 +982,34 @@ Models 模块管理 **本地已安装模型**，不负责本地模型下载实�
 
 ---
 
-## 9. 功能需求：Routing（逻辑目录树，高级）
+## 9. 功能需求：Routing（用途表、策略组与路由细节）
 
-> ⚠️ 本节于 2026-05-29 整体重写。原 PRD 把 Routing 理解成"逻辑名 → 扁平候选列表 + 优先级排序"，这与 AICC 的实际模型（三层目录树 + 权重 + profile + fallback mode）不兼容，导致原"拖拽优先级"的交互方向是错的。本节按 `aicc 逻辑模型目录.md` 与 `SessionConfig` schema 重写。
+> ⚠️ 本节于 2026-05-29 整体重写，2026-11-27 按“用户视角的路由”再次重写：用户理解和调整的是**用途表**，三层目录树退到“路由细节”。规范见 [aicc_router.md](../../doc/aicc/aicc_router.md) §9、§11、§12；设计与裁决见 [AICC 用户视角的模型路由改进 TODO](../../notepads/aicc-user-centric-routing-todo.md) §3、§4.9。
 
 ## 9.1 模块定位
 
-Routing 是 AI Center 的高级能力区，用于查看与配置 AICC 的**逻辑目录树**——即 §3.1 三层命名体系中，L3 任务目录 → L2 Provider 挂点 → L1 精确型号 的映射与调度策略。
+Routing 区由三页组成，按手机宽度设计：
 
-操作对象是 `SessionConfig.logical_tree`（一棵树），不是一张候选表。
+| 页 | 谁能用 | 内容 |
+|---|---|---|
+| **用途**（导航里放在其它路由页前面） | 所有能使用 AI 的用户 | 对自己生效的用途表；编辑自己的层；管理员另有“Zone 默认”视角和兜底 LLM 开关 |
+| **路由策略组** | 所有能使用 AI 的用户（只看、只改自己的组） | 组列表、编辑（复用用途表）、绑定到 App / Agent |
+| **路由细节**（原 Routing 页） | 所有人可看，写操作只对管理员显示 | 三层目录树、权重、profile、Route Trace Explorer |
+
+数据来自 kRPC `routing.usecases`、`routing.usecase.set`、`routing.groups.*`、`routing.bindings.*`；路由细节沿用 `routing.get` / `routing.update` / `routing.preview`（§10.5）。
 
 ---
 
-## 9.2 核心抽象（对齐 §3.5）
+## 9.2 核心抽象（对齐 §3.5、§3.10）
 
-逻辑目录是**树**，不是列表。每个节点（`LogicalNode`）包含：
-
-- `items`：该角色下的候选，形如 `name -> { target, weight }`；`target` 可以是另一个逻辑路径（递归）或精确型号
-- `exact_model_weights`：对具体精确型号的额外加权
-- `fallback`：`{ mode: parent | strict | disabled | target_logical | target_exact }`，**只能在同 api_type 内回退**
-- `policy`：节点级 `SchedulerProfile` 与 `RoutePolicy`，可被 `locked` 锁定
-
-示例（真实内置树片段，来自 `default_logical_tree.rs`）：
+- **用途表**：29 个用途，每个用途 → 一个精确模型 `model@provider`，外加一行兜底 LLM（`llm.fallback`）。
+- **两格**：每个用途有“模型”和“不可用时”两格，各由设了它的最高一层决定：`默认 < 管理员层（Zone 默认）< 用户层（我）< App 绑定的策略组 < 会话绑定的策略组`。管理员层可以锁定格子。
+- **模型只能选精确模型**：第一期不能只选模型、不选 Provider；多个 Provider 提供同一个模型时，用“同一个模型换 Provider”策略表达。选的模型必须对当前用户可见、API 类型与用途一致、满足用途要求（上下文、tool call 等）。
+- **“不可用时”**：`none` 不切换（默认）/ `same_model` 同一个模型换 Provider / `not_pricier` 换下一个不更贵的模型 / `next_model` 换下一个模型（§3.10）。
+- **默认路由**仍由逻辑目录树按权重展开得出（§3.5）。示例（内置树片段）：
 
 ```text
-llm.plan                       # L3 任务目录，profile=quality_first，fallback=parent
+llm.plan                       # L3 任务目录，profile=quality_first
 ├── opus      → llm.opus       weight 2.5   # L2 挂点
 ├── gemini    → llm.gemini-pro weight 2.4
 ├── qwen_max  → llm.qwen-max   weight 1.8
@@ -945,42 +1018,76 @@ llm.plan                       # L3 任务目录，profile=quality_first，fallb
    llm.opus → claude-opus-4.7@anthropic
 ```
 
-注意三点和原 PRD 的根本差异：① 是树不是表；② 候选靠 **weight** 不是序号优先级；③ 中间隔着 L2 挂点（`llm.opus`），不是 L3 直接连具体型号。
+权重决定“接入了哪些模型时默认用谁”，不是故障时的切换顺序：`llm.opus` 的 Provider 临时故障不会让 `llm.plan` 改用 Gemini。
 
 ---
 
-## 9.3 普通模式
+## 9.3 普通模式（用途页）
 
-默认策略：
+用途表每一行：
 
-- 只读展示**当前生效的目录树概览**（L3 任务目录 → 当前解析到的代表型号），不展示编辑器
-- 普通用户主要感知"每个任务现在用什么模型、为什么"——靠 §3.8 Route Trace 的 `user_summary` 给人话解释
-- 提供"进入高级模式"入口
+| 用途 | 当前模型 | 来源 | 不可用时 | 状态 |
+| --- | --- | --- | --- | --- |
+| 编码 `llm.code` | `gpt-codex-5.2@openai` | 管理员 | 同一个模型换 Provider → `gpt-codex-5.2@openrouter` | 已覆盖 |
+| 总结 `llm.summarize` | `gpt-5.5-mini@sn` | 默认 | 不切换 | 已覆盖 |
+| 规划 `llm.plan` | `gpt-5.5-mini@sn` | 兜底 LLM | 不切换 | 未覆盖：没有满足上下文要求的模型，由兜底 LLM 提供 |
+| 生成视频 `video.generate` | — | — | — | 未覆盖：没有接入能生成视频的模型 |
+
+- **来源**：决定这一格的那一层——默认 / 管理员 / 我 / 策略组名。被管理员锁定的格子显示锁，不能改。
+- **不可用时**：同时显示策略和**按现在的配置会换到谁**（假设当前模型所在的 Provider 不可用时预演出来）。算不出时写原因：“没有已知价格不高于它的模型”（提示管理员补价格或改用“换下一个模型”）或“没有别的模型”。
+- **状态**：已覆盖 / 由兜底 LLM 提供 / 未覆盖，未覆盖时写原因（没有接入该类模型 / 有模型但不满足用途要求）。某一层选的模型不能用时标出原因——“所选模型已不可用”“你无权使用”“不满足用途要求”——这一格跟随下一层。
+- **视角**：顶部切换“我 / 某个策略组 / 某个 App”；管理员多一个“Zone 默认”，编辑的是管理员层。“某个 App”视角只读，显示该 App 绑定的策略组生效时的样子。
+- **编辑面板**（点一行打开）：
+  - 选模型：只列出对自己可见、满足用途要求的模型，按家族分组，标价格
+  - 选“不可用时”：四个选项各附一句解释，实时显示“会换到谁”；`not_pricier` 与 `next_model` 的说明里写明“系统按已知价格判断，价格未知的模型不会被选为‘不更贵’”，`next_model` 提示可能换到更贵的模型
+  - 恢复为跟随下一层（清除这一格）
+  - 管理员在“Zone 默认”视角可以锁定格子
+  - 写操作带版本号，版本冲突时提示刷新
+- **兜底 LLM 行**：单独一行，默认关闭，只有管理员能开关。打开的含义是“这个 Zone 至少有一个 LLM 可以用来维护系统”：七个 LLM 用途中没有模型的由它提供，使用它的会话显示警告（例如“规划没有配置模型，正在使用兜底模型 X”）。它不替代故障的 Provider。
+- 选模型的交互后续会继续优化，帮用户完成手工调整。
 
 ---
 
-## 9.4 高级模式
+## 9.4 高级模式（路由策略组与路由细节）
 
-支持配置（按真实 schema，不是优先级拖拽）：
+**路由策略组页**：
 
-- 浏览三层目录树（L3 / L2 / L1）
-- 编辑某个 L3 角色路径的 `items` 候选与 **weight**
-- 选择该路径的 **Scheduler Profile**（cost_first / latency_first / quality_first / balanced / local_first / strict_local）
-- 配置 **Fallback mode**（parent / strict / disabled / target_*）
-- 配置 **Policy**：`local_only`、`required_features`（按 capabilities 硬过滤，如必须 tool_call / vision / 最小上下文）、`allowed / blocked_provider_instances`、`max_estimated_cost_usd`
-- 理解 `locked`：admin 在上层锁定的字段，下层会话/用户不可改（UI 需置灰并解释）
-- 未来支持：多 Key 自动切换、多账号轮转、并行多模型（预留）
+- 组列表：名称、包含的用途数、已绑定的 App / Agent
+- 编辑：复用用途页的表与编辑面板，只能改组内容，不能锁定
+- 绑定到 App：从 App / Agent 列表选；同一个 App 只能绑定一个组。删除组时一并解除它的 App 绑定
+- 会话绑定不在这里：在会话自己的设置里（OpenDAN WebUI / Jarvis 对话的会话菜单）选择策略组，对该会话和子会话生效；AI Center 不列出会话绑定
+- 第一期管理员不建共享组、不替所有用户给 App 绑组，只用管理员层 + 锁定
+
+**路由细节页**（原 Routing 页）：
+
+- 浏览三层目录树（L3 / L2 / L1），解释默认路由为什么选了这个模型
+- 管理员编辑候选 **weight**、Provider 权重与 routing commands（高级调权，影响默认展开）
+- 管理员层的 **Scheduler Profile**（latency_first / quality_first / balanced / local_first / strict_local）与 **Policy**：`local_only`、`allowed / blocked_provider_instances`、`max_estimated_cost`
+- 理解 `locked`：管理员锁定的字段，用户层、策略组和请求不可改（UI 需置灰并解释）
+- Route Trace Explorer：来源层、命中的策略组、是否由兜底 LLM 提供、是否按策略切换
+- 未来支持：多 Key、多账号（预留）
 
 > 交互提示：weight 调整建议用滑杆/数值而非拖拽排序；profile 是单选；目录树用可展开的树形控件而非平铺表格。
 
 ---
 
-## 9.5 一级 namespace 与示例角色路径
+## 9.5 一级 namespace 与用途
 
-一级 namespace（每个带默认 fallback 策略与默认 profile，见 §3.2 / 逻辑目录文档 §二）：
-`llm`、`embedding`、`rerank`、`image`、`vision`、`audio`、`video`、`agent_runtime`、`multimodal`(占位)。
+一级 namespace（每个带默认 profile，见 §3.2 / 逻辑目录文档 §二）：
+`decision`、`llm`、`embedding`、`rerank`、`image`、`vision`、`audio`、`video`、`agent_runtime`、`multimodal`(占位)。
 
-`llm` 下的任务角色示例：`llm.chat` / `llm.plan` / `llm.code` / `llm.reason` / `llm.vision` / `llm.swift` / `llm.summarize` / `llm.long` / `llm.fallback`。
+用途表的 29 个用途：
+
+- `decision`
+- `llm.chat`、`llm.plan`、`llm.code`、`llm.swift`、`llm.summarize`、`llm.translate`、`llm.vision`
+- `embedding.text`、`embedding.multimodal`、`rerank`
+- `image.txt2img`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove`
+- `vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment`
+- `audio.tts`、`audio.asr`、`audio.music`、`audio.enhance`
+- `video.generate`、`video.edit`、`video.extend`、`video.upscale`
+- `agent_runtime.computer_use`
+
+另有一行兜底 LLM `llm.fallback`。规格和家族目录（如 `llm.gpt-mini`）仍可以被请求直接使用，但不出现在用途表里。
 
 ---
 
@@ -988,20 +1095,22 @@ llm.plan                       # L3 任务目录，profile=quality_first，fallb
 
 用户在界面上不应只看到抽象字段，而应看到可理解的规则预览 + 实际路由解释（Route Trace）：
 
-- 规则预览：`llm.plan` → 高质量优先（quality_first），候选 Opus(2.5) / Gemini-Pro(2.4) / Qwen-Max(1.8)，失败回退到父级 `llm`
-- 实际解释（来自最近一次 Route Trace 的 `user_summary`）：`llm.plan` → 本次选中 `claude-opus-4.7@anthropic`，原因：规划任务高质量首选；未触发 fallback
-- 异常解释：`llm.reason` fallback=disabled，若候选全不可用则明确报错（`AICC_ROUTE_NO_CANDIDATE`），不静默降级
+- 规则预览：`llm.code` → `gpt-codex-5.2@openai`（来源：管理员）；不可用时同一个模型换 Provider，会换到 `gpt-codex-5.2@openrouter`
+- 实际解释（来自最近一次 Route Trace 的 `user_summary`）：`llm.code` → 本次选中 `gpt-codex-5.2@openai`；未切换
+- 切换解释：`gpt-codex-5.2@openai` 超时，按“同一个模型换 Provider”改用 `gpt-codex-5.2@openrouter`（用量记录里标出原模型）
+- 兜底解释：`llm.plan` 没有配置模型，本次由兜底 LLM 的 `gpt-5.5-mini@sn` 提供
+- 异常解释：`llm.summarize` 不切换，选中的 Provider 失败时返回它的真实错误（Provider、精确模型、上游状态与原文），不改写成“没有可用模型”；没有接入满足要求的模型时才返回无候选，并指向用途页
 
 ---
 
 ## 9.7 移动端处理
 
-由于 Routing 高级配置较复杂，移动端建议：
+用途页、策略组页和添加 Provider 的用途覆盖步骤都要在手机宽度下好用：
 
-- 默认只展示概要与只读信息
-- 编辑动作使用全屏页或底部抽屉
-- 长列表排序使用拖拽手柄
-- 对复杂配置进行折叠分组
+- 用途表在窄屏下变成每个用途一张卡片，“当前模型 / 来源 / 不可用时 / 状态”竖排
+- 编辑面板使用全屏页或底部抽屉
+- 视角切换用顶部分段控件或下拉
+- 路由细节默认只展示概要与只读信息，复杂配置折叠分组
 
 ---
 
@@ -1112,23 +1221,24 @@ type UsageEvent = {
 
   estimated_cost?: number
   status: "success" | "failed"
+  fallback_from?: string                         // 被“不可用时”策略替换掉的原精确模型；用量页可按此筛选
 }
 ```
 
 ---
 
-## 10.5 SessionConfig / LogicalNode（取代旧 LogicalModelConfig）
+## 10.5 Routing 配置 / LogicalNode / 用途配置（取代旧 LogicalModelConfig）
 
-路由配置是一棵树，不是候选列表。
+管理员的路由配置存在系统配置 `services/aicc/settings` 的 `routing` 字段（原名 `session_config`）；用户层、策略组和 App 绑定存在 AICC 的数据库；会话绑定存在 OpenDAN 的会话配置（`route_group`）。
 
 ```ts
-type SessionConfig = {
-  inherit?: string                               // 分层继承
-  logical_tree: Record<string, LogicalNode>      // path -> node
+type AiccRouting = {                             // settings.routing
+  logical_tree: Record<string, LogicalNode>      // path -> node，默认路由的展开结构
   global_exact_model_weights: Record<string, number>
+  provider_weights: Record<string, number>
+  routing_commands: RoutingCommand[]
   policy: PolicyConfig
-  revision?: string
-  ttl_seconds?: number
+  usecases: Record<string, UsecaseRoute>         // 管理员层（Zone 默认）
 }
 
 type LogicalNode = {
@@ -1136,21 +1246,48 @@ type LogicalNode = {
   items?: Record<string, { target: string; weight: number }>   // target 可为逻辑路径或精确型号
   item_overrides?: Record<string, { target?: string; weight?: number }>
   exact_model_weights: Record<string, number>
-  fallback?: { mode: "parent" | "strict" | "disabled" | "target_logical" | "target_exact"; target?: string }
   policy?: PolicyConfig                          // 字段可被 { value, locked } 锁定
 }
 
 type PolicyConfig = {
-  profile?: SchedulerProfile                     // cost_first | latency_first | quality_first | balanced | local_first | strict_local
+  profile?: SchedulerProfile                     // latency_first | quality_first | balanced（默认）| local_first | strict_local
   local_only?: boolean
-  allow_fallback?: boolean
-  runtime_failover?: boolean
-  required_features?: Partial<Capabilities>      // 按能力硬过滤
   allowed_provider_instances?: string[]
   blocked_provider_instances?: string[]
-  max_estimated_cost_usd?: number
+  max_estimated_cost?: Money
+}
+
+type UsecaseRoute = {                            // 管理员层、用户层、策略组共用
+  model?: string | { value: string; locked: boolean }          // 精确模型 model@provider；locked 只在管理员层有效
+  on_unavailable?: OnUnavailable | { value: OnUnavailable; locked: boolean }
+  enabled?: boolean                              // 只用于 llm.fallback，只能写在管理员层
+}
+
+type OnUnavailable = "none" | "same_model" | "not_pricier" | "next_model"
+
+type RoutingGroup = {
+  group_id: string
+  name: string
+  usecases: Record<string, UsecaseRoute>
+  version: number
+  app_ids: string[]                              // 已绑定的 App / Agent
+}
+
+type UsecaseRow = {                              // routing.usecases 的一行
+  usecase: string
+  model?: string
+  model_source?: string                          // default | zone | user | group:<id> | fallback_llm
+  on_unavailable: OnUnavailable
+  on_unavailable_source: string
+  model_locked: boolean
+  on_unavailable_locked: boolean
+  fallback_to?: string                           // 当前模型的 Provider 不可用时会换到谁
+  coverage: "covered" | "fallback_llm" | "uncovered"
+  coverage_reason?: "no_model_for_api_type" | "requirements_unmet"
 }
 ```
+
+字段以 `src/kernel/buckyos-api/src/aicc_routing.rs` 为准。
 
 ---
 
@@ -1171,8 +1308,6 @@ type RouteTrace = {
     final_score?: number
     score_inputs?: {
       cost: number
-      latency: number
-      reliability: number
       quality: number
       preference: number
       cache: number
@@ -1181,18 +1316,28 @@ type RouteTrace = {
     selected: boolean
   }>
   filtered_candidates: Array<{ exact_model: string; reason: string }>
-  fallback_applied: boolean
-  fallback_chain: Array<{ from: string; to: string; reason: string }>
-  session_sticky_hit: boolean
+  usecase?: {                                    // 经用途表路由时
+    usecase: string
+    usecase_source: string                       // default | zone | user | group:<id>
+    on_unavailable: OnUnavailable
+    on_unavailable_source: string
+    app_group?: string
+    session_group?: string
+  }
+  fallback?: {                                   // 答复不是来自用途自己的模型
+    kind: "coverage" | "unavailable"             // 由兜底 LLM 提供 / 按“不可用时”策略切换
+    from: string                                 // 用途（coverage）或失败的精确模型（unavailable）
+    to: string                                   // llm.fallback 或实际使用的精确模型
+    policy?: OnUnavailable
+  }
   scheduler_profile: SchedulerProfile
-  runtime_failover_count: number
   user_summary?: {                               // 面向普通用户的人话版
     display_name: string
     model_family: string
     provider_origin: "cloud" | "local" | "proxy_unknown"
     reason_short: string
-    was_fallback: boolean
-    was_failover: boolean
+    was_fallback: boolean                        // 由兜底 LLM 提供
+    was_failover: boolean                        // 按“不可用时”策略切换
   }
   warnings: string[]
 }
@@ -1210,7 +1355,8 @@ type RouteTrace = {
 - 首页访问率
 - Balance 卡片点击率
 - Top Up 点击率
-- Routing 高级模式启用率
+- 用途页访问率与修改率、策略组创建率
+- 未覆盖用途数（按 Zone）、兜底 LLM 打开率
 - Provider 自动同步开启率
 
 ---
@@ -1218,6 +1364,7 @@ type RouteTrace = {
 ## 11.2 运行时指标
 
 - Provider 可用率
+- “不可用时”策略切换次数、标记故障的时长
 - Provider 模型同步成功率
 - Usage 统计延迟
 - Balance 拉取成功率
@@ -1266,12 +1413,14 @@ AI Center
 │   ├── Providers / Add / Step 1
 │   ├── Providers / Add / Step 2
 │   ├── Providers / Add / Step 3
-│   ├── Providers / Add / Step 4
+│   ├── Providers / Add / Step 4（用途覆盖）
+│   ├── Providers / Add / Step 5
 │   ├── Providers / Detail
 │   ├── Models / Empty
 │   ├── Models / List
-│   ├── Routing / Overview
-│   └── Routing / Advanced
+│   ├── Routing / Usecases
+│   ├── Routing / Groups
+│   └── Routing / Details
 │
 └── 02 Mobile
     ├── Home / Disabled
@@ -1280,12 +1429,14 @@ AI Center
     ├── Providers / Add / Step 1
     ├── Providers / Add / Step 2
     ├── Providers / Add / Step 3
-    ├── Providers / Add / Step 4
+    ├── Providers / Add / Step 4（用途覆盖）
+    ├── Providers / Add / Step 5
     ├── Providers / Detail
     ├── Models / Empty
     ├── Models / List
-    ├── Routing / Overview
-    └── Routing / Advanced
+    ├── Routing / Usecases
+    ├── Routing / Groups
+    └── Routing / Details
 ```
 
 ---
@@ -1297,7 +1448,7 @@ AI Center
 - `AI Center / Desktop / Home / Enabled`
 - `AI Center / Desktop / Providers / Wizard / Step 1`
 - `AI Center / Mobile / Providers / Detail`
-- `AI Center / Mobile / Routing / Advanced`
+- `AI Center / Mobile / Routing / Usecases`
 
 这样有利于后续开发对照和原型评审。
 
@@ -1552,8 +1703,11 @@ AI Center
 #### Step 3：Validation & Model Discovery
 主体为状态列表 + 已发现模型区域。
 
-#### Step 4：Review & Create
-摘要卡 + 操作按钮。
+#### Step 4：Usecase Coverage
+三组列表：新覆盖的用途、默认模型会变的用途（旧 → 新，带勾选框）、仍未覆盖的用途（带原因）。
+
+#### Step 5：Review & Create
+摘要卡（含用途覆盖摘要）+ 操作按钮。
 
 ---
 
@@ -1566,6 +1720,7 @@ AI Center
 │ Header: Provider Name                              [Edit] [Refresh]  │
 ├──────────────────────────────────────────────────────────────────────┤
 │ [Connection Status] [Auth Status] [Balance/Credit] [Model Count]    │
+│ [Marked Faulty toggle + 说明]                                       │
 ├──────────────────────────────┬───────────────────────────────────────┤
 │ Basic Info                   │ Models                                │
 │ - Type                       │ - model 1                             │
@@ -1588,24 +1743,27 @@ AI Center
 
 ---
 
-## G. Routing（按 §9 重做，原"拖拽优先级"作废）
+## G. Routing（按 §9 重做：用途页 / 策略组 / 路由细节）
 
 ### 桌面布局建议
 
-普通模式：
-- 逻辑目录树概览（L3 任务目录 → 当前解析到的代表型号），只读
-- 一块"最近路由解释"（Route Trace `user_summary`），回答"刚才这个任务用了什么、为什么"
+用途页：
+- 顶部：视角切换（我 / 策略组 / App；管理员多“Zone 默认”）
+- 主体：用途表（用途 / 当前模型 / 来源 / 不可用时 → 会换到谁 / 状态），锁定的格子显示锁
+- 兜底 LLM 单独一行，管理员可开关
+- 点一行打开右侧编辑面板：选模型（按家族分组、标价格）、选“不可用时”（四个选项各附解释并实时显示“会换到谁”）、恢复为跟随下一层
 
-高级模式：
-- 顶部模式切换
+策略组页：
+- 左侧组列表，右侧复用用途表编辑组内容，下方“已绑定的 App / Agent”与绑定按钮
+
+路由细节页（高级）：
 - 左侧：**三层目录树**可展开控件（L3 → L2 → L1），非平铺表格
 - 右侧（选中某 L3 角色路径时）：
   - Scheduler Profile 单选
   - 候选 items + **weight**（滑杆/数值，不是拖拽排序）
-  - Fallback mode 选择
-  - Policy：local_only / required_features / allowed·blocked instances / max_estimated_cost
-  - `locked` 字段置灰并解释
-- 底部/抽屉：Route Trace Explorer（ranked / filtered candidates、fallback chain）
+  - Policy：local_only / allowed·blocked instances / max_estimated_cost
+  - `locked` 字段置灰并解释；写操作只对管理员显示
+- 底部/抽屉：Route Trace Explorer（ranked / filtered candidates、来源层、兜底 / 策略切换）
 
 ---
 
@@ -1616,7 +1774,8 @@ AI Center
 ### 推荐方式
 - 顶部 App Bar
 - 主要页面采用分段或底部导航
-- `Routing` 作为“更多 / 高级”入口，避免与 Home / Providers / Models 抢主导航优先级
+- `用途` 页可直接进入；策略组与路由细节作为“更多 / 高级”入口，避免与 Home / Providers / Models 抢主导航优先级
+- 用途表在窄屏下变成每个用途一张卡片，“当前模型 / 来源 / 不可用时 / 状态”竖排
 
 ### 推荐主导航
 - Home
@@ -1661,6 +1820,9 @@ AI Center
 显示验证结果与模型发现列表；模型列表可滚动
 
 #### Step 4
+用途覆盖：每个用途一张卡片，旧模型和新模型竖排，变化项带勾选框
+
+#### Step 5
 确认摘要 + 创建按钮
 
 
@@ -1668,7 +1830,7 @@ AI Center
 
 ### Stepper
 - 桌面：顶部水平 Stepper
-- 移动：顶部简化 Stepper + “步骤 X / 4”
+- 移动：顶部简化 Stepper + “步骤 X / 5”
 
 ### 验证反馈
 - 连接验证与模型发现要可视化展示结果
@@ -1693,12 +1855,12 @@ AI Center
 建议设计优先顺序如下：
 
 1. Home / Disabled（首启）
-2. Providers / Add Wizard（Step 1~4）
+2. Providers / Add Wizard（Step 1~5）
 3. Home / Enabled（默认首页）
 4. Providers / List + Detail
 5. Models / Empty + List
-6. Routing / Overview
-7. Routing / Advanced
+6. Routing / Usecases
+7. Routing / Groups + Details
 
 ---
 
@@ -1717,7 +1879,8 @@ AI Center
 - Step 1：选择一种 Provider 类型
 - Step 2：填写连接信息
 - Step 3：验证连接并发现模型
-- Step 4：确认并创建
+- Step 4：检查用途覆盖
+- Step 5：确认并创建
 
 ---
 
@@ -1733,6 +1896,17 @@ AI Center
 - 前往 Store 安装模型
 - 尚无 AI 调用记录
 - 当前 Provider 无法提供余额信息
+
+---
+
+## 13.5 用途与故障
+- “不可用时”选项：不切换 / 同一个模型换 Provider / 换下一个不更贵的模型 / 换下一个模型
+- “不更贵”说明：系统按已知价格判断，价格未知的模型不会被选为“不更贵”
+- 算不出备选：没有已知价格不高于它的模型 / 没有别的模型
+- 未覆盖：没有接入能做这件事的模型 / 有模型但不满足用途要求
+- 兜底 LLM 开关：打开后，没有配置模型的 LLM 用途由兜底模型提供，使用它的会话会显示警告
+- 会话警告：规划没有配置模型，正在使用兜底模型 X
+- 标记为故障：路由不变；配置了不可用策略的用途直接改用备选，其余直接报错；长期故障请停用 Provider
 
 ---
 
@@ -1780,9 +1954,9 @@ AI Center
    - 需与工程实现枚举最终对齐
 
 6. **Routing 交互需整体重做（2026-05-29 新增）**
-   - 旧"逻辑名 + 扁平候选 + 拖拽优先级"模型作废，改为三层目录树 + weight + profile + fallback mode（§9）
-   - 设计师需重画 Routing/Advanced 全部 Frame；Routing/Overview 改为只读树 + Route Trace
-   - api 适配层（`src/frame/desktop/src/api`）需新增 SessionConfig 读写与 RouteTrace 查询的映射
+   - 旧"逻辑名 + 扁平候选 + 拖拽优先级"模型作废，改为三层目录树 + weight + profile（§9）
+   - 2026-11-27 再改：用户入口改为用途表（用途页、策略组页），目录树退到路由细节；fallback mode 已删除，改为每个用途的“不可用时”策略
+   - api 适配层（`src/frame/desktop/src/api`）需新增 `routing.usecases` / `routing.usecase.set` / `routing.groups.*` / `routing.bindings.*` 与 RouteTrace 查询的映射
 
 7. **Models 与 Providers 的边界（2026-05-29 新增）**
    - 二者是同一份 inventory 的两个视图（按 `provider_type`），不是独立数据。前端需共享一份 inventory 状态，避免两套缓存不一致
@@ -1800,13 +1974,13 @@ AI Center
 - Home / Usage（基础用量 + Credit）
 - Providers 列表与详情
 - Models 空状态与跳转
-- Routing 只读概要
+- 用途页（查看对自己生效的用途表）
 
 ## Phase 2：增强版
 - Provider 余额与费用展示增强
 - App / Agent / Session 深钻
 - 模型自动同步能力完整化
-- Routing 高级编辑
+- 用途页编辑、路由策略组、路由细节
 - 更细粒度的错误解释
 
 ## Phase 3：高级版

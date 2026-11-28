@@ -20,7 +20,7 @@
 6. 路由、Provider、协议、任务、权限、预算、资源、配置等异常路径。
 7. 低成本、确定性 Mock 模型前期测试，以及真实模型的 gateway 验收。
 8. gateway 发布强覆盖验收必须覆盖 `openai`、`fal`、`google-gemini`、`claude`、`openrouter`、`sn-ai-provider` 六类 Provider；SN 必须覆盖 `api_key` 和 `dynamic_login` 两种认证模式。普通开发验收可按所选模式缺少的凭据将真实 Provider 用例标记为 skipped。
-9. gateway 真实模型验收必须按 `api_type × method × 标准逻辑目录路径 × Provider × model` 的笛卡尔积生成用例；`api_type` 以 `aicc_api设计.md` 定义的 canonical 值域为准，标准逻辑目录路径以当前生效 `LocalLogicalTreeConfig.logical_definitions`、`SessionConfig.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准，Provider 与 model 以实际 inventory 中可观察到的可用模型为准。
+9. gateway 真实模型验收必须按 `api_type × method × 标准逻辑目录路径 × Provider × model` 的笛卡尔积生成用例；`api_type` 以 `aicc_api设计.md` 定义的 canonical 值域为准，标准逻辑目录路径以当前生效 `LocalLogicalTreeConfig.logical_definitions`、settings `routing.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准，Provider 与 model 以实际 inventory 中可观察到的可用模型为准。
 10. 每个矩阵用例必须同时覆盖逻辑模型和实际物理模型两种调用方式：先用逻辑目录路径执行 `route.resolve` 并断言选中的 `selected_exact_model`，再用该精确模型名执行 typed inference，报告中必须保留 requested logical path 与 exact model 的对应关系。
 11. 新模型、新 Provider、新逻辑目录挂载、metadata / 运营策略 / routing 更新的维护验收闭环，覆盖测试环境相关用例、测试环境全量用例、发布环境相关用例、发布环境全量用例，以及必要的回滚验证。
 
@@ -50,9 +50,9 @@
 - AICC 不暴露独立 streaming 协议；长任务、进度、Provider streaming 中间态统一通过 task-manager event / task data 观察。
 - AI method response 只有 `succeeded`、`running`、`failed` 三类状态；失败细节写入 task event / task data。
 - 精确模型名格式为 `<provider_model_id>[:variant]@<provider_instance_name>`；variant 由 Model Driver 定义语义身份，Provider Rules lower 为原始 provider model、operation 和 resolved options。
-- 精确模型默认不 fallback，除非显式开启。
+- 精确模型从不换模型；逻辑请求只有用途配置了不可用时策略才换模型，每次请求最多一次。
 - fallback 不得跨 API namespace。
-- `local_only`、隐私、预算、能力、上下文长度、Provider health 是硬过滤条件。
+- `local_only`、隐私、预算、能力、上下文长度是硬过滤条件；Provider health、熔断、冷却不参与选择，只用于展示、告警和显式 `max_latency_ms` 门槛。
 - 使用量记录只在 Provider 成功完成且存在 usage 时写入；缺 usage 的成功结果应视为 provider protocol error。可选 `finance_snapshot_json` 是非权威快照，缺失不得影响成功。
 
 ## 3. 用例优先级

@@ -3,7 +3,7 @@
  * messages as ordinary ones. */
 
 import { useContext, useState } from 'react'
-import { UserPlus, Users } from 'lucide-react'
+import { TriangleAlert, UserPlus, Users } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import { networkActions } from '../../components/network/cache'
 import { useNetworkDialogs } from '../../components/network/dialogs'
@@ -12,6 +12,7 @@ import { networkErrorText } from '../../components/network/relation'
 import { ConversationMessageActionsContext } from '../../components/conversation/history/actions'
 import { bubbleStyle, bubbleWidthClass, type MessageRenderContext } from '../../components/conversation/history/bubble'
 import { FallbackMessage, MessageFooter, MessageRow } from '../../components/conversation/history/renderers'
+import { effectiveContent, messageObjId } from '../../components/conversation/history/relations'
 import { parseFriendNotice } from '../../components/conversation/model/friendNotice'
 import { groupErrorCode, groupErrorText, isAgentGroupDisabled, parseGroupNotice } from '../../components/conversation/model/groupNotice'
 import { messageNotify, type MessageObject } from '../../components/conversation/model/msgobj'
@@ -26,6 +27,18 @@ export function NotifyMessage({ message, context }: { message: MessageObject; co
   return (
     <MessageRow message={message} isSelf={false} context={context}>
       <NotifyCard message={message} data={data} className={`${bubbleWidthClass} w-[420px] min-w-[240px]`} style={{ ...bubbleStyle(false, context.continued), padding: 12 }} footer={<MessageFooter message={message} isSelf={false} mode="card" />} />
+    </MessageRow>
+  )
+}
+
+/** The Agent says a fallback model answered: shown apart from its replies, in the Agent's own words. */
+export function RouteFallbackMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {
+  return (
+    <MessageRow message={message} isSelf={false} context={context}>
+      <div role="note" className={`${bubbleWidthClass} min-w-[160px]`} style={{ ...bubbleStyle(false, context.continued), background: 'color-mix(in srgb, var(--cp-warning) 12%, var(--cp-surface))', borderColor: 'color-mix(in srgb, var(--cp-warning) 40%, transparent)' }} data-testid="route-fallback-notice" data-message-id={messageObjId(message)}>
+        <p className="flex items-start gap-1.5 whitespace-pre-wrap break-words text-[13px]"><TriangleAlert size={14} className="mt-0.5 shrink-0" style={{ color: 'var(--cp-warning)' }} aria-hidden />{effectiveContent(message).content}</p>
+        <MessageFooter message={message} isSelf={false} selfDid={context.selfDid} mode="card" />
+      </div>
     </MessageRow>
   )
 }

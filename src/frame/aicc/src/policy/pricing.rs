@@ -399,3 +399,96 @@ impl PinnedCreditPrice {
         }
     }
 }
+
+/// Lowest and highest unit price of every billing dimension a pricing has,
+/// over its base rates, tiers, rules and time windows. `None` when a rate is
+/// not a finite non-negative number.
+fn price_bounds(pricing: &Pricing) -> Option<BTreeMap<String, (f64, f64)>> {
+    let mut bounds = BTreeMap::<String, (f64, f64)>::new();
+    let mut valid = true;
+    let mut add = |dimension: String, value: Option<f64>| {
+        let Some(value) = value else { return };
+        if !value.is_finite() || value < 0.0 {
+            valid = false;
+            return;
+        }
+        let entry = bounds.entry(dimension).or_insert((value, value));
+        entry.0 = entry.0.min(value);
+        entry.1 = entry.1.max(value);
+    };
+    let unit_key = |unit: Option<crate::catalog::PricingUnit>| {
+        format!(
+            "unit:{}",
+            unit.map(|unit| format!("{unit:?}"))
+                .unwrap_or_else(|| "none".into())
+        )
+    };
+    macro_rules! tokens {
+        ($source:expr) => {{
+            let source = $source;
+            for (name, value) in [
+                ("input_token", source.input_token),
+                ("output_token", source.output_token),
+                ("cache_input_token", source.cache_input_token),
+                ("cache_write_input_token", source.cache_write_input_token),
+                ("cache_write_1h_input_token", source.cache_write_1h_input_token),
+                ("audio_input_token", source.audio_input_token),
+                ("image_input_token", source.image_input_token),
+                ("audio_output_token", source.audio_output_token),
+                ("image_output_token", source.image_output_token),
+            ] {
+                add(name.to_string(), value);
+            }
+        }};
+    }
+    tokens!(pricing);
+    add("estimated".into(), pricing.estimated_cost);
+    add(unit_key(pricing.unit), pricing.amount);
+    for addon in &pricing.addons {
+        add(format!("addon:{:?}", addon.unit), Some(addon.amount));
+    }
+    for step in pricing.tiers.iter().flat_map(|tiers| &tiers.steps) {
+        tokens!(step);
+        add(unit_key(step.unit.or(pricing.unit)), step.amount);
+    }
+    for rule in &pricing.rules {
+        tokens!(rule);
+        add(unit_key(rule.unit.or(pricing.unit)), Some(rule.amount));
+    }
+    for window in &pricing.time_windows {
+        tokens!(window);
+        add(unit_key(pricing.unit), window.amount);
+    }
+    valid.then_some(bounds)
+}
+
+/// The candidate is known not to cost more than the original: both have the
+/// same billing dimensions and, per dimension, the candidate's highest unit
+/// price is at most the original's lowest, once both are in USD. An unknown
+/// price, a currency without a rate or mismatched dimensions is not proof.
+pub(crate) fn not_pricier(
+    candidate: &Pricing,
+    original: &Pricing,
+    to_usd: &dyn Fn(f64, &str) -> Option<f64>,
+) -> bool {
+    let (Some(candidate_bounds), Some(original_bounds)) =
+        (price_bounds(candidate), price_bounds(original))
+    else {
+        return false;
+    };
+    if candidate_bounds.is_empty()
+        || candidate_bounds.keys().ne(original_bounds.keys())
+    {
+        return false;
+    }
+    candidate_bounds.iter().all(|(dimension, (_, highest))| {
+        let (lowest, _) = original_bounds[dimension];
+        match (
+            to_usd(*highest, &candidate.currency),
+            to_usd(lowest, &original.currency),
+        ) {
+            (Some(candidate), Some(original)) => candidate <= original + 1e-12,
+            _ => false,
+        }
+    })
+}

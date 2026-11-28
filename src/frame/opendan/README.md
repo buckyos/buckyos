@@ -224,6 +224,7 @@ WebUI 通过同源 `/api/opendan` 访问托管本页面的 Agent，由 zone 网�
 | `session.stop` | `{sid, reason?, scope?: session \| turn}` | `control(stop)`。`turn`：针对消息的 stop，只关当前 Turn，没有打开的 Turn 时报错。`session`（缺省）：针对 Session 的 stop，按会话类型——Work / self_check 以 stopped 结束（连同未结束的子 Session），Goal Session 让它的 Goal 休眠，UI Session 报错（对话不能停，清空上下文用 `ui.rotate`） |
 | `session.pause` / `session.resume` | `{sid, reason?}` | `control(pause)` / `control(resume)`。暂停级联到未结束的子 Session；resume 也是恢复“异常中断”的入口，级联到同一次中断的子 Session |
 | `session.decide` | `{sid, decision: accept \| discard, note?}` | `control(decide)` |
+| `session.route_group` | `{sid, route_group: string \| null}` | `control(route_group)`：Session 用的 AICC 路由策略组（属于调用者；`null` 清除），子 Session 没有自己的就用最近祖先的，下一次推理起生效。`session.read` 返回 `config.route_group`（自己的）与 `route_group`（生效的 `{group_id, session_id}`），`ui.conversation` 的 `current` 带 `route_group`、`route_fallbacks` |
 | `session.post` | `{sid, text}` | 以调用方身份投一条文本消息。只收控制命令的 Session（纯 Work，`session.input_policy = none`）拒绝并说明 |
 | `ui.rotate` | `{sid}` | clean：归档这个 UI Session（投 `stop(scope=archive)`，旧会话以 stopped 结束、原样保留），同一对话的下一条消息新建一代。它名下还有未结束的 Work 时报错（`unfinished_works: …`）。返回 `{archived, finished}`；`finished: false` 表示等了 20 秒旧会话还在收尾 |
 | `sessions.delete` | `{sid}` | 门面方法。删除一个已结束的 Work / self_check 会话，连同它全部已结束的后代（目录和登记项；感知流不动）；有未结束的后代、或是 UI / Goal 会话时报错。返回 `{deleted: [sid…]}` |

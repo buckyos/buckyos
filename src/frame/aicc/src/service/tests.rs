@@ -154,7 +154,7 @@ impl ServiceRuntime for FakeRuntime {
             .iter()
             .map(provider_public_view)
             .collect();
-        candidate.routing = settings.settings.session_config.clone().unwrap_or_default();
+        candidate.routing = settings.settings.routing.clone().unwrap_or_default();
         Ok(Box::new(FakePreparedRuntime {
             runtime: Arc::new(Self {
                 snapshot: Mutex::new(self.snapshot.lock().await.clone()),
@@ -198,7 +198,7 @@ impl ServiceRuntime for SharedFakeRuntime {
             .iter()
             .map(provider_public_view)
             .collect();
-        candidate.routing = settings.settings.session_config.clone().unwrap_or_default();
+        candidate.routing = settings.settings.routing.clone().unwrap_or_default();
         Ok(Box::new(FakePreparedRuntime {
             runtime: self.0.clone(),
             expected: settings.revision.saturating_sub(1),
@@ -356,10 +356,10 @@ impl InferencePort for FakeInference {
             operation: request.api_type.typed_method().to_string(),
             enabled_capabilities: Vec::new(),
             disabled_capabilities: Vec::new(),
-            fallback_attempts: Vec::new(),
             route_trace: RouteTrace {
                 attempts: Vec::new(),
                 final_model: Some("model-a@primary".to_string()),
+                fallback: None,
             },
             inventory_revision: "inventory-1".to_string(),
         })
@@ -471,6 +471,7 @@ fn sn_provider(name: &str, auth: Value) -> ProviderSettings {
         timeout_ms: None,
         auto_sync_models: None,
         lifecycle: ProviderLifecyclePolicy { non_deletable },
+        marked_faulty: false,
     }
 }
 
@@ -488,6 +489,7 @@ fn provider_public_view(provider: &ProviderSettings) -> ProviderInstanceView {
         base_url: provider.base_url.clone(),
         operation_base_urls: provider.operation_base_urls.clone(),
         enabled: provider.enabled,
+        marked_faulty: provider.marked_faulty,
         auth: ProviderInstanceAuthView {
             mode: Some(ProviderInstanceAuthMode::ApiKey),
             credential_kind: Some("bearer".to_string()),
@@ -919,6 +921,7 @@ async fn provider_list_returns_disabled_instances_revision_and_no_credentials() 
         timeout_ms: None,
         auto_sync_models: None,
         lifecycle: Default::default(),
+        marked_faulty: false,
     };
     {
         let mut snapshot = fixture.runtime.snapshot.lock().await;
@@ -968,8 +971,8 @@ async fn routing_update_validates_cas_weights_and_provider_references() {
     {
         let current = fixture.settings.value.lock().await.clone();
         let mut settings = current.settings.as_ref().clone();
-        settings.session_config = Some(buckyos_api::AiccRouteOverlay {
-            revision: Some("keep-me".to_string()),
+        settings.routing = Some(buckyos_api::AiccRouteOverlay {
+            global_exact_model_weights: BTreeMap::from([("keep@me".to_string(), 2.0)]),
             ..Default::default()
         });
         *fixture.settings.value.lock().await =
@@ -986,7 +989,7 @@ async fn routing_update_validates_cas_weights_and_provider_references() {
         .unwrap();
     assert_eq!(response.settings_revision, 6);
     assert_eq!(response.routing.provider_weights["primary"], 0.25);
-    assert_eq!(response.routing.revision.as_deref(), Some("keep-me"));
+    assert_eq!(response.routing.global_exact_model_weights["keep@me"], 2.0);
     assert_eq!(fixture.settings.writes.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.runtime.publishes.load(Ordering::SeqCst), 2);
 
@@ -1060,7 +1063,7 @@ async fn routing_update_validates_cas_weights_and_provider_references() {
         .lock()
         .await
         .settings
-        .session_config
+        .routing
         .as_ref()
         .unwrap()
         .provider_weights
@@ -1344,7 +1347,7 @@ async fn sn_discovered_models_populate_catalog_and_builtin_llm_tasks() {
     );
     assert_eq!(inventory.unavailable_presets[0].effort, "none");
     let registry = ServiceModelAssembler {
-        session: None,
+        system: None,
         events: None,
     }
     .build(catalog.clone(), vec![inventory.as_model_inventory()])
@@ -1478,7 +1481,6 @@ fn builtin_plan_and_code_prefer_openai_and_keep_other_vendors_available() {
                 *next,
                 "{path}"
             );
-            assert!(candidates.fallback_chain.is_empty(), "{path}: {next}");
             unavailable.push(*next);
         }
         let exhausted = registry
@@ -1486,8 +1488,9 @@ fn builtin_plan_and_code_prefer_openai_and_keep_other_vendors_available() {
                 !unavailable.contains(&candidate.model.exact_model.as_str())
             })
             .unwrap();
-        assert_eq!(exhausted.resolved_logical_path, "llm.fallback", "{path}");
-        assert!(!exhausted.candidates.is_empty(), "{path}");
+        // The registry has no fallback chain: an exhausted usecase is empty.
+        assert_eq!(exhausted.resolved_logical_path, path, "{path}");
+        assert!(exhausted.candidates.is_empty(), "{path}");
         assert!(exhausted
             .candidates
             .iter()
@@ -1541,31 +1544,20 @@ fn builtin_logical_definitions_gate_specs_with_min_line_and_reject_old_mounts() 
         == "planner:reasoning-high@secondary"
         && !record.admitted
         && record.missing_requirements.contains(&"tool_call".into())));
-    assert_eq!(candidates.fallback_chain.len(), 1);
-    assert_eq!(candidates.candidates.len(), 1);
-    assert_eq!(
-        candidates.candidates[0].model.exact_model.as_str(),
-        "nano:reasoning-none@primary"
-    );
-    assert_eq!(
-        candidates.candidates[0].paths[0].logical_paths,
-        vec!["llm.fallback", "llm.gpt-nano", "llm.gpt-5-6-luna:none"]
-    );
-    let strict: buckyos_api::AiccRouteOverlay = serde_json::from_value(
-        json!({"logical_tree": {"llm.plan": {"fallback": {"mode": "strict"}}}}),
-    )
-    .unwrap();
-    let candidates = registry
-        .with_session_overlay(&strict)
-        .unwrap()
-        .resolve_candidates("llm.plan", buckyos_api::ApiType::Llm)
-        .unwrap();
+    // The small model only serves llm.plan through the fallback LLM, which
+    // the usecase table applies (routing/usecase.rs), not the registry.
     assert!(candidates.candidates.is_empty());
-    assert!(candidates.fallback_chain.is_empty());
     assert!(!candidates
         .admissions
         .iter()
         .any(|record| record.exact_model.starts_with("nano")));
+    let fallback = registry
+        .resolve_candidates("llm.fallback", buckyos_api::ApiType::Llm)
+        .unwrap();
+    assert_eq!(
+        fallback.candidates[0].paths[0].logical_paths,
+        vec!["llm.fallback", "llm.gpt-nano", "llm.gpt-5-6-luna:none"]
+    );
 }
 
 #[test]
@@ -1608,16 +1600,13 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
             .resolve_candidates(path, buckyos_api::ApiType::Llm)
             .unwrap();
         assert!(set.candidates.is_empty());
-        assert!(set.fallback_chain.is_empty());
     }
     for path in llm_usecases() {
         let set = registry
             .resolve_candidates(&path, buckyos_api::ApiType::Llm)
             .unwrap();
         assert!(set.candidates.is_empty(), "{path}");
-        assert_eq!(set.resolved_logical_path, "llm.fallback", "{path}");
-        assert_eq!(set.fallback_chain.len(), 1, "{path}");
-        assert_eq!(set.fallback_chain[0].from, path);
+        assert_eq!(set.resolved_logical_path, path, "{path}");
     }
     let catalog = crate::model::llm_tests::builtin_catalog();
     assert_eq!(
@@ -1798,10 +1787,20 @@ fn builtin_single_llm_serves_every_usecase_it_is_capable_of() {
                 &efforts
             },
         )]);
+        // With the fallback LLM on, a usecase without its own model is
+        // served by llm.fallback.
+        let fallback = registry
+            .resolve_candidates("llm.fallback", buckyos_api::ApiType::Llm)
+            .unwrap();
         for usecase in usecases.iter().chain([&"llm.fallback".to_owned()]) {
-            let set = registry
+            let own = registry
                 .resolve_candidates(usecase, buckyos_api::ApiType::Llm)
                 .unwrap();
+            let set = if own.candidates.is_empty() {
+                fallback.clone()
+            } else {
+                own.clone()
+            };
             if efforts.is_empty() {
                 if !set.candidates.is_empty() || !set.admissions.is_empty() {
                     gaps.push(format!(
@@ -1811,7 +1810,7 @@ fn builtin_single_llm_serves_every_usecase_it_is_capable_of() {
                 continue;
             }
             checked += 1;
-            let rejected = set
+            let rejected = own
                 .admissions
                 .iter()
                 .any(|record| !record.admitted && !record.missing_requirements.is_empty());
@@ -1864,24 +1863,26 @@ fn builtin_section_2_1_models_reach_every_usecase_alone() {
     ] {
         let registry = builtin_tree(&[single_llm_inventory(driver, origin, &[effort])]);
         let exact = format!("single:reasoning-{effort}@single");
-        for (paths, via_fallback) in [(direct, false), (fallback, true)] {
-            for path in paths {
-                let set = registry
-                    .resolve_candidates(path, buckyos_api::ApiType::Llm)
-                    .unwrap();
-                assert_eq!(set.candidates.len(), 1, "{origin} {path}");
-                assert_eq!(set.candidates[0].model.exact_model.as_str(), exact);
-                assert_eq!(
-                    set.fallback_chain.is_empty(),
-                    !via_fallback,
-                    "{origin} {path}"
-                );
-                if via_fallback {
-                    assert_eq!(set.resolved_logical_path, "llm.fallback");
-                    assert_eq!(set.scheduler_profile, registry_profile(&registry, path));
-                }
-            }
+        for path in direct {
+            let set = registry
+                .resolve_candidates(path, buckyos_api::ApiType::Llm)
+                .unwrap();
+            assert_eq!(set.candidates.len(), 1, "{origin} {path}");
+            assert_eq!(set.candidates[0].model.exact_model.as_str(), exact);
+            assert_eq!(set.scheduler_profile, registry_profile(&registry, path));
         }
+        // These need the fallback LLM: the usecase itself has no model.
+        for path in fallback {
+            let set = registry
+                .resolve_candidates(path, buckyos_api::ApiType::Llm)
+                .unwrap();
+            assert!(set.candidates.is_empty(), "{origin} {path}");
+        }
+        let set = registry
+            .resolve_candidates("llm.fallback", buckyos_api::ApiType::Llm)
+            .unwrap();
+        assert_eq!(set.candidates.len(), 1, "{origin}");
+        assert_eq!(set.candidates[0].model.exact_model.as_str(), exact);
     }
 }
 
@@ -1915,34 +1916,30 @@ fn builtin_fallback_prefers_the_cheap_tier_and_keeps_existing_tiers() {
         select(&all, "llm.fallback"),
         ["single:reasoning-none@single"]
     );
-    assert_eq!(
-        select(&all, "llm.summarize"),
-        ["single:reasoning-none@single"]
-    );
+    // Usecases without a model of their own get nothing from the registry;
+    // with the fallback LLM on they are served by llm.fallback above.
+    assert!(select(&all, "llm.summarize").is_empty());
     assert_eq!(select(&all, "llm.plan"), ["single:reasoning-high@pro"]);
     let without_cheap = [standard.clone(), pro.clone()];
     assert_eq!(
         select(&without_cheap, "llm.fallback"),
         ["single:reasoning-medium@standard"]
     );
+    assert!(select(&without_cheap, "llm.swift").is_empty());
     assert_eq!(
-        select(&without_cheap, "llm.swift"),
-        ["single:reasoning-medium@standard"]
-    );
-    assert_eq!(
-        select(&[pro.clone()], "llm.translate"),
+        select(&[pro.clone()], "llm.fallback"),
         ["single:reasoning-high@pro"]
     );
+    assert!(select(&[pro.clone()], "llm.translate").is_empty());
     let registry = builtin_tree(&[]);
     let set = registry
         .resolve_candidates("llm.swift", buckyos_api::ApiType::Llm)
         .unwrap();
     assert!(set.candidates.is_empty());
-    assert_eq!(set.fallback_chain.len(), 1);
-    assert!(set
+    assert!(!set
         .expansions
         .iter()
-        .any(|step| step.logical_path == "llm.fallback" && step.max_weight.is_none()));
+        .any(|step| step.logical_path == "llm.fallback"));
 }
 
 #[test]
@@ -1953,13 +1950,17 @@ fn builtin_fallback_keeps_usecase_requirements_and_explicit_isolation() {
         .resolve_candidates("llm.vision", buckyos_api::ApiType::Llm)
         .unwrap();
     assert!(vision.candidates.is_empty());
-    assert_eq!(vision.fallback_chain.len(), 1);
     assert!(vision.admissions.iter().all(
         |record| !record.admitted && record.missing_requirements.contains(&"vision".to_owned())
     ));
+    assert!(registry
+        .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
+        .unwrap()
+        .candidates
+        .is_empty());
     assert_eq!(
         registry
-            .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
+            .resolve_candidates("llm.fallback", buckyos_api::ApiType::Llm)
             .unwrap()
             .candidates
             .len(),
@@ -1974,20 +1975,26 @@ fn builtin_fallback_keeps_usecase_requirements_and_explicit_isolation() {
             .resolve_candidates(path, buckyos_api::ApiType::Llm)
             .unwrap();
         assert!(set.candidates.is_empty(), "{path}");
-        assert!(set.admissions.iter().any(|record| record
-            .missing_requirements
-            .contains(&"json_schema".to_owned())));
     }
+    // The fallback LLM carries only the request's own requirements: a
+    // request that needs JSON Schema filters the model out there.
+    assert_eq!(
+        registry
+            .resolve_candidates("llm.fallback", buckyos_api::ApiType::Llm)
+            .unwrap()
+            .candidates
+            .len(),
+        1
+    );
 
     let registry = builtin_tree(&[single_llm_inventory("openai", "gpt-5.4-nano", &["none"])]);
     for overlay in [
-        json!({"logical_tree": {"llm.plan": {"fallback": {"mode": "disabled"}}}}),
         json!({"logical_tree": {"llm.plan": {"items": [{"name": "gpt_pro", "target": "llm.gpt-pro", "weight": 1.0}]}}}),
         json!({"logical_tree": {"llm.fallback": {"items": []}}}),
     ] {
         let overlay: buckyos_api::AiccRouteOverlay = serde_json::from_value(overlay).unwrap();
         assert!(registry
-            .with_session_overlay(&overlay)
+            .with_overlay(&overlay)
             .unwrap()
             .resolve_candidates("llm.plan", buckyos_api::ApiType::Llm)
             .unwrap()
@@ -2000,26 +2007,25 @@ fn builtin_fallback_keeps_usecase_requirements_and_explicit_isolation() {
     .unwrap();
     assert_eq!(
         registry
-            .with_session_overlay(&weight_only)
+            .with_overlay(&weight_only)
             .unwrap()
             .resolve_candidates("llm.plan", buckyos_api::ApiType::Llm)
             .unwrap()
-            .fallback_chain
+            .candidates
             .len(),
-        1
+        0
     );
     for path in ["llm.gpt-mini", "llm.gpt-5-6-luna", "llm.gpt-5-4-nano:low"] {
         let set = registry
             .resolve_candidates(path, buckyos_api::ApiType::Llm)
             .unwrap();
         assert!(set.candidates.is_empty(), "{path}");
-        assert!(set.fallback_chain.is_empty(), "{path}");
     }
     let direct_only: buckyos_api::AiccRouteOverlay = serde_json::from_value(json!({
         "logical_tree": {"llm.fallback": {"items": [{"name": "grok", "target": "llm.grok-standard", "weight": 1.0}]}}
     }))
     .unwrap();
-    assert!(registry.with_session_overlay(&direct_only).is_err());
+    assert!(registry.with_overlay(&direct_only).is_err());
     let catalog = crate::model::llm_tests::builtin_catalog();
     let directory = model_directory_json(&registry);
     for item in directory["llm.fallback"].as_array().unwrap() {
@@ -2039,7 +2045,7 @@ fn builtin_fallback_keeps_usecase_requirements_and_explicit_isolation() {
 async fn service_assembler_builds_with_only_builtin_model_metadata() {
     use crate::runtime::ModelRegistryAssembler;
     let assembler = ServiceModelAssembler {
-        session: None,
+        system: None,
         events: None,
     };
     let registry = assembler
@@ -2250,6 +2256,7 @@ async fn management_reads_and_krpc_dispatch_use_one_runtime_view() {
             timeout_ms: None,
             auto_sync_models: None,
             lifecycle: Default::default(),
+            marked_faulty: false,
         })];
         snapshot
             .provider_health
@@ -2520,7 +2527,7 @@ async fn model_metadata_sources_replace_whole_documents_and_publish_trees_atomic
             _: ConvergenceTrigger,
         ) -> Result<RuntimePreparedState, RuntimeError> {
             let models = ServiceModelAssembler {
-                session: None,
+                system: None,
                 events: None,
             }
             .build(catalog.clone(), vec![])

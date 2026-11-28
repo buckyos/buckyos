@@ -51,7 +51,7 @@ case_set = {
 
 1. `canonical ApiType` 以 `aicc_api设计.md` 定义的目标协议为准。`llm` 是 canonical api_type，`chat.completions.create` 是 method；`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment` 是 api_type，但其标准逻辑目录路径在内置树中是 `image.ocr`、`image.caption`、`image.detect`、`image.segment`。
 2. `methods_supporting(api_type)` 以本文件 §7 Method 验收清单和 `aicc_api设计.md` 为准。一个 api_type 可以对应多个 method，例如 `llm` 需要覆盖 `route.resolve`、`chat.completions.create`、`helper.llm_chat` 中适用的调用形态。
-3. `standard_logical_paths` 以当前运行版本加载的 `LocalLogicalTreeConfig.logical_definitions`、`SessionConfig.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准；该配置默认来自 `build_builtin_local_logical_tree_config()`，并可被 system_config 中的官方 routing 配置叠加。runner 必须把最终生效的标准逻辑目录路径写入报告，并标明每个路径的来源、继承到的 api_type、items、fallback 和 admission 结果。
+3. `standard_logical_paths` 以当前运行版本加载的 `LocalLogicalTreeConfig.logical_definitions`、settings `routing.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准；该配置默认来自 `build_builtin_local_logical_tree_config()`，并可被 system_config 中的官方 routing 配置叠加。runner 必须把最终生效的标准逻辑目录路径写入报告，并标明每个路径的来源、继承到的 api_type、items、fallback 和 admission 结果。
 4. `enabled_official_providers` 发布强覆盖默认至少包含 `openai`、`fal`、`google-gemini`、`claude`、`openrouter`、`sn-ai-provider`；如果官方配置或本次发布基线新增 Provider driver，必须自动纳入矩阵或在报告中标记为未覆盖缺口。
 5. `supported_models` 以 AICC 实际注册并可被 `models.list` 观察到的模型为准，包含精确模型名、provider instance、`api_types`、`logical_mounts`、capabilities、health 和 pricing 摘要。
 
@@ -76,13 +76,13 @@ case_set = {
 
 | 用例族 | 优先级 | 覆盖点 |
 |---|---|---|
-| `l1_routing_exact_model_*` | P0 | 精确模型解析、Provider instance 校验、API type 校验、默认不 fallback |
+| `l1_routing_exact_model_*` | P0 | 精确模型解析、Provider instance 校验、API type 校验、从不换模型 |
 | `l1_routing_logical_tree_*` | P0 | 逻辑目录展开、items target、目录软链接、候选去重 |
-| `l1_routing_fallback_*` | P0 | `strict`、`parent`、`target_exact`、`target_logical`、`disabled` |
-| `l1_routing_loop_*` | P0 | fallback loop、logical tree loop、最大 fallback depth |
+| `l1_routing_fallback_*` | P0 | 用途的不可用时策略 `none`（默认）/ `same_model` / `not_pricier` / `next_model`：触发与不触发类别、每次请求最多切换一次、备选沿用原请求与用途约束、请求 `no_fallback` 关闭；兜底 LLM 只为静态无候选的 LLM 用途提供；标记为故障 |
+| `l1_routing_loop_*` | P0 | logical tree loop（目录软链接环）；注册表没有 fallback 链，不再有 fallback loop 和深度限制 |
 | `l1_scheduler_weight_*` | P0 | item weight、exact model weight、weight 0 硬过滤、同权重 profile 评分 |
-| `l1_scheduler_profile_*` | P0 | `cost_first`、`latency_first`、`quality_first`、`balanced`、`local_first`、`strict_local` |
-| `l1_request_overlay_*` | P0 | overlay 合并、逻辑目录覆盖、policy locked、互不污染 |
+| `l1_scheduler_profile_*` | P0 | `latency_first`、`quality_first`、`balanced`（默认）、`local_first`、`strict_local`；`cost_first` 已删除 |
+| `l1_usecase_layers_*` | P0 | 用途表各层合并（默认 < 管理员 < 用户 < App 组 < 会话组）、管理员锁定、层选的模型缺失 / 不可见 / 不满足要求时跟随下一层、请求策略只能收紧、互不污染（取代已删除的 `l1_request_overlay_*`：请求不再携带 `session_overlay`） |
 | `l1_provider_protocol_openai_responses_*` | P0 | Responses request/item/SSE、tool call、JSON schema、usage |
 | `l1_provider_protocol_openai_chat_completions_*` | P0 | Chat Completions 独立 contract，不经过 Responses Adapter |
 | `l1_provider_protocol_claude_messages_*` | P0 | Messages content block、tool use、vision、stop reason、usage |
@@ -128,7 +128,7 @@ case_set = {
 | `l3_krpc_stream_*` | P0 | Mock streaming chunks、task data progress、final summary |
 | `l3_krpc_async_*` | P0 | image/audio/video 类异步 task 状态闭环 |
 | `l3_krpc_usage_*` | P0 | usage event 写入和查询 |
-| `l3_krpc_failover_*` | P0 | Provider timeout / 5xx / quota exhausted 后 failover |
+| `l3_krpc_unavailable_*` | P0 | 用途没有策略时 timeout / 5xx / quota exhausted 返回真实错误、不换模型；配置 `same_model` / `not_pricier` / `next_model` 后切换一次，`route_trace.fallback`、usage `fallback_from`、事件 `unavailable_fallback` 可见；标记为故障（取代已删除的 `l3_krpc_failover_*`） |
 | `l3_krpc_security_*` | P0 | local_only、跨用户访问拒绝、脱敏扫描 |
 
 ### 2.4 L4 Gateway 真实模型验收
@@ -154,14 +154,15 @@ L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型
 | case id | 层级 | 目标 |
 |---|---|---|
 | `l1_routing_exact_model_success` | L1 | 精确模型名解析成功 |
-| `l1_routing_exact_model_no_fallback` | L1 | 精确模型不可用且未开启 fallback 时失败 |
+| `l1_routing_exact_model_no_fallback` | L1 | 精确模型不可用时直接失败，从不换模型 |
 | `l1_routing_logical_model_candidates` | L1 | 逻辑模型展开候选列表 |
-| `l1_routing_parent_fallback_success` | L1 | parent fallback 生效 |
-| `l1_routing_fallback_loop_rejected` | L1 | fallback 环路被拒绝 |
+| `l1_routing_no_policy_no_switch` | L1 | 用途没有不可用时策略：同池两个 Provider，选中者连续失败 10 次，另一个收到 0 次请求；404 之后再请求仍选同一模型 |
+| `l1_routing_fallback_once` | L1 | 用途配置 `same_model` 时最多切换一次；备选也失败时错误同时带两边原因 |
 | `l1_scheduler_weight_priority` | L1 | 目录 item weight 优先级生效 |
-| `l1_scheduler_profile_cost_first` | L1 | 同优先级候选按 cost profile 选择 |
-| `l1_request_overlay_override_route` | L1 | request overlay 覆盖系统配置并改变最终物理路由 |
-| `l1_request_overlay_stateless` | L1 | 不同 request overlay 互不污染，AICC 不保存 session config |
+| `l1_scheduler_profile_balanced_default` | L1 | 未指定 profile 时按 `balanced` 选择 |
+| `l1_usecase_layer_override_route` | L1 | 用户层为用途选的精确模型覆盖管理员层和默认路由；管理员锁定的格子不被覆盖 |
+| `l1_request_policy_tighten_only` | L1 | 请求策略只能收紧：不替换管理员策略，允许列表与管理员的取交集，不能改锁定的 profile |
+| `l1_routing_fallback_llm_coverage` | L1 | 兜底 LLM 关闭时没有模型的 LLM 用途返回 `no_candidate_model`（`details.usecase`）；打开后由 `llm.fallback` 提供，`route_trace.fallback.kind = coverage` |
 | `l1_security_local_only_rejects_cloud` | L1 | `local_only` 硬过滤云端 Provider |
 | `l1_provider_openai_chat_success` | L1 | OpenAI-like `chat.completions.create` 协议转换成功 |
 | `l1_provider_openai_stream_merge` | L1 | Provider streaming chunks 聚合为最终 summary |
@@ -186,9 +187,13 @@ L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型
 | `l3_krpc_resource_named_object_artifact` | L3 | named_object artifact 输出可读取 |
 | `l3_krpc_stream_progress_and_final` | L3 | streaming 中间态写 task data，最终 summary 正确 |
 | `l3_krpc_async_task_success` | L3 | 异步任务状态闭环 |
-| `l3_krpc_provider_5xx_failover` | L3 | Provider 5xx 后按策略 failover |
+| `l3_krpc_provider_5xx_no_policy_real_error` | L3 | 用途没有策略时 Provider 5xx 返回真实错误，不换模型 |
+| `l3_krpc_provider_5xx_same_model_switch` | L3 | 用途配置 `same_model` 时 Provider 5xx 后切到另一个 Provider 的同一模型，trace、usage、事件标出原模型 |
+| `l3_krpc_marked_faulty` | L3 | Provider 标记为故障：有策略的用途直接用备选，没有策略的立即返回 `no_provider_available`（`details.reason = marked_faulty`），用途表不变 |
 | `l3_krpc_provider_timeout_failed` | L3 | Provider timeout 返回明确错误 |
 | `l3_krpc_usage_query_last_1d` | L3 | usage 可按 last_1d 查询 |
 | `l3_krpc_security_no_secret_in_report` | L3 | 报告和 trace 脱敏扫描通过 |
+
+2026-11-27 删除的最小集用例：`l1_routing_parent_fallback_success`（不再有 parent fallback）、`l1_routing_fallback_loop_rejected`（注册表没有 fallback 链，没有环可测）、`l1_scheduler_profile_cost_first`（`cost_first` 已删除）、`l1_request_overlay_override_route` / `l1_request_overlay_stateless`（请求不再携带 `session_overlay`）、`l3_krpc_provider_5xx_failover`（没有策略时不换模型，换模型只来自用途的不可用时策略）。规则见 [aicc_router.md §9](../../../aicc_router.md#9-fallback-与失败处理)、[§11](../../../aicc_router.md#11-用途表与配置层次)。
 
 首批 P0 最小集通过后，再扩展到完整 P0/P1/P2 用例矩阵。

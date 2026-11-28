@@ -13,14 +13,15 @@
 | case id | 层级 | 目标 |
 |---|---|---|
 | `l1_routing_exact_model_success` | L1 | 精确模型名解析成功 |
-| `l1_routing_exact_model_no_fallback` | L1 | 精确模型不可用且未开启 fallback 时失败 |
+| `l1_routing_exact_model_no_fallback` | L1 | 精确模型不可用时直接失败，从不换模型 |
 | `l1_routing_logical_model_candidates` | L1 | 逻辑模型展开候选列表 |
-| `l1_routing_parent_fallback_success` | L1 | parent fallback 生效 |
-| `l1_routing_fallback_loop_rejected` | L1 | fallback 环路被拒绝 |
+| `l1_routing_no_policy_no_switch` | L1 | 用途没有不可用时策略：同池两个 Provider，选中者连续失败 10 次，另一个收到 0 次请求；404 之后再请求仍选同一模型 |
+| `l1_routing_fallback_once` | L1 | 用途配置 `same_model` 时最多切换一次；备选也失败时错误同时带两边原因 |
 | `l1_scheduler_weight_priority` | L1 | 目录 item weight 优先级生效 |
-| `l1_scheduler_profile_cost_first` | L1 | 同优先级候选按 cost profile 选择 |
-| `l1_request_overlay_override_route` | L1 | request overlay 覆盖系统配置并改变最终物理路由 |
-| `l1_request_overlay_stateless` | L1 | 不同 request overlay 互不污染，AICC 不保存 session config |
+| `l1_scheduler_profile_balanced_default` | L1 | 未指定 profile 时按 `balanced` 选择 |
+| `l1_usecase_layer_override_route` | L1 | 用户层为用途选的精确模型覆盖管理员层和默认路由；管理员锁定的格子不被覆盖 |
+| `l1_request_policy_tighten_only` | L1 | 请求策略只能收紧：不替换管理员策略，允许列表与管理员的取交集，不能改锁定的 profile |
+| `l1_routing_fallback_llm_coverage` | L1 | 兜底 LLM 关闭时没有模型的 LLM 用途返回 `no_candidate_model`（`details.usecase`）；打开后由 `llm.fallback` 提供，`route_trace.fallback.kind = coverage` |
 | `l1_security_local_only_rejects_cloud` | L1 | `local_only` 硬过滤云端 Provider |
 | `l1_provider_openai_chat_success` | L1 | OpenAI-like `chat.completions.create` 协议转换成功 |
 | `l1_provider_openai_stream_merge` | L1 | Provider streaming chunks 聚合为最终 summary |
@@ -45,9 +46,13 @@
 | `l3_krpc_resource_named_object_artifact` | L3 | named_object artifact 输出可读取 |
 | `l3_krpc_stream_progress_and_final` | L3 | streaming 中间态写 task data，最终 summary 正确 |
 | `l3_krpc_async_task_success` | L3 | 异步任务状态闭环 |
-| `l3_krpc_provider_5xx_failover` | L3 | Provider 5xx 后按策略 failover |
+| `l3_krpc_provider_5xx_no_policy_real_error` | L3 | 用途没有策略时 Provider 5xx 返回真实错误，不换模型 |
+| `l3_krpc_provider_5xx_same_model_switch` | L3 | 用途配置 `same_model` 时 Provider 5xx 后切到另一个 Provider 的同一模型，trace、usage、事件标出原模型 |
+| `l3_krpc_marked_faulty` | L3 | Provider 标记为故障：有策略的用途直接用备选，没有策略的立即返回 `no_provider_available`（`details.reason = marked_faulty`），用途表不变 |
 | `l3_krpc_provider_timeout_failed` | L3 | Provider timeout 返回明确错误 |
 | `l3_krpc_usage_query_last_1d` | L3 | usage 可按 last_1d 查询 |
 | `l3_krpc_security_no_secret_in_report` | L3 | 报告和 trace 脱敏扫描通过 |
+
+2026-11-27 删除的最小集用例：`l1_routing_parent_fallback_success`（不再有 parent fallback）、`l1_routing_fallback_loop_rejected`（注册表没有 fallback 链，没有环可测）、`l1_scheduler_profile_cost_first`（`cost_first` 已删除）、`l1_request_overlay_override_route` / `l1_request_overlay_stateless`（请求不再携带 `session_overlay`）、`l3_krpc_provider_5xx_failover`（没有策略时不换模型，换模型只来自用途的不可用时策略）。规则见 [aicc_router.md §9](../../../aicc_router.md#9-fallback-与失败处理)、[§11](../../../aicc_router.md#11-用途表与配置层次)。
 
 首批 P0 最小集通过后，再扩展到完整 P0/P1/P2 用例矩阵。

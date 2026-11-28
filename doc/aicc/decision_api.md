@@ -70,7 +70,7 @@ ASCII 字母、数字、下划线、点或连字符。公共保护上限：1024 
 `max_state_question_bytes`。Rust `DecisionEvaluateRequest::requirements()` 从实际
 请求生成这些要求；exact 调用也重新计算。模型和 codec 必须同时声明
 `decision.probabilities` 与各问题类型特性，容量不足或缺失的候选被过滤。
-preview、fallback 和 failover 使用同一硬过滤路径。
+preview 与用途的“不可用时”策略选备选模型时使用同一硬过滤路径。
 
 首版 TypeSafe System One Adapter 只支持 immediate。渠道使用明确静态库存
 `jev-1.13.0`；已核验的 `jev-latest`/`jev-preview` 身份映射固定到该版本，

@@ -11,7 +11,11 @@ import { StepConnection } from './StepConnection'
 import { StepModels } from './StepModels'
 import { StepValidation } from './StepValidation'
 import { StepReview } from './StepReview'
+import { StepCoverage } from './StepCoverage'
 import { usePolicyApi } from '../../../hooks/use-policy-api'
+import { useRoutingApi } from '../../../hooks/use-routing-api'
+import { summarizeCoverage } from '../../../datamodel/usecases'
+import { errorText } from '../../policy/policy-labels'
 import { useViewerIsAdmin } from '../../../../settings/hooks/use-viewer-is-admin'
 import { applyProviderAccess, NO_PROVIDER_ACCESS, type ProviderAccess } from './providerAccess'
 import { ProviderCreatedPanel } from './ProviderCreatedPanel'
@@ -28,13 +32,14 @@ const INITIAL_DRAFT: WizardDraft = {
   auto_sync_models: true,
 }
 
-type WizardStepKey = 'chooseType' | 'connection' | 'models' | 'validation' | 'review'
+type WizardStepKey = 'chooseType' | 'connection' | 'models' | 'validation' | 'coverage' | 'review'
 
 const STEP_LABELS: Record<WizardStepKey, string> = {
   chooseType: 'Choose Type',
   connection: 'Connection',
   models: 'Models',
   validation: 'Validation',
+  coverage: 'Usecases',
   review: 'Review',
 }
 
@@ -64,15 +69,19 @@ export function WizardShell({ onBack, onCreated, onOpenPrices }: WizardShellProp
   const [createError, setCreateError] = useState<string | null>(null)
   const [keyboardInset, setKeyboardInset] = useState(0)
   const [access, setAccess] = useState<ProviderAccess>(NO_PROVIDER_ACCESS)
-  const [created, setCreated] = useState<{ provider: string; models: string[]; free: boolean } | null>(null)
+  const [created, setCreated] = useState<{ provider: string; models: string[]; free: boolean; kept: number; keepError?: string } | null>(null)
+  const [keepOld, setKeepOld] = useState<Record<string, string>>({})
   const policyApi = usePolicyApi()
+  const routingApi = useRoutingApi()
   const isAdmin = useViewerIsAdmin() === true
   const selectedProfile = catalog?.providers.find((item) => item.provider_profile_id === draft.provider_profile_id)
 
   const selectsInventoryModels = (selectedProfile?.selectable_inventory_models?.length ?? 0) > 0
   const stepKeys = (selectsInventoryModels
-    ? ['chooseType', 'connection', 'models', 'validation', 'review']
-    : ['chooseType', 'connection', 'validation', 'review']) as WizardStepKey[]
+    ? ['chooseType', 'connection', 'models', 'validation', 'coverage', 'review']
+    : ['chooseType', 'connection', 'validation', 'coverage', 'review']) as WizardStepKey[]
+  const coverage = validation?.usecase_coverage ?? []
+  const coverageSummary = summarizeCoverage(coverage)
   const currentStep = stepKeys[Math.min(step, stepKeys.length - 1)]
   const steps = stepKeys.map((key) => t(`aiCenter.wizard.step.${key}`, STEP_LABELS[key]))
 
@@ -89,6 +98,7 @@ export function WizardShell({ onBack, onCreated, onOpenPrices }: WizardShellProp
       case 'connection': return isConnectionValid(draft) && providerConnectionFieldsValid(draft, selectedProfile)
       case 'models': return true
       case 'validation': return validation !== null && validationCanProceed(validation)
+      case 'coverage': return true
       case 'review': return true
       default: return false
     }
@@ -103,14 +113,30 @@ export function WizardShell({ onBack, onCreated, onOpenPrices }: WizardShellProp
         const provider = await store.addProvider(draft)
         const name = provider.config.provider_instance_name
         let free = false
+        let kept = 0
+        let keepError: string | undefined
         if (isAdmin) {
           free = await applyProviderAccess(policyApi, name, access).then(() => access.free, (error: unknown) => {
             console.error('aicc.policy.provider_access failed', error)
             return false
           })
+          // Usecases unchecked on the coverage step keep their old model in the Zone default.
+          const keep = Object.entries(keepOld)
+          if (keep.length > 0) {
+            try {
+              let { revision } = await routingApi.usecases({ view: 'zone' })
+              for (const [usecase, model] of keep) {
+                revision = (await routingApi.setUsecase({ target: 'zone', usecase, model, revision })).revision
+                kept += 1
+              }
+            } catch (error) {
+              console.error('aicc.routing.keep_old_model failed', error)
+              keepError = errorText(error)
+            }
+          }
         }
         // Administrators see how much of the new Provider is priced before leaving.
-        if (isAdmin) setCreated({ provider: name, models: provider.inventory.models.map((model) => model.exact_model), free })
+        if (isAdmin) setCreated({ provider: name, models: provider.inventory.models.map((model) => model.exact_model), free, kept, keepError })
         else onCreated()
       } catch (error) {
         const message = error instanceof Error ? error.message : ''
@@ -129,6 +155,7 @@ export function WizardShell({ onBack, onCreated, onOpenPrices }: WizardShellProp
     if (currentStep === 'connection') {
       // Reset validation when leaving the connection step
       setValidation(null)
+      setKeepOld({})
       setCreateError(null)
     }
     setStep((s) => s + 1)
@@ -278,7 +305,7 @@ export function WizardShell({ onBack, onCreated, onOpenPrices }: WizardShellProp
         onFocusCapture={keepFocusedFieldVisible}
       >
         {created && (
-          <ProviderCreatedPanel provider={created.provider} models={created.models} free={created.free} onOpenPrices={onOpenPrices} onDone={onCreated} />
+          <ProviderCreatedPanel provider={created.provider} models={created.models} free={created.free} kept={created.kept} keepError={created.keepError} onOpenPrices={onOpenPrices} onDone={onCreated} />
         )}
         {!created && currentStep === 'chooseType' && (
           <StepChooseType
@@ -303,7 +330,20 @@ export function WizardShell({ onBack, onCreated, onOpenPrices }: WizardShellProp
           <StepModels draft={draft} profile={selectedProfile ?? null} onUpdate={updateDraft} />
         )}
         {!created && currentStep === 'validation' && (
-          <StepValidation draft={draft} onResult={setValidation} />
+          <StepValidation draft={draft} onResult={(result) => { setValidation(result); setKeepOld({}) }} />
+        )}
+        {!created && currentStep === 'coverage' && (
+          <StepCoverage
+            coverage={coverage}
+            keep={keepOld}
+            canKeep={isAdmin}
+            onKeepChange={(change, keep) => setKeepOld((current) => {
+              const next = { ...current }
+              if (keep && change.before) next[change.usecase] = change.before
+              else delete next[change.usecase]
+              return next
+            })}
+          />
         )}
         {!created && currentStep === 'review' && (
           <StepReview
@@ -312,6 +352,12 @@ export function WizardShell({ onBack, onCreated, onOpenPrices }: WizardShellProp
             onToggleAutoSync={(v) => updateDraft({ auto_sync_models: v })}
             access={access}
             onAccessChange={setAccess}
+            coverage={coverage.length > 0 ? {
+              newly: coverageSummary.newlyCovered.length,
+              changed: coverageSummary.changed.length,
+              kept: Object.keys(keepOld).length,
+              uncovered: coverageSummary.stillUncovered.length,
+            } : undefined}
           />
         )}
         {createError && (

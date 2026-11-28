@@ -52,7 +52,7 @@
 - `prompt?`、`negative_prompt?`、`conditions`（默认空）、`output?`、`seed?`，以及通用的 `trace_id/execution_mode/idempotency_key/task_options/session_id`。
 - `prompt` 为空白（或缺失）且 `conditions` 为空时报 `invalid_request`。模型要求 prompt 时由模型能力再检查。
 - 未知字段在顶层与所有嵌套对象拒绝。
-- helper 另有 `logical_model`、`requirements`、`disable`、`policy`、`session_overlay`；`exact_model` 不出现在 helper 中。
+- helper 另有 `logical_model`、`requirements`、`disable`、`policy`、`route_group`；`exact_model` 不出现在 helper 中。
 
 ### 2.1 条件 `conditions[]`
 
@@ -184,7 +184,7 @@ Model Driver 的 `capabilities.video_generation` 声明厂商官方云 API 的�
 1. schema 与业务校验（`from_json` + `validate()`）。
 2. 预选路由：只用请求推导的需求，落实 privacy / `local_only` / 可见性策略；无合格候选时在任何 URL 下载或探测前失败。
 3. 素材准备：对 `reference_video` / `reference_audio` 读取字节（URL 走受控下载：HTTPS、公网地址、大小与超时限制），实测容器、时长、宽高、fps、音轨；Base64 / Named Object 图片同时读出尺寸。URL 视频/音频写入租户 Named Object 作为提交副本，保证“验证的内容 = 提交的内容”；去音轨派生素材同样落为 Named Object，并在计划中记录 `derived_from`。
-4. 复核路由：helper 带素材事实重新路由；exact 用同一判定复核所选模型。管理员配置的 fallback 必须满足同一需求。
+4. 复核路由：helper 带素材事实重新路由；exact 用同一判定复核所选模型。用途的“不可用时”策略选出的备选模型必须满足同一需求。
 5. lowering：按合同生成 `VideoPlan`（场景、提交顺序、厂商标记、时长/比例/档位/音频、默认值来源），写入 `resolved_parameters.video_plan`，并给定价提供 `/video/resolution`、`/video/duration_seconds`、`/video/audio`、`/video/reference_images` 维度。
 6. 资源物化 → codec 编码提交。codec 只读计划，遇到计划之外的组合直接拒绝。
 
@@ -197,7 +197,7 @@ Model Driver 的 `capabilities.video_generation` 声明厂商官方云 API 的�
 - 幂等指纹使用原始公共请求（含条件顺序、clip、`include_audio`、`output`、`seed`），素材准备、重排、去音轨与厂商 prompt 都不改写它。helper 以原始 helper 请求计算指纹，作用域是执行方法（`video.generate`）。
 - 显式 `idempotency_key` 在路由前先查执行记录（`ExecutionEngine::replay`）：同 key 同请求直接返回原任务及其绑定模型，不重新路由、不重复下载素材，路由结果变化或此刻无候选都不影响；同 key 不同请求返回 `idempotency_conflict`。
 - 持久边界：素材准备产物是租户 Named Object（可重做、无外部费用）；执行记录先以 `submitted` 落库，native submit 成功后才写入绑定（实际模型/operation、remote task id、`resolved_parameters.video_plan`、价格快照、凭据引用）。重启时有绑定的任务只查询/恢复；无绑定的任务直接失败，从不重新提交。恢复描述所需的资源上下文在提交前检查。
-- 提交被拒（非 2xx，`native_submit_rejected`）表示上游没有任务，按 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理) 处理（同一模型重试、管理员配置的 fallback）；提交结果不确定（超时、断连、成功响应无法解析，`native_submit_unknown`）或已接受后的失败一律不重试、不跨 Provider failover（视频 API 对 `after_accept` 同样生效），配额按 unknown 结算。
+- 提交被拒（非 2xx，`native_submit_rejected`）表示上游没有任务，按 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理) 处理（同一模型重试；属于 §9.2 的触发条件且用途设置了“不可用时”策略时，Helper 换一次模型）；提交结果不确定（超时、断连、成功响应无法解析，`native_submit_unknown`）或已接受后的失败一律不重试、不换模型或 Provider（视频 API 对 `after_accept` 同样生效），配额按 unknown 结算。
 - 取消：未绑定前取消本地执行；已绑定且上游支持取消时调用上游；上游不支持（OpenRouter、Veo）时返回 `unsupported_operation`，不伪报已取消。
 - 升级与旧任务：旧方法（`video.txt2video` 等）不再可读。启动恢复时无法解析的未完成记录被“退役”：去掉绑定与暂存输出、标记为 `failed`（`unsupported_operation`），向 TaskMgr 报失败，配额按 unknown 结算，且不阻断其它任务恢复。上游已接受的旧任务仍会在厂商侧完成并计费但不再回收结果，因此升级前应先排空进行中的视频任务。
 - 上游终态 `usage.cost` 进入 `AiUsage.reported_cost`（OpenRouter 为 USD 总费用），与本地估价不重复累计；计费秒数（`video_seconds`）、产物实测时长、请求估值分开记录，小数秒不截断。

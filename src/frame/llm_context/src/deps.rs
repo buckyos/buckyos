@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use buckyos_api::{AiMessage, AiResponse, AiToolCall};
+use buckyos_api::{AiMessage, AiResponse, AiToolCall, RouteTrace};
 use serde_json::Value;
 
 use crate::behavior_loop::{LLMResultParser, StepRenderer};
@@ -35,6 +35,10 @@ pub struct LlmInferenceRequest {
     /// `tool_policy.mode == None` or no tools are available.
     pub tool_specs: Vec<ToolSpecLite>,
     pub allow_tool_calls: bool,
+    /// AICC routing group of the caller (`None`: the App's binding or the
+    /// user's own table decides). Adapters that do not route through AICC
+    /// ignore it.
+    pub route_group: Option<String>,
     /// Abort signal for this inference. Adapters that support native
     /// cancellation should wire it to the underlying HTTP / SDK cancel;
     /// adapters that don't may ignore it — the waist also races the
@@ -53,11 +57,30 @@ pub struct ToolSpecLite {
     pub args_schema: Value,
 }
 
+/// One inference with the route the provider took.
+#[derive(Debug, Clone, Default)]
+pub struct LlmInference {
+    pub response: AiResponse,
+    /// AICC's route trace (`None`: the adapter does not route through AICC).
+    /// `route_trace.fallback` says the answer did not come from the
+    /// usecase's own model.
+    pub route_trace: Option<RouteTrace>,
+}
+
 /// LLM provider boundary. One call ⇒ one inference. Provider-internal
 /// retry / fallback happens *inside* the adapter, not in the waist loop.
 #[async_trait]
 pub trait LlmClient: Send + Sync {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError>;
+
+    /// [`LlmClient::infer`] with its route. Adapters that route override it;
+    /// wrappers forward it so a host sees the route of the client below.
+    async fn infer_routed(&self, req: LlmInferenceRequest) -> Result<LlmInference, LLMComputeError> {
+        self.infer(req).await.map(|response| LlmInference {
+            response,
+            route_trace: None,
+        })
+    }
 }
 
 /// Failure of the tool dispatch infrastructure itself (sandbox unreachable,

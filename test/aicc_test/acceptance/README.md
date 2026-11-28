@@ -142,7 +142,7 @@ node --experimental-strip-types acceptance/run_openrouter_decision_smoke.ts --co
 
 第一条只刷新、预览和解析路由；第二条须遵守 E2E skill 的本次 T2 授权，最多一次
 Provider attempt、60 秒、USD 0.01。它临时将已有实例的 timeout 设为 60 秒，并锁定
-实例、预算、禁止 fallback/failover；结束通过既有 settings transaction 恢复。
+实例和预算，请求带 `policy.no_fallback`；结束通过既有 settings transaction 恢复。
 凭据读取忽略的 TOML `[auth]`，结果写入忽略的 `reports/openrouter-jev-smoke.json`。
 DV 自签名证书需按本地测试证书配置运行环境，不改变生产 HTTP transport。
 

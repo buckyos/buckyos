@@ -170,6 +170,7 @@ async fn drive_locked(
         );
     }
     let hints = Arc::new(super::hints::SessionHintLedger::of(&session.state));
+    let route_notes = Arc::new(super::route::RouteNotes::of(&session.state));
     let sh = Arc::new(Shared {
         deps: deps.clone(),
         lease: lease.clone(),
@@ -190,6 +191,7 @@ async fn drive_locked(
         current_intent: Mutex::new(None),
         line_pending: std::sync::atomic::AtomicBool::new(false),
         hints,
+        route_notes,
         task_status: Mutex::new(None),
         flush: tokio::sync::Mutex::new(()),
         external_stop_applied: AtomicBool::new(false),

@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useSWRConfig } from 'swr'
 import { t, type TextKey } from '../i18n'
 import { goalHref, useQuery } from '../lib'
-import { dataModel, type OutboxEntry, type PauseSource, type RegistryEntry, type SessionDetail, type StopScope, type WorklogEntry } from '../model'
+import { dataModel, type OutboxEntry, type PauseSource, type RegistryEntry, type RouteFallbackNote, type SessionDetail, type StopScope, type WorklogEntry } from '../model'
 import { pauseLabel } from '../runtimes'
 import { toneOf } from '../tone'
 import { Badge, ConfirmDialog, Dot, Empty, ErrorBox, Fields, Mono, Note, PageHead, Panel, Pre, Sid, Time, type ConfirmRequest } from '../ui'
@@ -307,6 +307,48 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
   )
 }
 
+/** The session's AICC routing group: its own, or the one it follows from a parent. */
+function RouteGroupField({ detail, onDone }: { detail: SessionDetail; onDone: () => void }) {
+  const sid = detail.entry.session_id
+  const { data: groups, error } = useQuery(['aicc.routing.groups'], () => dataModel.routeGroups(), false)
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<unknown>(null)
+  const own = detail.config?.route_group ?? null
+  const inherited = !own && detail.route_group ? detail.route_group : null
+  const known = groups ?? []
+  const options = own && !known.some((g) => g.group_id === own) ? [...known, { group_id: own, name: own }] : known
+  const name = (id: string) => known.find((g) => g.group_id === id)?.name ?? id
+  const change = async (value: string) => {
+    setBusy(true)
+    setFailed(null)
+    try {
+      await dataModel.setRouteGroup(sid, value || null)
+      onDone()
+    } catch (e) {
+      setFailed(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <select className="input" aria-label={t('routeGroup')} data-testid="route-group" value={own ?? ''}
+        disabled={busy || detail.entry.status.run_state === 'finished'} onChange={(e) => void change(e.target.value)}>
+        <option value="">{t('routeGroupNone')}</option>
+        {options.map((g) => <option key={g.group_id} value={g.group_id}>{g.name}</option>)}
+      </select>
+      {inherited && <span className="text-xs text-mute" data-testid="route-group-inherited">{t('routeGroupInherited', { group: name(inherited.group_id) })} <Sid sid={inherited.session_id} /></span>}
+      {(groups === null || error) && <span className="text-xs text-mute">{t('routeGroupsUnavailable')}</span>}
+      {failed != null && <ErrorBox error={failed} />}
+    </span>
+  )
+}
+
+const fallbackText = (n: RouteFallbackNote) =>
+  n.kind === 'coverage'
+    ? t('routeFallbackCoverage', { usecase: n.usecase, model: n.model })
+    : t('routeFallbackUnavailable', { usecase: n.usecase, model: n.model, replaced: n.replaced ?? '' })
+
 export default function SessionDetailPage({ sid }: { sid: string }) {
   const [tail, setTail] = useState(40)
   const { mutate } = useSWRConfig()
@@ -338,6 +380,11 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
       </PageHead>
       <ErrorBox error={error} />
       {data.note && <Note tone="warn" className="mb-4 rounded-lg border border-line bg-panel px-3 py-2">{data.note}</Note>}
+      {state?.route_fallbacks?.length ? (
+        <Note tone="warn" testId="route-fallbacks" className="mb-4 rounded-lg border border-line bg-panel px-3 py-2">
+          {state.route_fallbacks.map((n) => <div key={`${n.usecase}:${n.model}`}>{fallbackText(n)} {n.turn != null && <span className="text-xs text-mute">{t('routeFallbackSince', { turn: n.turn })}</span>}</div>)}
+        </Note>
+      ) : null}
       <Operations detail={data} onDone={() => mutate(() => true)} />
 
       <div className="grid gap-x-4 lg:grid-cols-2">
@@ -351,6 +398,7 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
               [t('observeCreatedBy'), <Mono>{entry.created_by.principal} {t('observeVia')} {entry.created_by.via}</Mono>],
               [t('observeParent'), entry.origin?.parent_session ? <Sid sid={entry.origin.parent_session} /> : null],
               [t('observeChildren'), data.children.length ? <span className="flex flex-wrap gap-2">{data.children.map((c) => <Sid key={c} sid={c} />)}</span> : null],
+              [t('routeGroup'), <RouteGroupField detail={data} onDone={() => mutate(() => true)} />],
               ['route_key', entry.route_key ? <Mono>{entry.route_key}</Mono> : null],
               [t('observeInputQueue'), entry.input_queue ? <Mono>{entry.input_queue}</Mono> : null],
               [t('observeArtifact'), entry.artifact_id ? <Mono>{entry.artifact_id}</Mono> : null],

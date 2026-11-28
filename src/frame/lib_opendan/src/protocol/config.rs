@@ -1111,6 +1111,12 @@ pub struct SessionConfig {
     pub artifact_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subscriptions: Vec<Subscription>,
+    /// The AICC routing group of the session's owner its inferences use,
+    /// and those of its sub sessions without one of their own (looked up
+    /// along `origin.parent_session` at every call). Changed with the
+    /// control `route_group`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_group: Option<String>,
     #[serde(default)]
     pub channels: Channels,
     /// Application extension items, preserved verbatim.

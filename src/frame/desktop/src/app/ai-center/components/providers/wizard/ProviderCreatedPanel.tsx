@@ -6,10 +6,13 @@ import { buttonStyle, errorText } from '../../policy/policy-labels'
 import { applyProviderAccess } from './providerAccess'
 
 /** After adding a Provider: how many of its models have an AI Credit price, and a way to make it free. */
-export function ProviderCreatedPanel({ provider, models, free, onOpenPrices, onDone }: {
+export function ProviderCreatedPanel({ provider, models, free, kept = 0, keepError, onOpenPrices, onDone }: {
   provider: string
   models: string[]
   free: boolean
+  /** Usecases whose old model was kept in the Zone default, and why keeping failed. */
+  kept?: number
+  keepError?: string
   onOpenPrices?: () => void
   onDone: () => void
 }) {
@@ -53,6 +56,8 @@ export function ProviderCreatedPanel({ provider, models, free, onOpenPrices, onD
           ? t('aiCenter.policy.wizardIsFree', 'It is free for everyone who can use it.')
           : t('aiCenter.policy.wizardUnpricedHint', 'Users who pay (a coefficient other than 0) cannot use models without a price. Price them, or make the Provider free.')}
       </p>
+      {kept > 0 && <p className="text-xs" data-testid="provider-kept-models" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.wizard.coverage.kept', 'Usecases that keep their previous model in the Zone default: {{count}}', { count: kept })}</p>}
+      {keepError && <p className="text-xs" style={{ color: 'var(--cp-danger)' }}>{t('aiCenter.wizard.coverage.keepFailed', 'Could not keep every previous model: {{error}}. Set them on the Usecases page.', { error: keepError })}</p>}
       {error && <p className="text-xs" style={{ color: 'var(--cp-danger)' }}>{error}</p>}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
         {!isFree && <button type="button" data-testid="provider-make-free" disabled={busy} onClick={() => void makeFree()} className="min-h-11 rounded-lg px-4 text-sm disabled:opacity-50" style={buttonStyle.secondary}>{t('aiCenter.policy.wizardMakeFree', 'Make it free')}</button>}

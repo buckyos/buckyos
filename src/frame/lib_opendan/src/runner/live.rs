@@ -409,7 +409,7 @@ async fn fork_run_context(
     let xdeps = xllm_deps_for(sh, env, depth, function_call).await?;
     let manager = rebuild_toolset(&record, &xdeps).await?;
     let resolver = manager.resolver();
-    let llm = create_run_llm(&record, &xdeps).await?;
+    let llm = super::route::routed(sh, create_run_llm(&record, &xdeps).await?);
     let config = record.config.clone();
     let workdir = PathBuf::from(&record.workdir);
     let run = RunHandle::new(runs.store().clone(), record, lock);
@@ -664,7 +664,7 @@ async fn own_run_context(
         &xdeps,
     )
     .await?;
-    let llm = hosted.create_llm(&xdeps).await?;
+    let llm = super::route::routed(sh, hosted.create_llm(&xdeps).await?);
     // History (may compact first).
     let budget = cfg
         .prompt
@@ -899,6 +899,7 @@ pub(super) async fn resume_live_run(
     let llm = create_run_llm(&record, &xdeps)
         .await
         .map_err(|e| blocked(format!("cannot create the run's provider: {e}")))?;
+    let llm = super::route::routed(sh, llm);
     let behavior = record.config.loop_model == LoopModel::Behavior;
     let mut snapshot = snapshot;
     // The first call without a result may have been started by the

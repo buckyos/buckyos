@@ -23,6 +23,7 @@ use std::sync::Once;
 use std::time::Duration;
 
 mod policy;
+mod routing;
 pub(crate) use policy::{ChargeOutcome, CounterState, CreditEntryDraft, PolicyWriteError};
 
 const SERVICE_NAME: &str = "aicc";
@@ -202,6 +203,7 @@ pub(crate) struct ProviderCompletion {
     pub credit: Option<(i64, buckyos_api::CreditChargeStatus)>,
     pub subjects: Vec<String>,
     pub created_at_ms: i64,
+    pub fallback_from: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -353,6 +355,9 @@ impl AiccStorage {
         transaction
             .execute("ALTER TABLE aicc_usage_event ADD COLUMN credit_status TEXT")
             .await?;
+        transaction
+            .execute("ALTER TABLE aicc_usage_event ADD COLUMN fallback_from TEXT")
+            .await?;
         for statement in policy::POLICY_SCHEMA
             .split(';')
             .map(str::trim)
@@ -382,65 +387,6 @@ impl AiccStorage {
             .await
             .map_err(|e| StorageError::InvalidRecord(e.to_string()))?;
         Self::open(&instance.connection, instance.backend).await
-    }
-
-    pub(crate) async fn session_exact_model(
-        &self,
-        tenant_id: &str,
-        user_id: &str,
-        caller_app_id: Option<&str>,
-        session_id: &str,
-    ) -> StorageResult<Option<String>> {
-        let sql = self.sql(
-            "SELECT selected_exact_model FROM aicc_session_route_history
-             WHERE tenant_id=? AND user_id=? AND caller_app_id=? AND session_id=?",
-        );
-        Ok(sqlx::query(&sql)
-            .bind(tenant_id)
-            .bind(user_id)
-            .bind(caller_app_id.unwrap_or_default())
-            .bind(session_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .map(|row| row.get("selected_exact_model")))
-    }
-
-    pub(crate) async fn remember_session_exact_model(
-        &self,
-        tenant_id: &str,
-        user_id: &str,
-        caller_app_id: Option<&str>,
-        session_id: &str,
-        selected_exact_model: &str,
-        updated_at_ms: i64,
-    ) -> StorageResult<()> {
-        if [tenant_id, user_id, session_id, selected_exact_model]
-            .iter()
-            .any(|value| value.trim().is_empty())
-            || session_id.len() > 512
-            || updated_at_ms < 0
-        {
-            return Err(StorageError::InvalidRecord(
-                "session route history is invalid".into(),
-            ));
-        }
-        let sql = self.sql(
-            "INSERT INTO aicc_session_route_history
-             (tenant_id,user_id,caller_app_id,session_id,selected_exact_model,updated_at_ms)
-             VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,user_id,caller_app_id,session_id)
-             DO UPDATE SET selected_exact_model=excluded.selected_exact_model,
-                           updated_at_ms=excluded.updated_at_ms",
-        );
-        sqlx::query(&sql)
-            .bind(tenant_id)
-            .bind(user_id)
-            .bind(caller_app_id.unwrap_or_default())
-            .bind(session_id)
-            .bind(selected_exact_model)
-            .bind(updated_at_ms)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
     }
 
     pub(crate) async fn remember_artifact_scope(
@@ -936,6 +882,7 @@ impl AiccStorage {
             credit_status: completion.credit.map(|(_, status)| status),
             subjects: completion.subjects,
             created_at_ms: completion.created_at_ms,
+            fallback_from: completion.fallback_from,
         };
         self.write_usage(&event).await
     }
@@ -980,8 +927,8 @@ impl AiccStorage {
           (event_id,tenant_id,user_id,caller_app_id,task_id,trace_id,idempotency_key,method,capability,
            request_model,provider_instance_name,provider_model,input_tokens,output_tokens,total_tokens,
            request_units,usage_json,finance_snapshot_json,finance_amount,finance_currency,finance_valid,
-           operator_id,attribution_json,credit_micro,credit_status,created_at_ms)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING");
+           operator_id,attribution_json,credit_micro,credit_status,created_at_ms,fallback_from)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING");
         let result = sqlx::query(&sql)
             .bind(&e.event_id)
             .bind(&e.tenant_id)
@@ -1014,6 +961,7 @@ impl AiccStorage {
             .bind(credit_micro)
             .bind(e.credit_status.map(|status| status.as_str()))
             .bind(e.created_at_ms)
+            .bind(&e.fallback_from)
             .execute(&mut *tx)
             .await?;
         let inserted = result.rows_affected() == 1;
@@ -1390,12 +1338,12 @@ impl AiccStorage {
                 "trace identity is incomplete".into(),
             ));
         }
+        // Served by the fallback LLM or by a usecase's unavailable policy.
         let fallback_applied = r
             .trace
             .route_trace_json
-            .get("fallback_applied")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+            .get("fallback")
+            .is_some_and(|fallback| !fallback.is_null());
         let warning_count = r
             .trace
             .route_trace_json
@@ -1612,6 +1560,7 @@ impl UsageCompletionPort for AiccStorage {
             credit: completion.credit,
             subjects: completion.subjects,
             created_at_ms: completion.completed_at_ms,
+            fallback_from: completion.fallback_from,
         })
         .await
         .map(|_| ())
@@ -1727,6 +1676,7 @@ fn usage_from_row(row: AnyRow) -> StorageResult<AiccUsageEvent> {
             .and_then(|status| buckyos_api::CreditChargeStatus::parse(&status)),
         subjects: Vec::new(),
         created_at_ms: row.try_get("created_at_ms")?,
+        fallback_from: row.try_get("fallback_from")?,
     })
 }
 
@@ -1892,6 +1842,9 @@ fn usage_query(
     push_in_clause(&mut query, "task_id", &filters.task_ids);
     push_in_clause(&mut query, "idempotency_key", &filters.idempotency_keys);
     push_in_clause(&mut query, "method", &filters.methods);
+    if filters.fallback_only {
+        query.push(" AND fallback_from IS NOT NULL");
+    }
     if !filters.user_groups.is_empty() {
         query.push(" AND event_id IN (SELECT event_id FROM aicc_usage_event_subject WHERE subject IN (");
         let mut separated = query.separated(",");
@@ -2342,6 +2295,7 @@ mod tests {
                 "DROP TABLE aicc_usage_event_subject",
                 "ALTER TABLE aicc_usage_event DROP COLUMN credit_micro",
                 "ALTER TABLE aicc_usage_event DROP COLUMN credit_status",
+                "ALTER TABLE aicc_usage_event DROP COLUMN fallback_from",
                 "DELETE FROM aicc_state",
                 "INSERT INTO aicc_state (state_key,int_value,updated_at_ms) VALUES ('visibility_seeded',1,0)",
                 "CREATE TABLE aicc_visibility_policy (subject TEXT PRIMARY KEY, entries_json TEXT NOT NULL)",
@@ -3067,57 +3021,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_route_history_is_durable_scoped_and_upserted() {
-        let db = db().await;
-        assert_eq!(
-            db.session_exact_model("tenant-a", "user-a", Some("app-a"), "session-1")
-                .await
-                .unwrap(),
-            None
-        );
-        db.remember_session_exact_model(
-            "tenant-a",
-            "user-a",
-            Some("app-a"),
-            "session-1",
-            "gpt-5.6@openai-a",
-            1,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            db.session_exact_model("tenant-a", "user-a", Some("app-a"), "session-1")
-                .await
-                .unwrap()
-                .as_deref(),
-            Some("gpt-5.6@openai-a")
-        );
-        assert_eq!(
-            db.session_exact_model("tenant-b", "user-a", Some("app-a"), "session-1")
-                .await
-                .unwrap(),
-            None
-        );
-        db.remember_session_exact_model(
-            "tenant-a",
-            "user-a",
-            Some("app-a"),
-            "session-1",
-            "gpt-5.6@openai-b",
-            2,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            db.session_exact_model("tenant-a", "user-a", Some("app-a"), "session-1")
-                .await
-                .unwrap()
-                .as_deref(),
-            Some("gpt-5.6@openai-b")
-        );
-    }
-
-    #[tokio::test]
     async fn artifact_scope_records_the_creating_tenant_once() {
         let db = db().await;
         db.remember_artifact_scope("cyfile:artifact", "tenant-a", "user-a", Some("app-a"), 1)
@@ -3160,6 +3063,7 @@ mod tests {
             credit: None,
             subjects: Vec::new(),
             created_at_ms: at,
+            fallback_from: None,
         }
     }
 
@@ -3196,6 +3100,7 @@ mod tests {
             credit_status: None,
             subjects: Vec::new(),
             created_at_ms: 10_000,
+            fallback_from: None,
         }
     }
 
@@ -3287,6 +3192,7 @@ mod tests {
                     tiers: None,
                 },
             }),
+            fallback_from: None,
         }
     }
 
@@ -3509,6 +3415,7 @@ mod tests {
             credit: Some((250_000, buckyos_api::CreditChargeStatus::Charged)),
             subjects: vec!["type:user".into(), "group:students".into()],
             completed_at_ms: 10_000,
+            fallback_from: None,
         };
         db.write_once(completion.clone()).await.unwrap();
         db.write_once(completion).await.unwrap();
@@ -3868,7 +3775,7 @@ mod tests {
                     api_type: "llm".into(),
                     route_trace_json: json!({
                         "requested_model": "llm.chat",
-                        "fallback_applied": fallback,
+                        "fallback": fallback.then(|| json!({"kind": "unavailable", "from": "a@x", "to": "b@y"})),
                         "warnings": warnings,
                         "ranked_candidates": []
                     }),

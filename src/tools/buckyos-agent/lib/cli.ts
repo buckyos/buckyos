@@ -38,21 +38,21 @@ const BOOLEAN_FLAGS = new Set(["no-fallback", "json"]);
 
 function parseProfile(value: string): Profile {
   const v = value.toLowerCase();
-  if (v === "cheap" || v === "fast" || v === "balanced" || v === "quality") {
+  if (v === "fast" || v === "balanced" || v === "quality") {
     return v;
   }
   throw new ArgError(
-    `--profile must be cheap|fast|balanced|quality, got ${value}`,
+    `--profile must be fast|balanced|quality, got ${value}`,
   );
 }
 
 export const COMMON_OPTIONS_HELP = `
 Common options:
   --model <alias>                 logical model name or exact model id
-  --profile <balanced|cheap|fast|quality>
+  --profile <balanced|fast|quality>
   --max-cost <usd>                cost ceiling
   --max-latency-ms <ms>           latency ceiling
-  --no-fallback                   disable allow_fallback + runtime_failover
+  --no-fallback                   do not switch models when the usecase's model is unavailable
   --idempotency-key <key>
   --trace-id <id>
   --timeout <seconds>             max wait for AICC task completion

@@ -1,3 +1,5 @@
+import type { OnUnavailable, UsecaseCoverageChange, UsecaseRequirement } from '../datamodel/usecases'
+
 // ========== Enums ==========
 
 export type ProviderType = string
@@ -25,8 +27,7 @@ export type ApiType =
 export type ModelHealthStatus = 'available' | 'degraded' | 'unavailable'
 export type QuotaState = 'normal' | 'near_limit' | 'exhausted' | 'unknown'
 export type SchedulerProfile =
-  | 'cost_first' | 'latency_first' | 'quality_first' | 'balanced' | 'local_first' | 'strict_local'
-export type FallbackMode = 'parent' | 'strict' | 'disabled' | 'target_logical' | 'target_exact'
+  | 'latency_first' | 'quality_first' | 'balanced' | 'local_first' | 'strict_local'
 export type PricingMode = 'per_token' | 'subscription' | 'free_quota' | 'unknown'
 
 // ========== Inventory / Models ==========
@@ -109,6 +110,8 @@ export interface ProviderConfig {
   base_url: string
   auto_sync_models: boolean
   created_at: string
+  /** Manually marked faulty: routing is unchanged, calls are not sent to it. */
+  marked_faulty?: boolean
 }
 
 export interface ProviderStatus {
@@ -167,6 +170,8 @@ export interface UsageEvent {
   credit_status?: 'charged' | 'free' | 'unpriced' | 'unknown_usage'
   /** `type:*` / `group:*` of the charged user at the time of the call. */
   subjects?: string[]
+  /** The exact model the usecase's "when unavailable" policy replaced. */
+  fallback_from?: string
   status: 'success' | 'failed'
 }
 
@@ -217,8 +222,6 @@ export interface LogicalRouteItem {
 export interface RoutePolicy {
   profile?: SchedulerProfile
   local_only?: boolean
-  allow_fallback?: boolean
-  runtime_failover?: boolean
   required_features?: string[]
   allowed_provider_instances?: string[]
   blocked_provider_instances?: string[]
@@ -232,7 +235,6 @@ export interface LogicalNode {
   api_type?: ApiType
   items?: Record<string, LogicalRouteItem>
   exact_model_weights: Record<string, number>
-  fallback?: { mode: FallbackMode; target?: string }
   policy?: RoutePolicy
   locked?: boolean
   children?: LogicalNode[]
@@ -292,11 +294,10 @@ export interface RouteTrace {
     }
   }>
   filtered_candidates: Array<{ exact_model: string; reason: string }>
-  fallback_applied: boolean
-  fallback_chain: Array<{ from: string; to: string; reason: string }>
+  /** Set when the answer did not come from the usecase's own model. */
+  fallback?: RouteFallback
   session_sticky_hit: boolean
   scheduler_profile: SchedulerProfile
-  runtime_failover_count: number
   user_summary?: {
     display_name: string
     model_family: string
@@ -306,6 +307,16 @@ export interface RouteTrace {
     was_failover: boolean
   }
   warnings: string[]
+}
+
+/** `coverage`: the usecase has no model and the fallback LLM served it (`from` the usecase, `to` `llm.fallback`);
+ * `unavailable`: its model failed and its "when unavailable" policy served it (`from`/`to` exact models). */
+export interface RouteFallback {
+  kind: 'coverage' | 'unavailable'
+  from: string
+  to: string
+  policy?: OnUnavailable
+  reason?: string
 }
 
 // ========== Local Model ==========
@@ -428,7 +439,8 @@ export interface ValidationResult {
   models_recognized?: string[]
   unmatched_models?: unknown[]
   unavailable_presets?: unknown[]
-  routing_candidates?: Record<string, string[]>
+  /** Every usecase of the Zone before and after the Provider is added. */
+  usecase_coverage?: UsecaseCoverageChange[]
   warnings?: string[]
   base_url_reachable: boolean
   auth_valid: boolean
@@ -454,4 +466,6 @@ export interface StoreSnapshot {
   localModels: LocalModel[]
   aiStatus: AIStatus
   settingsRevision: number
+  /** Hard requirements of each usecase, from its logical definition. */
+  usecaseRequirements: Record<string, UsecaseRequirement>
 }

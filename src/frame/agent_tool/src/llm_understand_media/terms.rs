@@ -236,6 +236,7 @@ pub async fn search_terms(
         disable_capabilities: vec!["web_search".to_string()],
         tool_specs: Vec::new(),
         allow_tool_calls: false,
+        route_group: None,
         abort: llm_context::InferenceAbortToken::noop(),
     };
     let answer = match llm.infer(request).await {

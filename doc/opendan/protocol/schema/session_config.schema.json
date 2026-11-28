@@ -941,6 +941,27 @@
           "type": "object"
         },
         {
+          "description": "The AICC routing group of the session and of its sub sessions without their own (`session_config.route_group`; `None` clears it). Takes effect at the next inference.",
+          "properties": {
+            "command": {
+              "enum": [
+                "route_group"
+              ],
+              "type": "string"
+            },
+            "route_group": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Goal Sessions: change the Goal's current skills (applied by the driver to the Goal State it owns).",
           "properties": {
             "add": {
@@ -3110,6 +3131,13 @@
           ]
         }
       }
+    },
+    "route_group": {
+      "description": "The AICC routing group of the session's owner its inferences use, and those of its sub sessions without one of their own (looked up along `origin.parent_session` at every call). Changed with the control `route_group`.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "runtime": {
       "allOf": [

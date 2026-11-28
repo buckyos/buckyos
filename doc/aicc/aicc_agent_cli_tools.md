@@ -64,7 +64,7 @@ gen_video "prompt" result.mp4
 
 ```text
 --model <alias>              逻辑模型名或精确模型名，默认由命令决定
---profile <balanced|cheap|fast|quality>
+--profile <balanced|fast|quality>
 --max-cost <usd>
 --max-latency-ms <ms>
 --no-fallback
@@ -78,17 +78,18 @@ gen_video "prompt" result.mp4
 
 | CLI value | AICC value | 语义 |
 |---|---|---|
-| `cheap` | `cheap` | 成本优先 |
 | `fast` | `fast` | 延迟优先 |
 | `balanced` | `balanced` | 综合排序 |
 | `quality` | `quality` | 质量优先 |
 
-`--no-fallback` 不接受系统管理员配置的 fallback，等价于下面的 policy（没有配置 fallback 时本来就不会换模型，见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)；现有实现同时发送 `runtime_failover: false`）：
+`cost_first` / `cheap` 已删除。`profile` 只在管理员没有锁定时生效，请求策略只能收紧管理员的配置（[aicc_router.md §12.3](aicc_router.md#12-控制面设计)）。
+
+`--no-fallback` 关闭本次请求所用用途的“不可用时”策略：选中的模型失败就返回真实错误，不换模型。用途本来就是 `none` 时没有区别；精确模型请求从不换模型（[aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)）。等价于下面的 policy：
 
 ```json
 {
   "policy": {
-    "allow_fallback": false
+    "no_fallback": true
   }
 }
 ```

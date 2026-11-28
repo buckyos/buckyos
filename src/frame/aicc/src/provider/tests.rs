@@ -1074,7 +1074,6 @@ fn openai_inventory_satisfies_canonical_tool_and_schema_requirements() {
             default_options: BTreeMap::new(),
             mount_mode: MountMode::Manual,
             scheduler_profile: buckyos_api::AiccSchedulerProfile::Balanced,
-            fallback: None,
             route_policy: buckyos_api::AiccPolicyConfig::default(),
             user_visible_tier: None,
         }],

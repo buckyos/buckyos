@@ -240,7 +240,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
             }
         }
         let models: Arc<dyn ModelRegistryAssembler> = Arc::new(ServiceModelAssembler {
-            session: settings.session_config.clone(),
+            system: settings.routing.clone(),
             events: Some(self.events.clone()),
         });
         let backend: Arc<dyn RuntimeBackend> = Arc::new(ProviderRuntimeBackend::new(
@@ -375,6 +375,14 @@ impl ProviderValidator for RuntimeProviderValidator {
         &self,
         request: ProviderValidateRequest,
     ) -> Result<ProviderValidateResponse, RPCErrors> {
+        Ok(self.validate_with_inventory(request).await?.0)
+    }
+
+    async fn validate_with_inventory(
+        &self,
+        request: ProviderValidateRequest,
+    ) -> Result<(ProviderValidateResponse, Option<crate::model::ProviderInventory>), RPCErrors>
+    {
         let snapshot = self.runtime.capture().await;
         let builtins =
             builtin_provider_registry(snapshot.catalog.as_ref()).map_err(to_rpc_error)?;
@@ -495,10 +503,13 @@ impl ProviderValidator for RuntimeProviderValidator {
             )
             .await
         {
-            Ok(negotiated) => Ok(provider_inventory_validation(
-                &catalog,
-                &negotiated.inventory,
-                negotiated.protocol_adapter_id,
+            Ok(negotiated) => Ok((
+                provider_inventory_validation(
+                    &catalog,
+                    &negotiated.inventory,
+                    negotiated.protocol_adapter_id,
+                ),
+                Some(negotiated.inventory.as_model_inventory()),
             )),
             Err(error) => {
                 let kind = match error.stage {
@@ -523,7 +534,7 @@ impl ProviderValidator for RuntimeProviderValidator {
                 let provider_name =
                     crate::observability::redact(&json!(draft.provider_instance_name));
                 log::warn!("provider {provider_name}: {message}");
-                Ok(ProviderValidateResponse {
+                Ok((ProviderValidateResponse {
                     base_url_reachable: !matches!(
                         error.stage,
                         ProviderDraftValidationStage::Connection
@@ -542,7 +553,7 @@ impl ProviderValidator for RuntimeProviderValidator {
                     }],
                     resolved_protocol_adapter_id: Some(adapter),
                     ..Default::default()
-                })
+                }, None))
             }
         }
     }
@@ -607,22 +618,10 @@ fn provider_inventory_validation(
             return response;
         }
     };
-    for view in registry.logical_model_views().into_iter().filter(|view| {
-        view.kind == buckyos_api::AiccLogicalDirectoryKind::Task
-            && view.api_type.as_deref() == Some("llm")
-    }) {
-        let candidates = registry
-            .resolve_available_candidates(&view.path, ApiType::Llm, &mut |_, _| true)
-            .map(|expanded| {
-                expanded
-                    .candidates
-                    .into_iter()
-                    .map(|candidate| candidate.model.exact_model.to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
-        response.routing_candidates.insert(view.path, candidates);
-    }
+    let chat_candidates = registry
+        .resolve_available_candidates("llm.chat", ApiType::Llm, &mut |_, _| true)
+        .map(|expanded| expanded.candidates.len())
+        .unwrap_or_default();
     if !response.unmatched_models.is_empty() {
         response
             .warnings
@@ -637,10 +636,7 @@ fn provider_inventory_validation(
         .models
         .iter()
         .any(|model| model.api_types.contains(&ApiType::Llm))
-        && response
-            .routing_candidates
-            .get("llm.chat")
-            .is_none_or(Vec::is_empty)
+        && chat_candidates == 0
     {
         response.warnings.push(
             "No llm.chat candidate: check channel presets and specification admission".into(),
@@ -764,7 +760,7 @@ mod startup_tests {
         assert_eq!(response.models_recognized, ["qwen3.8-max-0902"]);
         assert_eq!(response.unmatched_models.len(), 1);
         assert_eq!(response.unavailable_presets.len(), 4);
-        assert!(response.routing_candidates["llm.chat"].is_empty());
+        assert!(response.usecase_coverage.is_empty());
         assert_eq!(response.warnings.len(), 3);
     }
 

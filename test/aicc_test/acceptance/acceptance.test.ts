@@ -2177,7 +2177,7 @@ test("T1 mock settings append run-scoped instances without mutating backup", () 
       provider_instance_name: "production",
       provider_profile_id: "openai",
     }],
-    session_config: { revision: "production" },
+    routing: { provider_weights: { production: 1 } },
   };
   const serialized = JSON.stringify(original);
   const decoded = configValue({ value: serialized });
@@ -2219,9 +2219,14 @@ test("T1 mock settings append run-scoped instances without mutating backup", () 
       ["custom", "gemini-interactions"],
     ],
   );
-  assert.equal(
-    (patched.session_config as { revision: string }).revision,
-    "dv-routing-run-one",
+  const routing = patched.routing as {
+    provider_weights: Record<string, number>;
+    logical_tree: { llm: { children: { dv_acceptance: { children: Record<string, { policy?: { allowed_provider_instances?: { value: string[] } } }> } } } };
+  };
+  assert.deepEqual(routing.provider_weights, { production: 1 });
+  assert.deepEqual(
+    routing.logical_tree.llm.children.dv_acceptance.children.locked.policy?.allowed_provider_instances?.value,
+    ["dv-openai-a-run-one"],
   );
   assert.equal(decoded.serialized, serialized);
 });

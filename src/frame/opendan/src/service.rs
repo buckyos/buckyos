@@ -230,6 +230,7 @@ impl StateService {
                     "workspace": cfg.workspace,
                     "workspace_binding": cfg.workspace_binding,
                     "subscriptions": cfg.subscriptions,
+                    "route_group": cfg.route_group,
                     "channels": cfg.channels,
                     "behavior": cfg.prompt.behavior,
                     "frozen": cfg.prompt.frozen.as_ref().map(|f| json!({
@@ -240,6 +241,7 @@ impl StateService {
                     })),
                 });
             }
+            out["route_group"] = json!(libopendan::api::route_group_of(self.agent.as_ref(), &sid).await.ok().flatten());
             out["binding"] = json!(sd.binding_opt().ok().flatten());
             out["statistics"] = json!(sd.statistics().ok());
             out["runs"] = json!(sd.runs().list().unwrap_or_default());
@@ -418,6 +420,15 @@ impl StateService {
                     _ => {}
                 }
                 self.post_control(who, &sid, ControlCommand::Stop { reason, scope }).await
+            }
+            "session.route_group" => {
+                let sid: String = param(params, "sid")?;
+                let route_group = param::<Option<String>>(params, "route_group")?
+                    .map(|g| g.trim().to_string())
+                    .filter(|g| !g.is_empty());
+                self.agent.sessions().lookup(&sid).await?
+                    .ok_or_else(|| OpenDanError::NotFound(format!("session {sid}")))?;
+                self.post_control(who, &sid, ControlCommand::RouteGroup { route_group }).await
             }
             "session.pause" | "session.resume" => {
                 let sid: String = param(params, "sid")?;
@@ -751,6 +762,7 @@ fn is_operation(method: &str) -> bool {
         "session.stop"
             | "session.pause"
             | "session.resume"
+            | "session.route_group"
             | "ui.rotate"
             | "session.decide"
             | "session.post"
@@ -971,7 +983,7 @@ mod permission_tests {
             "goals.create", "goals.revise", "goals.set_status", "goals.reopen", "goals.restart", "goals.set_check",
             "goals.job_put", "goals.job_run", "goals.job_set_enabled", "goals.job_rollback", "goals.job_delete",
             "notify.send", "notify.cancel", "notify.answer", "skills.note_frozen", "skills.revise", "skills.status", "runtimes.ext_tools_check",
-            "session.stop", "session.pause", "session.resume", "ui.rotate", "sessions.delete",
+            "session.stop", "session.pause", "session.resume", "session.route_group", "ui.rotate", "sessions.delete",
             "session.decide", "session.post", "goals.activate", "goals.post",
             // Using its own browser is the Agent's own ability, whatever it may do to the owner's files.
             "browser.ensure", "browser.acquire", "browser.renew", "browser.release", "browser.request_handover",

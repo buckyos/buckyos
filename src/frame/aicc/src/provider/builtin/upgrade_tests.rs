@@ -235,7 +235,7 @@ fn deepseek_inventory_uses_provider_metadata_for_aliases_and_exclusions() {
 async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
     use crate::call::{CallResolver, ProviderCallTarget};
     use crate::routing::policy::*;
-    use crate::routing::{CandidateRuntimeState, ProviderHealthStatus, Router, RoutingRequest};
+    use crate::routing::{CandidateRuntimeState, Router, RoutingRequest};
     struct Quota;
     impl QuotaSource for Quota {
         fn query(&self, _: &QuotaLookup) -> Result<QuotaSnapshot, QuotaSourceError> {
@@ -647,8 +647,6 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                     CandidateRuntimeState {
                         enabled: true,
                         credential_available: true,
-                        model_available: true,
-                        health: ProviderHealthStatus::Available,
                         provider_privacy: ProviderPrivacy::PublicCloud,
                         trust: Some(ProviderTrustView {
                             provider_type: ProviderType::CloudApi,

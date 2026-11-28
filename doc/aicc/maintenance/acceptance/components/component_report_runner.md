@@ -276,18 +276,18 @@ Total: 103 passed, 2 failed, 31 skipped, 184 not_applicable, 1 partial.
 
 ## Failed Cases
 
-### l3_krpc_provider_5xx_failover
+### l3_krpc_provider_5xx_same_model_switch
 
 - Failure class: routing_failed
-- Method: chat.completions.create
-- Model: llm.plan
+- Method: helper.llm_chat
+- Model: llm.code
 - Provider: openai-mock-1
-- Error code: AICC_ROUTE_NO_CANDIDATE
+- Error code: provider_error
 - Trace ID: trace-aicc-20260509-0008
 - Task ID: aicc-20260509-0008
 - Duration: 3021ms
-- Reason: expected failover to openai-mock-2, but no fallback candidate remained after hard filter.
-- Artifacts: local_krpc/l3_krpc_provider_5xx_failover/
+- Reason: expected same_model switch to gpt-mock@openai-mock-2, but the backup did not meet the request's hard requirements; the original 503 was returned.
+- Artifacts: local_krpc/l3_krpc_provider_5xx_same_model_switch/
 
 ## Skipped Cases
 

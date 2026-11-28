@@ -34,7 +34,7 @@ Helper 接受逻辑模型，一次完成路由与推理。目前冻结三个 Hel
 - `helper.text_to_image`
 - `helper.video_generate`
 
-适合希望随 inventory、成本和健康状态自动选择模型的应用。
+适合按用途表选择模型的应用：模型由调用者的用途表决定（默认 < 管理员层 < 用户层 < App 绑定的策略组 < 会话绑定的策略组，见 [aicc_router.md §11](aicc_router.md#11-用途表与配置层次)），健康状态不参与选择。用途设置了“不可用时”策略时，只有 Helper 会在 Provider 不可用时换一次模型。
 
 ```json
 {
@@ -85,7 +85,7 @@ Helper 接受逻辑模型，一次完成路由与推理。目前冻结三个 Hel
 ```
 
 `logical_model` 是不含 `@` 的用途路径。`exact_model` 必须是
-`<provider_model_id>[:<variant>]@<provider_instance_name>`。typed inference 不接受逻辑模型，也不接受用户传入 `provider_options`。
+`<provider_model_id>[:<variant>]@<provider_instance_name>`。typed inference 不接受逻辑模型，也不接受用户传入 `provider_options`。`route.resolve` 只返回一个 exact model；用它调用 typed inference 时从不换模型，用途的“不可用时”策略不生效。
 
 ## 3. 推理 Method
 
@@ -128,10 +128,9 @@ typed request 共同字段：
 | `execution_mode` | `immediate`（默认）或 `stream`；以所选 operation 支持为准 |
 | `idempotency_key` | 建议对有副作用/计费的请求设置；相同 key 必须对应相同请求体 |
 | `task_options.parent_id` | 可选父任务 |
-| `session_id` | 用于 session 路由连续性和 Provider 状态连续性 |
 
-Helper 另接受 `logical_model`、`requirements`、`disable`、`policy` 和可选
-`session_overlay`。请求字段默认拒绝未知字段，调用方应尽早发现拼写错误。
+Helper 与 `route.resolve` 另接受 `logical_model`、`requirements`、`disable`、`policy` 和可选
+`route_group`（调用者自己的一个路由策略组 ID，通常由 lib_opendan 按会话绑定传入；不属于调用者的组被忽略并在 trace 中标出）。请求字段默认拒绝未知字段，调用方应尽早发现拼写错误；已删除的 `session_overlay`、`allow_fallback`、`runtime_failover` 会被拒绝。
 
 ## 5. 消息与资源
 
@@ -183,7 +182,7 @@ typed response 共同字段为：`task_id`、`status`、业务结果、`usage?`�
 `ModelRequirement` 用于硬需求，例如 `tool_call`、`json_schema`、`web_search`、
 `vision`、`image_generation`、`min_context_tokens`、视频生成需求 `video` 和 canonical field 要求。`ModelDisable` 用于显式禁用能力。
 
-逻辑路由中只有以 `llm.chat`、`llm.plan`、`llm.vision` 为入口的 LLM 请求可以启用云端联网搜索；这三个入口不把联网搜索作为硬性选模条件。本次路由的模型、Adapter 和 Provider discovery 均支持 `web_search` 且未被目录或请求禁用时，AICC 默认向云端开放搜索，由模型决定是否调用。其他逻辑入口（含 `llm.code`、规格、家族和自定义路径）会强制禁用 `web_search`，并在 route trace 中记录；入口限制在 fallback / failover 后仍生效。OpenAI Responses（含 SN）追加 `web_search`，Gemini Interactions 追加 `google_search`，OpenRouter Responses 转换为 `openrouter:web_search`，Claude Messages 追加 `{ "type": "web_search_20250305", "name": "web_search" }`；这些服务端工具与调用方的函数工具共存。不支持搜索的模型仍可使用 Agent 提供的工具；`disable.web_search = true` 关闭云端搜索。
+逻辑路由中只有以 `llm.chat`、`llm.plan`、`llm.vision` 为入口的 LLM 请求可以启用云端联网搜索；这三个入口不把联网搜索作为硬性选模条件。本次路由的模型、Adapter 和 Provider discovery 均支持 `web_search` 且未被目录或请求禁用时，AICC 默认向云端开放搜索，由模型决定是否调用。其他逻辑入口（含 `llm.code`、规格、家族和自定义路径）会强制禁用 `web_search`，并在 route trace 中记录；入口限制在“不可用时”策略换模型后仍生效；由兜底 LLM 提供时按 `llm.fallback` 入口处理，不开放联网搜索。OpenAI Responses（含 SN）追加 `web_search`，Gemini Interactions 追加 `google_search`，OpenRouter Responses 转换为 `openrouter:web_search`，Claude Messages 追加 `{ "type": "web_search_20250305", "name": "web_search" }`；这些服务端工具与调用方的函数工具共存。不支持搜索的模型仍可使用 Agent 提供的工具；`disable.web_search = true` 关闭云端搜索。
 
 `response_format` 只有 `text` 和 `json_schema`，不提供 JSON mode（`json_object`）：它和 OpenAI Responses 的搜索互斥，Claude Messages 也不接受。`json_schema` 和搜索可以共存，OpenAI Responses 与 Gemini Interactions 已实测；Claude 未实测，它的搜索始终带 citations，而 citations 与 `output_config.format` 同用时返回 400。
 
@@ -193,27 +192,42 @@ typed response 共同字段为：`task_id`、`status`、业务结果、`usage?`�
 
 协议依据：[Claude Web search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)、[OpenAI Web search](https://developers.openai.com/api/docs/guides/tools-web-search)、[Gemini Google Search](https://ai.google.dev/gemini-api/docs/google-search)、[OpenRouter Web Search](https://openrouter.ai/docs/guides/features/server-tools/web-search)。
 
-`RoutePolicy` 支持：`cheap | fast | balanced | quality` profile、local only、关闭 fallback、explain、Provider allow/block、最大成本和最大延迟。策略只能缩小候选或改变排序，不能赋予模型/adapter 不存在的能力。
+`RoutePolicy` 支持：`fast | balanced | quality` profile、`local_only`、`no_fallback`（本次请求关闭用途的“不可用时”策略）、explain、Provider allow/block、最大成本（`max_cost`）和最大延迟（`max_latency_ms`）。请求策略只能收紧管理员层：屏蔽列表追加，允许列表与管理员的列表同时生效，成本上限和延迟门槛只能更低；profile 只在管理员没有锁定时生效。它不能选用途的模型、不能打开“不可用时”策略，也不能赋予模型/adapter 不存在的能力。
 
-**调用失败不会自动换模型或 Provider。** 返回的是 Provider 的真实错误，应据此修 Provider 配置。只有系统管理员为该逻辑目录手工配置了 fallback 模型路由时才会改用它，结果与 trace 会标出；请求只能用 `allow_fallback: false` 关闭，不能打开或指定目标。原则见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)。现有实现仍接受 `runtime_failover` 且默认开启，将按 [显式 fallback 改造 TODO](../../notepads/aicc-explicit-fallback-todo.md) 移除，新代码不要依赖。
+**调用失败默认不换模型或 Provider。** 返回的是 Provider 的真实错误（Provider 实例名、精确模型、上游原因），应据此修 Provider 配置。换模型只来自用途的“不可用时”策略：`none`（默认，不切换）、`same_model`（同一个模型换 Provider）、`not_pricier`（换下一个不更贵的模型）、`next_model`（换下一个模型），由管理员或用户在用途表里手工打开。它只对 Helper 生效，每次请求最多换一次，只在重试后仍超时 / 5xx / 连接失败、模型已下线、上游配额耗尽、用户额度规则拒绝该模型或 Provider 被标记为故障时触发；400、401、403、409、取消、已产生用量的失败不触发。发生切换时响应的 `route_trace.fallback` 标出原模型、实际模型和策略，备选也失败时错误同时给出两边原因。请求只能用 `no_fallback: true` 关闭，不能打开或指定目标。原则见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)。
 
-session overlay 是请求级临时配置，不能绕过上层 locked policy。显式 exact model 不换模型。
+七个 LLM 用途没有任何模型、且管理员打开了兜底 LLM（`llm.fallback`）时，请求由兜底 LLM 提供，响应 `route_trace.fallback.kind = "coverage"`；调用方应在会话里显示警告。
+
+请求不能绕过管理员层锁定的策略和用途格子。显式 exact model 不换模型。
 
 ## 8. 管理接口
 
 | 目标 | method |
 | --- | --- |
-| 获取/更新路由配置 | `routing.get`, `routing.update` |
+| 获取/更新路由配置（管理员：Provider 权重与路由调整命令） | `routing.get`, `routing.update`, `routing.preview` |
+| 用途表（所有能用 AI 的用户；管理员层要求管理员） | `routing.usecases`, `routing.usecase.set` |
+| 自己的路由策略组与 App 绑定 | `routing.groups.list`, `routing.groups.create`, `routing.groups.update`, `routing.groups.delete`, `routing.bindings.list`, `routing.bindings.set`, `routing.bindings.remove` |
 | 原子重载 settings | `service.reload_settings` |
 | 列出模型 | `models.list` |
 | Provider/adapter catalog | `provider.catalog`, `protocol_adapter.list` |
 | 校验/新增 Provider | `provider.validate`, `provider.add` |
 | 列表/健康/更新/删除 | `provider.list`, `provider.health`, `provider.update`, `provider.delete` |
 | 立即刷新库存 | `provider.refresh_models` |
+| 事件 | `events.list` |
 | 用量/route trace | `usage.query`, `trace.query`；用户策略、价目表与 Credit（`policy.*` / `price.*` / `credit.*`）见 [aicc_user_policy.md](aicc_user_policy.md) |
 | metadata 更新状态/目标 | `driver_metadata_update.get`, `driver_metadata_update.set` |
 
 配置写入使用 `expected_settings_revision` 做 CAS。收到 `settings_revision_conflict` 后必须重新读取、重放用户意图，不能盲目覆盖。`provider.validate` 不写配置；`provider.add/update/delete` 才改变 system-config 并发布新 runtime。
+
+路由相关的字段与语义（字段级以 `buckyos-api/src/aicc_routing.rs` 为准，说明见 [aicc_api设计.md §2.12–§2.13](aicc_api设计.md)）：
+
+- `routing.usecases {view?, without_provider?}` 返回 29 个用途加兜底 LLM 一行的用途表：当前模型及来源层、各层的值与锁、`on_unavailable` 及其来源、“不可用时会换到谁”（`fallback_to`）和覆盖状态（`covered` / `fallback_llm` / `uncovered`）。`view` 为 `self`（默认）、`zone`（管理员）、`group:<id>` 或 `app:<app_id>`；`without_provider`（管理员）预演删除或停用某个 Provider 后的表。
+- `routing.usecase.set {target: zone | user | group:<id>, usecase, model?, on_unavailable?, enabled?, clear?, revision}`。`model` 必须是对调用者可见、满足用途要求的精确模型 `model@provider`；`locked` 只能写在 `zone`；`enabled` 只用于 `llm.fallback`、只能写在 `zone`。`revision` 取 `routing.usecases` 对应视角的 `revision`，不一致返回 `settings_revision_conflict`。
+- 路由策略组和 App 绑定只属于创建它的用户，只对该用户的调用生效；删除组同时删除它的 App 绑定。
+- `provider.update` 的 `marked_faulty: true | false` 手工标记故障，`provider.list` 的实例带 `marked_faulty`。被标记的 Provider 仍参与路由，但不再收到请求：有“不可用时”策略的用途直接改用备选，其余立即返回 `no_provider_available`（`details.reason = "marked_faulty"`）。
+- `provider.validate` 的 `usecase_coverage` 列出整个 Zone 每个用途在加上这个 Provider 前后的模型与覆盖状态（取代 `routing_candidates`）。
+- `usage.query` 的用量事件带 `fallback_from`（被策略替换掉的精确模型），过滤条件 `fallback_only` 只看这类用量。
+- `events.list` 的路由事件：`unavailable_fallback`、`provider_marked_faulty`、`provider_fault_cleared`、`usecase_model_missing`、`usecase_model_recovered`、`usecase_updated`。
 
 管理权限与普通推理权限分离。所有管理响应必须脱敏。
 

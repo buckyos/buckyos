@@ -257,6 +257,8 @@ test('Add Provider: open it, see how much is priced and make it free', async ({ 
   await page.getByRole('button', { name: 'Next', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeEnabled()
   await page.getByRole('button', { name: 'Next', exact: true }).click()
+  await expect(page.getByTestId('wizard-coverage')).toBeVisible()
+  await page.getByRole('button', { name: 'Next', exact: true }).click()
   const access = page.getByTestId('provider-access')
   await expect(access).toContainText('Gets it automatically (All Providers): Administrators, Users')
   await expect(access.locator('[data-testid="provider-access-subject"][data-subject="type:limited"]')).toBeVisible()

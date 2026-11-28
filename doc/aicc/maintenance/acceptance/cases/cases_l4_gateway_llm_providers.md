@@ -51,7 +51,7 @@ case_set = {
 
 1. `canonical ApiType` 以 `aicc_api设计.md` 定义的目标协议为准。`llm` 是 canonical api_type，`chat.completions.create` 是 method；`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment` 是 api_type，但其标准逻辑目录路径在内置树中是 `image.ocr`、`image.caption`、`image.detect`、`image.segment`。
 2. `methods_supporting(api_type)` 以本文件 §7 Method 验收清单和 `aicc_api设计.md` 为准。一个 api_type 可以对应多个 method，例如 `llm` 需要覆盖 `route.resolve`、`chat.completions.create`、`helper.llm_chat` 中适用的调用形态。
-3. `standard_logical_paths` 以当前运行版本加载的 `LocalLogicalTreeConfig.logical_definitions`、`SessionConfig.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准；该配置默认来自 `build_builtin_local_logical_tree_config()`，并可被 system_config 中的官方 routing 配置叠加。runner 必须把最终生效的标准逻辑目录路径写入报告，并标明每个路径的来源、继承到的 api_type、items、fallback 和 admission 结果。
+3. `standard_logical_paths` 以当前运行版本加载的 `LocalLogicalTreeConfig.logical_definitions`、settings `routing.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准；该配置默认来自 `build_builtin_local_logical_tree_config()`，并可被 system_config 中的官方 routing 配置叠加。runner 必须把最终生效的标准逻辑目录路径写入报告，并标明每个路径的来源、继承到的 api_type、items、fallback 和 admission 结果。
 4. `enabled_official_providers` 发布强覆盖默认至少包含 `openai`、`fal`、`google-gemini`、`claude`、`openrouter`、`sn-ai-provider`；如果官方配置或本次发布基线新增 Provider driver，必须自动纳入矩阵或在报告中标记为未覆盖缺口。
 5. `supported_models` 以 AICC 实际注册并可被 `models.list` 观察到的模型为准，包含精确模型名、provider instance、`api_types`、`logical_mounts`、capabilities、health 和 pricing 摘要。
 
@@ -128,10 +128,10 @@ case_set = {
 
 | 类型 | 交付物 | 必验内容 |
 |---|---|---|
-| 已有 Provider 新增协议兼容模型 | 模型事实 metadata、运营策略、必要的 routing_config | `models.list` 出现新 exact model；`api_types`、`capabilities`、上下文长度、`logical_mounts` 正确；成本、健康度、权重和 fallback 策略生效 |
+| 已有 Provider 新增协议兼容模型 | 模型事实 metadata、运营策略、必要的 settings `routing` | `models.list` 出现新 exact model；`api_types`、`capabilities`、上下文长度、`logical_mounts` 正确；成本、权重生效，用途表的覆盖与默认模型符合预期（健康度不参与路由） |
 | 新增 OpenAI-compatible Provider Instance | Provider Profile、协议族、`base_url`、授权、discovery 策略 | 用户无需选择 API 代际；接入测试优先新接口并按序测试已注册历史接口；resolved Adapter 固化后 inventory 身份链正确；运行时不得重新探测或跨代际降级 |
-| 新增非兼容 Provider adapter 或新 API type | 版本包、adapter、schema、metadata 基线、默认路由策略 | 新 adapter 的协议转换、错误映射、streaming / task 语义、usage、fallback 和 helper / typed inference 链路通过相关用例 |
-| 仅更新运营策略 | 策略配置、成本 / quota / health / 权重 / 熔断 / 灰度规则 | 不改变模型事实；route trace 显示策略命中；回滚策略后路由恢复；不需要回滚 metadata |
+| 新增非兼容 Provider adapter 或新 API type | 版本包、adapter、schema、metadata 基线、默认路由策略 | 新 adapter 的协议转换、错误映射、streaming / task 语义、usage、不可用时策略和 helper / typed inference 链路通过相关用例 |
+| 仅更新运营策略 | 策略配置、成本 / quota / 权重 / 灰度规则、管理员层用途表 | 不改变模型事实；route trace 显示策略或用途来源命中；health、熔断只用于展示与告警，不改变路由；回滚策略后路由恢复；不需要回滚 metadata |
 | 随版本内置缓存更新 | 版本包内 builtin metadata / 默认策略 | 新安装或无云端更新环境中仍能识别发布时已知模型，并生成可用默认路由 |
 | 云端 metadata 更新 | 严格递增的 manifest `revision_seq`、客户端兼容范围与分组目标；NDN 当前文件和 `metadata_target_seq`；Provider `metadata_applied_seq` | 每个受支持客户端版本获得对应的兼容发布；非法发布被拒绝；新文件就绪前 target seq 不推进；Provider 真正完成库存刷新后才推进自己的 applied seq；两个触发点均收敛全部落后 Provider |
 | 人工运行时覆盖 | `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<driver>.json` 或 `system-config/<driver>.json` | `service.reload_settings` 后生效；优先级高于 NDN 当前云端 metadata；损坏配置被拒绝且不破坏可用基线 |
@@ -141,16 +141,16 @@ case_set = {
 1. 准备更新说明，列出 provider、model、api type、逻辑目录、模型事实变更、运营策略变更、routing 变更、是否需要 adapter 发版，以及影响的现有用例族。
 2. 新增或更新命名可检索的相关用例，并在 manifest tags 中标明更新类型、provider、model、api type 和逻辑目录。
 3. 在测试环境发布云端配置、运行时覆盖文件或版本包，触发 `service.reload_settings`。
-4. 先执行本次新增用例和受影响的现有用例，覆盖 inventory、metadata 解析、exact model、logical model、fallback、成本估算、禁用策略和错误返回。
+4. 先执行本次新增用例和受影响的现有用例，覆盖 inventory、metadata 解析、exact model、logical model、用途覆盖、不可用时策略、成本估算、禁用策略和错误返回。
 5. 相关用例通过后执行 AICC 全量用例，对全部受支持 Provider、模型和路由策略执行回归验证。
 6. 发布环境上线后重复相关用例，再执行发布环境全量用例；发布环境的授权、网络、Provider 实际状态和报告摘要必须可诊断。
-7. 如本次支持回滚，至少执行一次目标回滚用例：模型事实错误时回滚 metadata / override；路由错误时优先回滚运营策略或 routing_config；回滚后重新调用 `service.reload_settings`，确认 `models.list`、route trace 和关键调用恢复预期。
+7. 如本次支持回滚，至少执行一次目标回滚用例：模型事实错误时回滚 metadata / override；路由错误时优先回滚运营策略或 settings `routing`（含管理员层的用途表）；回滚后重新调用 `service.reload_settings`，确认 `models.list`、route trace 和关键调用恢复预期。
 
 角色边界：
 
 - BuckyOS 项目方更新公共协议、默认模型事实基线、默认运营策略基线、默认逻辑目录和随版本缓存时，必须同时提交或更新对应 L1/L3/L4 用例。
-- 商业服务商跟随 BuckyOS 更新或维护自有 Provider 网关、模型事实包、运营策略包和产品默认 routing_config 时，必须保留服务商维度的用例 tags，报告中能按服务商 Provider / model 聚合。
-- 产品用户通过 system_config、local metadata override 或 `session_overlay` 做临时接入时，验收只要求配置生效、可回滚和安全边界正确；不要求修改公共基线。
+- 商业服务商跟随 BuckyOS 更新或维护自有 Provider 网关、模型事实包、运营策略包和产品默认 settings `routing` 时，必须保留服务商维度的用例 tags，报告中能按服务商 Provider / model 聚合。
+- 产品用户通过 system_config、local metadata override、用户层或路由策略组做临时调整时，验收只要求配置生效、可回滚和安全边界正确；不要求修改公共基线。
 - 模型服务商主动提供 BuckyOS metadata / inventory / cost / quota / health 信息目前按畅想处理；如接入试点，应作为服务商或第三方 Provider 包验收，不作为 P0 默认要求。
 
 ## 4. 分层用例清单
@@ -161,13 +161,13 @@ case_set = {
 
 | 用例族 | 优先级 | 覆盖点 |
 |---|---|---|
-| `l1_routing_exact_model_*` | P0 | 精确模型解析、Provider instance 校验、API type 校验、默认不 fallback |
+| `l1_routing_exact_model_*` | P0 | 精确模型解析、Provider instance 校验、API type 校验、从不换模型 |
 | `l1_routing_logical_tree_*` | P0 | 逻辑目录展开、items target、目录软链接、候选去重 |
-| `l1_routing_fallback_*` | P0 | `strict`、`parent`、`target_exact`、`target_logical`、`disabled` |
-| `l1_routing_loop_*` | P0 | fallback loop、logical tree loop、最大 fallback depth |
+| `l1_routing_fallback_*` | P0 | 用途的不可用时策略 `none`（默认）/ `same_model` / `not_pricier` / `next_model`：触发与不触发类别、每次请求最多切换一次、备选沿用原请求与用途约束、请求 `no_fallback` 关闭；兜底 LLM 只为静态无候选的 LLM 用途提供；标记为故障 |
+| `l1_routing_loop_*` | P0 | logical tree loop（目录软链接环）；注册表没有 fallback 链，不再有 fallback loop 和深度限制 |
 | `l1_scheduler_weight_*` | P0 | item weight、exact model weight、weight 0 硬过滤、同权重 profile 评分 |
-| `l1_scheduler_profile_*` | P0 | `cost_first`、`latency_first`、`quality_first`、`balanced`、`local_first`、`strict_local` |
-| `l1_request_overlay_*` | P0 | overlay 合并、逻辑目录覆盖、policy locked、互不污染 |
+| `l1_scheduler_profile_*` | P0 | `latency_first`、`quality_first`、`balanced`（默认）、`local_first`、`strict_local`；`cost_first` 已删除 |
+| `l1_usecase_layers_*` | P0 | 用途表各层合并（默认 < 管理员 < 用户 < App 组 < 会话组）、管理员锁定、层选的模型缺失 / 不可见 / 不满足要求时跟随下一层、请求策略只能收紧、互不污染（取代已删除的 `l1_request_overlay_*`：请求不再携带 `session_overlay`） |
 | `l1_provider_protocol_openai_*` | P0 | Responses 与 Chat Completions 分 Adapter contract、无隐式 fallback |
 | `l1_provider_protocol_claude_*` | P0 | Messages 与兼容 Completions 分 Adapter contract |
 | `l1_provider_protocol_gemini_*` | P0 | Interactions 与 `generateContent` 分 Adapter contract、无隐式 fallback |
@@ -206,7 +206,7 @@ case_set = {
 | `l3_krpc_stream_*` | P0 | Mock streaming chunks、task data progress、final summary |
 | `l3_krpc_async_*` | P0 | image/audio/video 类异步 task 状态闭环 |
 | `l3_krpc_usage_*` | P0 | usage event 写入和查询 |
-| `l3_krpc_failover_*` | P0 | Provider timeout / 5xx / quota exhausted 后 failover |
+| `l3_krpc_unavailable_*` | P0 | 用途没有策略时 timeout / 5xx / quota exhausted 返回真实错误、不换模型；配置 `same_model` / `not_pricier` / `next_model` 后切换一次，`route_trace.fallback`、usage `fallback_from`、事件 `unavailable_fallback` 可见；标记为故障（取代已删除的 `l3_krpc_failover_*`） |
 | `l3_krpc_security_*` | P0 | local_only、跨用户访问拒绝、脱敏扫描 |
 
 ### 4.4 L4 Gateway 真实模型验收
@@ -235,12 +235,12 @@ L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型
 | image/audio/video artifact | artifact 存在、media type 正确、可读取、size > 0 | 视觉/听觉内容完全一致 |
 | async task | running -> succeeded/failed 有闭环、失败有 error code | Provider 完成时间固定 |
 | usage/cost | usage 存在且数值非负、真实调用次数受控 | token 数精确一致 |
-| trace | final_model、provider、fallback/failover 标志、trace id 存在 | score 细节完全固定 |
+| trace | final_model、provider、有切换时的 `fallback`（`kind`、`from`、`to`）、trace id 存在 | score 细节完全固定 |
 
 真实模型可接受的 `partial`：
 
 - Provider 成功返回，但内容安全策略导致模型拒答，协议链路和错误分类正确。
-- Provider 临时不可用，AICC 返回明确 provider error 或 failover trace。
+- Provider 临时不可用，AICC 返回明确 provider error；只有用途配置了不可用时策略时才切换一次，trace 带 `fallback.kind = unavailable`。
 - artifact 生成成功但模型内容不满足人工预期，协议事实正确。
 
 真实模型不可接受的 `partial`，应判为 `failed`：

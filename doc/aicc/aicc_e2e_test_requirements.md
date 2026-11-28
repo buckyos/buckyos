@@ -308,9 +308,9 @@ T1 Runner 必须加载 4.5 节的独立路由暴露契约，并基于 `models.li
 6. health、quota、budget 和余额状态。
 7. context/output token 上限。
 8. 模型和逻辑目录权重。
-9. 当前调度 profile：`cost_first`、`latency_first`、`quality_first`、`balanced`、`local_first`、`strict_local`；新增 profile 必须自动进入枚举完整性检查和路由用例。
+9. 当前调度 profile：`balanced`（默认）、`latency_first`、`quality_first`、`local_first`、`strict_local`（`cost_first` 已删除）；新增 profile 必须自动进入枚举完整性检查和路由用例。
 10. `min_line`、`disable_line`、auto/manual mount。
-11. system routing config 和 request/session overlay。
+11. 用途表各层（默认、管理员层、用户层、App 绑定的策略组、请求 `route_group` 指定的会话策略组）与只能收紧的请求 `policy`。
 12. locked policy 及调用方不可覆盖项。
 13. metadata、pricing、latency 或 quality 数据缺失时的保守行为。
 
@@ -334,41 +334,37 @@ T1 Runner 必须加载 4.5 节的独立路由暴露契约，并基于 `models.li
 - 一个 instance reload、delete 或失败不影响其他 instance。
 - usage、cost、trace 和错误归因到实际 instance。
 
-### 7.6 历史路由软优先
+### 7.6 不按会话历史选择
 
-历史路由偏好的粒度固定为同一 session 内过去实际选中的精确模型（包含 Provider instance），不得退化为仅按 Provider instance 或模型家族粘滞。后续请求先应用全部硬约束，再在仍合格的候选中软优先选择该 session 过去使用过的精确模型。例如首轮选择 GPT-4，第二轮 GPT-4 与 GPT-5 均合格时应优先 GPT-4。
-
-历史路由只能作为软偏好，不能越过模型存在性、api_type、required capability、disabled capability、privacy、`local_only`、Provider allow/deny、health、quota、budget、context length、output length 和 locked policy 硬约束。
+会话历史软优先已删除（2026-11-28，router §10.4）：请求没有 `session_id`，AICC 不记上一次选中的模型。
 
 至少覆盖：
 
-- 上一轮 exact model 和 instance 仍适用时优先复用。
-- 上一轮模型不支持新 api_type 或 capability 时重新选择。
-- 上一轮 instance 不健康、无 quota 或被 policy 拒绝时重新选择。
-- 可选择同一 instance 的另一精确模型、同一 Provider driver 的另一 instance，或另一 Provider driver 的合格模型。
-- 历史偏好缺失时正常调度。
-- 不同 session 的历史偏好互不污染。
-
-测试必须使用真实 session 标识和上一轮实际路由结果建立历史，不得用 request/session overlay 伪造等价的历史路由粘滞。
+- 带 `session_id` 的请求按未知字段拒绝。
+- 同一用途在同一会话里连续请求，只要配置、库存和请求硬约束不变就选同一个模型；池内有多个同分候选时按默认顺序，不因上一次的选择改变。
+- 会话绑定的策略组（`route_group`）是唯一按会话改变路由的输入（§7.7 之后的策略组用例）。
 
 ### 7.7 Fallback 与运行时错误
 
-原则见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)。下列要求是改造后的目标；现有 T1 用例仍断言自动切换，随 [显式 fallback 改造 TODO](../../notepads/aicc-explicit-fallback-todo.md) 一起改。
+原则见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)。T1 用例（`test/aicc_test/acceptance/run_t1_gateway.ts`）中断言自动切换、`runtime_failover`、父目录回退的部分已于 2026-11-27 改为下列行为。
 
 必须覆盖：
 
-- 默认 strict：无静态候选、Provider 故障、配额耗尽、模型不存在时都不换模型，其它 Provider 收到 0 次请求。
-- 连续失败后再次请求仍选中同一模型，错误是上游的真实错误而不是“没有候选”。
-- 管理员配置的 target logical 和 target exact fallback；请求与 overlay 只能关闭，不能打开或改目标。
-- 精确模型不 fallback。
-- fallback 不跨 api_type。
-- `embedding.text` 和 `embedding.multimodal` 默认 strict；指定 `embedding_space_id` 或已有向量索引时，禁止 fallback 到不同 embedding space、维度、距离度量或归一化约定的模型。
-- `rerank` 默认 strict；fallback 重跑不能把不同 reranker 的分数混排。
-- fallback loop 和最大深度。
-- Provider 429、5xx、连接失败、timeout：只重试同一 exact model 1 次；配置了 fallback 时执行一次，否则返回真实错误。
-- 400 参数/schema 错误、401 认证错误、403 权限或内容策略拒绝、409 幂等冲突及明确标记为不可重试的 Provider 错误必须停止。404 模型不存在不得重试同一 exact model，也不得切换到其它候选；逻辑模型只在管理员配置了 fallback 时改用它。
-- fallback 后 task、usage、trace 和 Provider 归因。
-- 多 instance 间不自动切换；显式配置后才切换。
+- 默认 `none`：无静态候选、Provider 故障、配额耗尽、模型不存在时都不换模型，其它 Provider 收到 0 次请求；两个 Provider 同池时第一个连续失败 10 次，第二个收到 0 次请求。
+- 连续失败后再次请求仍选中同一模型，错误是上游的真实错误（Provider 实例名、精确模型、上游原因）而不是“没有候选”。
+- 三种“不可用时”策略各自的备选：`same_model`（同模型另一 Provider，按 Provider 权重再按配置顺序）、`not_pricier`（价格未知、币种无法折算、备选更贵时不切换）、`next_model`；单 Provider 时都没有备选。
+- 每次请求最多切换一次；备选也失败时错误同时给出两边原因；trace（`route_trace.fallback.kind = unavailable`）、usage（`fallback_from`）、`unavailable_fallback` 事件都标出原模型、实际模型和原因。
+- 请求 `policy.no_fallback` 关闭策略；请求不能打开策略、不能选用途的模型。
+- 手工标记故障：有策略的用途直接用备选（原 Provider 收到 0 次请求），没有策略的立即返回 `no_provider_available`（`details.reason = marked_faulty`），用途表不变；清除标记后恢复。
+- 兜底 LLM：未打开时 LLM 用途无静态候选即报 `no_candidate_model`；打开后只为静态无候选的 LLM 用途提供（`route_trace.fallback.kind = coverage`），已覆盖用途不受影响，Provider 故障不会转到它。
+- 精确模型（包括 `route.resolve` 得到后再用 typed inference 调用）从不切换。
+- 备选不跨 api_type，仍满足原请求与原用途的能力、隐私、`local_only`、可见性和额度约束。
+- `embedding.text` 和 `embedding.multimodal` 默认 `none`；指定 `embedding_space_id` 或已有向量索引时，备选不得是不同 embedding space、维度、距离度量或归一化约定的模型。
+- `rerank` 默认 `none`；切换后的重跑不能把不同 reranker 的分数混排。
+- Provider 429、5xx、连接失败、timeout：只重试同一 exact model 1 次；用途配置了策略时切换一次，否则返回真实错误。
+- 400 参数/schema 错误、401 认证错误、403 权限或内容策略拒绝、409 幂等冲突、取消、已产生用量的失败、异步任务拿到 remote task ID 之后的失败及明确标记为不可重试的 Provider 错误必须停止，不切换。404 模型不存在不得重试同一 exact model；只在用途配置了策略时切换。
+- 切换后 task、usage、trace 和 Provider 归因。
+- 多 instance 间不自动切换；只有用途打开了策略才切换。
 
 ### 7.8 Mock 行为
 
@@ -388,7 +384,7 @@ Mock Provider 至少支持：
 
 - 所有路由硬过滤、fallback 和错误处理分支必须穷举。
 - `model selector × api_type × capabilities × task feature × session preference` 使用 covering array 或 pairwise 生成组合。
-- 冲突组合、边界值、fallback 链和多 instance 选择单独穷举。
+- 冲突组合、边界值、用途表层次与锁、“不可用时”策略和多 instance 选择单独穷举。
 - 报告必须给出需求分支覆盖率和组合覆盖率，不能只统计 case 数量。
 
 ### 7.10 T1 断言与通过标准
@@ -398,7 +394,7 @@ Mock Provider 至少支持：
 - 选中的 exact model 和 Provider instance。
 - provider model ID 和 variant 展开结果；具体 Provider options 的 wire lowering 由 T1.5 断言。
 - 候选集合及每个候选保留/过滤原因。
-- route trace、fallback attempts 和最终错误分类。
+- route trace（含 `usecase` 来源与 `fallback`）和最终错误分类。
 - 只有预期 Mock Provider 收到预期次数的请求。
 - task、usage 和错误归因正确。
 
@@ -797,7 +793,7 @@ quota、budget、幂等计费和 fallback 归因在 T1 覆盖；Provider usage �
 - 成功且 Provider 返回 usage 时写入一次 durable usage。
 - 缺 usage 的成功响应按协议要求处理。
 - 幂等调用不重复计费。
-- fallback 多次 Provider 调用分别记录，最终任务归因明确。
+- 策略切换前后的 Provider 调用分别记录，用量只记在实际执行的模型上（带 `fallback_from`），最终任务归因明确。
 - tenant、Provider instance、model、api_type 和 task 归因。
 - quota、budget、余额不足的路由拒绝。
 - 未配置 quota、Provider 不支持余额查询及单个 Provider quota 查询失败时返回 `unknown` 并继续路由；明确 `exhausted` 只过滤对应候选。

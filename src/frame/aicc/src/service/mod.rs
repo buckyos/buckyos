@@ -57,7 +57,7 @@ use buckyos_api::{
     ProviderUpdateResponse, ProviderValidateRequest, ProviderValidateResponse,
     QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
     QuotaState, RequestControlResult, RequestDelegatedControlReq, RerankRequest, RerankResponse,
-    ResourceRef, RouteFallbackAttempt, RouteResolveRequest, RouteResolveResponse, RouteTrace,
+    ResourceRef, RouteResolveRequest, RouteResolveResponse, RouteTrace,
     RoutingGetRequest, RoutingGetResponse, RoutingPreviewEntry, RoutingPreviewRequest,
     RoutingPreviewResponse, RoutingUpdateRequest, RoutingUpdateResponse, RunnerWriteEnvelope,
     ServiceReloadSettingsRequest, ServiceReloadSettingsResponse, SystemConfigClient,
@@ -133,7 +133,7 @@ use crate::routing::policy::{
     CredentialScope, ProviderPrivacy, ProviderTrustLevel, ProviderTrustView, ProviderType,
 };
 use crate::routing::{
-    policy_engine_for_route, CallerIdentity, CandidateRuntimeState, ProviderHealthStatus,
+    policy_engine_for_route, CallerIdentity, CandidateRuntimeState,
     QuotaLookup, QuotaSnapshot, QuotaSourceFactory, QuotaTruthPort, RouteDecision, Router,
     RoutingRequest,
 };
@@ -523,7 +523,10 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         Arc::new(ReqwestUrlResourceFetcher::new().context("initialize AICC URL resource fetcher")?);
     let service_runtime: Arc<dyn ServiceRuntime> =
         Arc::new(RuntimeServiceAdapter::new(runtime.clone(), codecs.clone(), storage.clone()));
-    let model_health = Arc::new(ModelHealthRegistry::default());
+    let health_events = events.clone();
+    let model_health = Arc::new(ModelHealthRegistry::default().with_observer(Arc::new(
+        move |transition| health_events.observe_model_health(transition),
+    )));
     let provider_execution = Arc::new(RuntimeProviderExecutionPort::new(
         runtime.clone(),
         codecs.clone(),
@@ -552,7 +555,8 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
     let quota_factory = Arc::new(QuotaSourceFactory::new(Arc::new(
         ProviderQuotaTruthPort::new(runtime.clone()),
     )));
-    let inference = Arc::new(RuntimeInferencePort::new(
+    let inference = Arc::new(
+        RuntimeInferencePort::new(
         runtime.clone(),
         codecs,
         quota_factory,
@@ -563,7 +567,9 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         provider_execution.clone(),
         model_health,
         policy_service.clone(),
-    ));
+    )
+        .with_events(events.clone()),
+    );
     let service = AiccService::new(
         Arc::new(RuntimeAuthorizer::new(directory)),
         Arc::new(SystemConfigSettingsStore::new(system_config_url.clone())),
@@ -705,6 +711,39 @@ pub(crate) trait InferencePort: Send + Sync {
     ) -> Result<buckyos_api::RoutingPreviewResponse, RPCErrors>;
 
     async fn invoke(&self, caller: &AuthorizedCaller, call: AiccCall) -> Result<Value, RPCErrors>;
+
+    /// `routing.usecases`, writes of the caller's own layer and groups,
+    /// `routing.groups.*` and `routing.bindings.*`.
+    async fn usecase_rpc(
+        &self,
+        _caller: &AuthorizedCaller,
+        method: &str,
+        _params: Value,
+    ) -> Result<Value, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(method.to_string()))
+    }
+
+    async fn validate_usecase_route(
+        &self,
+        _caller: &AuthorizedCaller,
+        _zone: bool,
+        _usecase: &str,
+        _route: &buckyos_api::AiccUsecaseRoute,
+    ) -> Result<(), RPCErrors> {
+        Ok(())
+    }
+
+    /// An administrator changed the Provider: forget its observed failures.
+    fn provider_changed(&self, _provider_instance_name: &str) {}
+
+    /// The usecase table before and after a Provider is added.
+    async fn coverage_preview(
+        &self,
+        _caller: &AuthorizedCaller,
+        _added: &crate::model::ProviderInventory,
+    ) -> Result<Vec<buckyos_api::UsecaseCoverageChange>, RPCErrors> {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Clone)]
@@ -716,8 +755,7 @@ struct InferenceRouteInput {
     requirements: buckyos_api::ModelRequirement,
     disable: buckyos_api::ModelDisable,
     policy: Option<buckyos_api::RoutePolicy>,
-    session_overlay: Option<buckyos_api::AiccRouteOverlay>,
-    session_id: Option<String>,
+    route_group: Option<String>,
     estimated_input_tokens: Option<u64>,
     estimated_output_tokens: Option<u64>,
     /// Measured clip lengths; empty until materials are prepared.
@@ -727,7 +765,8 @@ struct InferenceRouteInput {
 struct RoutedInference {
     snapshot: Arc<crate::runtime::RuntimeSnapshot>,
     decision: RouteDecision,
-    runtime_failover: bool,
+    /// What the usecase's "when unavailable" policy needs.
+    context: Arc<inference::RouteContext>,
     trace_id: String,
     request_id: String,
 }
@@ -1060,6 +1099,7 @@ fn provider_from_add(
         lifecycle: ProviderLifecyclePolicy {
             non_deletable: dynamic_login,
         },
+        marked_faulty: false,
     })
 }
 
@@ -1095,6 +1135,9 @@ fn apply_provider_update(provider: &mut ProviderSettings, request: ProviderUpdat
     }
     if let Some(rules) = request.instance_rules {
         provider.instance_rules = Some(rules);
+    }
+    if let Some(marked_faulty) = request.marked_faulty {
+        provider.marked_faulty = marked_faulty;
     }
 }
 
@@ -1632,6 +1675,7 @@ fn runtime_admin_snapshot(
                 base_url: settings.base_url.clone(),
                 operation_base_urls: settings.operation_base_urls.clone(),
                 enabled: settings.enabled,
+                marked_faulty: settings.marked_faulty,
                 auth,
                 inventory,
                 health,
@@ -1729,7 +1773,7 @@ fn runtime_admin_snapshot(
             })).collect::<Vec<_>>(),
             "generation": snapshot.generation,
         }),
-        routing: snapshot.settings.session_config.clone().unwrap_or_default(),
+        routing: snapshot.settings.routing.clone().unwrap_or_default(),
         routing_command_status: snapshot.models.routing_command_status().to_vec(),
         providers,
         inventory_revision,
@@ -1859,7 +1903,6 @@ fn logical_definitions_json(models: &crate::model::ModelRegistry) -> Value {
                     "disable_line": logical.disable_line,
                     "default_options": logical.default_options,
                     "scheduler_profile": logical.scheduler_profile,
-                    "fallback": logical.fallback,
                 })
             })
             .collect(),

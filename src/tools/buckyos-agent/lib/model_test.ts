@@ -59,7 +59,7 @@ Deno.test("the AICC call asks llm.translate for a json_schema answer and forbids
     ],
     response_format: { type: "json_schema", json_schema: { name: "translation", schema: { type: "object" }, strict: true } },
     requirements: { json_schema: true },
-    policy: { allow_fallback: false, runtime_failover: false },
+    policy: { no_fallback: true },
     execution_mode: "immediate",
     trace_id: "site:0123456789abcdef",
   }]);

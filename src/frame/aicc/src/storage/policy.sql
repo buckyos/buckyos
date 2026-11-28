@@ -37,3 +37,13 @@ CREATE TABLE IF NOT EXISTS aicc_state (
  state_key TEXT PRIMARY KEY, int_value BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL);
 CREATE TABLE IF NOT EXISTS aicc_schema_meta (
  schema_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)
+;
+CREATE TABLE IF NOT EXISTS aicc_routing_layer (
+ subject TEXT PRIMARY KEY, content_json TEXT NOT NULL, version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL);
+CREATE TABLE IF NOT EXISTS aicc_routing_group (
+ group_id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, content_json TEXT NOT NULL,
+ version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_aicc_routing_group_owner ON aicc_routing_group(owner);
+CREATE TABLE IF NOT EXISTS aicc_routing_binding (
+ owner TEXT NOT NULL, scope TEXT NOT NULL, group_id TEXT NOT NULL, updated_at_ms BIGINT NOT NULL,
+ PRIMARY KEY (owner, scope))

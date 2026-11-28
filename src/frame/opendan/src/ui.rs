@@ -222,6 +222,15 @@ pub struct OutboundTexts {
     pub stopped: Option<String>,
     /// Ends the placeholder of a Turn that finished without a reply.
     pub finished: Option<String>,
+    /// A usecase without a model was answered by the fallback LLM
+    /// (`{usecase}`, `{model}`).
+    pub route_fallback_coverage: Option<String>,
+    /// A usecase's model was unavailable and another one answered
+    /// (`{usecase}`, `{model}`, `{replaced}`).
+    pub route_fallback_unavailable: Option<String>,
+    /// Names of the usecases in the notices (table `[usecase]`, key =
+    /// usecase with `.` replaced by `_`); an unnamed one shows its id.
+    pub usecases: BTreeMap<String, String>,
 }
 
 impl OutboundTexts {
@@ -252,9 +261,44 @@ impl OutboundTexts {
             accepted: get("accepted"),
             stopped: get("stopped"),
             finished: get("finished"),
+            route_fallback_coverage: get("route_fallback_coverage"),
+            route_fallback_unavailable: get("route_fallback_unavailable"),
+            usecases: table
+                .get("usecase")
+                .and_then(|t| t.as_table())
+                .map(|t| {
+                    t.iter()
+                        .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
+
+    /// The notice of a fallback note in the agent's language (`None`: the
+    /// package has no text for it).
+    pub fn route_notice(&self, note: &RouteFallbackNote) -> Option<String> {
+        let template = match note.kind {
+            RouteFallbackKind::Coverage => self.route_fallback_coverage.as_ref()?,
+            RouteFallbackKind::Unavailable => self.route_fallback_unavailable.as_ref()?,
+        };
+        let usecase = self
+            .usecases
+            .get(&note.usecase.replace('.', "_"))
+            .cloned()
+            .unwrap_or_else(|| note.usecase.clone());
+        Some(
+            template
+                .replace("{usecase}", &usecase)
+                .replace("{model}", &note.model)
+                .replace("{replaced}", note.replaced.as_deref().unwrap_or("")),
+        )
+    }
 }
+
+/// `content.machine.intent` of a fallback notice: the conversation shows it
+/// apart from the Agent's own replies.
+pub const ROUTE_FALLBACK_INTENT: &str = "opendan.route_fallback";
 
 /// Replies of hosted sessions → `post_send`.
 pub struct MsgCenterSink {
@@ -358,6 +402,21 @@ impl OutboundSink for MsgCenterSink {
                 Ok(self.notice(base, &self.texts.convert_failed))
             }
         }
+    }
+
+    async fn notice(
+        &self,
+        _cfg: &SessionConfig,
+        mut base: MsgObject,
+        note: &RouteFallbackNote,
+    ) -> Option<MsgObject> {
+        // Which model answers is the owner's business, not a group's.
+        if base.kind == MsgObjKind::GroupMsg {
+            return None;
+        }
+        base.content.content = self.texts.route_notice(note)?;
+        base.content.machine = buckyos_api::machine_content(ROUTE_FALLBACK_INTENT, note).ok();
+        Some(base)
     }
 
     async fn placeholder(
@@ -1309,6 +1368,8 @@ pub async fn conversation(agent: &dyn AgentStateClient, peer_did: &str, session_
                 })),
                 "unfinished_works": works,
                 "prompt": prompt,
+                "route_group": cfg.route_group,
+                "route_fallbacks": state.route_fallbacks,
             })
         }
     };
@@ -1321,4 +1382,39 @@ pub async fn conversation(agent: &dyn AgentStateClient, peer_did: &str, session_
             "outcome": state.outcome.filter(|_| state.is_finished()),
         })).collect::<Vec<_>>(),
     }))
+}
+
+#[cfg(test)]
+mod route_notice_tests {
+    use super::*;
+
+    fn note(kind: RouteFallbackKind, usecase: &str, replaced: Option<&str>) -> RouteFallbackNote {
+        RouteFallbackNote {
+            kind,
+            usecase: usecase.into(),
+            model: "small-1@local".into(),
+            replaced: replaced.map(str::to_string),
+            turn: Some(1),
+            at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn the_jarvis_package_names_the_usecase_in_its_language() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/jarvis_agent/agent");
+        let zh = OutboundTexts::load(&root, "zh");
+        assert_eq!(
+            zh.route_notice(&note(RouteFallbackKind::Coverage, "llm.plan", None)).unwrap(),
+            "规划没有配置模型，正在使用兜底模型 small-1@local。可在 AI Center › 用途 为它选择模型。"
+        );
+        let en = OutboundTexts::load(&root, "en");
+        let text = en
+            .route_notice(&note(RouteFallbackKind::Unavailable, "llm.code", Some("big@cloud")))
+            .unwrap();
+        assert!(text.contains("Coding") && text.contains("big@cloud") && text.contains("small-1@local"), "{text}");
+        // A usecase the package does not name shows its id.
+        let text = en.route_notice(&note(RouteFallbackKind::Coverage, "image.txt2img", None)).unwrap();
+        assert!(text.contains("image.txt2img"), "{text}");
+        assert_eq!(OutboundTexts::default().route_notice(&note(RouteFallbackKind::Coverage, "llm.plan", None)), None);
+    }
 }

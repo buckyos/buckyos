@@ -5,6 +5,7 @@ import { modelCatalogEn, modelCatalogZh } from './model-catalog'
 import { aiCenterEn, aiCenterZh } from './ai-center'
 import { aiCenterRoutingEn, aiCenterRoutingZh } from './ai-center-routing'
 import { aiCenterPolicyEn, aiCenterPolicyZh } from './ai-center-policy'
+import { aiCenterUsecasesEn, aiCenterUsecasesZh } from './ai-center-usecases'
 import { fileBrowserReviewEn, fileBrowserReviewZh } from './filebrowser-review'
 import { messageHubEn, messageHubZh } from './messagehub'
 import { homeStationEn, homeStationZh } from './homestation'
@@ -50,6 +51,7 @@ const en: Dictionary = {
   ...aiCenterPlaygroundEn,
   ...aiCenterRoutingEn,
   ...aiCenterPolicyEn,
+  ...aiCenterUsecasesEn,
   ...messageHubEn,
   ...homeStationEn,
   ...loadingTipsEn,
@@ -307,7 +309,6 @@ const en: Dictionary = {
   'aiCenter.nav.home': 'Home',
   'aiCenter.nav.providers': 'Providers',
   'aiCenter.nav.models': 'Models',
-  'aiCenter.nav.routing': 'Routing',
   'aiCenter.addProvider': 'Add Provider',
   'aiCenter.enable.title': 'AI Features Not Enabled',
   'aiCenter.enable.desc': 'Add at least one AI Provider to start using AI capabilities across your system.',
@@ -888,6 +889,7 @@ const zhCN: Dictionary = {
   ...aiCenterPlaygroundZh,
   ...aiCenterRoutingZh,
   ...aiCenterPolicyZh,
+  ...aiCenterUsecasesZh,
   ...messageHubZh,
   ...homeStationZh,
   ...loadingTipsZh,
@@ -1145,7 +1147,6 @@ const zhCN: Dictionary = {
   'aiCenter.nav.home': '首页',
   'aiCenter.nav.providers': '提供商',
   'aiCenter.nav.models': '模型',
-  'aiCenter.nav.routing': '路由',
   'aiCenter.addProvider': '添加 Provider',
   'aiCenter.enable.title': 'AI 功能尚未启用',
   'aiCenter.enable.desc': '需要至少添加一个 AI Provider，才能开始使用系统中的 AI 能力。',

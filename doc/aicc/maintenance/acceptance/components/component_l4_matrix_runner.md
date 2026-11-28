@@ -53,7 +53,7 @@ case_set = {
 
 1. `canonical ApiType` 以 `aicc_api设计.md` 定义的目标协议为准。`llm` 是 canonical api_type，`chat.completions.create` 是 method；`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment` 是 api_type，但其标准逻辑目录路径在内置树中是 `image.ocr`、`image.caption`、`image.detect`、`image.segment`。
 2. `methods_supporting(api_type)` 以本文件 §7 Method 验收清单和 `aicc_api设计.md` 为准。一个 api_type 可以对应多个 method，例如 `llm` 需要覆盖 `route.resolve`、`chat.completions.create`、`helper.llm_chat` 中适用的调用形态。
-3. `standard_logical_paths` 以当前运行版本加载的 `LocalLogicalTreeConfig.logical_definitions`、`SessionConfig.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准；该配置默认来自 `build_builtin_local_logical_tree_config()`，并可被 system_config 中的官方 routing 配置叠加。runner 必须把最终生效的标准逻辑目录路径写入报告，并标明每个路径的来源、继承到的 api_type、items、fallback 和 admission 结果。
+3. `standard_logical_paths` 以当前运行版本加载的 `LocalLogicalTreeConfig.logical_definitions`、settings `routing.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准；该配置默认来自 `build_builtin_local_logical_tree_config()`，并可被 system_config 中的官方 routing 配置叠加。runner 必须把最终生效的标准逻辑目录路径写入报告，并标明每个路径的来源、继承到的 api_type、items、fallback 和 admission 结果。
 4. `enabled_official_providers` 发布强覆盖默认至少包含 `openai`、`fal`、`google-gemini`、`claude`、`openrouter`、`sn-ai-provider`；如果官方配置或本次发布基线新增 Provider driver，必须自动纳入矩阵或在报告中标记为未覆盖缺口。
 5. `supported_models` 以 AICC 实际注册并可被 `models.list` 观察到的模型为准，包含精确模型名、provider instance、`api_types`、`logical_mounts`、capabilities、health 和 pricing 摘要。
 
@@ -211,12 +211,12 @@ L4 runner 应把被测环境视为一次性资源，推荐流程：
 | image/audio/video artifact | artifact 存在、media type 正确、可读取、size > 0 | 视觉/听觉内容完全一致 |
 | async task | running -> succeeded/failed 有闭环、失败有 error code | Provider 完成时间固定 |
 | usage/cost | usage 存在且数值非负、真实调用次数受控 | token 数精确一致 |
-| trace | final_model、provider、fallback/failover 标志、trace id 存在 | score 细节完全固定 |
+| trace | final_model、provider、有切换时的 `fallback`（`kind`、`from`、`to`）、trace id 存在 | score 细节完全固定 |
 
 真实模型可接受的 `partial`：
 
 - Provider 成功返回，但内容安全策略导致模型拒答，协议链路和错误分类正确。
-- Provider 临时不可用，AICC 返回明确 provider error 或 failover trace。
+- Provider 临时不可用，AICC 返回明确 provider error；只有用途配置了不可用时策略时才切换一次，trace 带 `fallback.kind = unavailable`。
 - artifact 生成成功但模型内容不满足人工预期，协议事实正确。
 
 真实模型不可接受的 `partial`，应判为 `failed`：

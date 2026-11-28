@@ -2480,7 +2480,6 @@ fn encode_image_inpaint(
         output: request.output.clone(),
         idempotency_key: request.idempotency_key.clone(),
         task_options: request.task_options.clone(),
-        session_id: request.session_id.clone(),
     };
     encode_image_edit(&synthetic, Some(&request.mask), call)
 }
@@ -4375,7 +4374,6 @@ mod tests {
             output: None,
             idempotency_key: None,
             task_options: None,
-            session_id: None,
         };
         assert!(registry()
             .encode(

@@ -2205,6 +2205,7 @@ fn inference_request() -> LlmInferenceRequest {
         disable_capabilities: vec![],
         tool_specs: vec![],
         allow_tool_calls: false,
+        route_group: None,
         abort: llm_context::interrupt::InferenceAbortToken::noop(),
     }
 }

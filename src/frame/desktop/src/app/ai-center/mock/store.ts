@@ -16,6 +16,7 @@ import type {
   WizardDraft,
 } from './types'
 import { getEmptySeed, getPopulatedSeed, model } from './seed'
+import { MOCK_USECASE_REQUIREMENTS } from './usecases'
 
 function isManagedSnProvider(provider: ProviderView): boolean {
   return provider.config.provider_profile_id === 'sn'
@@ -140,6 +141,7 @@ export class MockDataStore {
       localModels: this.localModels,
       aiStatus: this.computeAIStatus(),
       settingsRevision: this.snapshotVersion,
+      usecaseRequirements: MOCK_USECASE_REQUIREMENTS,
     }
   }
 
@@ -192,6 +194,18 @@ export class MockDataStore {
   }
 
   addProvider(draft: WizardDraft): ProviderView {
+    const view = this.providerForDraft(draft)
+    this.providers.set(view.config.id, view)
+    this.notify()
+    return view
+  }
+
+  /** The snapshot as it would be with the Provider of `draft` added (`provider.validate` coverage). */
+  previewWithProvider(draft: WizardDraft): StoreSnapshot {
+    return { ...this.snapshot, providers: [...this.snapshot.providers, this.providerForDraft(draft)] }
+  }
+
+  private providerForDraft(draft: WizardDraft): ProviderView {
     const id = `provider-${Date.now()}`
     const providerType = draft.provider_profile_id ?? 'custom'
     const instanceName = draft.provider_instance_name ?? `${providerType}-${Date.now().toString(36)}`
@@ -247,9 +261,6 @@ export class MockDataStore {
         balance_unit: 'usd',
       },
     }
-
-    this.providers.set(id, view)
-    this.notify()
     return view
   }
 
@@ -314,6 +325,13 @@ export class MockDataStore {
         model_sync_status: enabled ? 'ok' : 'failed',
       },
     })
+    this.notify()
+  }
+
+  setProviderMarkedFaulty(id: string, marked: boolean): void {
+    const provider = this.providers.get(id)
+    if (!provider) throw new Error('provider_not_found')
+    this.providers.set(id, { ...provider, config: { ...provider.config, marked_faulty: marked } })
     this.notify()
   }
 

@@ -220,7 +220,7 @@ export function aiResponseData(
   return Object.keys(data).length ? data as JsonValue : null;
 }
 
-export type Profile = "balanced" | "cheap" | "fast" | "quality";
+export type Profile = "balanced" | "fast" | "quality";
 
 export type AgentToolStatus = "success" | "error" | "pending";
 

@@ -51,6 +51,7 @@
 | `activity` | `summary?`、`touch[]`、`clear` | 合并进 `state.activity`（touching 上限 16） |
 | `perceive` | `kind`（默认 `observation`）、`summary`、`tags[]`、`objects[]` | 驱动者以 lease 追加到 Agent 感知流（按 seq 幂等），再消费输入 |
 | `reply_mode` | `mode`：`schema` \| `compat` | 只对 UI Session：最后的回复怎样给出（`state.reply_mode`），在下一个推理边界生效，跨 Turn 保持；其它 Session 记 `applied = false` |
+| `route_group` | `route_group?`（AICC 路由策略组 ID，缺省或空串＝清除） | 写 `session_config.route_group`（`config_rev + 1`）；下一次推理起生效。每次推理沿 `origin.parent_session` 找最近一个设了组的 Session，所以对已有的子 Session 立即生效。组是否属于调用者由 AICC 判断，不属于就当没传。Agent Service 的 `session.route_group {sid, route_group}` 发出这条控制 |
 
 ## 4. 停止
 

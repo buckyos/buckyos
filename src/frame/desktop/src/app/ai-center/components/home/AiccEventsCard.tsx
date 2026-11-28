@@ -98,6 +98,18 @@ function eventTitle(event: AiccEvent, t: ReturnType<typeof useI18n>['t']): strin
       return t('aiCenter.events.registryBuildFailed', 'Model registry rebuild failed')
     case 'registry_recovered':
       return t('aiCenter.events.registryRecovered', 'Model registry rebuilt successfully')
+    case 'unavailable_fallback':
+      return t('aiCenter.events.unavailableFallback', '{{from}} was unavailable; {{to}} served the request', { from: String(event.details.from ?? ''), to: String(event.details.to ?? '') })
+    case 'provider_marked_faulty':
+      return t('aiCenter.events.providerMarkedFaulty', '{{provider}} was marked faulty', { provider: String(event.details.provider_instance_name ?? '') })
+    case 'provider_fault_cleared':
+      return t('aiCenter.events.providerFaultCleared', '{{provider}} is no longer marked faulty', { provider: String(event.details.provider_instance_name ?? '') })
+    case 'usecase_model_missing':
+      return t('aiCenter.events.usecaseModelMissing', 'The model chosen for {{usecase}} is no longer offered', { usecase: String(event.details.usecase ?? '') })
+    case 'usecase_model_recovered':
+      return t('aiCenter.events.usecaseModelRecovered', 'The model chosen for {{usecase}} is available again', { usecase: String(event.details.usecase ?? '') })
+    case 'usecase_updated':
+      return t('aiCenter.events.usecaseUpdated', 'The Zone default of {{usecase}} changed', { usecase: String(event.details.usecase ?? '') })
     default:
       return event.message
   }

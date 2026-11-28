@@ -20,7 +20,7 @@ import {
 } from "./gateway.ts";
 import { buildExactRequest, assertResponseShape } from "./payloads.ts";
 import { runPreflight } from "./preflight.ts";
-import { withMockSettings } from "./settings_transaction.ts";
+import { withAiccSettingsOverride, withMockSettings } from "./settings_transaction.ts";
 import { configValue } from "./mock_settings.ts";
 import { ProviderScheduler } from "./scheduler.ts";
 import { buildFinancialReport } from "./finance.ts";
@@ -247,23 +247,6 @@ async function waitHealth(baseUrl: string, timeoutMs = 15_000): Promise<void> {
   throw new Error(`mock provider is unreachable at ${baseUrl}: ${last}`);
 }
 
-async function waitForRouteMatch(
-  expectation: string,
-  timeoutMs: number,
-  matches: (route: Record<string, unknown>) => boolean,
-  resolveRoute: (attempt: number) => Promise<Record<string, unknown>>,
-): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + Math.min(timeoutMs, 10_000);
-  let attempt = 0;
-  let last: Record<string, unknown> | undefined;
-  while (Date.now() < deadline) {
-    last = await resolveRoute(attempt++);
-    if (matches(last)) return last;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
-  }
-  throw new Error(`route did not converge to ${expectation}: ${JSON.stringify(last)}`);
-}
-
 async function recordExactProviderFailures(input: {
   session: GatewaySession;
   mockControlUrl: string;
@@ -413,18 +396,41 @@ export async function withExhaustedProviderQuota<T>(session: Pick<GatewaySession
   finally { await session.aicc.call("quota.rule.delete", { rule_id: created.rule.rule_id, expected_version: created.rule.version }); }
 }
 
-async function assertQuotaCallUsesBackup(session: GatewaySession, input: Options, logicalModel: string, primary: string, backup: string, id: string, sessionId?: string): Promise<void> {
-  const before = (await mockRequests(input.mockControlUrl)).length;
-  const initial = await session.aicc.call("helper.llm_chat", {
-    logical_model: logicalModel, session_id: sessionId,
-    session_overlay: { provider_weights: { [primary]: 2, [backup]: 1 } },
-    policy: { allowed_provider_instances: [primary, backup], runtime_failover: true },
-    messages: [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827" }] }],
-    disable: { web_search: true }, max_output_tokens: 32, idempotency_key: id,
-  }) as AiMethodResponse;
-  await terminal(session, initial, input.timeoutMs);
-  const calls = (await mockRequests(input.mockControlUrl)).slice(before).filter((request) => request.method === "POST" && String(request.path).endsWith("/responses"));
-  if (calls.length !== 1 || !String(calls[0].path).startsWith("/instance-b/")) throw new Error(`exhausted primary reached Provider or backup was not called: ${JSON.stringify(calls.map((call) => call.path))}`);
+// The caller's own usecase layer (doc/aicc/aicc_router.md §11-§12): set the
+// model and/or "when unavailable" policy of one usecase while `execute` runs,
+// then clear both cells.
+export async function withUsecaseRoute<T>(
+  session: Pick<GatewaySession, "aicc">,
+  usecase: string,
+  cells: { model?: string; on_unavailable?: "none" | "same_model" | "not_pricier" | "next_model" },
+  execute: () => Promise<T>,
+): Promise<T> {
+  const revision = async () =>
+    (await session.aicc.call("routing.usecases", { view: "self" }) as { revision: number }).revision;
+  await session.aicc.call("routing.usecase.set", { target: "user", usecase, ...cells, revision: await revision() });
+  try { return await execute(); }
+  finally {
+    await session.aicc.call("routing.usecase.set", {
+      target: "user", usecase, clear: ["model", "on_unavailable"], revision: await revision(),
+    });
+  }
+}
+
+// A user quota rule that refuses the primary lets the usecase's `same_model`
+// policy move the call to the same model on the other Provider, once.
+async function assertQuotaCallUsesBackup(session: GatewaySession, input: Options, primaryModel: string, primary: string, backup: string, id: string, sessionId?: string): Promise<void> {
+  await withUsecaseRoute(session, "llm.chat", { model: primaryModel, on_unavailable: "same_model" }, async () => {
+    const before = (await mockRequests(input.mockControlUrl)).length;
+    const initial = await session.aicc.call("helper.llm_chat", {
+      logical_model: "llm.chat", session_id: sessionId,
+      policy: { allowed_provider_instances: [primary, backup] },
+      messages: [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827" }] }],
+      disable: { web_search: true }, max_output_tokens: 32, idempotency_key: id,
+    }) as AiMethodResponse;
+    await terminal(session, initial, input.timeoutMs);
+    const calls = (await mockRequests(input.mockControlUrl)).slice(before).filter((request) => request.method === "POST" && String(request.path).endsWith("/responses"));
+    if (calls.length !== 1 || !String(calls[0].path).startsWith("/instance-b/")) throw new Error(`exhausted primary reached Provider or backup was not called: ${JSON.stringify(calls.map((call) => call.path))}`);
+  });
 }
 
 async function setScenario(baseUrl: string, scenario: string, pathPrefix?: string): Promise<void> {
@@ -861,28 +867,30 @@ async function runRouteExposureContractCases(args: {
             cell.api_type,
             args.logicalDefinitions,
           );
-          const inventory = args.inventories.find((item) =>
-            item.provider_instance_name === cell.provider_instance
-          )!;
-          const exactModelWeights = Object.fromEntries(inventory.models
-            .filter((model) => model.api_types.includes(cell.api_type))
-            .map((model) => [model.exact_model, model.exact_model === cell.exact_model ? 1_000 : 0]));
-          const response = await args.session.aicc.call("route.resolve", {
+          // A usecase entrypoint is pinned to the representative through the
+          // caller's own layer; a request can no longer pin a model. A spec
+          // entrypoint has no layers, so it only has to stay on the instance.
+          const entrypoint = cell.exposure.logical_entrypoint!;
+          const isUsecase = logicalEntrypoints.entrypoints
+            .some((item) => item.path === entrypoint && item.kind === "public_function");
+          const resolve = async () => await args.session.aicc.call("route.resolve", {
             request_id: `${args.runId}:${caseId}`,
             api_type: cell.api_type,
-            logical_model: cell.exposure.logical_entrypoint,
+            logical_model: entrypoint,
             requirements: {},
             disable: {},
             policy: { allowed_provider_instances: [cell.provider_instance] },
-            session_overlay: { global_exact_model_weights: exactModelWeights },
           }) as Record<string, unknown>;
+          const response = isUsecase
+            ? await withUsecaseRoute(args.session, entrypoint, { model: cell.exact_model }, resolve)
+            : await resolve();
           if (response.provider_instance_name !== cell.provider_instance) {
             throw new Error(`logical entrypoint selected ${String(response.provider_instance_name)}, expected ${cell.provider_instance}`);
           }
           if (typeof response.selected_exact_model !== "string") {
             throw new Error("logical entrypoint returned no exact model");
           }
-          if (response.selected_exact_model !== cell.exact_model) {
+          if (isUsecase && response.selected_exact_model !== cell.exact_model) {
             throw new Error(`logical entrypoint did not expose representative ${cell.exact_model}; selected ${response.selected_exact_model}`);
           }
           if (response.provider_profile_id !== cell.provider_profile_id) {
@@ -1215,9 +1223,36 @@ async function runRouteCases(
     }
     throw new Error("route unexpectedly resolved");
   };
-  const replacingOverlay = (path: string, leaf: Record<string, unknown>): Record<string, unknown> => ({
-    logical_profile: { overlays: [{ path, merge_mode: "replace", ...leaf }] },
-  });
+  // Routing weights are administrator settings now (`routing` in the AICC
+  // settings); a request can no longer carry them.
+  const withRoutingSettings = async <T>(
+    description: string,
+    patch: (routing: Record<string, unknown>) => void,
+    execute: () => Promise<T>,
+  ): Promise<T> => (await withAiccSettingsOverride({
+    systemConfig: session.systemConfig,
+    aicc: session.aicc,
+    description,
+    patch: (settings) => {
+      const patched = structuredClone(settings);
+      const routing = (patched.routing ?? {}) as Record<string, unknown>;
+      patch(routing);
+      patched.routing = routing;
+      return patched;
+    },
+    execute,
+  })).result;
+  const expectUsecaseSetRejected = async (usecase: string, model: string): Promise<string> => {
+    const { revision } = await session.aicc.call("routing.usecases", { view: "self" }) as { revision: number };
+    try {
+      await session.aicc.call("routing.usecase.set", { target: "user", usecase, model, revision });
+    } catch (error) {
+      return `usecase layer write rejected: ${String(error).slice(0, 300)}`;
+    }
+    const { revision: next } = await session.aicc.call("routing.usecases", { view: "self" }) as { revision: number };
+    await session.aicc.call("routing.usecase.set", { target: "user", usecase, clear: ["model"], revision: next });
+    throw new Error(`routing.usecase.set accepted ${model} for ${usecase}`);
+  };
   const pushRouteProbe = async (
     caseId: string,
     execute: () => Promise<string | undefined>,
@@ -1277,13 +1312,9 @@ async function runRouteCases(
     disable: { web_search: true },
   })));
   await pushRouteProbe("t1.route.unmounted_model", () => expectRouteRejected(routeRequest("t1.route.unmounted_model", {
-    session_overlay: replacingOverlay(logicalModel, { items: [] }),
+    logical_model: "llm.dv_acceptance.unmounted",
   })));
-  await pushRouteProbe("t1.route.corrupt_metadata", () => expectRouteRejected(routeRequest("t1.route.corrupt_metadata", {
-    session_overlay: replacingOverlay(logicalModel, {
-        items: [{ name: "corrupt", target: "not-an-exact-or-logical-model", weight: -1 }],
-      }),
-  })));
+  await pushRouteProbe("t1.route.corrupt_metadata", () => expectUsecaseSetRejected("llm.chat", "not-an-exact-or-logical-model"));
   await pushRouteProbe("t1.route.privacy_boundary", () => expectRouteRejected(routeRequest("t1.route.privacy_boundary", {
     policy: { local_only: true },
   })));
@@ -1296,13 +1327,11 @@ async function runRouteCases(
   await pushRouteProbe("t1.route.output_limit_filter", () => expectRouteRejected(routeRequest("t1.route.output_limit_filter", {
     estimated_output_tokens: 1_000_000_000,
   })));
+  // The fixture node locks its allow list to instance A; a request may only
+  // narrow it, so asking for B leaves no candidate.
   await pushRouteProbe("t1.route.locked_policy_cannot_override", () => expectRouteRejected(routeRequest("t1.route.locked_policy_cannot_override", {
+    logical_model: "llm.dv_acceptance.locked",
     policy: { allowed_provider_instances: [openaiB.provider_instance_name] },
-    session_overlay: {
-      policy: {
-        allowed_provider_instances: { value: [openaiA.provider_instance_name], locked: true },
-      },
-    },
   })));
   await pushRouteProbe("t1.route.missing_metadata_is_conservative", async () => {
     const unclassified = openaiA.models.find((model) =>
@@ -1328,13 +1357,7 @@ async function runRouteCases(
   })));
   await pushRouteProbe("t1.route.min_line_admission", () => {
     if (!basicModel) throw new Error("min-line test model is missing from OpenAI mock inventory");
-    return expectRouteRejected(routeRequest("t1.route.min_line_admission", {
-      logical_model: "llm.plan",
-      session_overlay: replacingOverlay("llm.plan", {
-        items: [{ name: "basic", target: basicModel.exact_model, weight: 1 }],
-      }),
-      policy: { allowed_provider_instances: [openaiA.provider_instance_name] },
-    }));
+    return expectUsecaseSetRejected("llm.plan", basicModel.exact_model);
   });
   await pushRouteProbe("t1.route.disable_line_applied", async () => {
     const response = await session.aicc.call("route.resolve", routeRequest("t1.route.disable_line_applied", {
@@ -1352,24 +1375,24 @@ async function runRouteCases(
     [modelA.exact_model]: 0,
     [modelB.exact_model]: 1,
   };
-  for (const [caseId, sessionOverlay] of [
-    ["t1.route.global_exact_model_weight", {
-      global_exact_model_weights: exactWeights,
+  for (const [caseId, routingPatch] of [
+    ["t1.route.global_exact_model_weight", (routing: Record<string, unknown>) => {
+      routing.global_exact_model_weights = exactWeights;
     }],
-    ["t1.route.logical_exact_model_weight", {
-      logical_tree: overlayTree(logicalModel, {
+    ["t1.route.logical_exact_model_weight", (routing: Record<string, unknown>) => {
+      routing.logical_tree = overlayTree(logicalModel, {
         exact_model_weights: exactWeights,
-      }),
+      });
     }],
-    ["t1.route.provider_instance_weight", {
-      provider_weights: { [openaiA.provider_instance_name]: 0, [openaiB.provider_instance_name]: 1 },
+    ["t1.route.provider_instance_weight", (routing: Record<string, unknown>) => {
+      routing.provider_weights = { [openaiA.provider_instance_name]: 0, [openaiB.provider_instance_name]: 1 };
     }],
   ] as const) {
     await pushRouteProbe(caseId, async () => {
-      const response = await session.aicc.call("route.resolve", routeRequest(caseId, {
-        session_overlay: sessionOverlay,
-        policy: { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name] },
-      })) as Record<string, unknown>;
+      const response = await withRoutingSettings(`T1 ${caseId}`, routingPatch, async () =>
+        await session.aicc.call("route.resolve", routeRequest(caseId, {
+          policy: { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name] },
+        })) as Record<string, unknown>);
       if (response.provider_instance_name !== openaiB.provider_instance_name) {
         throw new Error(`zero-weight candidate was selected: ${JSON.stringify(response)}`);
       }
@@ -1377,13 +1400,13 @@ async function runRouteCases(
     });
   }
 
-  await pushRouteProbe("t1.route.system_config_then_request_overlay", async () => {
+  await pushRouteProbe("t1.route.system_config_then_user_layer", async () => {
     const systemModel = openaiA.models.find((model) => model.provider_model_id === "gpt-5.6");
     const requestModel = openaiB.models.find((model) => model.provider_model_id === "gpt-5.3-codex:reasoning-high");
     if (!systemModel || !requestModel) {
-      throw new Error("system/request overlay test models are missing from OpenAI mock inventory");
+      throw new Error("system/user layer test models are missing from OpenAI mock inventory");
     }
-    const systemResponse = await session.aicc.call("route.resolve", routeRequest("t1.route.system_config_then_request_overlay.system", {
+    const systemResponse = await session.aicc.call("route.resolve", routeRequest("t1.route.system_config_then_user_layer.system", {
       logical_model: "llm.dv_acceptance.system_overlay",
       policy: { allowed_provider_instances: [openaiA.provider_instance_name] },
     })) as Record<string, unknown>;
@@ -1393,20 +1416,18 @@ async function runRouteCases(
     ) {
       throw new Error(`system routing fixture selected an unexpected target: ${JSON.stringify(systemResponse)}`);
     }
-    const requestResponse = await session.aicc.call("route.resolve", routeRequest("t1.route.system_config_then_request_overlay.request", {
-      logical_model: "llm.dv_acceptance.system_overlay",
-      session_overlay: replacingOverlay("llm.dv_acceptance.system_overlay", {
-        items: [{ name: "request", target: "llm.gpt-codex", weight: 1 }],
-      }),
-      policy: { allowed_provider_instances: [openaiB.provider_instance_name] },
-    })) as Record<string, unknown>;
+    const requestResponse = await withUsecaseRoute(session, "llm.chat", { model: requestModel.exact_model }, async () =>
+      await session.aicc.call("route.resolve", routeRequest("t1.route.system_config_then_user_layer.user", {
+        logical_model: "llm.chat",
+        policy: { allowed_provider_instances: [openaiB.provider_instance_name] },
+      })) as Record<string, unknown>);
     if (
       requestResponse.provider_instance_name !== openaiB.provider_instance_name ||
       requestResponse.selected_exact_model !== requestModel.exact_model
     ) {
-      throw new Error(`request overlay did not replace system route: ${JSON.stringify(requestResponse)}`);
+      throw new Error(`user layer did not choose the usecase model: ${JSON.stringify(requestResponse)}`);
     }
-    return "request session_overlay took precedence over system routing config";
+    return "system routing config served its node and the user layer chose llm.chat's model";
   });
 
   for (const [caseId, state] of [
@@ -1417,69 +1438,97 @@ async function runRouteCases(
     await pushRouteProbe(caseId, async () => {
       if (state.health === "unavailable") {
         try {
+          // Observed failures never change the route (aicc_router.md §11.5):
+          // a 404 or repeated connection failures leave the same model selected.
           const offlineModel = caseId === "t1.route.offline_model";
+          const routeOnce = async (suffix: string) => await session.aicc.call("route.resolve", routeRequest(`${caseId}.${suffix}`, {
+            policy: { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name] },
+          })) as Record<string, unknown>;
+          const before = await routeOnce("before");
+          const failing = [openaiA, openaiB].flatMap((inventory) =>
+            inventory.models.filter((model) => model.exact_model === before.selected_exact_model)
+              .map((model) => ({ inventory, model }))
+          )[0];
+          if (!failing) throw new Error(`baseline route left both mock instances: ${JSON.stringify(before)}`);
           await recordExactProviderFailures({
             session,
             mockControlUrl: input.mockControlUrl,
-            pathPrefix: "/instance-a/",
+            pathPrefix: failing.inventory === openaiA ? "/instance-a/" : "/instance-b/",
             scenario: offlineModel ? "not_found" : "connection_failed",
-            cell: cellFor(openaiA, modelA, "llm", "chat.completions.create"),
+            cell: cellFor(failing.inventory, failing.model, "llm", "chat.completions.create"),
             runId,
             caseId,
             attempts: offlineModel ? 1 : 3,
             timeoutMs: input.timeoutMs,
           });
-          const response = await waitForRouteMatch(
-            offlineModel ? `a model other than ${modelA.exact_model}` : openaiB.provider_instance_name,
-            input.timeoutMs,
-            (route) => offlineModel
-              ? route.selected_exact_model !== modelA.exact_model
-              : route.provider_instance_name === openaiB.provider_instance_name,
-            (attempt) => session.aicc.call("route.resolve", routeRequest(`${caseId}.${attempt}`, {
-              policy: { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name] },
-            })) as Promise<Record<string, unknown>>,
-          );
+          const after = await routeOnce("after");
+          if (after.selected_exact_model !== before.selected_exact_model) {
+            throw new Error(`observed failures moved the route from ${String(before.selected_exact_model)} to ${String(after.selected_exact_model)}`);
+          }
           return offlineModel
-            ? `unavailable exact model yielded to ${String(response.selected_exact_model)}`
-            : `open circuit excluded ${openaiA.provider_instance_name}`;
+            ? `a 404 on ${failing.model.exact_model} left the route on it`
+            : `repeated failures on ${failing.inventory.provider_instance_name} left the route on ${failing.model.exact_model}`;
         } finally {
+          await setScenario(input.mockControlUrl, "success", "/instance-b/");
           await setScenario(input.mockControlUrl, "success", "/instance-a/");
           await restartAicc(session, input);
         }
       }
       return await withExhaustedProviderQuota(session, openaiA.provider_instance_name, async () => {
-        await assertQuotaCallUsesBackup(session, input, logicalModel!, openaiA.provider_instance_name, openaiB.provider_instance_name, `${runId}:${caseId}`);
+        await assertQuotaCallUsesBackup(session, input, modelA.exact_model, openaiA.provider_instance_name, openaiB.provider_instance_name, `${runId}:${caseId}`);
         return `token quota blocked primary before inference and selected ${openaiB.provider_instance_name}`;
       });
     });
   }
 
-  const fallbackPath = "llm.plan";
-  const fallbackLeaf = (fallback: Record<string, unknown>): Record<string, unknown> => ({
-    items: [{ name: "disabled-primary", target: logicalModel, weight: 0 }],
-    fallback,
+  // Only a usecase's "when unavailable" policy switches models, once
+  // (aicc_router.md §9). llm.chat is pinned to A's model in the caller's own
+  // layer and A answers 5xx.
+  const instanceCalls = async (before: number, prefix: string): Promise<number> =>
+    (await mockRequests(input.mockControlUrl)).slice(before)
+      .filter((request) => request.method === "POST" && String(request.path).startsWith(prefix)).length;
+  const probeUnavailable = async (
+    caseId: string,
+    onUnavailable: "none" | "same_model" | "next_model",
+    requestPolicy: Record<string, unknown>,
+    expectBackup: boolean,
+  ): Promise<string> => await withUsecaseRoute(session, "llm.chat", { model: modelA.exact_model, on_unavailable: onUnavailable }, async () => {
+    await setScenario(input.mockControlUrl, "provider_5xx", "/instance-a/");
+    try {
+      const before = (await mockRequests(input.mockControlUrl)).length;
+      let failure: unknown;
+      try {
+        const initial = await session.aicc.call("helper.llm_chat", {
+          logical_model: "llm.chat",
+          policy: { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name], ...requestPolicy },
+          messages: [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827" }] }],
+          disable: { web_search: true }, max_output_tokens: 32, idempotency_key: `${runId}:${caseId}`,
+        }) as AiMethodResponse;
+        await terminal(session, initial, input.timeoutMs);
+      } catch (error) {
+        failure = error;
+      }
+      const backupCalls = await instanceCalls(before, "/instance-b/");
+      if (expectBackup) {
+        if (failure !== undefined || backupCalls !== 1) {
+          throw new Error(`${onUnavailable} did not move ${modelA.exact_model} to ${openaiB.provider_instance_name} once: backup_calls=${backupCalls} error=${String(failure)}`);
+        }
+        return `${onUnavailable} switched once to ${openaiB.provider_instance_name}`;
+      }
+      if (failure === undefined || backupCalls !== 0) {
+        throw new Error(`${caseId} switched models: backup_calls=${backupCalls} error=${String(failure)}`);
+      }
+      return `${modelA.exact_model} returned its real error and ${openaiB.provider_instance_name} got no request`;
+    } finally {
+      await setScenario(input.mockControlUrl, "success", "/instance-a/");
+    }
   });
-  await pushRouteProbe("t1.route.strict_no_fallback", () => expectRouteRejected(routeRequest("t1.route.strict_no_fallback", {
-    logical_model: fallbackPath,
-    session_overlay: replacingOverlay(fallbackPath, fallbackLeaf({ mode: "strict" })),
-  })));
-  await pushRouteProbe("t1.route.parent_fallback", () => expectRouteRejected(routeRequest("t1.route.parent_fallback", {
-    logical_model: fallbackPath,
-    session_overlay: replacingOverlay(fallbackPath, fallbackLeaf({ mode: "parent" })),
-  })));
-  for (const [caseId, fallback] of [
-    ["t1.route.target_logical_fallback", { mode: "target_logical", target: logicalModel }],
-    ["t1.route.target_exact_fallback", { mode: "target_exact", target: modelB.exact_model }],
-  ] as const) {
-    await pushRouteProbe(caseId, async () => {
-      const response = await session.aicc.call("route.resolve", routeRequest(caseId, {
-        logical_model: fallbackPath,
-        session_overlay: replacingOverlay(fallbackPath, fallbackLeaf(fallback)),
-      })) as Record<string, unknown>;
-      if (typeof response.selected_exact_model !== "string") throw new Error("fallback route returned no exact model");
-      return `fallback selected ${response.selected_exact_model}`;
-    });
-  }
+  await pushRouteProbe("t1.route.no_policy_no_switch", () =>
+    probeUnavailable("t1.route.no_policy_no_switch", "none", {}, false));
+  await pushRouteProbe("t1.route.next_model_switch", () =>
+    probeUnavailable("t1.route.next_model_switch", "next_model", {}, true));
+  await pushRouteProbe("t1.route.request_no_fallback", () =>
+    probeUnavailable("t1.route.request_no_fallback", "same_model", { no_fallback: true }, false));
   await pushRouteProbe("t1.route.exact_default_no_fallback", async () => {
     const before = await mockRequestCount(input.mockControlUrl);
     const request = buildExactRequest({ cell: { ...cellFor(openaiA, modelA, "llm", "chat.completions.create"), case_id: "t1.route.exact_default_no_fallback" }, runId, fixtures: {} });
@@ -1493,24 +1542,9 @@ async function runRouteCases(
     if (await mockRequestCount(input.mockControlUrl) !== before) throw new Error("exact model fallback reached another Provider");
     return "exact typed request did not fallback";
   });
-  await pushRouteProbe("t1.route.fallback_loop", () => expectRouteRejected(routeRequest("t1.route.fallback_loop", {
-    logical_model: fallbackPath,
-    session_overlay: replacingOverlay(fallbackPath, fallbackLeaf({ mode: "target_logical", target: fallbackPath })),
-  })));
-  await pushRouteProbe("t1.route.fallback_max_depth", () => expectRouteRejected(routeRequest("t1.route.fallback_max_depth", {
-    logical_model: `${fallbackPath}.depth0`,
-    session_overlay: {
-      logical_profile: {
-        overlays: Array.from({ length: 6 }, (_, index) => ({
-          path: `${fallbackPath}.depth${index}`,
-          merge_mode: "replace",
-          ...fallbackLeaf({ mode: "target_logical", target: `${fallbackPath}.depth${index + 1}` }),
-        })),
-      },
-    },
-  })));
-
-  const schedulerProfiles = ["cost_first", "latency_first", "quality_first", "balanced", "local_first", "strict_local"];
+  // Scheduler profiles are administrator policy (settings `routing.policy`);
+  // `cost_first` was removed and `balanced` is the default.
+  const schedulerProfiles = ["latency_first", "quality_first", "balanced", "local_first", "strict_local"];
   for (const profile of schedulerProfiles) {
     const caseId = `t1.scheduler.profile.${profile}`;
     if (!wants(input, caseId)) continue;
@@ -1521,9 +1555,12 @@ async function runRouteCases(
       apiType: "llm",
       failureClass: "routing_failed",
       execute: async () => {
-        const response = await session.aicc.call("route.resolve", routeRequest(caseId, {
-          session_overlay: { policy: { profile: { value: profile, locked: false } } },
-        })) as Record<string, unknown>;
+        const response = await withRoutingSettings(`T1 ${caseId}`, (routing) => {
+          routing.policy = {
+            ...(routing.policy as Record<string, unknown> | undefined),
+            profile: { value: profile, locked: false },
+          };
+        }, async () => await session.aicc.call("route.resolve", routeRequest(caseId)) as Record<string, unknown>);
         if (typeof response.selected_exact_model !== "string") throw new Error(`${profile} returned no selected exact model`);
         return `${profile} selected ${String(response.selected_exact_model)}`;
       },
@@ -1969,27 +2006,12 @@ async function runCases(
     sessionId: string,
     caseId: string,
     overrides: Record<string, unknown> = {},
-  ): Promise<Record<string, unknown>> => {
-    const requestedOverlay = overrides.session_overlay && typeof overrides.session_overlay === "object"
-      ? overrides.session_overlay as Record<string, unknown>
-      : {};
-    return await session.aicc.call("route.resolve", historyRouteRequest(caseId, {
-      ...overrides,
-      session_id: sessionId,
-      session_overlay: {
-        provider_weights: {
-          [openaiA.provider_instance_name]: 1,
-          [openaiB.provider_instance_name]: 1,
-        },
-        ...requestedOverlay,
-      },
-    })) as Record<string, unknown>;
-  };
+  ): Promise<Record<string, unknown>> => await session.aicc.call("route.resolve", historyRouteRequest(caseId, {
+    ...overrides,
+    session_id: sessionId,
+  })) as Record<string, unknown>;
   const seedSession = async (sessionId: string, caseId: string): Promise<void> => {
     const seeded = await sessionRoute(sessionId, `${caseId}.seed`, {
-      session_overlay: {
-        provider_weights: { [openaiA.provider_instance_name]: 1, [openaiB.provider_instance_name]: 0 },
-      },
       policy: { allowed_provider_instances: [openaiA.provider_instance_name] },
     });
     if (seeded.selected_exact_model !== modelA.exact_model) {
@@ -2038,11 +2060,37 @@ async function runCases(
     return `provider deny overrode history and selected ${modelB.exact_model}`;
   });
 
+  // Health is not a hard constraint: observed failures never move a session
+  // off its previous exact model (aicc_router.md §11.5).
+  await pushHistory("t1.history.health_keeps_exact_model", async (sessionId) => {
+    const caseId = "t1.history.health_keeps_exact_model";
+    try {
+      await recordExactProviderFailures({
+        session,
+        mockControlUrl: input.mockControlUrl,
+        pathPrefix: "/instance-a/",
+        scenario: "connection_failed",
+        cell: cellFor(openaiA, modelA, "llm", "chat.completions.create"),
+        runId,
+        caseId,
+        attempts: 3,
+        timeoutMs: input.timeoutMs,
+      });
+      const routed = await sessionRoute(sessionId, `${caseId}.after`, {
+        policy: { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name] },
+      });
+      if (routed.selected_exact_model !== modelA.exact_model) throw new Error(`observed failures moved the session to ${String(routed.selected_exact_model)}`);
+      return `repeated failures left the session on ${modelA.exact_model}`;
+    } finally {
+      await setScenario(input.mockControlUrl, "success", "/instance-a/");
+      await restartAicc(session, input);
+    }
+  });
+
   const remainingHistoryReasons = [
     "api_type_changed",
     "required_capability_changed",
     "disabled_capability_changed",
-    "instance_unhealthy",
     "quota_exhausted",
     "budget_exhausted",
     "local_only_changed",
@@ -2067,37 +2115,9 @@ async function runCases(
         if (routed.selected_exact_model === modelA.exact_model) throw new Error("LLM history crossed API type");
         return `API type change selected ${String(routed.selected_exact_model)}`;
       }
-      if (reason === "instance_unhealthy") {
-        try {
-          await recordExactProviderFailures({
-            session,
-            mockControlUrl: input.mockControlUrl,
-            pathPrefix: "/instance-a/",
-            scenario: "connection_failed",
-            cell: cellFor(openaiA, modelA, "llm", "chat.completions.create"),
-            runId,
-            caseId,
-            attempts: 3,
-            timeoutMs: input.timeoutMs,
-          });
-          const routed = await waitForRouteMatch(
-            openaiB.provider_instance_name,
-            input.timeoutMs,
-            (route) => route.provider_instance_name === openaiB.provider_instance_name,
-            (attempt) => sessionRoute(sessionId, `${caseId}.${attempt}`, {
-              policy: { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name] },
-            }),
-          );
-          if (routed.selected_exact_model !== modelB.exact_model) throw new Error(`unhealthy history selected ${String(routed.selected_exact_model)}`);
-          return `unhealthy prior instance yielded to ${modelB.exact_model}`;
-        } finally {
-          await setScenario(input.mockControlUrl, "success", "/instance-a/");
-          await restartAicc(session, input);
-        }
-      }
       if (reason === "quota_exhausted") {
         return await withExhaustedProviderQuota(session, openaiA.provider_instance_name, async () => {
-          await assertQuotaCallUsesBackup(session, input, logicalModel!, openaiA.provider_instance_name, openaiB.provider_instance_name, `${runId}:${caseId}`, sessionId);
+          await assertQuotaCallUsesBackup(session, input, modelA.exact_model, openaiA.provider_instance_name, openaiB.provider_instance_name, `${runId}:${caseId}`, sessionId);
           return `token quota overrode session history before inference and selected ${modelB.exact_model}`;
         });
       }
@@ -2119,12 +2139,28 @@ async function runCases(
       if (reason === "output_limit_exceeded") overrides.estimated_output_tokens = 1_000_000_000;
       if (reason === "locked_policy_changed") {
         overrides.policy = { allowed_provider_instances: [openaiA.provider_instance_name] };
-        overrides.session_overlay = {
-          policy: { allowed_provider_instances: { value: [openaiB.provider_instance_name], locked: true } },
-        };
       }
+      // The administrator locks the allow list to B after the history was
+      // recorded; the request's [A] can only narrow it, so nothing is left.
+      const routeWithPolicy = () => sessionRoute(sessionId, caseId, overrides);
+      const lockToB = async <T>(execute: () => Promise<T>): Promise<T> => (await withAiccSettingsOverride({
+        systemConfig: session.systemConfig,
+        aicc: session.aicc,
+        description: `T1 ${caseId}`,
+        patch: (settings) => {
+          const patched = structuredClone(settings);
+          const routing = (patched.routing ?? {}) as Record<string, unknown>;
+          routing.policy = {
+            ...(routing.policy as Record<string, unknown> | undefined),
+            allowed_provider_instances: { value: [openaiB.provider_instance_name], locked: true },
+          };
+          patched.routing = routing;
+          return patched;
+        },
+        execute,
+      })).result;
       try {
-        const routed = await sessionRoute(sessionId, caseId, overrides);
+        const routed = reason === "locked_policy_changed" ? await lockToB(routeWithPolicy) : await routeWithPolicy();
         if (mustReject) throw new Error(`${reason} unexpectedly selected ${String(routed.selected_exact_model)}`);
         if (routed.selected_exact_model !== modelB.exact_model) throw new Error(`${reason} selected ${String(routed.selected_exact_model)}`);
         return `${reason} overrode history and selected ${modelB.exact_model}`;
@@ -2588,73 +2624,71 @@ async function runCases(
     );
     const logical = modelA && modelB ? "llm.gpt-pro" : undefined;
     if (!openaiA || !openaiB || !modelA || !modelB || !logical) throw new Error("fallback attribution needs the same base model and logical mount on two instances");
-    const before = await mockRequestCount(input.mockControlUrl);
-    try {
-      await setScenario(input.mockControlUrl, "rate_limit", "/instance-a/");
-      const request = buildExactRequest({ cell: { ...probeCell, case_id: "t1.usage.fallback_attempts_attributed" }, runId, fixtures: {} });
-      request.model = { alias: logical };
-      const sessionOverlay = {
-        provider_weights: {
-          [openaiA.provider_instance_name]: 2,
-          [openaiB.provider_instance_name]: 1,
-        },
-      };
-      request.session_overlay = sessionOverlay;
-      request.policy = {
-        allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name],
-        runtime_failover: true,
-      };
-      const payload = request.payload as Record<string, unknown>;
-      const requestInput = payload.input_json as Record<string, unknown>;
-      const requestOptions = payload.options as Record<string, unknown>;
-      const route = await session.aicc.call("route.resolve", {
-        request_id: `${runId}:t1.usage.fallback_attempts_attributed.route`,
-        api_type: "llm",
-        logical_model: logical,
-        requirements: {},
-        disable: {},
-        policy: { ...request.policy as Record<string, unknown>, explain: true },
-        session_overlay: sessionOverlay,
-        session_id: requestOptions.session_id,
-        estimated_output_tokens: requestInput.max_output_tokens,
-      }) as Record<string, unknown>;
-      const fallbacks = Array.isArray(route.fallback_attempts) ? route.fallback_attempts : [];
-      if (route.provider_instance_name !== openaiA.provider_instance_name || fallbacks.length < 1) {
-        throw new Error(`failover route did not produce primary A plus backup: ${JSON.stringify(route)}`);
-      }
-      let initial: AiMethodResponse;
+    // llm.chat is pinned to A's model with `same_model`: A's 429 survives one
+    // same-model retry, the policy moves the call to B once, and trace and
+    // usage name both (aicc_router.md §9.3).
+    return await withUsecaseRoute(session, "llm.chat", { model: modelA.exact_model, on_unavailable: "same_model" }, async () => {
+      const before = await mockRequestCount(input.mockControlUrl);
       try {
-        initial = await callLlmChatHelper(session.aicc, request) as AiMethodResponse;
-      } catch (error) {
-        throw new Error(`helper route diverged from route.resolve ${JSON.stringify(route)}: ${String(error)}`);
+        await setScenario(input.mockControlUrl, "rate_limit", "/instance-a/");
+        const request = buildExactRequest({ cell: { ...probeCell, case_id: "t1.usage.fallback_attempts_attributed" }, runId, fixtures: {} });
+        request.model = { alias: "llm.chat" };
+        request.policy = {
+          allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name],
+        };
+        const payload = request.payload as Record<string, unknown>;
+        const requestInput = payload.input_json as Record<string, unknown>;
+        const requestOptions = payload.options as Record<string, unknown>;
+        const route = await session.aicc.call("route.resolve", {
+          request_id: `${runId}:t1.usage.fallback_attempts_attributed.route`,
+          api_type: "llm",
+          logical_model: "llm.chat",
+          requirements: {},
+          disable: {},
+          policy: { ...request.policy as Record<string, unknown>, explain: true },
+          session_id: requestOptions.session_id,
+          estimated_output_tokens: requestInput.max_output_tokens,
+        }) as Record<string, unknown>;
+        if (route.selected_exact_model !== modelA.exact_model) {
+          throw new Error(`usecase layer did not route llm.chat to ${modelA.exact_model}: ${JSON.stringify(route)}`);
+        }
+        let initial: AiMethodResponse;
+        try {
+          initial = await callLlmChatHelper(session.aicc, request) as AiMethodResponse;
+        } catch (error) {
+          throw new Error(`helper did not switch after ${JSON.stringify(route)}: ${String(error)}`);
+        }
+        await terminal(session, initial, input.timeoutMs);
+        const providerCalls = await mockRequestCount(input.mockControlUrl) - before;
+        if (providerCalls !== 3) {
+          throw new Error(`same_model switch caused ${providerCalls} Provider calls; expected primary, one same-model retry, and backup`);
+        }
+        const traces = await queryRouteTraces({ aicc: session.aicc, startTimeMs: Date.now() - input.timeoutMs - 2_000, endTimeMs: Date.now() + 1_000, taskIds: [initial.task_id] });
+        const traceText = JSON.stringify(traces);
+        if (
+          traces.length !== 1 || !traceText.includes('"kind":"unavailable"') ||
+          !traceText.includes(modelA.exact_model) || !traceText.includes(modelB.exact_model)
+        ) {
+          throw new Error(`route trace did not record the same_model switch from A to B: ${traceText}`);
+        }
+        const events = await queryUsageEvents({
+          aicc: session.aicc,
+          startTimeMs: Date.now() - input.timeoutMs - 2_000,
+          endTimeMs: Date.now() + 1_000,
+          taskIds: [initial.task_id],
+        });
+        const usageText = JSON.stringify(events);
+        if (
+          events.length !== 1 || !usageText.includes(openaiB.provider_instance_name) ||
+          (events[0] as { fallback_from?: unknown }).fallback_from !== modelA.exact_model
+        ) {
+          throw new Error(`usage was not attributed to the backup with fallback_from: ${usageText}`);
+        }
+        return `primary failure, same-model retry, and the same_model backup were attributed for task ${initial.task_id}`;
+      } finally {
+        await setScenario(input.mockControlUrl, "success", "/instance-a/");
       }
-      await terminal(session, initial, input.timeoutMs);
-      const providerCalls = await mockRequestCount(input.mockControlUrl) - before;
-      if (providerCalls !== 3) {
-        throw new Error(`runtime failover caused ${providerCalls} Provider calls; expected primary, one same-model retry, and backup`);
-      }
-      const traces = await queryRouteTraces({ aicc: session.aicc, startTimeMs: Date.now() - input.timeoutMs - 2_000, endTimeMs: Date.now() + 1_000, taskIds: [initial.task_id] });
-      const traceText = JSON.stringify(traces);
-      if (
-        traces.length !== 1 || !/runtime_failover/i.test(traceText) ||
-        !traceText.includes(openaiA.provider_instance_name) || !traceText.includes(openaiB.provider_instance_name)
-      ) {
-        throw new Error(`runtime failover trace did not attribute both Provider attempts: ${traceText}`);
-      }
-      const events = await queryUsageEvents({
-        aicc: session.aicc,
-        startTimeMs: Date.now() - input.timeoutMs - 2_000,
-        endTimeMs: Date.now() + 1_000,
-        taskIds: [initial.task_id],
-      });
-      const usageText = JSON.stringify(events);
-      if (events.length !== 1 || !usageText.includes(openaiB.provider_instance_name)) {
-        throw new Error(`runtime failover usage was not attributed to the successful Provider: ${usageText}`);
-      }
-      return `primary failure, same-model retry, and successful backup were attributed for task ${initial.task_id}`;
-    } finally {
-      await setScenario(input.mockControlUrl, "success", "/instance-a/");
-    }
+    });
   });
 
   const expectAuthRejected = async (token: string | null, label: string): Promise<string> => {
@@ -3568,8 +3602,9 @@ async function main(): Promise<void> {
       "t1.route.offline_model",
       "t1.route.health_filter",
       "t1.route.quota_filter",
-      "t1.route.parent_fallback",
-      "t1.route.target_logical_fallback",
+      "t1.route.no_policy_no_switch",
+      "t1.route.next_model_switch",
+      "t1.route.request_no_fallback",
       "t1.task.running_succeeded",
       "t1.task.cancelled",
       "t1.task.idempotency_conflict_different_body",

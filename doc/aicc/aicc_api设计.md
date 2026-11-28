@@ -1,7 +1,7 @@
 # AICC API 设计
 
 版本：`v0.4-beta2.2-target`
-更新基线：`2026-10-05`
+更新基线：`2026-11-27`（用途表路由、“不可用时”策略与兜底 LLM）
 配套文档：
 
 
@@ -34,13 +34,15 @@ POST /kapi/aicc
 
 | method | 语义 |
 |---|---|
-| `route.resolve` | 控制面路由解析。输入逻辑模型名，输出一次确定的 exact model、Provider 信息、候选顺序和 trace。 |
-| `chat.completions.create`、`embedding.*`、`decision.evaluate`、`rerank`、`images.generate`、`image.*`、`vision.*`、`audio.*`、`video.*` | typed inference 数据面。只接受 `exact_model`，不接受逻辑模型名，不做逻辑 fallback。 |
-| `helper.*` | helper 组合层。接收 `logical_model` 和对应 typed request，语义等价于 `route.resolve` + typed inference。 |
+| `route.resolve` | 控制面路由解析。输入逻辑模型名，输出一次确定的 exact model、Provider 信息和 trace。 |
+| `chat.completions.create`、`embedding.*`、`decision.evaluate`、`rerank`、`images.generate`、`image.*`、`vision.*`、`audio.*`、`video.*` | typed inference 数据面。只接受 `exact_model`，不接受逻辑模型名，从不换模型。 |
+| `helper.*` | helper 组合层。接收 `logical_model` 和对应 typed request，语义等价于 `route.resolve` + typed inference；用途配置了“不可用时”策略时，由 Helper 在 AICC 内部最多换一次模型（§2.3）。 |
 | `cancel` | 请求取消异步 task；返回值必须真实反映是否已触发上游取消或本地中止。 |
 | `service.reload_settings` | 从 `services/aicc/settings` 重新加载 Provider 配置；这是唯一有效的管理面 reload method。 |
 | `quota.query` | 查询调用方在 capability / method 维度的剩余额度和预算状态。 |
-| `routing.get` / `routing.update` | 读取路由 overlay，或以 settings revision CAS 完整替换 Provider 权重。 |
+| `routing.get` / `routing.update` | 管理员读取路由配置（settings 的 `routing`），或以 settings revision CAS 完整替换 Provider 权重与路由调整命令。 |
+| `routing.usecases` / `routing.usecase.set` | 读取对调用者生效的用途表，修改管理员层、自己的用户层或自己的路由策略组（§2.12）。 |
+| `routing.groups.*` / `routing.bindings.*` | 管理自己的路由策略组和 App 绑定（§2.12）。 |
 | `provider.list` / `provider.health` | 查询 Provider inventory 和健康状态。 |
 
 不为核心调用另建 `/v1/invoke`、`/v1/jobs`、`/v1/objects`。如果未来需要 OpenAI-compatible 或 REST-compatible API，应放在 Gateway Adapter / SDK Facade 层，把请求转换成 AICC kRPC。
@@ -59,7 +61,7 @@ Provider 不能自定义方法名，只能声明自己支持标准集合中的�
 路由规则：
 
 1. Router 按 `api_type` 选择候选；Provider Call Resolver 按 kRPC `method` 和 `api_type` 解析 operation。
-2. 不自动换模型；管理员配置的 fallback 不得改变 method（原则见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)）。
+2. 不自动换模型；用途的“不可用时”策略换模型时不得改变 method 和 `api_type`（原则见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)）。
 3. `logical_model` 只存在于 `route.resolve` 和 Helper；typed inference 只接受 `exact_model`。
 4. `Capability` 可用于 RBAC 边界、UI tab 分组和粗粒度 quota 桶，但不能作为 schema discriminator。
 5. RBAC / quota 支持直接挂在 method namespace 上，例如 `audio.*`、`image.*`、`chat.completions.*`。
@@ -82,13 +84,13 @@ Provider 不能自定义方法名，只能声明自己支持标准集合中的�
 
 新调用方应按三层语义接入：
 
-1. `route.resolve` 是控制面，只接受逻辑模型名。它返回 selected ModelUID/exact model、Provider Instance/Profile、Protocol Adapter、Model Driver、origin model、原始 provider model、operation、fallback 和 trace。
-2. typed inference 是数据面。请求必须包含 `exact_model`，逻辑模型名会被拒绝；内部关闭逻辑 fallback。调用阶段重新校验 catalog revision 和动态 availability，并生成内部 `ResolvedProviderCall`。
+1. `route.resolve` 是控制面，只接受逻辑模型名。它返回 selected ModelUID/exact model、Provider Instance/Profile、Protocol Adapter、Model Driver、origin model、原始 provider model、operation 和 trace。用途（`llm.code`、`image.txt2img` 等）按调用者的用途表求值（[aicc_router.md §11](aicc_router.md#11-用途表与配置层次)）。
+2. typed inference 是数据面。请求必须包含 `exact_model`，逻辑模型名会被拒绝；从不换模型，失败返回 Provider 的真实错误。调用阶段重新校验 catalog revision 和动态 availability，并生成内部 `ResolvedProviderCall`。
 3. `helper.*` 接受 `logical_model`、结构化 requirements/policy 和对应 typed 业务字段，内部先 `route.resolve`，再调用 typed inference。Helper 不接受或构造 `AiMethodRequest`。
 
 `route.resolve`、全部 typed inference request 以及三个 Helper request 都接受可选的 body 字段 `trace_id`。调用方提供时，Service 必须原样将其用于路由决策、TaskMgr task data/progress event、usage event 和 route trace 的关联；未提供时由 Service 生成非空 canonical trace id。该字段与 kRPC `sys` 中的传输 trace、`request_id` 及 Provider 返回的 `provider_trace_id` 相互独立，任一字段都不能替代 canonical `trace_id`。
 
-`fallback_attempts` 只包含系统管理员为该逻辑目录手工配置的 fallback，没有配置时为空。现有实现仍会填入同池候选，并受 `runtime_failover` 和 `fallback_limit` 限制，将按 [显式 fallback 改造 TODO](../../notepads/aicc-explicit-fallback-todo.md) 改掉；调用方不应据此自动换模型重试。
+`route.resolve` 只返回一个确定的 exact model，不返回候选列表或备选模型。换模型只来自用途的“不可用时”策略（[aicc_router.md §9.3](aicc_router.md#9-fallback-与失败处理)），而且只对 AICC 内部按用途路由的请求（`helper.*`）生效；调用方用 `route.resolve` 拿到 exact model 再调 typed inference 时，失败不会换模型，调用方也不应自行换模型重试。
 
 `enabled_capabilities` / `disabled_capabilities` 表达本次路由后模型可用能力与请求禁用能力。能力判断使用结构化 `ModelRequirement` / `ModelDisable`，最终能力是 Model Driver、Protocol Adapter 与 Provider discovery 的交集。
 
@@ -152,20 +154,7 @@ Request：
     "policy": { "profile": "balanced" },
     "estimated_input_tokens": 1200,
     "estimated_output_tokens": 400,
-    "session_id": "agent-session-001",
-    "session_overlay": {
-      "logical_tree": {
-        "llm": {
-          "children": {
-            "plan": {
-              "item_overrides": {
-                "local": { "weight": 2.0 }
-              }
-            }
-          }
-        }
-      }
-    }
+    "route_group": "rg_7f3a2c"
   },
   "sys": [1001, "<session_token>", "trace-aicc-route-001"]
 }
@@ -186,7 +175,6 @@ Response：
   "operation": "responses.create",
   "enabled_capabilities": ["tool_calling", "json_output"],
   "disabled_capabilities": ["web_search"],
-  "fallback_attempts": [],
   "route_trace": { "...": "见 §3.7" },
   "inventory_revision": "inv-42"
 }
@@ -195,17 +183,17 @@ Response：
 说明：
 
 1. `selected_exact_model` 是 AICC 语义下的确定物理模型名，形如 `provider_model_id[:variant]@provider_instance_name`。
-2. `session_overlay` 是调用方已经合成好的本次请求 route overlay，AICC 不按 session 持久化它。可选 `session_id` 只用于在 tenant/user/app 作用域内持久化“上一次实际选中的 exact model”；该历史在全部硬约束之后作为软优先级，不是 policy/config cache。
+2. `logical_model` 是用途时，模型由调用者的用途表决定：默认 < 管理员层 < 用户层 < App 绑定的策略组 < 会话绑定的策略组（[aicc_router.md §11.2](aicc_router.md#11-用途表与配置层次)）。可选 `route_group` 是调用者（额度用户）自己的一个路由策略组 ID，通常由 lib_opendan 按会话绑定传入；不属于该用户的组被忽略并在 trace 中标出，不报错。请求不能直接改用途的模型，也不能打开“不可用时”策略。
 3. `provider_model_id` 是 Provider discovery 返回并用于 wire request 的原始模型名，不得替换为 `origin_model_id`。
 4. `operation` 由 Provider Rules 和 adapter 注册表解析；调用方不能指定任意 operation 或 URL。
 5. `enabled_capabilities` / `disabled_capabilities` 表达本次路由后实际启用 / 禁用的能力集合。
-6. `fallback_attempts` 只列管理员手工配置的 fallback（不含 primary），没有配置时为空。
+6. `policy` 只能收紧管理员层的路由策略：`no_fallback`（本次请求关闭不可用策略）、`local_only`、屏蔽 Provider、与管理员的允许列表取交集、更低的成本上限和延迟门槛；`profile`（`fast` / `balanced` / `quality`）只在管理员没有锁定时生效。已删除的 `allow_fallback`、`runtime_failover`、`session_overlay` 与 profile `cheap` 会被拒绝（[aicc_router.md §12.3](aicc_router.md#12-控制面设计)）。
 7. `requirements.canonical_fields` 以 typed request 的 JSON Pointer 为 key。Model/Provider metadata 为每个 pointer 选择 AICC 内置的 Rust converter，并用统一 `fallback` 配置字段缺失或转换失败时的 `reject`、`omit` 或 canonical `default`；配置不内联映射表或脚本。默认值仍须通过同一 converter。`strict=true` 不执行 fallback，只接受 converter 产生的 exact，或在 `allow_fuzzy=true` 时接受 fuzzy。无法满足的严格要求会在路由阶段排除，不能作为无效 Provider 参数静默下发。
 8. 视频生成的需求使用 `requirements.video`（`VideoGenerationRequirement`），从 `video.generate` 请求推导；`route.resolve`、`helper.video_generate` 与执行前复核共用同一判定，见 [video_generation.md](video_generation.md) §3。
 
 ### 2.2 typed inference（数据面）
 
-数据面只接受 `exact_model`，不接受逻辑模型名，内部默认关闭 `allow_fallback` 和 `runtime_failover`。`chat.completions.create` 示例：
+数据面只接受 `exact_model`，不接受逻辑模型名，从不换模型，也不应用用途的“不可用时”策略（exact model 来自 `route.resolve` 时同样如此）。`chat.completions.create` 示例：
 
 ```json
 {
@@ -224,9 +212,7 @@ Response：
 }
 ```
 
-全部 typed inference request 都可携带可选 `session_id`，三个 Helper request 也同样支持。它与 `route.resolve.session_id` 共用一套语义：AICC 用 `(tenant_id, user_id, caller_app_id, session_id)` 读写上一次已选 exact model，仅作为下次路由在通过所有硬约束后的软优先级。`session_id` 必须为 1..512 bytes 的非空字符串；不携带时不读写 session 历史。typed request 本身已给出 exact model，因此历史不会覆盖该强制选择，只会记录本次已选值。
-
-`session_id` 不是 `session_overlay` 的服务端存储 key。`session_overlay` 始终由调用方在每次 Helper 或 `route.resolve` 请求中传入，AICC 不保存 overlay、revision 或 TTL。持久表契约见 [aicc_runtime_durable_data_schema.md](aicc_runtime_durable_data_schema.md)。
+请求没有 `session_id`（2026-11-28 随会话历史软优先一起删除，router §10.4）；带它的请求按未知字段拒绝。会话绑定的策略组保存在 lib_opendan 的会话配置里，调用方沿 `parent_session` 链取最近一个设了组的会话，在 Helper 或 `route.resolve` 请求里以 `route_group` 传入；AICC 不保存会话与组的对应关系。持久表契约见 [aicc_runtime_durable_data_schema.md](aicc_runtime_durable_data_schema.md)。
 
 `images.generate` 示例：
 
@@ -246,7 +232,7 @@ Response：
 
 ### 2.3 `helper.*`（组合层）
 
-Helper 使用与对应 typed inference 相同的业务字段，只把 `exact_model` 替换为 `logical_model`，并增加结构化 `requirements`、`disable` 和 `policy`。例如：
+Helper 使用与对应 typed inference 相同的业务字段，只把 `exact_model` 替换为 `logical_model`，并增加结构化 `requirements`、`disable`、`policy` 和可选 `route_group`（同 §2.1）。例如：
 
 ```json
 {
@@ -275,7 +261,7 @@ Helper 使用与对应 typed inference 相同的业务字段，只把 `exact_mod
 }
 ```
 
-其语义严格等价于 `route.resolve(api_type="llm", logical_model="llm.plan", ...)` 后调用 `chat.completions.create(exact_model=route.selected_exact_model, messages=...)`。Helper 不接收 `model.alias`、`must_features`、`payload` 或 `provider_options`。`helper.video_generate` 在预选路由后先准备参考素材，再带素材事实复核路由，见 [video_generation.md](video_generation.md) §5。
+其路由语义等价于 `route.resolve(api_type="llm", logical_model="llm.plan", ...)` 后调用 `chat.completions.create(exact_model=route.selected_exact_model, messages=...)`。唯一的区别：用途设置了“不可用时”策略、请求没有 `no_fallback`，且选中模型按 [aicc_router.md §9.2](aicc_router.md#9-fallback-与失败处理) 的触发条件失败（或其 Provider 被标记为故障）时，Helper 在 AICC 内部按策略换一个模型再执行一次，每次请求最多一次；结果的 `route_trace.fallback` 标出原模型、实际模型和策略。自己先 `route.resolve` 再调 typed inference 的调用方没有这一步。Helper 不接收 `model.alias`、`must_features`、`payload` 或 `provider_options`。`helper.video_generate` 在预选路由后先准备参考素材，再带素材事实复核路由，见 [video_generation.md](video_generation.md) §5。
 ### 2.4 typed inference 通用响应约束
 
 每个 typed inference method 使用独立的请求和响应结构，不再通过通用 `AiMethodRequest`、`AiPayload` 或 `AiResponseSummary` 承载业务字段。所有响应共享以下 envelope 字段：
@@ -458,6 +444,8 @@ Response：
 }
 ```
 
+管理员把 Provider 标记为故障后，该实例多一个 `"marked_faulty": true`（未标记时不输出）。标记用 `provider.update` 的 `marked_faulty: true | false` 设置，只改这一项时不重新校验 Provider 连接。被标记的 Provider 仍参与路由和用途表，但不再收到请求，语义见 [aicc_router.md §9.6](aicc_router.md#9-fallback-与失败处理)。
+
 `provider.health`：
 
 ```json
@@ -497,6 +485,8 @@ Response：
 
 `provider_weights` 是完整替换，不是 merge 或 patch；空对象表示清空。成功响应返回 `ok`、更新后的 revision 和完整 routing overlay。revision 冲突使用 `settings_revision_conflict`。
 
+`routing` 就是 settings 文档 `services/aicc/settings` 的 `routing` 字段（原名 `session_config`），也是用途表的管理员层：`usecases` 由 `routing.usecase.set {target: "zone"}` 修改（§2.12），`provider_weights`、`routing_commands` 是管理员的高级调权手段，只影响默认展开。`routing.preview` 的形状不变，用途按调用者自己的各层求值。
+
 ### 2.11 `service.reload_settings`
 
 `service.reload_settings` 用于从 `services/aicc/settings` 重新加载 Provider Instance 配置，也是唯一有效的管理面 reload method。`buckyos-api::aicc_client` 直接更新为调用该 method；删除 `reload_settings`、`reaload_settings`、`service.reaload_settings` 等旧名称、兼容别名和错误拼写。
@@ -508,6 +498,54 @@ Response：
 3. reload 失败不得污染旧配置；返回失败原因并保持旧配置继续服务。
 4. 新请求只能看到旧快照或新快照，不允许看到半更新状态。
 5. Provider 连接池、health cache 等运行时状态可以延迟收敛，但不得改变已经启动的 task 归属。
+
+### 2.12 用途表、路由策略组与 App 绑定
+
+用途（usecase）是逻辑目录里 kind 为 `task` 的 29 个入口（`decision`、`llm.chat` … `agent_runtime.computer_use`），另有一行兜底 LLM `llm.fallback`。每个用途路由到一个精确模型，每一格（模型、“不可用时”策略）由设了它的最高一层决定。设计见 [aicc_router.md §11](aicc_router.md#11-用途表与配置层次)、[§12](aicc_router.md#12-控制面设计)；共享类型在 `buckyos-api/src/aicc_routing.rs`。
+
+这些方法对所有能使用 AI 的用户开放（AICC 信息的 `read` 权限）；每个用户只能看、改自己的用户层、策略组和 App 绑定；写管理员层还需要 settings 的 `write` 权限。
+
+| method | 请求 | 响应 |
+|---|---|---|
+| `routing.usecases` | `{view?: "self" \| "zone" \| "group:<id>" \| "app:<app_id>", without_provider?}`；`view` 缺省为 `self`，`zone` 只有管理员能看；`without_provider`（管理员）表示假设删除或停用该 Provider 后的表 | `{view, revision, settings_revision, fallback_llm_enabled, can_edit, rows}` |
+| `routing.usecase.set` | `{target: "zone" \| "user" \| "group:<id>", usecase, model?, on_unavailable?, enabled?, clear?: ["model" \| "on_unavailable"], revision}` | `{ok, revision}` |
+| `routing.groups.list` | `{}` | `{groups: [{group_id, name, usecases, version, updated_at_ms, app_ids}]}` |
+| `routing.groups.create` | `{name, usecases?}` | `{group}` |
+| `routing.groups.update` | `{group_id, version, name?, usecases?}` | `{group}` |
+| `routing.groups.delete` | `{group_id, version}`（同时删除它的 App 绑定） | `{ok}` |
+| `routing.bindings.list` | `{}` | `{bindings: [{app_id, group_id}]}` |
+| `routing.bindings.set` | `{app_id, group_id}`（Agent 的 `app_id` 就是 agent_id） | `{ok}` |
+| `routing.bindings.remove` | `{app_id}` | `{ok}` |
+
+`routing.usecases` 的 `rows` 是 29 个用途加 `llm.fallback` 一行，每行：
+
+| 字段 | 说明 |
+|---|---|
+| `usecase`、`api_type` | 用途与它的 API 类型 |
+| `model`、`model_source` | 这个视角下现在路由到的精确模型；来源 `default`、`zone`、`user`、`group:<id>` 或 `fallback_llm`（由兜底 LLM 提供） |
+| `on_unavailable`、`on_unavailable_source` | `none`（默认）/ `same_model` / `not_pricier` / `next_model`，及其来源层 |
+| `model_locked`、`on_unavailable_locked` | 管理员层锁定了这一格 |
+| `layers[]` | 各层自己的值：`{layer, model?, model_locked, model_state?, on_unavailable?, on_unavailable_locked, enabled?}`；`model_state` 为 `available` / `missing` / `not_permitted` / `unsuitable`，后三种时路由跟随下一层 |
+| `fallback_to`、`fallback_note` | 假设当前模型的 Provider 不可用时策略会换到的模型；没有时的原因 `no_known_cheaper_model` / `no_other_model` / 错误文本 |
+| `coverage`、`coverage_reason` | `covered` / `fallback_llm` / `uncovered`；未覆盖的原因 `no_model_for_api_type` / `requirements_unmet` |
+| `detail` | 路由错误原文，只给管理员 |
+| `enabled` | 只在 `llm.fallback` 一行：兜底 LLM 是否打开 |
+
+`routing.usecase.set` 的规则：
+
+1. `revision` 是 `routing.usecases` 对应视角返回的 `revision`：`zone` 为 settings revision，`user` 为用户层版本（还没有时为 `0`），`group:<id>` 为该组版本。不一致返回 `settings_revision_conflict`。
+2. `model` 必须是精确模型 `model@provider`：在库存里、API 类型与用途一致、满足用途的硬要求（`llm.fallback` 除外）、对调用者可见。
+3. `model` / `on_unavailable` 可写成值或 `{value, locked}`；只有 `target = "zone"` 可以 `locked`。`enabled` 只用于 `llm.fallback`，只能写 `zone`。
+4. `clear` 把这一格恢复为跟随下一层。
+
+请求侧：`route.resolve` 与三个 Helper 的 `route_group` 选择会话绑定的组（§2.1）；App 绑定由 AICC 按 `(调用者用户, 调用者 app_id)` 自动查找。同时命中时会话绑定优先。
+
+### 2.13 故障标记、覆盖预演、用量与事件
+
+- **标记为故障**：`provider.update {provider_instance_name, settings_revision, marked_faulty}`；`ProviderInstanceView.marked_faulty`（§2.9）。被标记 Provider 上的模型不会被调用：用途配置了“不可用时”策略时直接改用备选，否则立即返回 `no_provider_available`，`details` 为 `{reason: "marked_faulty", provider_instance_name, exact_model}`。
+- **添加 Provider 时的用途覆盖**：`provider.validate` 的响应用 `usecase_coverage` 取代原来的 `routing_candidates`，列出整个 Zone 29 个用途在加上这个 Provider 前后的变化：`[{usecase, before?, before_coverage, after?, after_coverage}]`，覆盖状态为 `covered` / `fallback_llm` / `uncovered`。删除或停用前的预演用 `routing.usecases {without_provider}`。
+- **用量**：`AiccUsageEvent.fallback_from` 是被“不可用时”策略替换掉的精确模型；用量只记在实际执行的模型上。`usage.query` 的过滤条件 `fallback_only: true` 只返回这类用量。
+- **事件**（`events.list` 的 kind）：`unavailable_fallback`（一次策略切换：`from`、`to`、`policy`、`reason`、`usecase`、`task_id`）、`provider_marked_faulty`、`provider_fault_cleared`、`usecase_model_missing` / `usecase_model_recovered`（管理员层为用途选的模型离开 / 回到库存，配置保留）、`usecase_updated`（管理员层的用途被修改）。
 
 ---
 
@@ -608,7 +646,7 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 1. `messages[].content` 是 `Vec<AiContent>` content-block 数组。最常见的纯文本消息用单个 `text` block 表达（`AiMessage::text(role, "...")`）。
 2. `role` 是 `AiRole` 枚举（snake_case 序列化）。`tool` 是 IR 内部承载 tool result 的角色，`developer` 是 OpenAI Responses 原生角色；Provider Adapter 在 lowering 时改写为各 provider 原生形态。
 3. `tool_use` / `tool_result` 用 `call_id` 关联；`tool_result.content` 只允许 `text` / `image` / `document` 三类子块。
-4. `thinking` 承载扩展思考；`provider_state` 承载无法跨协议抽象、但需要 round-trip 的原生项。这里的“原样”指协议语义和字段顺序可逆，不允许复制内联二进制：已知媒体字段在 decode 时替换为 `ResourceRef`，物化后保存 `named_object`，同坐标 lowering 时按该字段的官方 wire 形态恢复 bytes/base64。lowering 仅在 `source` 四元组与目标四元组完全一致时还原；不一致时必须转换为目标可接受结构。当前通用转换只提取公开文本、摘要、拒绝说明或规范化内容，无法安全转换的 opaque 块跳过。不得读取加密状态或伪造目标私有状态。`thinking` 同样带 `source` 四元组，AICC 在每次响应（Immediate / Stream / Native Task）上与 `provider_state` 一起绑定；调用方原样回传即可，缺省为 unbound。编码请求前统一过滤：`source` 与目标四元组完全一致的 `thinking` 原样回放，其它来源或 unbound 的 `thinking` 静默丢弃（不报错、不降级为文本或 `reasoning_content`），只剩 thinking 的消息整条去掉。四元组包含 provider 实例，同一模型换 provider 实例（如官方 Anthropic 与 OpenRouter）也视为不同来源。过滤只取决于坐标，因此 `runtime_failover` 换到 backup 或之后切回 primary 时，发给同一目标的前缀在多次请求之间保持稳定。
+4. `thinking` 承载扩展思考；`provider_state` 承载无法跨协议抽象、但需要 round-trip 的原生项。这里的“原样”指协议语义和字段顺序可逆，不允许复制内联二进制：已知媒体字段在 decode 时替换为 `ResourceRef`，物化后保存 `named_object`，同坐标 lowering 时按该字段的官方 wire 形态恢复 bytes/base64。lowering 仅在 `source` 四元组与目标四元组完全一致时还原；不一致时必须转换为目标可接受结构。当前通用转换只提取公开文本、摘要、拒绝说明或规范化内容，无法安全转换的 opaque 块跳过。不得读取加密状态或伪造目标私有状态。`thinking` 同样带 `source` 四元组，AICC 在每次响应（Immediate / Stream / Native Task）上与 `provider_state` 一起绑定；调用方原样回传即可，缺省为 unbound。编码请求前统一过滤：`source` 与目标四元组完全一致的 `thinking` 原样回放，其它来源或 unbound 的 `thinking` 静默丢弃（不报错、不降级为文本或 `reasoning_content`），只剩 thinking 的消息整条去掉。四元组包含 provider 实例，同一模型换 provider 实例（如官方 Anthropic 与 OpenRouter）也视为不同来源。过滤只取决于坐标，因此“不可用时”策略换到备选模型或之后回到原模型时，发给同一目标的前缀在多次请求之间保持稳定。
 5. 多模态内容直接进入 `content` 数组，不引入 `messages_v2` 等并行通道。
 6. Provider 响应中的一个原生历史单元可以同时产生 provider-neutral block 和紧邻的 `ProviderState`。两者不是两份待发送内容：同四元组回放时原生状态是权威表示并替代对应 canonical block；跨实例、原厂或模型时由源坐标到目标坐标执行转换，不能仅凭 namespace 直传。
 7. tool result 的 canonical `call_id` 必须能关联此前的 `tool_use`。若目标协议还要求函数名，Adapter 必须从同一历史中的 `tool_use` 恢复并校验名称，不能把内部生成的占位 ID 或缺失名称发送给 Provider。
@@ -705,37 +743,29 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 
 ### 3.7 Route Trace
 
-`AiResponseSummary.extra.route_trace` 和 task data 中的 route trace 必须使用同一结构，便于日志、debug 工具和 UI 解析：
+每个 typed inference 与 Helper 响应的 `route_trace`、`route.resolve` 响应的 `route_trace` 以及 task data 中的 route trace 使用同一结构（`buckyos-api` 的 `RouteTrace`），便于日志、debug 工具和 UI 解析：
 
 ```json
 {
-  "attempts": [
-    {
-      "step": 0,
-      "exact_model": "gpt-5.5@openai_primary",
-      "started_at": "2026-04-25T10:00:00Z",
-      "ended_at": "2026-04-25T10:00:01Z",
-      "outcome": "failed",
-      "error_code": "provider_error",
-      "fallback_reason": null
-    },
-    {
-      "step": 1,
-      "exact_model": "gpt-mini@openai_primary",
-      "started_at": "2026-04-25T10:00:01Z",
-      "ended_at": "2026-04-25T10:00:03Z",
-      "outcome": "succeeded",
-      "error_code": null,
-      "fallback_reason": "configured_fallback"
-    }
-  ],
-  "final_model": "gpt-mini@openai_primary"
+  "attempts": [],
+  "final_model": "gpt-5.5-mini@sn",
+  "fallback": {
+    "kind": "unavailable",
+    "from": "gpt-codex-5.2@openai",
+    "to": "gpt-5.5-mini@sn",
+    "policy": "next_model",
+    "reason": "timeout"
+  }
 }
 ```
 
-上例的第二步来自管理员为该目录配置的 fallback；没有配置时只有第一步。
+- `final_model` 是实际执行的精确模型。
+- `fallback` 只在回答不是来自用途自己的模型时出现：
+  - `kind = "coverage"`：用途没有模型，由兜底 LLM 提供；`from` 是用途（如 `llm.plan`），`to` 是 `llm.fallback`。使用它的会话应显示警告。
+  - `kind = "unavailable"`：原模型按“不可用时”策略被替换；`from` 是失败的精确模型，`to` 是实际使用的精确模型，`policy` 是策略，`reason` 是触发类别（如 `timeout`、`provider_unavailable`、`model_unavailable`、`upstream_quota_exhausted`、`quota_denied`、`marked_faulty`）。
+- `attempts` 预留给逐次尝试记录（`step`、`exact_model`、`started_at`、`ended_at`、`outcome` = `succeeded` / `failed` / `skipped`、`error_code`、`fallback_reason`），当前实现返回空数组。
 
-`outcome` 可为 `succeeded`、`failed`、`skipped`。`fallback_reason` 可为空；非空时应使用可枚举短码，例如 `configured_fallback`、`same_model_retry`。
+详细 trace（候选、过滤原因、用途来源层等）见 [aicc_router.md §13](aicc_router.md#13-可解释性与-trace)，由 `trace.query` 和 `routing.preview` 的 `explain` 返回。
 
 ---
 
@@ -827,11 +857,11 @@ Response mapping：
 
 `chat.completions.create` 返回 `LlmChatInvokeResponse`，assistant 输出使用 content-block `message: AiMessage`。`text`、`tool_use`、`thinking` 和 opaque `ProviderState` 必须保持原始顺序；存在匹配当前 adapter 的 ProviderState 时优先原样 replay，并替代其对应的 canonical 表示，不能重复发送；否则从 provider-neutral blocks lowering。foreign ProviderState 按三档策略处理：匹配目标 namespace 时还原，可安全抽取公开文本时降级为普通文本，无法降级时跳过。OpenAI/OpenRouter Responses 的 completed output item 和 Gemini Interactions 的 completed step 都属于必须无损回放的原生历史。
 
-Fallback（逻辑路由层语义，由 `route.resolve` / helper / logical definition 承载，数据面 `chat.completions.create` 自身不 fallback）：
+换模型（用途表语义，由 `route.resolve` / helper 承载，数据面 `chat.completions.create` 自身从不换模型）：
 
-1. 所有用途默认 strict；只有系统管理员手工配置的目标才会被使用，见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)。
-2. `llm.reason` 应为 disabled，避免降级到无 reasoning 能力模型。
-3. `llm.vision` 必须硬过滤 `vision=true`（在逻辑模型定义 `min_line` 中表达）。
+1. 所有用途默认 `on_unavailable = none`，不切换；用途设置了“不可用时”策略时，Helper 在 Provider 不可用时最多换一次，见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)。
+2. 备选同样满足原用途的硬要求，例如 `llm.vision` 必须硬过滤 `vision=true`（在逻辑模型定义 `min_line` 中表达）。
+3. 七个 LLM 用途没有任何模型时，兜底 LLM 打开后由 `llm.fallback` 提供；这时只带请求自身的硬要求，不带原用途的门槛，响应的 `route_trace.fallback.kind = "coverage"`。
 
 AICC 不定义 `llm.completion`。纯文本 completion 由调用方构造单条 user message 后调用 `chat.completions.create`；服务端不保留旧 Completion schema、method alias 或自动转换入口。
 
@@ -904,11 +934,11 @@ Response mapping：
 2. 大批量数据生成 `AiArtifact`，resource 使用 `NamedObject`。
 3. `rows`、`dimensions`、`embedding_space_id` 必须进入结果 FileObject meta。
 
-Fallback：
+换模型：
 
-1. 默认 strict。
-2. 如果 request 指定 `embedding_space_id`，fallback 后的模型必须产出相同 space。
-3. 已存在向量索引查询时，禁止 fallback 到不同 space。
+1. 默认不切换；只有用途设置了“不可用时”策略才换。
+2. 如果 request 指定 `embedding_space_id`，换后的模型必须产出相同 space。
+3. 已存在向量索引查询时，禁止换到不同 space 的模型。
 
 ### 6.2 `embedding.multimodal`
 
@@ -933,7 +963,7 @@ Request：
 }
 ```
 
-Response 与 `embedding.text` 相同。fallback 同样必须保证 embedding space 兼容。
+Response 与 `embedding.text` 相同。换模型同样必须保证 embedding space 兼容。
 
 ---
 
@@ -983,7 +1013,7 @@ Response：
 
 Response mapping：结果直接放入 typed `RerankResponse.results`；每项保留输入 document 的 `id`、原始 `index`、`score` 及可选 `document`，不再经过通用 `AiResponseSummary.extra`。OpenRouter 使用官方 `POST /api/v1/rerank`，Provider 返回的 index 必须映射回原请求 document ID。
 
-Fallback：默认 strict。不同 reranker 分数不可直接比较，fallback 只允许在同一任务内重跑，不允许和旧分数混排。
+换模型：默认不切换。不同 reranker 分数不可直接比较，“不可用时”策略换模型后只允许在同一任务内重跑，不允许和旧分数混排。
 
 ---
 
@@ -1146,11 +1176,11 @@ Response：
 }
 ```
 
-Image fallback（默认 strict；以下约束适用于管理员手工配置的 fallback）：
+Image 换模型（默认不切换；以下约束适用于用途的“不可用时”策略）：
 
 1. `image.txt2img` 必须保持 `method=images.generate`。
-2. `inpaint` fallback 必须保持 mask 语义一致。
-3. `upscale` fallback 必须满足目标分辨率和人脸保护等硬约束。
+2. `inpaint` 换模型后必须保持 mask 语义一致。
+3. `upscale` 换模型后必须满足目标分辨率和人脸保护等硬约束。
 
 ---
 
@@ -1654,11 +1684,11 @@ Request：
 
 Response：同 `video.generate`。
 
-Video fallback（默认 strict；以下约束适用于管理员手工配置的 fallback）：
+Video 换模型（默认不切换；以下约束适用于用途的“不可用时”策略）：
 
-1. 只能在同 `method` 内 fallback。
-2. Provider 一旦返回 Started / Queued，AICC 不再跨 Provider 重试。
-3. `extend` 必须保持源视频和 provider operation 的状态一致，默认 strict；如果 Provider 需要上一轮生成状态，必须通过 `continuation_handle` 显式传入。
+1. 只能在同 `method` 内换模型。
+2. Provider 一旦返回 Started / Queued（已取得 remote task ID），AICC 不再换模型或跨 Provider 重试。
+3. `extend` 必须保持源视频和 provider operation 的状态一致，不换模型；如果 Provider 需要上一轮生成状态，必须通过 `continuation_handle` 显式传入。
 
 ---
 
@@ -1680,7 +1710,6 @@ Request：
 ```json
 {
   "exact_model": "gpt-5.6@openai_primary",
-  "session_id": "aicc-route-session-001",
   "task": "Click the login button and enter the username.",
   "environment": {
     "environment_id": "sandbox-123",
@@ -1706,7 +1735,7 @@ Request：
 }
 ```
 
-顶层 `session_id` 是 AICC exact-model 路由历史 key；`environment.session_id` 是调用方管理的 computer environment 会话标识，两者不共享状态。每次响应只能返回 `allowed_actions` 允许的动作；需要继续操作时 `requires_next_observation=true`，调用方执行动作、更新 screenshot 后发起下一次请求。
+`environment.session_id` 是调用方管理的 computer environment 会话标识。每次响应只能返回 `allowed_actions` 允许的动作；需要继续操作时 `requires_next_observation=true`，调用方执行动作、更新 screenshot 后发起下一次请求。
 
 Response：
 
@@ -1727,11 +1756,11 @@ Response：
 }
 ```
 
-Fallback：
+换模型：
 
-1. 默认 strict。
+1. 默认不切换。
 2. 不允许静默更换 `environment_id`。
-3. 是否可 fallback 由 Agent Runtime 的 session 策略决定，AICC Router 不单独判断 sandbox 可迁移性。
+3. 是否可以换模型由 Agent Runtime 的 session 策略决定，AICC Router 不单独判断 sandbox 可迁移性。
 
 ---
 
@@ -1794,17 +1823,19 @@ Fallback：
 
 ### 14.1 一级目录
 
-| 一级目录 | canonical api_type / builtin 逻辑入口 | fallback |
+| 一级目录 | canonical api_type / builtin 逻辑入口 | 无模型时 |
 |---|---|---|
-| `llm` | `llm` / `llm.chat`、`llm.plan`、`llm.code` 等 | namespace-only；各用途 strict |
-| `embedding` | `embedding.text` / `embedding.text`、`embedding.multimodal` | strict |
-| `decision` | `decision` / `decision` | strict |
-| `rerank` | `rerank` / `rerank` | strict |
-| `image` | `image.*` / 对应 `image.*` | strict |
-| `vision` | `vision.*` / 对应 `vision.*` | strict |
-| `audio` | `audio.*` / 对应 `audio.*` | strict 或 voice contract |
-| `video` | `video.*` / 对应 `video.*` | strict |
-| `agent_runtime` | `agent.computer_use` / `agent_runtime.computer_use` | strict |
+| `llm` | `llm` / `llm.chat`、`llm.plan`、`llm.code` 等 | namespace-only；各用途返回无候选，兜底 LLM 打开时由 `llm.fallback` 提供 |
+| `embedding` | `embedding.text` / `embedding.text`、`embedding.multimodal` | 无候选 |
+| `decision` | `decision` / `decision` | 无候选 |
+| `rerank` | `rerank` / `rerank` | 无候选 |
+| `image` | `image.*` / 对应 `image.*` | 无候选 |
+| `vision` | `vision.*` / 对应 `vision.*` | 无候选 |
+| `audio` | `audio.*` / 对应 `audio.*` | 无候选，或按 voice contract |
+| `video` | `video.*` / 对应 `video.*` | 无候选 |
+| `agent_runtime` | `agent.computer_use` / `agent_runtime.computer_use` | 无候选 |
+
+目录之间没有 fallback：一个目录没有模型时不扩大到父目录或其它目录。Provider 故障时是否换模型由用途的“不可用时”策略决定，见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)。
 
 ### 14.2 调用方选择模型
 
@@ -1837,7 +1868,7 @@ Fallback：
 1. `route.resolve.logical_model` 必须是不含 `@` 的逻辑路径。
 2. typed inference 的 `exact_model` 按 `<provider_model_id>[:variant]@<provider_instance_name>` 解析。
 3. exact model 不换模型；Provider 启动失败直接返回真实错误。
-4. logical path fallback 只能改变同一 `api_type` 的候选模型。
+4. 用途的“不可用时”策略只在同一 `api_type` 内换模型，只对 Helper 生效。
 ### 14.3 Exact model variant 与 Provider Rules lowering
 
 对用户来说，同一 base model 的不同语义档位表现为不同 AICC exact model：
@@ -1864,7 +1895,7 @@ Fallback：
 | kRPC transport / auth / parse | `RPCErrors` |
 | AICC 启动失败 | `AiMethodResponse.status=failed` + task event |
 | Provider 执行失败 | task-manager `Failed` + task event |
-| fallback / failover | route trace + task event |
+| “不可用时”策略切换 | route trace `fallback` + task event + `unavailable_fallback` 事件 |
 
 AICC 错误 payload schema：
 
@@ -1893,10 +1924,10 @@ AICC 错误 payload schema：
 | `invalid_method` | 未知或不支持的 method。 |
 | `schema_validation_failed` | request 未通过 method schema 校验。 |
 | `resource_invalid` | 资源不存在、无权限、格式不支持或过大。 |
-| `no_provider_available` | 无 Provider 支持指定 method / capability。 |
-| `no_candidate_model` | 没有接入满足请求的模型。不用于表示 Provider 故障，故障应返回 `provider_error` 等真实错误。 |
+| `no_provider_available` | 无 Provider 支持指定 method / capability；或选中模型的 Provider 被管理员标记为故障且用途没有“不可用时”策略（`details.reason = "marked_faulty"`）。 |
+| `no_candidate_model` | 没有接入满足请求的模型；请求的是用途时 `details.usecase` 给出用途名。不用于表示 Provider 故障，故障应返回 `provider_error` 等真实错误。 |
 | `context_length_exceeded` | 请求放不进模型的上下文窗口：Provider 以结构化码拒绝，或有候选仅因上下文长度不足被过滤。不可原样重试，缩小输入后再发。 |
-| `fallback_not_allowed` | 管理员配置的 fallback 被请求 policy 或 method 禁止。 |
+| `fallback_not_allowed` | 保留的错误码，当前路由不再产生；请求用 `policy.no_fallback` 关闭策略不算错误。 |
 | `provider_start_failed` | Provider 启动或提交失败。 |
 | `provider_error` | Provider 原生错误。 |
 | `unsupported_execution_mode` | 路由或选定 Adapter/operation 不支持请求的 canonical execution mode；不得静默切换模式。 |
@@ -1952,7 +1983,7 @@ AICC 错误 payload schema：
 1. API schema 文档。
 2. 标准 method 集合。
 3. Provider inventory 声明。
-4. Router fallback / policy 规则。
+4. Router 用途表与 policy 规则。
 5. Provider Adapter 映射。
 6. task-manager 状态和事件。
 7. 单元测试或 DV test。

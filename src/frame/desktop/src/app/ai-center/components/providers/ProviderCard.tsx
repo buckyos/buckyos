@@ -36,6 +36,8 @@ export function ProviderCard({ provider, selected, onClick }: ProviderCardProps)
   const managedSn = isManagedSnProvider(provider)
   const statusVariant = !provider.config.enabled
     ? 'unknown'
+    : provider.config.marked_faulty
+    ? 'error'
     : provider.status.model_sync_status === 'failed'
     ? 'warning'
     : authStatusToVariant(provider.status.auth_status)
@@ -69,6 +71,8 @@ export function ProviderCard({ provider, selected, onClick }: ProviderCardProps)
           status={statusVariant}
           label={!provider.config.enabled
             ? t('aiCenter.providers.disabled', 'Disabled')
+            : provider.config.marked_faulty
+            ? t('aiCenter.providers.markedFaulty', 'Marked faulty')
             : provider.status.model_sync_status === 'failed'
             ? t('aiCenter.providers.syncFailedShort', 'Sync failed')
             : undefined}

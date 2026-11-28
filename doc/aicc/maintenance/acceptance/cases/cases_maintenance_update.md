@@ -28,10 +28,10 @@
 
 | 类型 | 交付物 | 必验内容 |
 |---|---|---|
-| 已有 Provider 新增协议兼容模型 | 模型事实 metadata、运营策略、必要的 routing_config | `models.list` 出现新 exact model；`api_types`、`capabilities`、上下文长度、`logical_mounts` 正确；成本、健康度、权重和 fallback 策略生效 |
+| 已有 Provider 新增协议兼容模型 | 模型事实 metadata、运营策略、必要的 settings `routing` | `models.list` 出现新 exact model；`api_types`、`capabilities`、上下文长度、`logical_mounts` 正确；成本、权重生效，用途表的覆盖与默认模型符合预期（健康度不参与路由） |
 | 新增 OpenAI-compatible Provider Instance | Provider Profile、协议族、`base_url`、授权、discovery 策略 | 用户无需选择 API 代际；接入测试优先新接口并按序测试已注册历史接口；resolved Adapter 固化后 inventory 身份链正确；运行时不得重新探测或跨代际降级 |
-| 新增非兼容 Provider adapter 或新 API type | 版本包、adapter、schema、metadata 基线、默认路由策略 | 新 adapter 的协议转换、错误映射、streaming / task 语义、usage、fallback 和 helper / typed inference 链路通过相关用例 |
-| 仅更新运营策略 | 策略配置、成本 / quota / health / 权重 / 熔断 / 灰度规则 | 不改变模型事实；route trace 显示策略命中；回滚策略后路由恢复；不需要回滚 metadata |
+| 新增非兼容 Provider adapter 或新 API type | 版本包、adapter、schema、metadata 基线、默认路由策略 | 新 adapter 的协议转换、错误映射、streaming / task 语义、usage、不可用时策略和 helper / typed inference 链路通过相关用例 |
+| 仅更新运营策略 | 策略配置、成本 / quota / 权重 / 灰度规则、管理员层用途表 | 不改变模型事实；route trace 显示策略或用途来源命中；health、熔断只用于展示与告警，不改变路由；回滚策略后路由恢复；不需要回滚 metadata |
 | 随版本内置缓存更新 | 版本包内 builtin metadata / 默认策略 | 新安装或无云端更新环境中仍能识别发布时已知模型，并生成可用默认路由 |
 | 云端 metadata 更新 | 严格递增的 manifest `revision_seq`、客户端兼容范围与分组目标；NDN 当前文件和 `metadata_target_seq`；Provider `metadata_applied_seq` | 每个受支持客户端版本获得对应的兼容发布；非法发布被拒绝；新文件就绪前 target seq 不推进；Provider 真正完成库存刷新后才推进自己的 applied seq；两个触发点均收敛全部落后 Provider |
 | 人工运行时覆盖 | `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<driver>.json` 或 `system-config/<driver>.json` | `service.reload_settings` 后生效；优先级高于 NDN 当前云端 metadata；损坏配置被拒绝且不破坏可用基线 |
@@ -45,7 +45,7 @@
 5. 正常云端场景由 NDN 替换文件并令 `metadata_target_seq = manifest.revision_seq`，不调用 `service.reload_settings`；人工覆盖场景才触发 `service.reload_settings`。
 6. 云端场景分别验证“下一次推理前触发”和“某个 Provider 定时库存刷新触发”：任一触发都遍历全部 `metadata_applied_seq != metadata_target_seq` 的 Provider。每个 Provider 刷新前临时捕获目标 seq，真正完成库存刷新后才提交 applied seq；刷新未完成或失败时原 inventory 和 applied seq 不变，并暴露落后 seq 和失败原因；不得只处理触发请求或触发 Provider。
 7. 覆盖四种库存判定：model 列表未变且 seq 相同只探测；列表变化但 seq 相同更新库存；列表未变但 seq 不同按 metadata 重建；两者都变化时一起重建。
-8. 执行本次新增用例和受影响的现有用例，覆盖 inventory、metadata 解析、exact model、logical model、fallback、成本估算、禁用策略和错误返回。
+8. 执行本次新增用例和受影响的现有用例，覆盖 inventory、metadata 解析、exact model、logical model、用途覆盖、不可用时策略、成本估算、禁用策略和错误返回。
 9. 相关用例通过后执行 AICC 全量用例，对全部受支持 Provider、模型和路由策略执行回归验证。
 10. 发布环境上线后重复相关用例，再执行发布环境全量用例；发布环境的授权、网络、Provider 实际状态和报告摘要必须可诊断。
 9. 如本次支持回滚，云端 metadata 文件回滚由 NDN 完成并推进新的目标 seq；AICC 仍通过相同全局收敛流程应用，不实现独立回滚。人工 override 或 routing 回滚后按各自配置流程复验。
@@ -53,8 +53,8 @@
 角色边界：
 
 - BuckyOS 项目方更新公共协议、默认模型事实基线、默认运营策略基线、默认逻辑目录和随版本缓存时，必须同时提交或更新对应 L1/L3/L4 用例。
-- 商业服务商跟随 BuckyOS 更新或维护自有 Provider 网关、模型事实包、运营策略包和产品默认 routing_config 时，必须保留服务商维度的用例 tags，报告中能按服务商 Provider / model 聚合。
-- 产品用户通过 system_config、local metadata override 或 `session_overlay` 做临时接入时，验收只要求配置生效、可回滚和安全边界正确；不要求修改公共基线。
+- 商业服务商跟随 BuckyOS 更新或维护自有 Provider 网关、模型事实包、运营策略包和产品默认 settings `routing` 时，必须保留服务商维度的用例 tags，报告中能按服务商 Provider / model 聚合。
+- 产品用户通过 system_config、local metadata override、用户层或路由策略组做临时调整时，验收只要求配置生效、可回滚和安全边界正确；不要求修改公共基线。
 - 模型服务商主动提供 BuckyOS metadata / inventory / cost / quota / health 信息目前按畅想处理；如接入试点，应作为服务商或第三方 Provider 包验收，不作为 P0 默认要求。
 
 ## 2. 文档联动要求
@@ -80,10 +80,10 @@
 3. 修改 `ResourceRef` JSON 表达。
 4. 修改 Provider settings 字段。
 5. 修改 exact model 命名规则。
-6. 修改 fallback、session config、policy 字段。
+6. 修改用途表、不可用时策略、settings `routing`、policy 字段。
 7. 修改 usage log schema。
 8. 修改 task data / event 中 AICC 字段。
-9. 修改 metadata、运营策略、NDN 当前文件/目标 seq、Provider applied seq、provider settings、routing_config 或回滚流程。
+9. 修改 metadata、运营策略、NDN 当前文件/目标 seq、Provider applied seq、provider settings、settings `routing` 或回滚流程。
 
 ## 3. 用例 Manifest 约定
 

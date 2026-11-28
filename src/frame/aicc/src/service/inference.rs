@@ -1,5 +1,14 @@
 use super::*;
+use crate::error::RoutingError;
 
+mod usecases;
+pub(crate) use usecases::{apply_zone_usecase_set, UsecaseTarget};
+use crate::routing::usecase::{LayerId, UsecaseLayers};
+use crate::routing::SelectedRoute;
+use buckyos_api::{OnUnavailable, AICC_FALLBACK_LLM};
+use std::collections::BTreeSet;
+
+#[derive(Clone)]
 pub(crate) struct RuntimeInferencePort {
     runtime: Arc<RuntimeState>,
     codecs: Arc<CodecRegistry>,
@@ -11,6 +20,7 @@ pub(crate) struct RuntimeInferencePort {
     artifact_url_reader: Arc<RuntimeProviderExecutionPort>,
     model_health: Arc<ModelHealthRegistry>,
     governance: Arc<PolicyService>,
+    events: Option<Arc<AiccEventLog>>,
 }
 
 fn named_object_url_provider(settings: &AiccSettings) -> Arc<dyn NamedObjectUrlProvider> {
@@ -109,7 +119,13 @@ impl RuntimeInferencePort {
             artifact_url_reader,
             model_health,
             governance,
+            events: None,
         }
+    }
+
+    pub(crate) fn with_events(mut self, events: Arc<AiccEventLog>) -> Self {
+        self.events = Some(events);
+        self
     }
 
     async fn access(
@@ -125,6 +141,53 @@ impl RuntimeInferencePort {
             .await
     }
 
+    /// The layers of the usecase table that apply to `caller`: the zone layer
+    /// from the settings, the caller's own layer, the group bound to the
+    /// caller's App and the session group the request names (§12).
+    pub(super) async fn usecase_layers(
+        &self,
+        caller: &AuthorizedCaller,
+        snapshot: &crate::runtime::RuntimeSnapshot,
+        route_group: Option<&str>,
+    ) -> Result<UsecaseLayers, RPCErrors> {
+        let storage_error =
+            |error: crate::error::StorageError| inference_error(AiccErrorCode::InternalError, error.to_string());
+        let mut layers = UsecaseLayers::default();
+        if let Some(routing) = &snapshot.settings.routing {
+            layers.layers.push((LayerId::Zone, routing.usecases.clone()));
+        }
+        let subject = format!("user:{}", caller.user_id);
+        let (user, _) = self.storage.routing_layer(&subject).await.map_err(storage_error)?;
+        layers.layers.push((LayerId::User, user));
+        if let Some(app_id) = caller.app_id.as_deref() {
+            if let Some(group_id) = self
+                .storage
+                .routing_binding(&subject, app_id)
+                .await
+                .map_err(storage_error)?
+            {
+                if let Some((_, group)) =
+                    self.storage.routing_group(&group_id).await.map_err(storage_error)?
+                {
+                    layers.app_group = Some(group_id.clone());
+                    layers.layers.push((LayerId::Group(group_id), group.usecases));
+                }
+            }
+        }
+        if let Some(group_id) = route_group.filter(|group| !group.trim().is_empty()) {
+            match self.storage.routing_group(group_id).await.map_err(storage_error)? {
+                Some((owner, group)) if owner == subject => {
+                    layers.session_group = Some(group_id.to_owned());
+                    layers
+                        .layers
+                        .push((LayerId::Group(group_id.to_owned()), group.usecases));
+                }
+                _ => layers.route_group_ignored = true,
+            }
+        }
+        Ok(layers)
+    }
+
     async fn route(
         &self,
         caller: &AuthorizedCaller,
@@ -138,14 +201,11 @@ impl RuntimeInferencePort {
         };
         let trace_id = input.trace_id.unwrap_or_else(next_inference_id);
         let request_id = input.request_id.unwrap_or_else(next_inference_id);
-        let route_models = input
-            .session_overlay
-            .as_ref()
-            .map(|overlay| snapshot.models.with_session_overlay(overlay))
-            .transpose()
-            .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))?;
-        let models = route_models.as_ref().unwrap_or(snapshot.models.as_ref());
+        let models = snapshot.models.as_ref();
         let access = self.access(caller, snapshot.as_ref()).await?;
+        let layers = self
+            .usecase_layers(caller, snapshot.as_ref(), input.route_group.as_deref())
+            .await?;
         let provider_names = if input.model.contains('@') {
             if !access.allows_model(&input.model) {
                 return Err(not_permitted());
@@ -179,11 +239,18 @@ impl RuntimeInferencePort {
                 .provider_instance_name()
                 .to_owned()]
         } else {
-            let reachable = models
-                .reachable_models(&input.model, input.api_type)
+            let reachable = usecase_reachable_models(models, &layers, &input.model, input.api_type)
                 .map_err(|error| {
                     inference_error(AiccErrorCode::NoCandidateModel, error.to_string())
                 })?;
+            if reachable.is_empty() {
+                let mut error = AiccError::new(
+                    AiccErrorCode::NoCandidateModel,
+                    format!("no connected model serves {}", input.model),
+                );
+                error.details = Some(json!({ "usecase": input.model }));
+                return Err(error.to_krpc_error());
+            }
             let permitted = reachable
                 .into_iter()
                 .filter(|model| access.usable_model(&model.exact_model.to_string()))
@@ -214,19 +281,14 @@ impl RuntimeInferencePort {
             &access,
         )
         .await;
-        let session_overlay = input
-            .session_overlay
-            .as_ref()
-            .or(snapshot.settings.session_config.as_ref());
         let policy = policy_engine_for_route(
             models,
             &input.model,
-            session_overlay,
+            snapshot.settings.routing.as_ref(),
             input.policy.as_ref(),
             quota,
         )
         .map_err(|error| inference_error(AiccErrorCode::PolicyDenied, error.to_string()))?;
-        let runtime_failover = policy.policy().runtime_failover.value;
         let mut request = RoutingRequest::new(
             trace_id.clone(),
             request_id.clone(),
@@ -239,72 +301,61 @@ impl RuntimeInferencePort {
         request.estimated_input_tokens = input.estimated_input_tokens;
         request.estimated_output_tokens = input.estimated_output_tokens;
         request.video_clips = input.video_clips;
-        if let Some(session_id) = input.session_id.as_deref() {
-            if session_id.trim().is_empty() || session_id.len() > 512 {
-                return Err(inference_error(
-                    AiccErrorCode::InvalidRequest,
-                    "session_id must contain 1..512 bytes",
-                ));
-            }
-            request.previous_exact_model = self
-                .storage
-                .session_exact_model(
-                    &caller.tenant_id,
-                    &caller.user_id,
-                    caller.app_id.as_deref(),
-                    session_id,
+        let routed = crate::routing::usecase::resolve(
+            &Router::new(models, &policy, &runtime_states),
+            &layers,
+            &request,
+            true,
+        )
+        .map_err(|error| {
+            // Too large for every window that could take it: the caller
+            // shrinks the request instead of giving up on the route.
+            let (code, restricted_message) = if error.is_context_length_insufficient() {
+                (
+                    AiccErrorCode::ContextLengthExceeded,
+                    "the request does not fit the context window of any permitted model",
                 )
-                .await
-                .map_err(|error| {
-                    inference_error(AiccErrorCode::InternalError, error.to_string())
-                })?;
-        }
-        let mut decision = Router::new(models, &policy, &runtime_states)
-            .route(&request)
-            .map_err(|error| {
-                // Too large for every window that could take it: the caller
-                // shrinks the request instead of giving up on the route.
-                let (code, restricted_message) = if error.is_context_length_insufficient() {
-                    (
-                        AiccErrorCode::ContextLengthExceeded,
-                        "the request does not fit the context window of any permitted model",
-                    )
-                } else {
-                    (
-                        AiccErrorCode::NoCandidateModel,
-                        "no permitted model is available for this request",
-                    )
-                };
-                if access.is_restricted() {
-                    inference_error(code, restricted_message)
-                } else {
-                    inference_error(code, error.to_string())
-                }
-            })?;
+            } else {
+                (
+                    AiccErrorCode::NoCandidateModel,
+                    "no permitted model is available for this request",
+                )
+            };
+            let mut error = if access.is_restricted() {
+                AiccError::new(code, restricted_message)
+            } else {
+                AiccError::new(code, error.to_string())
+            };
+            if crate::routing::usecase::is_usecase(&request.model) {
+                error.details = Some(json!({ "usecase": request.model }));
+            }
+            error.to_krpc_error()
+        })?;
+        let mut decision = routed.decision;
         if access.is_restricted() {
             decision
                 .trace
                 .retain_models(&|model| access.allows_model(model));
         }
-        if let Some(session_id) = input.session_id.as_deref() {
-            self.storage
-                .remember_session_exact_model(
-                    &caller.tenant_id,
-                    &caller.user_id,
-                    caller.app_id.as_deref(),
-                    session_id,
-                    &decision.selected.exact_model,
-                    now_ms() as i64,
-                )
-                .await
-                .map_err(|error| {
-                    inference_error(AiccErrorCode::InternalError, error.to_string())
-                })?;
-        }
+        let on_unavailable = if policy.policy().no_fallback {
+            OnUnavailable::None
+        } else {
+            routed.on_unavailable
+        };
+        let context = Arc::new(RouteContext {
+            snapshot: snapshot.clone(),
+            policy,
+            runtime_states,
+            layers,
+            request,
+            coverage: routed.coverage,
+            on_unavailable,
+            access,
+        });
         Ok(RoutedInference {
             snapshot,
             decision,
-            runtime_failover,
+            context,
             trace_id,
             request_id,
         })
@@ -908,8 +959,7 @@ impl InferencePort for RuntimeInferencePort {
                     requirements: request.requirements,
                     disable: request.disable,
                     policy: request.policy,
-                    session_overlay: request.session_overlay,
-                    session_id: request.session_id,
+                    route_group: request.route_group,
                     estimated_input_tokens: request.estimated_input_tokens,
                     estimated_output_tokens: request.estimated_output_tokens,
                     video_clips: Default::default(),
@@ -926,131 +976,62 @@ impl InferencePort for RuntimeInferencePort {
     ) -> Result<RoutingPreviewResponse, RPCErrors> {
         let snapshot = self.runtime.capture().await;
         let models = snapshot.models.as_ref();
-        let caller_identity = CallerIdentity {
-            tenant_id: caller.tenant_id.clone(),
-            user_id: caller.user_id.clone(),
-            app_id: caller.app_id.clone(),
-        };
-        let views = models.logical_model_views();
-        let api_types = views
-            .iter()
-            .filter_map(|view| {
-                view.api_type
-                    .as_ref()
-                    .map(|api_type| (view.path.clone(), api_type.clone()))
-            })
-            .collect::<BTreeMap<_, _>>();
         let paths = if request.paths.is_empty() {
-            views
-                .iter()
-                .map(|view| (view.path.clone(), view.kind.clone()))
+            models
+                .logical_model_views()
+                .into_iter()
+                .map(|view| view.path)
                 .collect::<Vec<_>>()
         } else {
-            request
-                .paths
-                .iter()
-                .map(|path| {
-                    (
-                        path.clone(),
-                        models
-                            .logical_directory_kind(path)
-                            .unwrap_or(AiccLogicalDirectoryKind::Directory),
-                    )
-                })
-                .collect()
+            request.paths.clone()
+        };
+        // The caller's own view, as `routing.usecases` shows it.
+        let mut layers = UsecaseLayers::default();
+        if let Some(routing) = &snapshot.settings.routing {
+            layers.layers.push((LayerId::Zone, routing.usecases.clone()));
+        }
+        let (user, _) = self
+            .storage
+            .routing_layer(&format!("user:{}", caller.user_id))
+            .await
+            .map_err(|error| inference_error(AiccErrorCode::InternalError, error.to_string()))?;
+        layers.layers.push((LayerId::User, user));
+        let preview = Preview {
+            snapshot: snapshot.as_ref(),
+            models,
+            layers: &layers,
+            assume_ready: None,
+            excluded_providers: BTreeSet::new(),
+            requirements: request.requirements.clone().unwrap_or_default(),
+            with_backup: false,
         };
         let access = self.access(caller, snapshot.as_ref()).await?;
-        let runtime_states = candidate_runtime_states(
-            snapshot.as_ref(),
-            caller,
-            self.model_health.as_ref(),
-            None,
-            None,
-            None,
-            &access,
-        )
-        .await;
-        let provider_names = snapshot
-            .providers
-            .list()
-            .into_iter()
-            .map(|provider| provider.config.provider_instance_name.clone())
-            .collect::<Vec<_>>();
-        let mut quotas = std::collections::HashMap::new();
         let mut entries = Vec::with_capacity(paths.len());
-        for (path, kind) in paths {
-            let api_type_name = inherited_api_type(&api_types, &path);
+        for previewed in self.preview(caller, &preview, &paths).await? {
             let mut entry = RoutingPreviewEntry {
-                path: path.clone(),
-                api_type: api_type_name.clone().unwrap_or_default(),
-                kind,
+                kind: models
+                    .logical_directory_kind(&previewed.path)
+                    .unwrap_or(AiccLogicalDirectoryKind::Directory),
+                path: previewed.path,
+                api_type: previewed.api_type.unwrap_or_default(),
                 available: false,
                 selected_exact_model: None,
                 error: None,
                 trace: None,
             };
-            let Some(api_type) = api_type_name.and_then(|name| {
-                serde_json::from_value::<buckyos_api::ApiType>(Value::String(name)).ok()
-            }) else {
-                entry.error = Some("logical directory has no API type".to_string());
-                entries.push(entry);
-                continue;
-            };
-            if !quotas.contains_key(&api_type) {
-                let quota = self
-                    .quota
-                    .prepare_route(
-                        &caller_identity,
-                        api_type.capability(),
-                        api_type.typed_method(),
-                        provider_names.clone(),
-                    )
-                    .await
-                    .map_err(|_| {
-                        inference_error(AiccErrorCode::PolicyDenied, "quota scope is invalid")
-                    })?;
-                quotas.insert(api_type, quota);
-            }
-            let policy = match policy_engine_for_route(
-                models,
-                &path,
-                snapshot.settings.session_config.as_ref(),
-                None,
-                quotas[&api_type].clone(),
-            ) {
-                Ok(policy) => policy,
-                Err(error) => {
-                    entry.error = Some(error.to_string());
-                    entries.push(entry);
-                    continue;
-                }
-            };
-            let mut routing_request = RoutingRequest::new(
-                next_inference_id(),
-                next_inference_id(),
-                path.clone(),
-                api_type,
-                caller_identity.clone(),
-            );
-            routing_request.requirements = request.requirements.clone().unwrap_or_default();
-            match Router::new(models, &policy, &runtime_states).route(&routing_request) {
-                Ok(mut decision) => {
+            match previewed.route {
+                Ok(route) => {
                     entry.available = true;
-                    entry.selected_exact_model = Some(decision.selected.exact_model.clone());
+                    entry.selected_exact_model = Some(route.decision.selected.exact_model.clone());
                     if request.explain {
-                        if access.is_restricted() {
-                            decision
-                                .trace
-                                .retain_models(&|model| access.allows_model(model));
-                        }
-                        entry.trace = Some(public_route_trace_json(&decision)?);
+                        entry.trace = Some(public_route_trace_json(&route.decision)?);
                     }
                 }
                 Err(error) => {
                     entry.error = Some(if access.is_restricted() {
                         "no permitted model is available".to_string()
                     } else {
-                        error.to_string()
+                        error
                     })
                 }
             }
@@ -1060,6 +1041,56 @@ impl InferencePort for RuntimeInferencePort {
             settings_revision: snapshot.settings_revision,
             entries,
         })
+    }
+
+    async fn usecase_rpc(
+        &self,
+        caller: &AuthorizedCaller,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, RPCErrors> {
+        use buckyos_api::routing_methods as methods;
+        match method {
+            methods::ROUTING_USECASES => {
+                let request = serde_json::from_value(params).map_err(|error| {
+                    RPCErrors::ParseRequestError(format!("{method}: {error}"))
+                })?;
+                serde_json::to_value(self.usecase_table(caller, request).await?)
+                    .map_err(|error| RPCErrors::ReasonError(error.to_string()))
+            }
+            methods::ROUTING_USECASE_SET => {
+                let request: buckyos_api::RoutingUsecaseSetRequest =
+                    serde_json::from_value(params).map_err(|error| {
+                        RPCErrors::ParseRequestError(format!("{method}: {error}"))
+                    })?;
+                let target = UsecaseTarget::parse(&request.target)?;
+                serde_json::to_value(self.set_usecase(caller, &target, &request).await?)
+                    .map_err(|error| RPCErrors::ReasonError(error.to_string()))
+            }
+            _ => self.routing_store_rpc(caller, method, params).await,
+        }
+    }
+
+    async fn validate_usecase_route(
+        &self,
+        caller: &AuthorizedCaller,
+        zone: bool,
+        usecase: &str,
+        route: &buckyos_api::AiccUsecaseRoute,
+    ) -> Result<(), RPCErrors> {
+        RuntimeInferencePort::validate_usecase_route(self, caller, zone, usecase, route).await
+    }
+
+    async fn coverage_preview(
+        &self,
+        caller: &AuthorizedCaller,
+        added: &crate::model::ProviderInventory,
+    ) -> Result<Vec<buckyos_api::UsecaseCoverageChange>, RPCErrors> {
+        RuntimeInferencePort::coverage_preview(self, caller, added).await
+    }
+
+    fn provider_changed(&self, provider_instance_name: &str) {
+        self.model_health.clear_provider(provider_instance_name);
     }
 
     async fn invoke(&self, caller: &AuthorizedCaller, call: AiccCall) -> Result<Value, RPCErrors> {
@@ -1095,6 +1126,7 @@ impl InferencePort for RuntimeInferencePort {
                     RouteTrace {
                         attempts: Vec::new(),
                         final_model: exact_model,
+                        fallback: None,
                     },
                 );
             }
@@ -1152,85 +1184,89 @@ impl InferencePort for RuntimeInferencePort {
             .pointer("/task_options/parent_id")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let mut primary = self
-            .lower_call(
-                routed.snapshot.as_ref(),
-                &routed.decision,
-                &exact_call,
-                &video_facts,
-            )
-            .await?;
-        let mut resource_cache = Vec::new();
-        self.materialize_resources(
-            routed.snapshot.settings.as_ref(),
-            caller,
-            &routed.request_id,
-            &mut primary,
-            &mut resource_cache,
-        )
-        .await?;
-        let mut failover = Vec::new();
-        let mut primary_denial = None;
-        if let Err(error) = self.governance.precheck(caller, &primary).await {
-            if !routed.runtime_failover || routed.decision.fallback_candidates.is_empty() {
-                return Err(error.to_krpc_error());
-            }
-            primary_denial = Some(error);
-        }
-        for candidate in &routed.decision.fallback_candidates {
-            let mut fallback_decision = routed.decision.clone();
-            fallback_decision.selected = candidate.clone();
-            let fallback_call = call_with_exact_model(&exact_call, &candidate.exact_model)?;
-            if let Ok(mut call) = self
-                .lower_call(
-                    routed.snapshot.as_ref(),
-                    &fallback_decision,
-                    &fallback_call,
-                    &video_facts,
-                )
+        let fallback = Arc::new(InferenceFallback {
+            port: self.clone(),
+            caller: caller.clone(),
+            context: routed.context.clone(),
+            decision: routed.decision.clone(),
+            call: exact_call.clone(),
+            video_facts: video_facts.clone(),
+            request_id: routed.request_id.clone(),
+            used: Default::default(),
+        });
+        // A Provider an administrator marked faulty is never called: the
+        // usecase's policy takes over at once, or the request fails.
+        let selected_provider = routed.decision.selected.provider_instance_name.clone();
+        let marked_faulty = faulty_providers(routed.snapshot.as_ref()).contains(&selected_provider);
+        let mut primary = if marked_faulty {
+            match fallback
+                .prepare(&routed.decision.selected.exact_model, "marked_faulty")
                 .await
+                .map_err(|error| error.to_krpc_error())?
             {
-                match self
-                    .materialize_resources(
-                        routed.snapshot.settings.as_ref(),
-                        caller,
-                        &routed.request_id,
-                        &mut call,
-                        &mut resource_cache,
-                    )
-                    .await
-                {
-                    Ok(()) => {
-                        if primary_denial.is_some()
-                            && self.governance.precheck(caller, &call).await.is_err()
-                        {
-                            continue;
-                        }
-                        failover.push(call)
-                    }
-                    Err(error) => log::warn!(
-                        "fallback_resource_materialization_failed: exact_model={} error={}",
-                        candidate.exact_model,
-                        error
-                    ),
+                Some((_, call)) => call,
+                None => {
+                    let mut error = AiccError::new(
+                        AiccErrorCode::NoProviderAvailable,
+                        format!(
+                            "Provider {selected_provider} is marked faulty by an administrator"
+                        ),
+                    );
+                    error.details = Some(json!({
+                        "reason": "marked_faulty",
+                        "provider_instance_name": selected_provider,
+                        "exact_model": routed.decision.selected.exact_model,
+                    }));
+                    return Err(error.to_krpc_error());
                 }
             }
-        }
-        if let Some(denial) = primary_denial {
-            if failover.is_empty() {
+        } else {
+            let mut primary = self
+                .lower_call(
+                    routed.snapshot.as_ref(),
+                    &routed.decision,
+                    &exact_call,
+                    &video_facts,
+                )
+                .await?;
+            self.materialize_resources(
+                routed.snapshot.settings.as_ref(),
+                caller,
+                &routed.request_id,
+                &mut primary,
+                &mut Vec::new(),
+            )
+            .await?;
+            primary
+        };
+        if let Err(denial) = self.governance.precheck(caller, &primary).await {
+            // A user policy that refuses the model lets the usecase's
+            // policy pick another one, once.
+            let backup = if marked_faulty {
+                None
+            } else {
+                fallback
+                    .prepare(&primary.exact_model, "quota_denied")
+                    .await
+                    .map_err(|error| error.to_krpc_error())?
+            };
+            let Some((_, backup)) = backup else {
                 return Err(denial.to_krpc_error());
+            };
+            if let Err(error) = self.governance.precheck(caller, &backup).await {
+                return Err(crate::execution::with_original_failure(
+                    Some((primary.exact_model.clone(), denial)),
+                    error,
+                    &backup.exact_model,
+                )
+                .to_krpc_error());
             }
-            primary = failover.remove(0);
-            if let Some(position) = routed
-                .decision
-                .fallback_candidates
-                .iter()
-                .position(|candidate| candidate.exact_model == primary.exact_model)
-            {
-                let promoted = routed.decision.fallback_candidates.remove(position);
-                routed.decision.selected = promoted;
-            }
+            primary = backup;
         }
+        let switched = fallback.used.lock().expect("fallback lock").is_some();
+        let engine_fallback: Option<Arc<dyn crate::execution::UnavailableFallback>> =
+            (!switched && routed.context.on_unavailable() != OnUnavailable::None)
+                .then(|| fallback.clone() as Arc<dyn crate::execution::UnavailableFallback>);
         let receipt = self
             .execution
             .execute(crate::execution::ExecutionRequest {
@@ -1246,13 +1282,30 @@ impl InferencePort for RuntimeInferencePort {
                 parent_task_id,
                 runtime_generation: routed.snapshot.generation,
                 primary,
-                failover,
-                runtime_failover: routed.runtime_failover,
+                fallback: engine_fallback,
                 now_ms: now_ms(),
                 idempotency_window_ms: None,
             })
             .await
             .map_err(|error| error.to_krpc_error())?;
+        if let Some(decision) = fallback.used.lock().expect("fallback lock").take() {
+            if let (Some(events), Some(switch)) = (&self.events, decision.trace.fallback.as_ref()) {
+                events.record(
+                    AiccEventLevel::Warning,
+                    super::events::EVENT_UNAVAILABLE_FALLBACK,
+                    format!("{} was unavailable; {} served the request", switch.from, switch.to),
+                    json!({
+                        "from": switch.from,
+                        "to": switch.to,
+                        "policy": switch.policy,
+                        "reason": switch.reason,
+                        "usecase": decision.trace.usecase.as_ref().map(|usecase| &usecase.usecase),
+                        "task_id": receipt.task_id,
+                    }),
+                );
+            }
+            routed.decision = decision;
+        }
         if receipt.provider_task_ref.is_some() && !receipt.state.is_terminal() {
             let execution = Arc::clone(&self.execution);
             let task_id = receipt.task_id.clone();
@@ -1358,18 +1411,45 @@ async fn candidate_runtime_states(
     video: Option<&buckyos_api::VideoGenerationRequirement>,
     access: &crate::policy::Access,
 ) -> BTreeMap<String, CandidateRuntimeState> {
+    runtime_states_for(
+        snapshot,
+        snapshot.models.as_ref(),
+        None,
+        caller,
+        model_health,
+        estimated_input_tokens,
+        estimated_output_tokens,
+        video,
+        access,
+    )
+    .await
+}
+
+/// Static routing facts of every model in `models`. `assume_ready` names a
+/// Provider that is not running yet (one being added) and is treated as
+/// enabled, configured and visible.
+#[allow(clippy::too_many_arguments)]
+async fn runtime_states_for(
+    snapshot: &crate::runtime::RuntimeSnapshot,
+    models: &crate::model::ModelRegistry,
+    assume_ready: Option<&str>,
+    caller: &AuthorizedCaller,
+    model_health: &ModelHealthRegistry,
+    estimated_input_tokens: Option<u64>,
+    estimated_output_tokens: Option<u64>,
+    video: Option<&buckyos_api::VideoGenerationRequirement>,
+    access: &crate::policy::Access,
+) -> BTreeMap<String, CandidateRuntimeState> {
     let mut credentials = BTreeMap::new();
-    let mut health_states = BTreeMap::new();
     for provider in snapshot.providers.list() {
         let name = provider.config.provider_instance_name.clone();
-        credentials.insert(name.clone(), provider.resolve_credential().await.is_ok());
-        health_states.insert(name, provider.health().await.state);
+        credentials.insert(name, provider.resolve_credential().await.is_ok());
     }
-    snapshot
-        .models
+    models
         .model_views()
         .into_iter()
         .map(|model| {
+            let ready = assume_ready == Some(model.provider_instance_name.as_str());
             let settings =
                 snapshot.settings.providers.iter().find(|provider| {
                     provider.provider_instance_name == model.provider_instance_name
@@ -1381,35 +1461,27 @@ async fn candidate_runtime_states(
                 Some(ProviderInstanceType::ProxyUnknown) | None => ProviderType::ProxyUnknown,
             };
             let local = provider_type == ProviderType::LocalInference;
-            let health = match health_states.get(&model.provider_instance_name) {
-                Some(ProviderHealthState::Healthy) => ProviderHealthStatus::Available,
-                Some(ProviderHealthState::Degraded) => ProviderHealthStatus::Degraded,
-                _ => ProviderHealthStatus::Unavailable,
-            };
             let metadata_routable = snapshot
                 .provider_metadata
                 .get(&model.provider_instance_name)
                 .is_none_or(|metadata| metadata.routable);
-            let enabled = settings.is_some_and(|provider| provider.enabled)
-                && metadata_routable
-                && access.usable_model(&model.exact_model);
+            // Only static facts: whether the Provider is configured, enabled
+            // and visible. Its observed health never changes the route.
+            let enabled = ready
+                || (settings.is_some_and(|provider| provider.enabled)
+                    && runtime.is_some()
+                    && metadata_routable
+                    && access.usable_model(&model.exact_model));
+            // Observed latency only gates a request that set `max_latency_ms`.
             let observed =
                 model_health.snapshot(&model.exact_model, &model.provider_instance_name, now_ms());
-            let health = if observed.circuit_open {
-                ProviderHealthStatus::CircuitOpen
-            } else if health == ProviderHealthStatus::Available && observed.degraded {
-                ProviderHealthStatus::Degraded
-            } else {
-                health
-            };
             let state = CandidateRuntimeState {
                 enabled,
-                credential_available: credentials
-                    .get(&model.provider_instance_name)
-                    .copied()
-                    .unwrap_or(false),
-                model_available: runtime.is_some() && observed.model_available,
-                health,
+                credential_available: ready
+                    || credentials
+                        .get(&model.provider_instance_name)
+                        .copied()
+                        .unwrap_or(false),
                 provider_privacy: if local {
                     ProviderPrivacy::Local
                 } else {
@@ -1515,8 +1587,7 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
             requirements: request.requirements.clone().into(),
             disable: request.disable.clone(),
             policy: request.policy.clone(),
-            session_overlay: request.session_overlay.clone(),
-            session_id: request.session_id.clone(),
+            route_group: request.route_group.clone(),
             estimated_input_tokens: None,
             estimated_output_tokens: request.max_output_tokens,
             video_clips: Default::default(),
@@ -1529,8 +1600,7 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
             requirements: request.requirements.clone().into(),
             disable: request.disable.clone(),
             policy: request.policy.clone(),
-            session_overlay: request.session_overlay.clone(),
-            session_id: request.session_id.clone(),
+            route_group: request.route_group.clone(),
             estimated_input_tokens: None,
             estimated_output_tokens: None,
             video_clips: Default::default(),
@@ -1547,8 +1617,7 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
                 requirements,
                 disable: request.disable.clone(),
                 policy: request.policy.clone(),
-                session_overlay: request.session_overlay.clone(),
-                session_id: request.session_id.clone(),
+                route_group: request.route_group.clone(),
                 estimated_input_tokens: None,
                 estimated_output_tokens: None,
                 video_clips: Default::default(),
@@ -1601,16 +1670,402 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
                 requirements,
                 disable: Default::default(),
                 policy: None,
-                session_overlay: None,
-                session_id: params
-                    .get("session_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
+                route_group: None,
                 estimated_input_tokens: None,
                 estimated_output_tokens: None,
                 video_clips: Default::default(),
             })
         }
+    }
+}
+
+/// Routing for one caller without a request: `routing.preview`, the usecase
+/// table and the coverage of a Provider being added.
+pub(super) struct Preview<'a> {
+    pub snapshot: &'a crate::runtime::RuntimeSnapshot,
+    pub models: &'a crate::model::ModelRegistry,
+    pub layers: &'a UsecaseLayers,
+    /// A Provider being added: treated as enabled and configured.
+    pub assume_ready: Option<&'a str>,
+    /// Providers treated as disabled (a deletion preview).
+    pub excluded_providers: BTreeSet<String>,
+    pub requirements: buckyos_api::ModelRequirement,
+    /// Also predict what the row's "when unavailable" policy would use.
+    pub with_backup: bool,
+}
+
+pub(super) struct PreviewedPath {
+    pub path: String,
+    pub api_type: Option<String>,
+    pub route: Result<crate::routing::usecase::UsecaseRoute, String>,
+    /// `NoCandidate` with nothing filtered: no model of the API type at all.
+    pub no_model: bool,
+    pub backup: Option<Result<Option<RouteDecision>, String>>,
+}
+
+impl RuntimeInferencePort {
+    pub(super) async fn preview(
+        &self,
+        caller: &AuthorizedCaller,
+        preview: &Preview<'_>,
+        paths: &[String],
+    ) -> Result<Vec<PreviewedPath>, RPCErrors> {
+        let caller_identity = CallerIdentity {
+            tenant_id: caller.tenant_id.clone(),
+            user_id: caller.user_id.clone(),
+            app_id: caller.app_id.clone(),
+        };
+        let access = self.access(caller, preview.snapshot).await?;
+        let runtime_states = runtime_states_for(
+            preview.snapshot,
+            preview.models,
+            preview.assume_ready,
+            caller,
+            self.model_health.as_ref(),
+            None,
+            None,
+            None,
+            &access,
+        )
+        .await;
+        let api_types = preview
+            .models
+            .logical_model_views()
+            .into_iter()
+            .filter_map(|view| view.api_type.map(|api_type| (view.path, api_type)))
+            .collect::<BTreeMap<_, _>>();
+        let mut provider_names = preview
+            .snapshot
+            .providers
+            .list()
+            .into_iter()
+            .map(|provider| provider.config.provider_instance_name.clone())
+            .collect::<Vec<_>>();
+        provider_names.extend(preview.assume_ready.map(str::to_owned));
+        let order = provider_order(preview.snapshot);
+        let faulty = faulty_providers(preview.snapshot);
+        let price_of = |exact: &str| model_pricing(preview.snapshot, exact);
+        let to_usd = |amount: f64, currency: &str| usd(preview.snapshot, amount, currency);
+        let restrict = |decision: &mut RouteDecision| {
+            if access.is_restricted() {
+                decision.trace.retain_models(&|model| access.allows_model(model));
+            }
+        };
+        let mut quotas = std::collections::HashMap::new();
+        let mut previewed = Vec::with_capacity(paths.len());
+        for path in paths {
+            let api_type_name = inherited_api_type(&api_types, path);
+            let mut entry = PreviewedPath {
+                path: path.clone(),
+                api_type: api_type_name.clone(),
+                route: Err("logical directory has no API type".to_string()),
+                no_model: false,
+                backup: None,
+            };
+            let Some(api_type) = api_type_name.and_then(|name| {
+                serde_json::from_value::<buckyos_api::ApiType>(Value::String(name)).ok()
+            }) else {
+                previewed.push(entry);
+                continue;
+            };
+            if !quotas.contains_key(&api_type) {
+                let quota = self
+                    .quota
+                    .prepare_route(
+                        &caller_identity,
+                        api_type.capability(),
+                        api_type.typed_method(),
+                        provider_names.clone(),
+                    )
+                    .await
+                    .map_err(|_| {
+                        inference_error(AiccErrorCode::PolicyDenied, "quota scope is invalid")
+                    })?;
+                quotas.insert(api_type, quota);
+            }
+            let policy = match policy_engine_for_route(
+                preview.models,
+                path,
+                preview.snapshot.settings.routing.as_ref(),
+                None,
+                quotas[&api_type].clone(),
+            ) {
+                Ok(policy) => policy,
+                Err(error) => {
+                    entry.route = Err(error.to_string());
+                    previewed.push(entry);
+                    continue;
+                }
+            };
+            let mut request = RoutingRequest::new(
+                next_inference_id(),
+                next_inference_id(),
+                path.clone(),
+                api_type,
+                caller_identity.clone(),
+            );
+            request.requirements = preview.requirements.clone();
+            request.excluded_providers = preview.excluded_providers.clone();
+            let router = Router::new(preview.models, &policy, &runtime_states);
+            match crate::routing::usecase::resolve(&router, preview.layers, &request, true) {
+                Ok(mut route) => {
+                    restrict(&mut route.decision);
+                    if preview.with_backup && route.on_unavailable != OnUnavailable::None {
+                        entry.backup = Some(
+                            crate::routing::usecase::unavailable_fallback(
+                                &router,
+                                preview.layers,
+                                &request,
+                                route.coverage,
+                                &route.decision.selected,
+                                route.on_unavailable,
+                                &crate::routing::usecase::FallbackSearch {
+                                    price_of: &price_of,
+                                    to_usd: &to_usd,
+                                    provider_order: &order,
+                                    faulty: &faulty,
+                                },
+                            )
+                            .map(|backup| {
+                                backup.map(|mut decision| {
+                                    restrict(&mut decision);
+                                    decision
+                                })
+                            })
+                            .map_err(|error| error.to_string()),
+                        );
+                    }
+                    entry.route = Ok(route);
+                }
+                Err(error) => {
+                    entry.no_model = matches!(
+                        &error,
+                        RoutingError::NoCandidate { filtered, .. } if filtered.is_empty()
+                    );
+                    entry.route = Err(error.to_string());
+                }
+            }
+            previewed.push(entry);
+        }
+        Ok(previewed)
+    }
+}
+
+/// Every model a usecase may route to: its default expansion, the models
+/// its layers chose and, for an LLM usecase, the fallback LLM's.
+fn usecase_reachable_models(
+    models: &crate::model::ModelRegistry,
+    layers: &UsecaseLayers,
+    path: &str,
+    api_type: buckyos_api::ApiType,
+) -> Result<Vec<crate::model::RegisteredModel>, crate::error::ModelRegistryError> {
+    let mut reachable = models.reachable_models(path, api_type)?;
+    let mut rows = vec![path.to_owned()];
+    if crate::routing::usecase::LLM_USECASES.contains(&path) && layers.fallback_llm_enabled() {
+        reachable.extend(models.reachable_models(AICC_FALLBACK_LLM, api_type)?);
+        rows.push(AICC_FALLBACK_LLM.to_owned());
+    }
+    for row in rows.iter().filter(|row| crate::routing::usecase::is_usecase(row)) {
+        for choice in layers.cells(row).models {
+            if let Some(model) = models.exact_model(&choice.model) {
+                reachable.push(model.clone());
+            }
+        }
+    }
+    let mut seen = BTreeSet::new();
+    reachable.retain(|model| seen.insert(model.exact_model.to_string()));
+    Ok(reachable)
+}
+
+/// What a routed request keeps for its "when unavailable" policy.
+pub(crate) struct RouteContext {
+    snapshot: Arc<crate::runtime::RuntimeSnapshot>,
+    policy: crate::routing::PolicyEngine<crate::routing::policy::PreparedQuotaSource>,
+    runtime_states: BTreeMap<String, CandidateRuntimeState>,
+    layers: UsecaseLayers,
+    request: RoutingRequest,
+    coverage: bool,
+    on_unavailable: OnUnavailable,
+    access: crate::policy::Access,
+}
+
+impl RouteContext {
+    pub(crate) fn on_unavailable(&self) -> OnUnavailable {
+        self.on_unavailable
+    }
+
+    /// The backup route for `failed` under the request's policy.
+    fn backup_route(&self, failed: &SelectedRoute) -> Result<Option<RouteDecision>, RoutingError> {
+        if self.on_unavailable == OnUnavailable::None {
+            return Ok(None);
+        }
+        let router = Router::new(self.snapshot.models.as_ref(), &self.policy, &self.runtime_states);
+        let snapshot = self.snapshot.as_ref();
+        let price_of = |exact: &str| model_pricing(snapshot, exact);
+        let to_usd = |amount: f64, currency: &str| usd(snapshot, amount, currency);
+        let order = provider_order(snapshot);
+        let faulty = faulty_providers(snapshot);
+        let mut decision = crate::routing::usecase::unavailable_fallback(
+            &router,
+            &self.layers,
+            &self.request,
+            self.coverage,
+            failed,
+            self.on_unavailable,
+            &crate::routing::usecase::FallbackSearch {
+                price_of: &price_of,
+                to_usd: &to_usd,
+                provider_order: &order,
+                faulty: &faulty,
+            },
+        )?;
+        if let Some(decision) = decision.as_mut() {
+            if self.access.is_restricted() {
+                let access = &self.access;
+                decision.trace.retain_models(&|model| access.allows_model(model));
+            }
+        }
+        Ok(decision)
+    }
+}
+
+/// The unit prices of an exact model from its Provider's inventory.
+pub(super) fn model_pricing(
+    snapshot: &crate::runtime::RuntimeSnapshot,
+    exact_model: &str,
+) -> Option<crate::catalog::Pricing> {
+    let model = snapshot.models.exact_model(exact_model)?;
+    snapshot
+        .providers
+        .get(&model.identity.provider_instance_name)?
+        .inventory
+        .models
+        .iter()
+        .find(|candidate| {
+            candidate.provider_model_id == model.identity.provider_model_id
+                && candidate.model_driver_id == model.identity.model_driver_id
+        })?
+        .pricing
+        .as_ref()
+        .map(|pricing| pricing.value.clone())
+}
+
+pub(super) fn usd(
+    snapshot: &crate::runtime::RuntimeSnapshot,
+    amount: f64,
+    currency: &str,
+) -> Option<f64> {
+    snapshot
+        .catalog
+        .cost_in_usd(
+            buckyos_api::Money::new(amount, currency.to_ascii_uppercase()),
+            now_ms().min(i64::MAX as u64) as i64,
+        )
+        .map(|cost| cost.amount)
+}
+
+pub(super) fn provider_order(snapshot: &crate::runtime::RuntimeSnapshot) -> Vec<String> {
+    snapshot
+        .settings
+        .providers
+        .iter()
+        .map(|provider| provider.provider_instance_name.clone())
+        .collect()
+}
+
+pub(super) fn faulty_providers(snapshot: &crate::runtime::RuntimeSnapshot) -> BTreeSet<String> {
+    snapshot
+        .settings
+        .providers
+        .iter()
+        .filter(|provider| provider.marked_faulty)
+        .map(|provider| provider.provider_instance_name.clone())
+        .collect()
+}
+
+/// The usecase policy of one request, handed to the execution engine.
+struct InferenceFallback {
+    port: RuntimeInferencePort,
+    caller: AuthorizedCaller,
+    context: Arc<RouteContext>,
+    decision: RouteDecision,
+    call: AiccCall,
+    video_facts: crate::video::VideoMaterialFacts,
+    request_id: String,
+    /// The backup decision once one was made.
+    used: std::sync::Mutex<Option<RouteDecision>>,
+}
+
+impl InferenceFallback {
+    /// The backup decision and the call lowered for it, or `None`.
+    async fn prepare(
+        &self,
+        failed_model: &str,
+        reason: &str,
+    ) -> Result<Option<(RouteDecision, ResolvedProviderCall)>, AiccError> {
+        if self.used.lock().expect("fallback lock").is_some() {
+            return Ok(None);
+        }
+        let mut failed = self.decision.selected.clone();
+        if failed.exact_model != failed_model {
+            return Ok(None);
+        }
+        failed.exact_model = failed_model.to_owned();
+        let Some(mut decision) = self
+            .context
+            .backup_route(&failed)
+            .map_err(|error| AiccError::new(AiccErrorCode::NoCandidateModel, error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        if let Some(fallback) = decision.trace.fallback.as_mut() {
+            fallback.reason = Some(reason.to_owned());
+        }
+        decision.trace.usecase = self.decision.trace.usecase.clone();
+        decision.trace.requested_model = self.decision.trace.requested_model.clone();
+        let rpc = |error: RPCErrors| {
+            AiccError::from_krpc_error(&error)
+                .unwrap_or_else(|| AiccError::new(AiccErrorCode::InternalError, error.to_string()))
+        };
+        let exact_call = call_with_exact_model(&self.call, &decision.selected.exact_model).map_err(rpc)?;
+        let mut lowered = self
+            .port
+            .lower_call(self.context.snapshot.as_ref(), &decision, &exact_call, &self.video_facts)
+            .await
+            .map_err(rpc)?;
+        self.port
+            .materialize_resources(
+                self.context.snapshot.settings.as_ref(),
+                &self.caller,
+                &self.request_id,
+                &mut lowered,
+                &mut Vec::new(),
+            )
+            .await
+            .map_err(rpc)?;
+        lowered.fallback_from = Some(failed_model.to_owned());
+        *self.used.lock().expect("fallback lock") = Some(decision.clone());
+        log::warn!(
+            "unavailable_fallback: from={} to={} policy={:?} reason={reason}",
+            failed_model,
+            decision.selected.exact_model,
+            self.context.on_unavailable()
+        );
+        Ok(Some((decision, lowered)))
+    }
+}
+
+#[async_trait]
+impl crate::execution::UnavailableFallback for InferenceFallback {
+    async fn backup(
+        &self,
+        failed: &ResolvedProviderCall,
+        reason: &str,
+    ) -> Result<Option<ResolvedProviderCall>, AiccError> {
+        Ok(self
+            .prepare(&failed.exact_model, reason)
+            .await?
+            .map(|(_, call)| call))
     }
 }
 
@@ -1706,7 +2161,7 @@ fn exact_call_for_route(call: AiccCall, exact_model: &str) -> Result<AiccCall, R
         "requirements",
         "disable",
         "policy",
-        "session_overlay",
+        "route_group",
     ] {
         object.remove(field);
     }
@@ -1762,15 +2217,6 @@ fn route_response(decision: &RouteDecision) -> RouteResolveResponse {
         operation: selected.operation.clone(),
         enabled_capabilities: selected.enabled_capabilities.clone(),
         disabled_capabilities: selected.disabled_capabilities.clone(),
-        fallback_attempts: decision
-            .fallback_candidates
-            .iter()
-            .map(|candidate| RouteFallbackAttempt {
-                exact_model: candidate.exact_model.clone(),
-                provider_instance_name: candidate.provider_instance_name.clone(),
-                provider_model_id: candidate.provider_model_id.clone(),
-            })
-            .collect(),
         route_trace: public_route_trace(decision),
         inventory_revision: selected.inventory_revision.clone(),
     }
@@ -1780,6 +2226,7 @@ fn public_route_trace(decision: &RouteDecision) -> RouteTrace {
     RouteTrace {
         attempts: Vec::new(),
         final_model: Some(decision.selected.exact_model.clone()),
+        fallback: decision.trace.fallback.clone(),
     }
 }
 
@@ -1852,6 +2299,15 @@ pub(crate) trait ProviderValidator: Send + Sync {
         &self,
         request: ProviderValidateRequest,
     ) -> Result<ProviderValidateResponse, RPCErrors>;
+
+    /// Also the inventory the Provider would add, for the usecase coverage.
+    async fn validate_with_inventory(
+        &self,
+        request: ProviderValidateRequest,
+    ) -> Result<(ProviderValidateResponse, Option<crate::model::ProviderInventory>), RPCErrors>
+    {
+        Ok((self.validate(request).await?, None))
+    }
 }
 
 #[async_trait]

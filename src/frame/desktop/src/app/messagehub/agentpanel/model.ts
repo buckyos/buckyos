@@ -21,6 +21,18 @@ export interface PromptVersion {
   changed: string[]
 }
 
+/** An answer that did not come from the usecase's own model (AICC `route_trace.fallback`), once per usecase and model. */
+export interface RouteFallbackNote {
+  /** `coverage`: no model is set up for the usecase, the fallback LLM answered. `unavailable`: its model failed, another one answered. */
+  kind: 'coverage' | 'unavailable'
+  usecase: string
+  model: string
+  replaced?: string
+}
+
+/** One of the viewer's AI routing groups (AICC `routing.groups.list`). */
+export interface RouteGroup { group_id: string; name: string }
+
 /** The current generation of the UI Session behind a conversation. */
 export interface UiSessionView {
   session_id: string
@@ -33,6 +45,9 @@ export interface UiSessionView {
   /** Work sessions under it that have not ended. */
   unfinished_works: number
   prompt: PromptVersion
+  /** The viewer's routing group the session uses; absent: none chosen. */
+  route_group?: string
+  route_fallbacks?: RouteFallbackNote[]
 }
 
 export interface UiGeneration { session_id: string; created_at_ms: number; finished_at_ms?: number; outcome?: string }
@@ -83,11 +98,24 @@ export function parseAgentSummary(value: unknown): AgentSummary | null {
   }
 }
 
+function parseFallback(value: unknown): RouteFallbackNote | null {
+  const note = record(value)
+  if (!note || (note.kind !== 'coverage' && note.kind !== 'unavailable') || typeof note.usecase !== 'string' || typeof note.model !== 'string') return null
+  return { kind: note.kind, usecase: note.usecase, model: note.model, ...(typeof note.replaced === 'string' ? { replaced: note.replaced } : {}) }
+}
+
+export function parseRouteGroups(value: unknown): RouteGroup[] | null {
+  const groups = record(value)?.groups
+  if (!Array.isArray(groups)) return null
+  return groups.map(record).filter(group => !!group && typeof group.group_id === 'string' && !!group.group_id).map(group => ({ group_id: group!.group_id as string, name: text(group!.name) || group!.group_id as string }))
+}
+
 function parseSessionView(value: unknown): UiSessionView | null {
   const view = record(value)
   if (!view || typeof view.session_id !== 'string' || !view.session_id) return null
   const turn = record(view.open_turn)
   const prompt = record(view.prompt)
+  const fallbacks = Array.isArray(view.route_fallbacks) ? view.route_fallbacks.map(parseFallback).filter((note): note is RouteFallbackNote => !!note) : []
   return {
     session_id: view.session_id,
     run_state: text(view.run_state),
@@ -97,6 +125,8 @@ function parseSessionView(value: unknown): UiSessionView | null {
     ...(turn ? { open_turn: { turn: count(turn.turn), task_id: typeof turn.task_id === 'string' && turn.task_id ? turn.task_id : null } } : {}),
     unfinished_works: count(view.unfinished_works),
     prompt: { frozen_at_ms: count(prompt?.frozen_at_ms), current: prompt?.current !== false, changed: Array.isArray(prompt?.changed) ? prompt.changed.filter((item): item is string => typeof item === 'string') : [] },
+    ...(typeof view.route_group === 'string' && view.route_group ? { route_group: view.route_group } : {}),
+    ...(fallbacks.length ? { route_fallbacks: fallbacks } : {}),
   }
 }
 

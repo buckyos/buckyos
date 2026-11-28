@@ -168,6 +168,7 @@ pub mod ai_methods {
                 | DRIVER_METADATA_UPDATE_GET
                 | DRIVER_METADATA_UPDATE_SET
         ) || crate::policy_methods::is_policy_method(method)
+            || crate::routing_methods::is_usecase_method(method)
     }
 }
 
@@ -874,6 +875,7 @@ mod canonical_contract_tests {
             base_url: "https://api.openai.com/v1".to_string(),
             operation_base_urls: BTreeMap::new(),
             enabled,
+            marked_faulty: false,
             auth: ProviderInstanceAuthView {
                 mode: Some(ProviderInstanceAuthMode::ApiKey),
                 credential_kind: Some("bearer".to_string()),
@@ -1462,7 +1464,6 @@ pub enum AiccErrorCode {
     ResourceInvalid,
     NoProviderAvailable,
     NoCandidateModel,
-    FallbackNotAllowed,
     ProviderStartFailed,
     ProviderError,
     UnsupportedOperation,
@@ -1516,7 +1517,6 @@ impl AiccErrorCode {
             Self::ResourceInvalid => "resource_invalid",
             Self::NoProviderAvailable => "no_provider_available",
             Self::NoCandidateModel => "no_candidate_model",
-            Self::FallbackNotAllowed => "fallback_not_allowed",
             Self::ProviderStartFailed => "provider_start_failed",
             Self::ProviderError => "provider_error",
             Self::UnsupportedOperation => "unsupported_operation",
@@ -1892,36 +1892,10 @@ pub struct ModelItemPatch {
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum OverlayMergeMode {
-    #[default]
-    Inherit,
-    Replace,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AiccFallbackMode {
-    Strict,
-    Parent,
-    TargetExact,
-    TargetLogical,
-    Disabled,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AiccFallbackRule {
-    pub mode: AiccFallbackMode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum AiccSchedulerProfile {
-    #[default]
-    CostFirst,
     LatencyFirst,
     QualityFirst,
+    #[default]
     Balanced,
     LocalFirst,
     StrictLocal,
@@ -2007,12 +1981,6 @@ pub struct AiccPolicyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_only: Option<LockedValue<bool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allow_fallback: Option<LockedValue<bool>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allow_exact_model_fallback: Option<LockedValue<bool>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_failover: Option<LockedValue<bool>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explain: Option<LockedValue<bool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_provider_instances: Option<LockedValue<Vec<String>>>,
@@ -2024,8 +1992,6 @@ pub struct AiccPolicyConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AiccSchedulerProfileConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cost_first: Option<AiccSchedulerProfileWeights>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latency_first: Option<AiccSchedulerProfileWeights>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2040,8 +2006,6 @@ pub struct AiccSchedulerProfileConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AiccSchedulerProfileWeights {
-    #[serde(default)]
-    pub cost: f64,
     #[serde(default)]
     pub quality: f64,
     #[serde(default)]
@@ -2067,60 +2031,15 @@ pub struct AiccLogicalNodeOverlay {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_line: Option<ModelDisable>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fallback: Option<AiccFallbackRule>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<AiccPolicyConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route_policy_override: Option<AiccPolicyConfig>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct AiccSessionLogicalProfile {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub overlays: Vec<AiccLogicalTreeOverlay>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub route_policy_override: Option<AiccPolicyConfig>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct AiccLogicalTreeOverlay {
-    pub path: String,
-    #[serde(default, skip_serializing_if = "is_default_overlay_merge_mode")]
-    pub merge_mode: OverlayMergeMode,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub items: LogicalItems,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub item_overrides: BTreeMap<String, ModelItemPatch>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub exact_model_weights: BTreeMap<String, f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disable_line: Option<ModelDisable>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fallback: Option<AiccFallbackRule>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub route_policy_override: Option<AiccPolicyConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-}
-
-fn is_default_overlay_merge_mode(mode: &OverlayMergeMode) -> bool {
-    *mode == OverlayMergeMode::default()
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AiccRouteOverlay {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inherit: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub logical_tree: BTreeMap<String, AiccLogicalNodeOverlay>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub logical_profile: Option<AiccSessionLogicalProfile>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub logical_profiles: BTreeMap<String, AiccSessionLogicalProfile>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_logical_profile: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub global_exact_model_weights: BTreeMap<String, f64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -2129,10 +2048,10 @@ pub struct AiccRouteOverlay {
     pub routing_commands: Vec<AiccRoutingCommand>,
     #[serde(default, skip_serializing_if = "is_default_aicc_policy_config")]
     pub policy: AiccPolicyConfig,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub revision: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ttl_seconds: Option<u64>,
+    /// The administrator layer of the usecase table
+    /// (doc/aicc/aicc_router.md §11).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub usecases: BTreeMap<String, crate::AiccUsecaseRoute>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2229,7 +2148,6 @@ fn is_default_aicc_policy_config(policy: &AiccPolicyConfig) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RoutePolicyProfile {
-    Cheap,
     Fast,
     #[default]
     Balanced,
@@ -2251,10 +2169,9 @@ pub struct RoutePolicy {
     pub profile: RoutePolicyProfile,
     #[serde(default, skip_serializing_if = "is_false")]
     pub local_only: bool,
-    #[serde(default = "default_allow_fallback")]
-    pub allow_fallback: bool,
-    #[serde(default = "default_runtime_failover")]
-    pub runtime_failover: bool,
+    /// Turn off the usecase's "when unavailable" policy for this request.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub no_fallback: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub explain: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2267,21 +2184,12 @@ pub struct RoutePolicy {
     pub max_latency_ms: Option<u64>,
 }
 
-fn default_allow_fallback() -> bool {
-    true
-}
-
-fn default_runtime_failover() -> bool {
-    true
-}
-
 impl Default for RoutePolicy {
     fn default() -> Self {
         Self {
             profile: RoutePolicyProfile::Balanced,
             local_only: false,
-            allow_fallback: true,
-            runtime_failover: true,
+            no_fallback: false,
             explain: false,
             allowed_provider_instances: Vec::new(),
             blocked_provider_instances: Vec::new(),
@@ -2887,6 +2795,9 @@ pub struct RouteTrace {
     pub attempts: Vec<RouteTraceAttempt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_model: Option<String>,
+    /// Set when the answer did not come from the usecase's own model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<crate::RouteFallback>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -3087,10 +2998,9 @@ pub struct RouteResolveRequest {
     pub estimated_input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_output_tokens: Option<u64>,
+    /// A routing group of the caller's quota user (doc/aicc/aicc_router.md §12).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_overlay: Option<AiccRouteOverlay>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
+    pub route_group: Option<String>,
 }
 
 impl RouteResolveRequest {
@@ -3106,8 +3016,7 @@ impl RouteResolveRequest {
             policy: None,
             estimated_input_tokens: None,
             estimated_output_tokens: None,
-            session_overlay: None,
-            session_id: None,
+            route_group: None,
         }
     }
 
@@ -3119,13 +3028,6 @@ impl RouteResolveRequest {
             .map_err(|error| error.to_krpc_error())?;
         Ok(request)
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RouteFallbackAttempt {
-    pub exact_model: String,
-    pub provider_instance_name: String,
-    pub provider_model_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -3145,8 +3047,6 @@ pub struct RouteResolveResponse {
     pub enabled_capabilities: Vec<Feature>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_capabilities: Vec<Feature>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fallback_attempts: Vec<RouteFallbackAttempt>,
     #[serde(default, skip_serializing_if = "is_default")]
     pub route_trace: RouteTrace,
     pub inventory_revision: String,
@@ -3184,8 +3084,6 @@ pub struct LlmChatInvokeRequest {
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_options: Option<AiTaskOptions>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -3224,10 +3122,9 @@ pub struct LlmChatHelperRequest {
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_options: Option<AiTaskOptions>,
+    /// A routing group of the caller's quota user (doc/aicc/aicc_router.md §12).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_overlay: Option<AiccRouteOverlay>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
+    pub route_group: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -3290,8 +3187,7 @@ impl LlmChatHelperRequest {
             output: None,
             idempotency_key: None,
             task_options: None,
-            session_overlay: None,
-            session_id: None,
+            route_group: None,
         }
     }
 
@@ -3323,7 +3219,6 @@ impl LlmChatInvokeRequest {
             output: None,
             idempotency_key: None,
             task_options: None,
-            session_id: None,
         }
     }
 
@@ -3389,8 +3284,6 @@ pub struct TextToImageInvokeRequest {
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_options: Option<AiTaskOptions>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
 }
 
 impl TextToImageInvokeRequest {
@@ -3410,7 +3303,6 @@ impl TextToImageInvokeRequest {
             output: None,
             idempotency_key: None,
             task_options: None,
-            session_id: None,
         }
     }
 
@@ -3461,10 +3353,9 @@ pub struct TextToImageHelperRequest {
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_options: Option<AiTaskOptions>,
+    /// A routing group of the caller's quota user (doc/aicc/aicc_router.md §12).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_overlay: Option<AiccRouteOverlay>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
+    pub route_group: Option<String>,
 }
 
 impl TextToImageHelperRequest {
@@ -3487,8 +3378,7 @@ impl TextToImageHelperRequest {
             output: None,
             idempotency_key: None,
             task_options: None,
-            session_overlay: None,
-            session_id: None,
+            route_group: None,
         }
     }
 
@@ -3569,8 +3459,6 @@ macro_rules! typed_request {
             pub idempotency_key: Option<String>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             pub task_options: Option<AiTaskOptions>,
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            pub session_id: Option<String>,
         }
 
         impl $name {
@@ -3583,7 +3471,6 @@ macro_rules! typed_request {
                     $($optional: None,)*
                     idempotency_key: None,
                     task_options: None,
-                    session_id: None,
                 }
             }
         }
@@ -4737,8 +4624,9 @@ pub struct ProviderValidateResponse {
     pub unmatched_models: Vec<Value>,
     #[serde(default)]
     pub unavailable_presets: Vec<Value>,
-    #[serde(default)]
-    pub routing_candidates: BTreeMap<String, Vec<String>>,
+    /// Every usecase of the Zone before and after this Provider is added.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub usecase_coverage: Vec<crate::UsecaseCoverageChange>,
     #[serde(default)]
     pub warnings: Vec<String>,
     pub base_url_reachable: bool,
@@ -5041,6 +4929,8 @@ pub struct ProviderInstanceView {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub operation_base_urls: BTreeMap<String, String>,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub marked_faulty: bool,
     pub auth: ProviderInstanceAuthView,
     pub inventory: ProviderInstanceInventoryView,
     pub health: ProviderInstanceHealthView,
@@ -5101,6 +4991,9 @@ pub struct ProviderUpdateRequest {
     pub discovery: Option<ProviderDiscoverySettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_rules: Option<ProviderInstanceRules>,
+    /// Manually marked faulty: routing is unchanged, calls are not sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marked_faulty: Option<bool>,
 }
 
 impl_request_json!(ProviderUpdateRequest);
@@ -5120,6 +5013,7 @@ impl ProviderUpdateRequest {
             protocol_adapter_id: None,
             discovery: None,
             instance_rules: None,
+            marked_faulty: None,
         }
     }
 }
@@ -5497,6 +5391,32 @@ impl AiccClient {
             }
             in_process => in_process,
         }
+    }
+
+    /// One usecase-table method (see [`routing_methods`]).
+    pub async fn routing_call<Req, Resp>(
+        &self,
+        method: &str,
+        request: &Req,
+    ) -> std::result::Result<Resp, RPCErrors>
+    where
+        Req: Serialize,
+        Resp: serde::de::DeserializeOwned,
+    {
+        let params = serde_json::to_value(request).map_err(|error| {
+            RPCErrors::ReasonError(format!("Failed to serialize {method} request: {error}"))
+        })?;
+        let result = match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_usecase_rpc(method, params, RPCContext::default())
+                    .await?
+            }
+            Self::KRPC(client) => client.call(method, params).await?,
+        };
+        serde_json::from_value(result).map_err(|error| {
+            RPCErrors::ParserResponseError(format!("Failed to parse {method} response: {error}"))
+        })
     }
 
     /// One `policy.*` / `price.*` / `credit.*` method (see [`policy_methods`]).
@@ -6536,6 +6456,17 @@ pub trait AiccHandler: Send + Sync {
         ))
     }
 
+    /// The usecase table, routing groups and App bindings; the typed
+    /// requests and responses are in `aicc_routing`.
+    async fn handle_usecase_rpc(
+        &self,
+        method: &str,
+        _params: Value,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Value, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(method.to_string()))
+    }
+
     /// Every `policy.*`, `price.*` and `credit.*` method; the typed requests
     /// and responses are in `aicc_quota`.
     async fn handle_policy_rpc(
@@ -6966,6 +6897,9 @@ impl<T: AiccHandler> AiccServerHandler<T> {
                     .handle_list_events(EventsListRequest::from_json(req.params)?, ctx)
                     .await?
             )),
+            method if crate::routing_methods::is_usecase_method(method) => {
+                RPCResult::Success(self.0.handle_usecase_rpc(method, req.params, ctx).await?)
+            }
             method if policy_methods::is_policy_method(method) => {
                 RPCResult::Success(self.0.handle_policy_rpc(method, req.params, ctx).await?)
             }

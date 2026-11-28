@@ -228,10 +228,17 @@ interface UsageDashboardProps {
   mode?: 'home' | 'usage'
   /** Breakdown rows open the policy of the row's user (or App), focused on the row's Provider or model. */
   onSetPolicy?: (intent: PolicyIntent) => void
+  /** Start with the usage detail filtered to calls served by an unavailable policy. */
+  initialFallbackOnly?: boolean
+  onIntentConsumed?: () => void
 }
 
-export function UsageDashboard({ mode = 'home', onSetPolicy }: UsageDashboardProps) {
+export function UsageDashboard({ mode = 'home', onSetPolicy, initialFallbackOnly = false, onIntentConsumed }: UsageDashboardProps) {
   const { t } = useI18n()
+  const [fallbackStart] = useState(initialFallbackOnly)
+  useEffect(() => {
+    if (fallbackStart) onIntentConsumed?.()
+  }, [fallbackStart, onIntentConsumed])
   const store = useAICCStore()
   const version = useSyncExternalStore(store.subscribe, store.getSnapshotVersion)
   const isAdmin = useViewerIsAdmin()
@@ -307,6 +314,7 @@ export function UsageDashboard({ mode = 'home', onSetPolicy }: UsageDashboardPro
             onSelectUser={isAdmin && scopeKey === 'system' ? (user) => setSelection(`user:${user}`) : undefined}
             onSetPolicy={scopeKey === 'system' ? undefined : onSetPolicy}
             policyUser={scopeKey.startsWith('user:') ? scopeKey.slice(5) : undefined}
+            initialFallbackOnly={fallbackStart}
           />
         </div>
       ) : <div role="status" className="p-4 text-sm" style={{ color: 'var(--cp-muted)' }}>{t('common.loading', 'Loading...')}</div>}
@@ -314,7 +322,7 @@ export function UsageDashboard({ mode = 'home', onSetPolicy }: UsageDashboardPro
   )
 }
 
-function ScopedUsageDashboard({ mode = 'home', onSetPolicy, policyUser, scope, overview, onSelectUser }: UsageDashboardProps & {
+function ScopedUsageDashboard({ mode = 'home', onSetPolicy, policyUser, scope, overview, onSelectUser, initialFallbackOnly = false }: UsageDashboardProps & {
   scope: UsageScope
   overview: UsageOverview
   onSelectUser?: (user: string) => void
@@ -331,6 +339,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetPolicy, policyUser, scope, o
   const [providerFilter, setProviderFilter] = useState<MultiFilter>(EMPTY_MULTI_FILTER)
   const [modelFilter, setModelFilter] = useState<MultiFilter>(EMPTY_MULTI_FILTER)
   const [appAgentFilter, setAppAgentFilter] = useState<MultiFilter>(EMPTY_MULTI_FILTER)
+  const [fallbackOnly, setFallbackOnly] = useState(initialFallbackOnly)
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
   // Free-text portion of the filters as last committed to the query (see useDebouncedEffect below).
@@ -349,7 +358,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetPolicy, policyUser, scope, o
   const [linkedTraceCursor, setLinkedTraceCursor] = useState<string | undefined>()
   const [linkedTraceLoading, setLinkedTraceLoading] = useState(false)
   const [linkedTraceError, setLinkedTraceError] = useState<string | null>(null)
-  const [filtersSheetOpen, setFiltersSheetOpen] = useState(false)
+  const [filtersSheetOpen, setFiltersSheetOpen] = useState(initialFallbackOnly)
   const [usageTab, setUsageTab] = useState<'usage' | 'trace'>('usage')
   const [homeBreakdownKey, setHomeBreakdownKey] = useState<HomeBreakdownKey>('provider')
   const [costExpanded, setCostExpanded] = useState(false)
@@ -402,7 +411,8 @@ function ScopedUsageDashboard({ mode = 'home', onSetPolicy, policyUser, scope, o
     providerModelQuery: committedFilterText.model,
     appIds: appAgentFilter.selected,
     appQuery: committedFilterText.app,
-  }), [appAgentFilter.selected, committedFilterText, modelFilter.selected, providerFilter.selected])
+    fallbackOnly,
+  }), [appAgentFilter.selected, committedFilterText, fallbackOnly, modelFilter.selected, providerFilter.selected])
   const currentCursor = pageCursors[detailPage]
   const effectiveDetailPage = detailPage
   const pageStart = (effectiveDetailPage - 1) * pageLimit
@@ -423,7 +433,7 @@ function ScopedUsageDashboard({ mode = 'home', onSetPolicy, policyUser, scope, o
     ['30d', t('aiCenter.home.last30Days', 'Last 30 days')],
     ['custom', t('aiCenter.home.customRange', 'Custom range')],
   ], [t])
-  const activeUsageFilterCount = usageFilterCount(timeRange, providerFilter, modelFilter, appAgentFilter)
+  const activeUsageFilterCount = usageFilterCount(timeRange, providerFilter, modelFilter, appAgentFilter) + (fallbackOnly ? 1 : 0)
 
   useEffect(() => {
     let cancelled = false
@@ -922,6 +932,19 @@ function ScopedUsageDashboard({ mode = 'home', onSetPolicy, policyUser, scope, o
                   options={appAgentOptions}
                   allLabel={t('aiCenter.home.allAppsAgents', 'All apps / agents')}
                 />
+                <label className="flex min-h-10 items-center gap-2 px-1 text-xs sm:col-span-2 xl:col-span-4" style={{ color: 'var(--cp-text)' }}>
+                  <input
+                    type="checkbox"
+                    data-testid="usage-fallback-only"
+                    checked={fallbackOnly}
+                    onChange={(event) => {
+                      setFallbackOnly(event.target.checked)
+                      resetUsagePaging()
+                    }}
+                    style={{ accentColor: 'var(--cp-accent)' }}
+                  />
+                  {t('aiCenter.home.filterFallbackOnly', 'Only calls served by an unavailable policy')}
+                </label>
               </div>
             )}
           </div>
@@ -986,6 +1009,11 @@ function ScopedUsageDashboard({ mode = 'home', onSetPolicy, policyUser, scope, o
                     </td>
                     <td className="px-4 py-2 text-xs font-mono" style={{ color: 'var(--cp-text)' }}>
                       <CopyableText value={event.exact_model} mono />
+                      {event.fallback_from && (
+                        <div data-testid="usage-fallback-from" className="mt-1 break-all font-sans" style={{ color: 'var(--cp-warning)' }}>
+                          {t('aiCenter.home.fallbackFrom', 'Switched from {{model}}', { model: event.fallback_from })}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-2 text-xs truncate" style={{ color: 'var(--cp-text)' }} title={event.api_type}>{event.api_type}</td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>
@@ -1436,6 +1464,7 @@ function UsageEventCard({
         <UsageCardRow label={t('aiCenter.home.usageUser', 'User')} value={event.user_id ?? event.tenant_id} />
         <UsageCardRow label={t('aiCenter.home.filterProvider', 'Provider')} value={providerDisplayName} title={providerDisplayName === providerIdentifier ? providerDisplayName : `${providerDisplayName} (${providerIdentifier})`} />
         <UsageCardRow label={t('aiCenter.home.filterModel', 'Model')} value={event.exact_model} mono allowWrap />
+        {event.fallback_from && <UsageCardRow label={t('aiCenter.home.switchedFrom', 'Switched from')} value={event.fallback_from} mono allowWrap />}
         <UsageCardRow label={t('aiCenter.home.filterAppAgent', 'App / Agent')} value={appAgent} />
         <UsageCardRow label={t('aiCenter.home.colCredit', 'AI Credit')} value={usageCredit(event, locale, t)} />
         {event.session_id && !onOpenTrace && <UsageCardRow label={t('aiCenter.home.taskSession', 'Task / Session')} value={event.session_id} mono />}

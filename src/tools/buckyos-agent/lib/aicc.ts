@@ -62,8 +62,7 @@ export interface RouteOptions {
   requirements?: Parameters<AiccClient["routeResolve"]>[0]["requirements"];
   disable?: Parameters<AiccClient["routeResolve"]>[0]["disable"];
   profile?: Profile;
-  allowFallback?: boolean;
-  runtimeFailover?: boolean;
+  noFallback?: boolean;
   localOnly?: boolean;
   allowedProviderInstances?: string[];
   blockedProviderInstances?: string[];
@@ -130,8 +129,7 @@ function envNumber(name: string, fallback: number): number {
 
 function defaultProfile(): Profile {
   const raw = (Deno.env.get("AICC_DEFAULT_PROFILE") ?? "").toLowerCase();
-  return raw === "cheap" || raw === "fast" || raw === "quality" ||
-      raw === "balanced"
+  return raw === "fast" || raw === "quality" || raw === "balanced"
     ? raw
     : "balanced";
 }
@@ -141,8 +139,7 @@ function buildPolicy(
 ): NonNullable<Parameters<AiccClient["routeResolve"]>[0]["policy"]> {
   return {
     profile: opts.profile ?? defaultProfile(),
-    allow_fallback: opts.allowFallback ?? true,
-    runtime_failover: opts.runtimeFailover ?? true,
+    ...(opts.noFallback ? { no_fallback: true } : {}),
     ...(opts.localOnly ? { local_only: true } : {}),
     ...(opts.allowedProviderInstances?.length
       ? { allowed_provider_instances: opts.allowedProviderInstances }
@@ -415,7 +412,7 @@ export interface TextToImageOptions extends RouteOptions {
     | "policy"
     | "idempotency_key"
     | "task_options"
-    | "session_overlay"
+    | "route_group"
   >;
 }
 
@@ -523,8 +520,7 @@ interface CommonFlagsShape {
 export function commonPolicyOptions(common: CommonFlagsShape): RouteOptions {
   return {
     profile: common.profile,
-    allowFallback: common.noFallback ? false : undefined,
-    runtimeFailover: common.noFallback ? false : undefined,
+    noFallback: common.noFallback,
     maxCostUsd: common.maxCostUsd,
     maxLatencyMs: common.maxLatencyMs,
     idempotencyKey: common.idempotencyKey,

@@ -22,7 +22,7 @@ all-in-one 接口也让黑盒测试很难写出高信心用例。
 
 从 provider 覆盖测试角度看，测试希望只通过 API 完整跑一遍所有 provider 模型。但当前接口先经过逻辑模型路由，再进入 provider 推理。黑盒测试只能看到一个统一推理入口，无法稳定指定“这一次一定要命中某个 provider 的某个物理模型”，因此很难通过纯 API 覆盖所有 provider model。
 
-从路由测试角度看，测试希望只通过 API 验证路由语义，例如 capability 过滤、成本优先、local only、fallback、session overlay 等。但当前接口会直接启动真实推理，路由结果和 provider 执行结果混在一起。为了构造一个典型路由逻辑，测试环境往往需要准备足够多的 provider、模型能力、quota、health、成本与延迟状态，最终测试会被迫理解并操控组件内部状态。
+从路由测试角度看，测试希望只通过 API 验证路由语义，例如 capability 过滤、用途表的层次、local only、“不可用时”策略、路由策略组等。但当前接口会直接启动真实推理，路由结果和 provider 执行结果混在一起。为了构造一个典型路由逻辑，测试环境往往需要准备足够多的 provider、模型能力、quota、health、成本与延迟状态，最终测试会被迫理解并操控组件内部状态。
 
 这导致两类测试都容易退化成白盒测试：
 
@@ -124,7 +124,7 @@ RouteResolveRequest
   estimated_input_tokens
   estimated_output_tokens
   session_id
-  session_overlay
+  route_group
 ```
 
 输出：
@@ -141,7 +141,6 @@ RouteResolveResponse
   operation
   enabled_capabilities
   disabled_capabilities
-  fallback_attempts
   route_trace
   inventory_revision
 ```
@@ -152,9 +151,9 @@ RouteResolveResponse
 - `provider_model_id` 是 provider wire protocol 中真正使用的模型名。
 - `model_driver_id` / `origin_model_id` 表达模型固有语义；`provider_profile_id` / `protocol_adapter_id` / `operation` 表达实际交付渠道。
 - `provider_model_id` 始终保存 Provider discovery 返回并用于真实调用的原始模型名。
-- `fallback_attempts` 是路由器建议的候选顺序，供 helper 或调用方在失败后自行决定是否重试。
-- `route_trace` 用于解释候选过滤、policy 命中、session overlay、成本/延迟/health 选择原因。
-- `session_overlay` 由调用方每次传入，AICC 不保存；`session_id` 只用于 tenant/user/app/session 隔离的上次 exact-model 路由历史，因此 response 不再包含 `session_config_revision`。
+- response 不包含备选模型。换模型只来自用途的“不可用时”策略，并且只在 Helper 内部执行（[aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)）。
+- `route_trace` 用于解释候选过滤、policy 命中、用途的来源层与策略组、成本等选择原因；健康和延迟观测不参与选择。
+- `route_group` 是调用者自己的一个路由策略组 ID（会话绑定，由 lib_opendan 传入）；用途的模型由调用者的用途表决定（[aicc_router.md §11](aicc_router.md#11-用途表与配置层次)）。`session_id` 只用于 tenant/user/app/session 隔离的上次 exact-model 路由历史，因此 response 不包含 `session_config_revision`。
 
 #### TOCTOU 处理原则
 
@@ -165,8 +164,8 @@ RouteResolveResponse
 数据面推理接口只接受 `exact_model`。如果推理失败，调用方可以选择：
 
 - 原地重试同一个 `exact_model`。
-- 重新调用 `route.resolve`，拿到新的 `selected_exact_model` 后再推理。
-- 使用 `fallback_attempts` 中的候选，自行尝试下一个物理模型。
+- 重新调用 `route.resolve`。路由是确定的：配置和静态库存没变时得到同一个模型，Provider 故障不会改变它。
+- 需要 Provider 不可用时换模型的，改用 Helper，并在用途表里为该用途设置“不可用时”策略。
 
 #### Provider call 解析原则
 
@@ -353,7 +352,7 @@ Beta 2.2 采用一次性切换，不保留向前兼容：
 ## 9. 验收约束
 
 - route response 和 trace 同时包含 Provider Instance/Profile、Protocol Adapter、Model Driver、origin model、原始 provider model、operation、规则及价格来源。
-- exact model 数据面不做逻辑 fallback；TOCTOU 失败由调用方重新 route。
+- exact model 数据面从不换模型；失败返回 Provider 的真实错误。
 - OpenAI-compatible Provider 调用 Claude 模型时使用 Claude Model Driver 语义，但不得应用 GPT 特判或切换 Anthropic endpoint。
 - 同一 origin model 在不同 Provider 可以解析出不同 operation 和价格。
 - Adapter 执行层不按模型家族字符串或 base URL 猜测 operation。

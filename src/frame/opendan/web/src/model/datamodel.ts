@@ -31,6 +31,7 @@ import type {
   LoaderStatus,
   ProfilePatch,
   RegistryEntry,
+  RouteGroup,
   RuntimeImpact,
   RuntimeSettingPatch,
   RuntimeSettings,
@@ -100,6 +101,10 @@ export interface OpenDanDataModel {
   /** A finished work with all its (finished) descendants. */
   deleteSession(sid: string): Promise<{ deleted: string[] }>
   decideSession(sid: string, decision: Decision, note?: string): Promise<{ index: number }>
+  /** `null` clears it: the session follows its parent's group, else the App binding and the user's own table. */
+  setRouteGroup(sid: string, routeGroup: string | null): Promise<{ index: number }>
+  /** The signed-in user's AICC routing groups; `null`: AICC cannot be reached from here. */
+  routeGroups(): Promise<RouteGroup[] | null>
   postMessage(sid: string, text: string): Promise<{ index: number; key: string }>
 
   artifacts(): Promise<ArtifactHead[]>

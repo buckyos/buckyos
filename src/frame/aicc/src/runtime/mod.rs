@@ -68,10 +68,6 @@ impl RuntimeProvider {
         self.executable.quota_observation().await
     }
 
-    pub(crate) async fn health(&self) -> crate::provider::ProviderHealth {
-        self.executable.health().await
-    }
-
     pub(crate) async fn open_artifact_url_reader(
         &self,
         codecs: &crate::protocol::CodecRegistry,
@@ -820,9 +816,10 @@ mod tests {
                         timeout_ms: None,
                         auto_sync_models: None,
                         lifecycle: Default::default(),
+                        marked_faulty: false,
                     })
                     .collect(),
-                session_config: None,
+                routing: None,
                 public_named_object_base_url: None,
             },
         )

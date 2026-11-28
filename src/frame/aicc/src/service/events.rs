@@ -12,6 +12,14 @@ pub(crate) const EVENT_ROUTING_COMMAND_RECOVERED: &str = "routing_command_recove
 pub(crate) const EVENT_ROUTING_COMMANDS_UPDATED: &str = "routing_commands_updated";
 pub(crate) const EVENT_REGISTRY_BUILD_FAILED: &str = "registry_build_failed";
 pub(crate) const EVENT_REGISTRY_RECOVERED: &str = "registry_recovered";
+pub(crate) const EVENT_UNAVAILABLE_FALLBACK: &str = "unavailable_fallback";
+pub(crate) const EVENT_USECASE_UPDATED: &str = "usecase_updated";
+pub(crate) const EVENT_MODEL_FAILING: &str = "model_failing";
+pub(crate) const EVENT_MODEL_RECOVERED: &str = "model_recovered";
+pub(crate) const EVENT_PROVIDER_MARKED_FAULTY: &str = "provider_marked_faulty";
+pub(crate) const EVENT_PROVIDER_FAULT_CLEARED: &str = "provider_fault_cleared";
+pub(crate) const EVENT_USECASE_MODEL_MISSING: &str = "usecase_model_missing";
+pub(crate) const EVENT_USECASE_MODEL_RECOVERED: &str = "usecase_model_recovered";
 
 #[derive(Default)]
 struct EventLogState {
@@ -19,6 +27,8 @@ struct EventLogState {
     events: VecDeque<AiccSystemEvent>,
     stale: BTreeMap<String, AiccSystemEvent>,
     build_error: Option<String>,
+    /// Zone-layer usecase → model that is in no inventory.
+    missing_models: BTreeMap<String, String>,
 }
 
 #[derive(Default)]
@@ -87,6 +97,65 @@ impl AiccEventLog {
             );
             state.stale.insert(key, event);
         }
+    }
+
+    /// Report once when a model the Zone default chose for a usecase leaves
+    /// every inventory, and once when it is back. The choice is kept; the
+    /// usecase follows the default meanwhile.
+    pub(crate) fn observe_usecase_models(&self, missing: BTreeMap<String, String>) {
+        let mut state = self.state.lock().expect("event log lock");
+        let recovered = state
+            .missing_models
+            .iter()
+            .filter(|(usecase, model)| missing.get(*usecase) != Some(model))
+            .map(|(usecase, model)| (usecase.clone(), model.clone()))
+            .collect::<Vec<_>>();
+        for (usecase, model) in recovered {
+            push_event(
+                &mut state,
+                AiccEventLevel::Info,
+                EVENT_USECASE_MODEL_RECOVERED,
+                format!("{model} is available again for {usecase}"),
+                json!({ "usecase": usecase, "exact_model": model }),
+            );
+        }
+        for (usecase, model) in &missing {
+            if state.missing_models.get(usecase) == Some(model) {
+                continue;
+            }
+            push_event(
+                &mut state,
+                AiccEventLevel::Warning,
+                EVENT_USECASE_MODEL_MISSING,
+                format!("{model} chosen for {usecase} is no longer in any inventory"),
+                json!({ "usecase": usecase, "exact_model": model }),
+            );
+        }
+        state.missing_models = missing;
+    }
+
+    /// A model started failing or recovered (reported once per period).
+    pub(crate) fn observe_model_health(&self, transition: crate::health::HealthTransition) {
+        let mut state = self.state.lock().expect("event log lock");
+        match transition {
+            crate::health::HealthTransition::Failing {
+                exact_model,
+                reason,
+            } => push_event(
+                &mut state,
+                AiccEventLevel::Warning,
+                EVENT_MODEL_FAILING,
+                format!("{exact_model} keeps failing ({reason}); its usecases keep routing to it"),
+                json!({ "exact_model": exact_model, "reason": reason }),
+            ),
+            crate::health::HealthTransition::Recovered { exact_model } => push_event(
+                &mut state,
+                AiccEventLevel::Info,
+                EVENT_MODEL_RECOVERED,
+                format!("{exact_model} succeeded again"),
+                json!({ "exact_model": exact_model }),
+            ),
+        };
     }
 
     pub(crate) fn observe_registry_error(&self, error: &str) {

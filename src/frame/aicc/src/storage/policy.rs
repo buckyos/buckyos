@@ -24,9 +24,10 @@ const POLICY_SEEDED_KEY: &str = "policy_seeded";
 const POLICY_REVISION_KEY: &str = "policy_revision";
 const PRICE_REVISION_KEY: &str = "price_revision";
 
-/// Tables of schema version 3 the 3 → 4 upgrade removes; their rules and
-/// token accounts are not migrated.
-pub(super) const V3_TABLES: [&str; 6] = [
+/// Tables of schema version 3 the 3 → 4 upgrade removes; their rules,
+/// token accounts and session route history are not migrated.
+pub(super) const V3_TABLES: [&str; 7] = [
+    "aicc_session_route_history",
     "aicc_quota_rule",
     "aicc_quota_counter",
     "aicc_quota_account",

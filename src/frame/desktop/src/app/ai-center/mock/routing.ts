@@ -83,6 +83,11 @@ export class MockRoutingWorld {
     return { events: [...this.events].reverse().slice(0, limit), activeWarnings: [...this.stale.values()] }
   }
 
+  /** An event of another part of the mock (usecases, Providers marked faulty, a policy switch). */
+  record(level: AiccEvent['level'], kind: string, message: string, details: Record<string, unknown>) {
+    this.pushEvent(level, kind, message, details)
+  }
+
   private state(status: RoutingCommandStatus[]): RoutingState {
     return { settingsRevision: this.revision, commands: this.commands, status }
   }
@@ -276,7 +281,6 @@ function simulate(nodes: Map<string, MockNode>, models: Map<string, ModelMetadat
     expansion: steps,
     ranked,
     filtered,
-    fallbackChain: [],
   }
 }
 

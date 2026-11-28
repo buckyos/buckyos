@@ -67,6 +67,11 @@ export function useGlobalRoutingView(): GlobalRoutingView {
   return useStoreSnapshot().routingView
 }
 
+/** Hard requirements of each usecase, for the model picker. */
+export function useUsecaseRequirements() {
+  return useStoreSnapshot().usecaseRequirements
+}
+
 export function useRouteTraces(): RouteTrace[] {
   return useStoreSnapshot().routeTraces
 }

@@ -54,6 +54,8 @@ pub struct Shared {
     /// Result hints shown once per session and dedup keys of this drive
     /// (the tool sets' `HintLedger`).
     pub hints: Arc<super::hints::SessionHintLedger>,
+    /// Fallbacks the session's answers ran into (written with every commit).
+    pub route_notes: Arc<super::route::RouteNotes>,
     /// What the Turn's task was told last by this drive.
     pub task_status: Mutex<Option<(String, super::turn_task::TurnTaskStatus)>>,
     /// Serializes hand-overs of the outbox.
@@ -142,8 +144,18 @@ pub async fn report(sh: &Shared, status: SessionStatus) {
     sh.deps.notifier.session_changed(&sid, &status).await;
 }
 
+/// Into the commit being prepared: the fallbacks first seen since the last
+/// one, and their notices.
+pub(super) async fn store_route_notes(sh: &Shared, s: &mut Session) {
+    let fresh = sh.route_notes.store(&mut s.state);
+    if !fresh.is_empty() {
+        super::outbound::push_route_notices(sh, s, &fresh).await;
+    }
+}
+
 pub(super) async fn commit_and_report(sh: &Shared, s: &mut Session) -> Result<()> {
     sh.hints.store(&mut s.state);
+    store_route_notes(sh, s).await;
     s.commit_state(&sh.lease)?;
     let status = s.status(sh.lease.epoch());
     let rev = status.rev;

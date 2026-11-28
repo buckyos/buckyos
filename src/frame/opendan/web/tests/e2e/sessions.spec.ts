@@ -122,3 +122,21 @@ test('a paused session says what paused it and offers what fits', async ({ page 
   await expect(ops.getByTestId('session-paused')).toContainText('Paused by the owner')
   await expect(ops.getByRole('button', { name: 'Resume' })).toBeVisible()
 })
+
+test('a routing group chosen for a session is followed by its sub sessions', async ({ page }) => {
+  const errors = await open(page, `#/session/${UI}`)
+  // The fallback the conversation ran into is shown apart.
+  await expect(page.getByTestId('route-fallbacks')).toContainText('No model is set up for llm.plan: the fallback model qwen3-8b@local answered.')
+  const select = page.getByTestId('session-summary').getByTestId('route-group')
+  await expect(select).toHaveValue('')
+  await expect(select.locator('option')).toHaveText(['None', 'Fast and cheap', 'Coding'])
+  await select.selectOption('rg-coding')
+  await expect(select).toHaveValue('rg-coding')
+
+  await page.goto(`/?data=mock&lang=en#/session/${WORK_RUNNING}`)
+  const summary = page.getByTestId('session-summary')
+  await expect(summary.getByTestId('route-group')).toHaveValue('')
+  await expect(summary.getByTestId('route-group-inherited')).toContainText('Follows “Coding” of')
+  await expect(summary.getByTestId('route-group-inherited')).toContainText(UI)
+  expect(errors).toEqual([])
+})

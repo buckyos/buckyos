@@ -974,7 +974,7 @@ mod beta22_tests {
         let root = value.as_object().unwrap();
         assert!(root
             .keys()
-            .all(|field| matches!(field.as_str(), "providers" | "session_config")));
+            .all(|field| matches!(field.as_str(), "providers" | "routing")));
         for provider in root["providers"].as_array().unwrap() {
             assert!(provider["provider_instance_name"].is_string());
             assert!(provider["provider_profile_id"].is_string());

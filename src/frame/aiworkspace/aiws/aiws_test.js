@@ -278,14 +278,14 @@ Deno.test('host.js: pictures and clips are generated with the session, imported,
   const declare = { inputs: {}, ai: { image: { max_calls: 5 }, video: { max_calls: 1 } } }
   const a = await host.handle('ai.image', { prompt: '海报', aspect: '3:4', format: 'jpeg', declare })
   assertEquals(a, { kind: 'image', object_id: id('1'), media_type: 'image/png', size: 123, width: 864, height: 1536, cached: false })
-  assertEquals(sent[0], ['helper.text_to_image', { prompt: '海报', aspect_ratio: '3:4', output: { media_type: 'image/jpeg' }, logical_model: 'image.txt2img', requirements: {}, disable: {}, policy: { profile: 'balanced', allow_fallback: true, runtime_failover: true } }])
+  assertEquals(sent[0], ['helper.text_to_image', { prompt: '海报', aspect_ratio: '3:4', output: { media_type: 'image/jpeg' }, logical_model: 'image.txt2img', requirements: {}, disable: {} }])
   // the same request: the same picture, staged again for this run, nothing generated
   const b = await host.handle('ai.image', { prompt: '海报', aspect: '3:4', format: 'jpeg', declare })
   assertEquals([b.object_id, b.cached, b.width, n, imported.length], [id('1'), true, 864, 1, 2])
   // reference pictures: the img2img twin of the model, routed first
   const c = await host.handle('ai.image', { prompt: '换成雨夜', images: [a], declare })
   assertEquals(c.object_id, id('2'))
-  assertEquals(sent[1], ['route.resolve', { api_type: 'image.img2img', logical_model: 'image.img2img', requirements: {}, disable: {}, policy: { profile: 'balanced', allow_fallback: true, runtime_failover: true } }])
+  assertEquals(sent[1], ['route.resolve', { api_type: 'image.img2img', logical_model: 'image.img2img', requirements: {}, disable: {} }])
   assertEquals(sent[2], ['image.img2img', { prompt: '换成雨夜', images: [{ kind: 'named_object', obj_id: id('1') }], exact_model: 'gpt-image-2@codex-proxy' }])
   assertEquals((await host.handle('ai.image', { prompt: 'third', declare })).code, 'AI_BUDGET_EXCEEDED', 'the stage allows two')
   // a clip runs as a task: followed until it ends, with what AICC measured

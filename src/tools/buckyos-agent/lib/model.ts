@@ -105,7 +105,7 @@ interface AiccChat {
   }>;
 }
 
-/** `helper.llm_chat` of the SDK's AICC client as a ModelCall: one answer, `json_schema`, no fallback, no failover. */
+/** `helper.llm_chat` of the SDK's AICC client as a ModelCall: one answer, `json_schema`, no fallback. */
 export function aiccModel(aicc: unknown): ModelCall {
   const client = aicc as AiccChat;
   return async (request) => {
@@ -123,7 +123,7 @@ export function aiccModel(aicc: unknown): ModelCall {
           json_schema: { name: request.schema.name, schema: request.schema.schema, strict: true },
         },
         requirements: { json_schema: true },
-        policy: { allow_fallback: false, runtime_failover: false },
+        policy: { no_fallback: true },
         execution_mode: "immediate",
         ...(request.traceId ? { trace_id: request.traceId } : {}),
       });

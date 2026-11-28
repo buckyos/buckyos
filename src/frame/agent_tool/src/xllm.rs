@@ -74,8 +74,8 @@ use serde_json::{json, Value};
 
 use llm_context::behavior_loop::{LLMBehaviorResult, LLMResultParser};
 use llm_context::deps::{
-    CheckpointHook, Injection, LLMContextDeps, LlmClient, LlmInferenceRequest, ToolCallCtx,
-    ToolDispatchError, ToolManager, ToolSpecLite, WorkEvent, WorklogSink,
+    CheckpointHook, Injection, LLMContextDeps, LlmClient, LlmInference, LlmInferenceRequest,
+    ToolCallCtx, ToolDispatchError, ToolManager, ToolSpecLite, WorkEvent, WorklogSink,
 };
 use llm_context::error::{ErrorSource, LLMComputeError, ProviderFailure};
 use llm_context::observation::Observation;
@@ -5452,6 +5452,10 @@ impl Default for AiccLlmClient {
 #[async_trait]
 impl LlmClient for AiccLlmClient {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
+        self.infer_routed(req).await.map(|r| r.response)
+    }
+
+    async fn infer_routed(&self, req: LlmInferenceRequest) -> Result<LlmInference, LLMComputeError> {
         let runtime = get_buckyos_api_runtime()
             .map_err(|e| provider_error_from_rpc("get buckyos runtime failed", e))?;
         let client = self.client(runtime).await?;
@@ -5484,7 +5488,7 @@ impl AiccLlmClient {
     async fn infer_with_client(
         client: &AiccClient,
         req: LlmInferenceRequest,
-    ) -> Result<AiResponse, LLMComputeError> {
+    ) -> Result<LlmInference, LLMComputeError> {
         let LlmInferenceRequest {
             trace_id,
             messages,
@@ -5498,6 +5502,7 @@ impl AiccLlmClient {
             disable_capabilities,
             tool_specs,
             allow_tool_calls,
+            route_group,
             abort: _,
         } = req;
 
@@ -5559,6 +5564,9 @@ impl AiccLlmClient {
                 response_format: request.response_format,
                 temperature: request.temperature,
                 max_output_tokens: request.max_output_tokens,
+                // An exact model bypasses the usecase table: only a logical
+                // request is routed by a group.
+                route_group,
                 ..LlmChatHelperRequest::new(request.exact_model, request.messages)
             };
             (
@@ -5576,17 +5584,21 @@ impl AiccLlmClient {
                         format!("aicc {method} succeeded but message is empty"),
                     )
                 })?;
-                Ok(AiResponse {
-                    message,
-                    usage: response.usage,
-                    cost: response.cost,
-                    finish_reason: response.finish_reason,
-                    provider_task_ref: response.provider_task_ref,
-                    // The model the route ended on (usage statistics by model).
-                    extra: response
-                        .route_trace
-                        .and_then(|t| t.final_model)
-                        .map(|model| serde_json::json!({ "model": model })),
+                Ok(LlmInference {
+                    response: AiResponse {
+                        message,
+                        usage: response.usage,
+                        cost: response.cost,
+                        finish_reason: response.finish_reason,
+                        provider_task_ref: response.provider_task_ref,
+                        // The model the route ended on (usage statistics by model).
+                        extra: response
+                            .route_trace
+                            .as_ref()
+                            .and_then(|t| t.final_model.clone())
+                            .map(|model| serde_json::json!({ "model": model })),
+                    },
+                    route_trace: response.route_trace,
                 })
             }
             AiMethodStatus::Failed => Err(LLMComputeError::provider(
@@ -6114,15 +6126,19 @@ fn record_usage(alias: &str, response: &AiResponse) {
 #[async_trait]
 impl LlmClient for TimeoutLlmClient {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
+        self.infer_routed(req).await.map(|r| r.response)
+    }
+
+    async fn infer_routed(&self, req: LlmInferenceRequest) -> Result<LlmInference, LLMComputeError> {
         if let Some(why) = model_budget_spent() {
             return Err(LLMComputeError::provider(llm_context::error::ProviderFailure::Refused { code: "model_budget".into() }, why));
         }
         self.calls.fetch_add(1, Ordering::SeqCst);
         let alias = req.model_alias.clone();
-        let result = tokio::time::timeout(self.timeout, self.inner.infer(req))
+        let result = tokio::time::timeout(self.timeout, self.inner.infer_routed(req))
             .await
             .map_err(|_| LLMComputeError::Timeout)?;
-        if let Ok(resp) = &result {
+        if let Ok(LlmInference { response: resp, .. }) = &result {
             record_usage(&alias, resp);
             let model = resp
                 .extra
@@ -9313,6 +9329,7 @@ impl XllmRun {
             disable_capabilities: Vec::new(),
             tool_specs: Vec::new(),
             allow_tool_calls: false,
+            route_group: None,
             abort: llm_context::InferenceAbortToken::noop(),
         };
         self.emit(RunEvent::LlmStarted {
@@ -10169,6 +10186,7 @@ mod tests {
                 args_schema: json!({"type": "object"}),
             }],
             allow_tool_calls: true,
+            route_group: None,
             abort: llm_context::interrupt::InferenceAbortToken::noop(),
         }
     }
@@ -10229,12 +10247,15 @@ mod tests {
                 let mut request = aicc_inference_request(model);
                 request.allow_tool_calls = mode == "json_schema";
                 request.force_json = mode != "text";
+                request.route_group = Some("grp-1".into());
                 if mode == "any_json" {
                     request.json_schema = None;
                 }
                 let result = AiccLlmClient::infer_with_client(&client, request)
                     .await
                     .unwrap();
+                assert_eq!(result.route_trace, None);
+                let result = result.response;
                 assert_eq!(result.message, response.message.unwrap());
                 assert_eq!(result.usage, response.usage);
                 assert_eq!(result.cost, response.cost);
@@ -10272,6 +10293,8 @@ mod tests {
                     });
                 }
                 if model_field == "logical_model" {
+                    // Only a logical request is routed by a group.
+                    expected["route_group"] = json!("grp-1");
                     expected["requirements"] = json!({});
                     if mode == "json_schema" {
                         expected["requirements"]["tool_call"] = json!(true);
@@ -10284,6 +10307,28 @@ mod tests {
                 assert_eq!(calls[0].1, expected);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn aicc_route_trace_reaches_the_caller() {
+        let mut response = aicc_success_response();
+        response.route_trace = Some(serde_json::from_value(json!({
+            "attempts": [],
+            "final_model": "qwen3-8b@local",
+            "fallback": {"kind": "coverage", "from": "llm.plan", "to": "llm.fallback"}
+        })).unwrap());
+        let client = AiccClient::new_in_process(Box::new(RecordingAicc {
+            calls: Arc::new(StdMutex::new(Vec::new())),
+            response,
+        }));
+        let result = AiccLlmClient::infer_with_client(&client, aicc_inference_request("llm.plan"))
+            .await
+            .unwrap();
+        let trace = result.route_trace.unwrap();
+        let fallback = trace.fallback.unwrap();
+        assert_eq!(fallback.kind, buckyos_api::RouteFallbackKind::Coverage);
+        assert_eq!(fallback.from, "llm.plan");
+        assert_eq!(result.response.extra, Some(json!({"model": "qwen3-8b@local"})));
     }
 
     #[tokio::test]
@@ -14461,6 +14506,7 @@ there]]></write_file>
                 disable_capabilities: Vec::new(),
                 tool_specs: Vec::new(),
                 allow_tool_calls: false,
+                route_group: None,
                 abort: llm_context::InferenceAbortToken::noop(),
             })
             .await

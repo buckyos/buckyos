@@ -1762,6 +1762,13 @@
             "final_edit"
           ],
           "type": "string"
+        },
+        {
+          "description": "Told to the other side once, outside any reply (a fallback model answered, `state.route_fallbacks`).",
+          "enum": [
+            "notice"
+          ],
+          "type": "string"
         }
       ]
     },
@@ -2438,6 +2445,69 @@
       ],
       "type": "object"
     },
+    "RouteFallbackKind": {
+      "description": "Why an answer did not come from the usecase's own model.",
+      "oneOf": [
+        {
+          "description": "No model is set up for the usecase: the fallback LLM answered.",
+          "enum": [
+            "coverage"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The usecase's model was unavailable: its \"when unavailable\" policy chose another one.",
+          "enum": [
+            "unavailable"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "RouteFallbackNote": {
+      "description": "One kind of fallback a session ran into (`state.route_fallbacks`).",
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/definitions/RouteFallbackKind"
+        },
+        "model": {
+          "description": "The exact model that answered.",
+          "type": "string"
+        },
+        "replaced": {
+          "description": "`unavailable`: the exact model that failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "turn": {
+          "description": "The Turn it was first seen in.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "usecase": {
+          "description": "The usecase the session asked for (`llm.plan`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at_ms",
+        "kind",
+        "model",
+        "usecase"
+      ],
+      "type": "object"
+    },
     "RunState": {
       "enum": [
         "created",
@@ -2992,6 +3062,13 @@
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "route_fallbacks": {
+      "description": "Answers that did not come from the usecase's own model (AICC `route_trace.fallback`), one per usecase and model, first seen.",
+      "items": {
+        "$ref": "#/definitions/RouteFallbackNote"
+      },
+      "type": "array"
     },
     "run_state": {
       "$ref": "#/definitions/RunState"

@@ -361,8 +361,7 @@ function mountNode(
     level: 'L2',
     api_type: apiType,
     exact_model_weights: {},
-    fallback: { mode: 'strict' },
-    policy: { profile: 'balanced', allow_fallback: false },
+    policy: { profile: 'balanced' },
     resolved_exact_model: resolvedExactModel,
     children,
   }
@@ -385,8 +384,7 @@ function buildLogicalTree(withPhysicalModels: boolean): LogicalNode[] {
       level: 'L3',
       api_type: 'llm',
       exact_model_weights: {},
-      fallback: { mode: 'strict' },
-      policy: { profile: 'balanced', allow_fallback: true, runtime_failover: true },
+        policy: { profile: 'balanced' },
       resolved_exact_model: withPhysicalModels ? 'sn-router-balanced@sn-router' : undefined,
       children: [
         {
@@ -401,8 +399,7 @@ function buildLogicalTree(withPhysicalModels: boolean): LogicalNode[] {
             local_code: { target: 'llm.qwen-coder', weight: 1.1 },
           },
           exact_model_weights: {},
-          fallback: { mode: 'parent' },
-          policy: { profile: 'quality_first', allow_fallback: true, runtime_failover: true },
+          policy: { profile: 'quality_first' },
           resolved_exact_model: withPhysicalModels ? opusExact : undefined,
           children: [
             mountNode('llm.opus', 'Provider flagship planning mount', 'llm', withPhysicalModels ? opusExact : undefined, withPhysicalModels ? [
@@ -428,8 +425,7 @@ function buildLogicalTree(withPhysicalModels: boolean): LogicalNode[] {
             local: { target: 'llm.qwen-coder', weight: 1.8 },
           },
           exact_model_weights: withPhysicalModels ? { [localCodeExact]: 1.2 } : {},
-          fallback: { mode: 'target_logical', target: 'llm.fallback' },
-          policy: { profile: 'local_first', allow_fallback: true, required_features: ['tool_call'] },
+          policy: { profile: 'local_first', required_features: ['tool_call'] },
           resolved_exact_model: withPhysicalModels ? sonnetExact : undefined,
           children: [
             mountNode('llm.sonnet', 'Balanced coding mount', 'llm', withPhysicalModels ? sonnetExact : undefined, withPhysicalModels ? [
@@ -453,8 +449,7 @@ function buildLogicalTree(withPhysicalModels: boolean): LogicalNode[] {
             sn: { target: 'llm.sn-balanced', weight: 1.7 },
           },
           exact_model_weights: {},
-          fallback: { mode: 'parent' },
-          policy: { profile: 'latency_first', allow_fallback: true },
+          policy: { profile: 'latency_first' },
           resolved_exact_model: withPhysicalModels ? miniExact : undefined,
           children: [
             mountNode('llm.gpt-mini', 'OpenAI GPT mini family mount', 'llm', withPhysicalModels ? miniExact : undefined, withPhysicalModels ? [
@@ -474,8 +469,7 @@ function buildLogicalTree(withPhysicalModels: boolean): LogicalNode[] {
             reasoner: { target: 'llm.reasoner', weight: 2.8 },
           },
           exact_model_weights: {},
-          fallback: { mode: 'disabled' },
-          policy: { profile: 'quality_first', allow_fallback: false },
+          policy: { profile: 'quality_first' },
           resolved_exact_model: undefined,
           children: [
             mountNode('llm.reasoner', 'Reasoning mount without inventory match', 'llm', undefined),
@@ -493,8 +487,7 @@ function buildLogicalTree(withPhysicalModels: boolean): LogicalNode[] {
         local: { target: 'embedding.local', weight: 1.4 },
       },
       exact_model_weights: {},
-      fallback: { mode: 'parent' },
-      policy: { profile: 'cost_first', allow_fallback: true },
+      policy: { profile: 'balanced' },
       resolved_exact_model: withPhysicalModels ? embeddingExact : undefined,
       children: [
         mountNode('embedding.large', 'Cloud embedding mount', 'embedding.text', withPhysicalModels ? embeddingExact : undefined, withPhysicalModels ? [
@@ -515,8 +508,7 @@ function buildLogicalTree(withPhysicalModels: boolean): LogicalNode[] {
         local: { target: 'image.local-txt2img', weight: 0.8 },
       },
       exact_model_weights: {},
-      fallback: { mode: 'disabled' },
-      policy: { profile: 'balanced', allow_fallback: false },
+      policy: { profile: 'balanced' },
       resolved_exact_model: withPhysicalModels ? imageExact : undefined,
       locked: true,
       children: [
@@ -535,8 +527,7 @@ function buildLogicalTree(withPhysicalModels: boolean): LogicalNode[] {
         cloud: { target: 'vision.ocr-cloud', weight: 1 },
       },
       exact_model_weights: {},
-      fallback: { mode: 'strict' },
-      policy: { profile: 'balanced', allow_fallback: false, required_features: ['vision'] },
+        policy: { profile: 'balanced', required_features: ['vision'] },
       resolved_exact_model: undefined,
       children: [
         mountNode('vision.ocr-cloud', 'OCR mount without discovered provider model', 'vision.ocr', undefined),
@@ -551,8 +542,7 @@ function buildLogicalTree(withPhysicalModels: boolean): LogicalNode[] {
         voice: { target: 'audio.voice', weight: 1 },
       },
       exact_model_weights: {},
-      fallback: { mode: 'strict' },
-      policy: { profile: 'latency_first', allow_fallback: false },
+        policy: { profile: 'latency_first' },
       resolved_exact_model: undefined,
       children: [
         mountNode('audio.voice', 'TTS mount without discovered provider model', 'audio.tts', undefined),
@@ -574,8 +564,6 @@ function buildGlobalRoutingView(withPhysicalModels: boolean): GlobalRoutingView 
     },
     policy: {
       profile: 'balanced',
-      allow_fallback: true,
-      runtime_failover: true,
     },
     logical_tree: buildLogicalTree(withPhysicalModels),
   }
@@ -634,6 +622,8 @@ function generateUsageEvents(): UsageEvent[] {
       credit: credit.toFixed(6).replace(/\.?0+$/, ''),
       credit_status: creditStatus,
       subjects: [user === 'alice' ? 'type:admin' : user === 'dave' ? 'type:limited' : 'type:user'],
+      // llm.code switches to gpt-5.1 under its "next model" policy when Claude is unavailable.
+      fallback_from: i % 20 === 0 ? 'claude-sonnet-4.5@anthropic-work' : undefined,
       status: i % 23 === 0 ? 'failed' : 'success',
     })
   }
@@ -735,11 +725,8 @@ const routeTraces: RouteTrace[] = [
     filtered_candidates: [
       { exact_model: 'sn-router-balanced@sn-router', reason: 'quality score below llm.plan policy threshold' },
     ],
-    fallback_applied: false,
-    fallback_chain: [],
     session_sticky_hit: false,
     scheduler_profile: 'quality_first' satisfies SchedulerProfile,
-    runtime_failover_count: 0,
     user_summary: {
       display_name: 'Planning request',
       model_family: 'Claude Opus',
@@ -765,11 +752,8 @@ const routeTraces: RouteTrace[] = [
       { exact_model: 'gpt-5.1@openai-main', final_score: 0.81, selected: false, score_inputs: scoreInputs(0.35, 0.08, 0.6, 1) },
     ],
     filtered_candidates: [],
-    fallback_applied: false,
-    fallback_chain: [],
     session_sticky_hit: true,
     scheduler_profile: 'local_first' satisfies SchedulerProfile,
-    runtime_failover_count: 0,
     user_summary: {
       display_name: 'Code generation',
       model_family: 'Qwen Coder',
@@ -793,11 +777,8 @@ const directoryOnlyRouteTraces: RouteTrace[] = [
     filtered_candidates: [
       { exact_model: 'llm.reasoner', reason: 'logical mount exists, but no provider inventory supplies an exact model' },
     ],
-    fallback_applied: false,
-    fallback_chain: [],
     session_sticky_hit: false,
     scheduler_profile: 'quality_first' satisfies SchedulerProfile,
-    runtime_failover_count: 0,
     user_summary: {
       display_name: 'Reasoning request',
       model_family: 'Unresolved logical mount',

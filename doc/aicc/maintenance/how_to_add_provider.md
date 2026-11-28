@@ -91,8 +91,8 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 4. 在 Provider Rules 中声明 provider model 映射、operation 选择、参数 lowering 和价格解析。
    对拟新增的 dialect 先完成声明化评审；schema 不足时优先扩展统一 schema，禁止在 dialect 代码中直接维护常规模型/参数/operation 表。
 5. 让 discovery 只收窄 catalog 声明，不能自行抬高模型能力。
-6. 通过 `provider.validate` 校验实例草案，再写入 system-config。
-7. 调用 `service.reload_settings`，用 `models.list` 和 `route.resolve` 验证完整身份链。
+6. 通过 `provider.validate` 校验实例草案，再写入 system-config。返回的 `usecase_coverage` 列出整个 Zone 29 个用途加上这个 Provider 前后的模型和覆盖状态（`covered` / `fallback_llm` / `uncovered`），确认新覆盖了哪些用途、哪些用途的默认模型会变；不想变的，把旧模型写进管理员层（`routing.usecase.set`，`target: "zone"`）。
+7. 调用 `service.reload_settings`，用 `models.list` 和 `route.resolve` 验证完整身份链；用 `routing.usecases`（或 `buckyos ai routing --view zone`）回读用途表，确认覆盖与预期一致（[aicc_router.md §11.4](../aicc_router.md#11-用途表与配置层次)）。
 
 内置 metadata 文件放入 `driver_metadata/models`、`driver_metadata/providers` 或
 `driver_metadata/known-providers` 后由 build script 自动嵌入；不再维护 Rust
@@ -140,7 +140,7 @@ canonical 请求里的可选参数按以下规则处理，不能让调用方为�
 
 - Profile、Adapter、Driver 或 Rules ID 不存在时拒绝加载。
 - `route.resolve` 返回 Provider Instance、Profile、Adapter、Driver、ModelUID、origin/provider model 和 operation。
-- typed inference 只接受 exact model，且不做隐式 fallback。
+- typed inference 只接受 exact model，从不切换模型或 Provider。
 - Model Driver variants 在 Provider Rules lowering 后得到正确 operation 和参数。
 - 能力结果是 Driver、Adapter 和 discovery 的交集；未知能力不靠模型名猜测。
 - 同步、SSE、异步轮询、取消、usage、错误分类和敏感信息脱敏均符合协议。

@@ -119,6 +119,9 @@ pub(crate) struct ResolvedProviderCall {
     /// Request dimensions Credit price rules match against.
     pub pricing_context: MatchContext,
     pub revisions: LoweringRevisions,
+    /// The exact model this call replaces under the usecase's
+    /// "when unavailable" policy.
+    pub fallback_from: Option<String>,
 }
 
 impl fmt::Debug for ResolvedProviderCall {
@@ -696,6 +699,7 @@ impl<'a> CallResolver<'a> {
                 provider_rules_revision_seq: provider_revision,
                 inventory_revision: decision.selected.inventory_revision.clone(),
             },
+            fallback_from: None,
         })
     }
 
@@ -1723,7 +1727,6 @@ mod tests {
         };
         RouteDecision {
             selected,
-            fallback_candidates: Vec::new(),
             trace: RoutingTrace {
                 trace_id: "trace-1".into(),
                 request_id: "request-1".into(),
@@ -1737,11 +1740,10 @@ mod tests {
                 candidate_count_after_filter: 1,
                 filtered_candidates: Vec::new(),
                 ranked_candidates: Vec::new(),
-                fallback_applied: false,
-                fallback_chain: Vec::new(),
+                usecase: None,
+                fallback: None,
                 scheduler_profile: "balanced".into(),
                 score_breakdown: ScoreBreakdown {
-                    cost: 0.0,
                     quality: 0.0,
                     preference: 0.0,
                     cache: 0.0,
@@ -1749,7 +1751,6 @@ mod tests {
                     final_score: 1.0,
                 },
                 estimated_cost: Some(Money::new(0.01, "USD")),
-                runtime_failover_count: 0,
                 warnings: Vec::new(),
                 logical_item_sources: Vec::new(),
                 logical_admission: Vec::new(),

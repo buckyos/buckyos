@@ -10,7 +10,8 @@
 
 | 类别 | 场景 |
 |---|---|
-| 路由 | 非法模型名、模型不存在、无候选、策略拒绝、fallback loop、logical tree loop、精确模型不可用 |
+| 路由 | 非法模型名、模型不存在、无候选（用途没有模型时 `details.usecase` 给出用途名）、策略拒绝、logical tree loop、精确模型不可用 |
+| 不可用时 | 用途没有策略时任何 Provider 失败都返回真实错误，不改写成无候选；备选也失败时错误同时带两边原因；Provider 被标记为故障且用途没有策略时返回 `no_provider_available` |
 | 策略 | `local_only` 无本地候选、预算超限、feature unsupported、context too long、provider 被禁用 |
 | Provider | 401/403、429、5xx、timeout、quota exhausted、malformed response、missing usage、unsupported media type |
 | 任务 | cancel unknown task、cancel forbidden、provider 不支持取消、异步任务最终失败 |
@@ -24,6 +25,6 @@
 
 - 错误码可机器判断。
 - 用户可见 message 可理解。
-- route trace 记录候选过滤、fallback、failover 原因。
+- route trace 记录候选过滤、来源层，以及兜底 LLM 或不可用时切换的原因（`fallback`）。
 - Provider 原始错误只保留脱敏摘要。
 - 早期 kRPC error 不创建 AICC task；已创建 task 的失败写入 task data / event。

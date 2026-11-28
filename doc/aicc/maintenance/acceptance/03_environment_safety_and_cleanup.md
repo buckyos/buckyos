@@ -25,7 +25,7 @@
 
 1. 停止 runner 启动的 Mock Provider。
 2. 恢复或清理测试写入的 AICC settings。
-3. 清理测试写入的 route overlay/settings。
+3. 清理测试写入的用户层、路由策略组和 App 绑定（`routing.usecase.set` 的 `clear`、`routing.groups.delete`），以及 Provider 的故障标记。
 4. 清理未完成的 Mock task 或记录到报告。
 5. 保留报告、输入、输出和脱敏后的 Provider 请求摘要。
 6. 如果是 L4，停止并清理本次 runner 新建的临时 group / VM。

@@ -82,6 +82,7 @@ Deno.test("callAicc resolves a logical model then sends a canonical typed reques
       output: { duration_seconds: 4 },
     },
     maxCostUsd: 1.25,
+    noFallback: true,
     traceId: "trace-1",
   });
 
@@ -93,8 +94,7 @@ Deno.test("callAicc resolves a logical model then sends a canonical typed reques
     disable: {},
     policy: {
       profile: "balanced",
-      allow_fallback: true,
-      runtime_failover: true,
+      no_fallback: true,
       max_cost: { amount: 1.25, currency: "USD" },
     },
   }]);
@@ -153,7 +153,7 @@ Deno.test("a logical video.generate is routed by the AICC helper with its condit
     logical_model: "video.generate",
     requirements: {},
     disable: {},
-    policy: { profile: "balanced", allow_fallback: true, runtime_failover: true },
+    policy: { profile: "balanced" },
     idempotency_key: "shot-3",
   }]]);
   assertEquals(
@@ -319,8 +319,6 @@ Deno.test("textToImage uses the canonical helper request", async () => {
     trace_id: "trace-image",
     policy: {
       profile: "balanced",
-      allow_fallback: true,
-      runtime_failover: true,
     },
     prompt: "a fox",
     quality: "high",

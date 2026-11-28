@@ -110,13 +110,13 @@ test/aicc_test/reports/acceptance/<run_id>/
 
 | 用例族 | 优先级 | 覆盖点 |
 |---|---|---|
-| `l1_routing_exact_model_*` | P0 | 精确模型解析、Provider instance 校验、API type 校验、默认不 fallback |
+| `l1_routing_exact_model_*` | P0 | 精确模型解析、Provider instance 校验、API type 校验、从不换模型 |
 | `l1_routing_logical_tree_*` | P0 | 逻辑目录展开、items target、目录软链接、候选去重 |
-| `l1_routing_fallback_*` | P0 | `strict`、`parent`、`target_exact`、`target_logical`、`disabled` |
-| `l1_routing_loop_*` | P0 | fallback loop、logical tree loop、最大 fallback depth |
+| `l1_routing_fallback_*` | P0 | 用途的不可用时策略 `none`（默认）/ `same_model` / `not_pricier` / `next_model`：触发与不触发类别、每次请求最多切换一次、备选沿用原请求与用途约束、请求 `no_fallback` 关闭；兜底 LLM 只为静态无候选的 LLM 用途提供；标记为故障 |
+| `l1_routing_loop_*` | P0 | logical tree loop（目录软链接环）；注册表没有 fallback 链，不再有 fallback loop 和深度限制 |
 | `l1_scheduler_weight_*` | P0 | item weight、exact model weight、weight 0 硬过滤、同权重 profile 评分 |
-| `l1_scheduler_profile_*` | P0 | `cost_first`、`latency_first`、`quality_first`、`balanced`、`local_first`、`strict_local` |
-| `l1_request_overlay_*` | P0 | overlay 合并、逻辑目录覆盖、policy locked、互不污染 |
+| `l1_scheduler_profile_*` | P0 | `latency_first`、`quality_first`、`balanced`（默认）、`local_first`、`strict_local`；`cost_first` 已删除 |
+| `l1_usecase_layers_*` | P0 | 用途表各层合并（默认 < 管理员 < 用户 < App 组 < 会话组）、管理员锁定、层选的模型缺失 / 不可见 / 不满足要求时跟随下一层、请求策略只能收紧、互不污染（取代已删除的 `l1_request_overlay_*`：请求不再携带 `session_overlay`） |
 | `l1_provider_protocol_openai_*` | P0 | Responses 与 Chat Completions 分 Adapter contract、无隐式 fallback |
 | `l1_provider_protocol_claude_*` | P0 | Messages 与兼容 Completions 分 Adapter contract |
 | `l1_provider_protocol_gemini_*` | P0 | Interactions 与 `generateContent` 分 Adapter contract、无隐式 fallback |
@@ -155,7 +155,7 @@ test/aicc_test/reports/acceptance/<run_id>/
 | `l3_krpc_stream_*` | P0 | Mock streaming chunks、task data progress、final summary |
 | `l3_krpc_async_*` | P0 | image/audio/video 类异步 task 状态闭环 |
 | `l3_krpc_usage_*` | P0 | usage event 写入和查询 |
-| `l3_krpc_failover_*` | P0 | Provider timeout / 5xx / quota exhausted 后 failover |
+| `l3_krpc_unavailable_*` | P0 | 用途没有策略时 timeout / 5xx / quota exhausted 返回真实错误、不换模型；配置 `same_model` / `not_pricier` / `next_model` 后切换一次，`route_trace.fallback`、usage `fallback_from`、事件 `unavailable_fallback` 可见；标记为故障（取代已删除的 `l3_krpc_failover_*`） |
 | `l3_krpc_security_*` | P0 | local_only、跨用户访问拒绝、脱敏扫描 |
 
 ### 5.4 L4 Gateway 真实模型验收

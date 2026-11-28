@@ -157,7 +157,6 @@ pub(crate) fn definition(path: &str) -> LogicalModelDefinition {
         default_options: BTreeMap::new(),
         mount_mode: MountMode::Manual,
         scheduler_profile: AiccSchedulerProfile::Balanced,
-        fallback: None,
         route_policy: AiccPolicyConfig::default(),
         user_visible_tier: None,
     }
@@ -272,7 +271,6 @@ fn z01_z02_real_openai_catalog_and_empty_specifications_need_no_provider() {
     for path in ["llm", "llm.plan", "llm.chat", "llm.missing"] {
         let result = registry.resolve_candidates(path, ApiType::Llm).unwrap();
         assert!(result.candidates.is_empty());
-        assert!(result.fallback_chain.is_empty());
     }
 }
 
@@ -482,59 +480,6 @@ fn additional_spec_binding_weights_are_independent() {
 }
 
 #[test]
-fn additional_direct_only_spec_cannot_be_bypassed_by_fallback() {
-    let mut value = openai_document();
-    value["specs"]
-        .as_array_mut()
-        .unwrap()
-        .iter_mut()
-        .find(|spec| spec["id"] == "gpt-mini")
-        .unwrap()["direct_only"] = json!(true);
-    let catalog = compile(vec![serde_json::from_value(value).unwrap()]).unwrap();
-    let stock = inventory("openai", "gpt-6-luna", "luna", "a", &["none", "low"]);
-    let mut overlay = gpt_overlay();
-    overlay
-        .logical_tree
-        .get_mut("llm.chat")
-        .unwrap()
-        .items
-        .as_mut()
-        .unwrap()
-        .retain(|item| item.target != "llm.gpt-mini");
-    ModelRegistry::build(
-        &catalog,
-        std::slice::from_ref(&stock),
-        vec![definition("llm.chat")],
-        RegistryLayers {
-            factory: Some(&overlay),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    for (mode, target) in [
-        (AiccFallbackMode::TargetLogical, "llm.gpt-6-luna:low"),
-        (AiccFallbackMode::TargetExact, "luna:reasoning-low@a"),
-    ] {
-        let mut task = definition("llm.plan");
-        task.fallback = Some(AiccFallbackRule {
-            mode,
-            target: Some(target.into()),
-        });
-        let error = ModelRegistry::build(
-            &catalog,
-            std::slice::from_ref(&stock),
-            vec![definition("llm.chat"), task],
-            RegistryLayers {
-                factory: Some(&overlay),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("fallback bypasses direct_only"));
-    }
-}
-
-#[test]
 fn z07_specs_require_explicit_admission_and_direct_only_cannot_be_bypassed() {
     let mut value = openai_document();
     let document = serde_json::from_value(value.clone()).unwrap();
@@ -555,12 +500,6 @@ fn z07_specs_require_explicit_admission_and_direct_only_cannot_be_bypassed() {
         }
     )
     .is_err());
-    let mut task = definition("llm.plan");
-    task.fallback = Some(AiccFallbackRule {
-        mode: AiccFallbackMode::TargetLogical,
-        target: Some("llm.gpt-pro".into()),
-    });
-    assert!(ModelRegistry::build(&catalog, &[], vec![task], RegistryLayers::default()).is_err());
     let mut value = openai_document();
     value["models"][0]["llm"]["family_id"] = json!("plan");
     let catalog = compile(vec![serde_json::from_value(value).unwrap()]).unwrap();
@@ -574,9 +513,6 @@ fn z07_specs_require_explicit_admission_and_direct_only_cannot_be_bypassed() {
         }
     )
     .is_err());
-    let registry = gpt_registry(&[]);
-    let cycle: AiccRouteOverlay = serde_json::from_value(json!({"logical_tree": {"llm.plan":{"fallback":{"mode":"target_logical","target":"llm.chat"}},"llm.chat":{"fallback":{"mode":"target_logical","target":"llm.plan"}}}})).unwrap();
-    assert!(registry.with_session_overlay(&cycle).is_err());
 }
 
 #[test]
@@ -654,7 +590,7 @@ fn d07_d08_efforts_never_fabricate_channel_support_or_bypass_task_membership() {
         .candidates
         .is_empty());
     let bypass: AiccRouteOverlay = serde_json::from_value(json!({"logical_tree":{"llm.plan":{"items":[{"name":"bypass","target":"sol:reasoning-low@a","weight":100}]}}})).unwrap();
-    assert!(registry.with_session_overlay(&bypass).is_err());
+    assert!(registry.with_overlay(&bypass).is_err());
     let mut task = definition("llm.chat");
     task.mount_mode = MountMode::Hybrid;
     let catalog = compile(vec![serde_json::from_value(openai_document()).unwrap()]).unwrap();
@@ -791,7 +727,7 @@ fn d04_metadata_weights_select_families_without_parsing_model_names() {
     assert_eq!(first.logical_model_views(), second.logical_model_views());
 
     let overlay: AiccRouteOverlay = serde_json::from_value(json!({"logical_tree":{"llm.gpt-pro":{"item_overrides":{"llm.gpt-5-5":{"weight":60},"llm.gpt-6":{"weight":0}}}}})).unwrap();
-    let overridden = first.with_session_overlay(&overlay).unwrap();
+    let overridden = first.with_overlay(&overlay).unwrap();
     assert_eq!(origins(&overridden), ["gpt-5.5"]);
     let item = overridden
         .logical_model_views()
@@ -804,14 +740,14 @@ fn d04_metadata_weights_select_families_without_parsing_model_names() {
         .unwrap();
     assert_eq!(
         (item.weight, item.default_weight, item.weight_source),
-        (60.0, 55.0, LogicalItemSource::SessionOverlay)
+        (60.0, 55.0, LogicalItemSource::ManualOverride)
     );
     let overlay: AiccRouteOverlay = serde_json::from_value(
         json!({"logical_tree":{"llm.gpt-pro":{"item_overrides":{"llm.gpt-5-5":{"weight":56}}}}}),
     )
     .unwrap();
     assert_eq!(
-        origins(&first.with_session_overlay(&overlay).unwrap()),
+        origins(&first.with_overlay(&overlay).unwrap()),
         ["gpt-5.5", "gpt-5.6", "gpt-unknown"]
     );
 }
@@ -823,7 +759,7 @@ fn family_instance_weights_accept_overrides_but_not_new_members() {
     let registry = gpt_registry(&[a, b]);
     let overlay: AiccRouteOverlay = serde_json::from_value(json!({"logical_tree":{"llm.gpt-5-6-sol":{"item_overrides":{"sol:reasoning-high@b":{"weight":2}}}}})).unwrap();
     let candidates = registry
-        .with_session_overlay(&overlay)
+        .with_overlay(&overlay)
         .unwrap()
         .resolve_candidates("llm.gpt-pro", ApiType::Llm)
         .unwrap()
@@ -834,7 +770,7 @@ fn family_instance_weights_accept_overrides_but_not_new_members() {
         "sol:reasoning-high@b"
     );
     let retarget: AiccRouteOverlay = serde_json::from_value(json!({"logical_tree":{"llm.gpt-5-6-sol":{"item_overrides":{"sol:reasoning-high@b":{"target":"sol:reasoning-high@a"}}}}})).unwrap();
-    assert!(registry.with_session_overlay(&retarget).is_err());
+    assert!(registry.with_overlay(&retarget).is_err());
 
     let persisted: AiccRouteOverlay = serde_json::from_value(json!({"logical_tree":{
         "llm.gpt-5-6-sol":{"item_overrides":{"sol:reasoning-high@b":{"weight":2}}},
@@ -847,8 +783,7 @@ fn family_instance_weights_accept_overrides_but_not_new_members() {
         vec![definition("llm.chat")],
         RegistryLayers {
             factory: Some(&gpt_overlay()),
-            user: Some(&persisted),
-            ..Default::default()
+            system: Some(&persisted),
         },
     )
     .unwrap();
@@ -964,57 +899,6 @@ fn d08_native_uses_base_and_thinking_is_not_medium() {
 }
 
 #[test]
-fn direct_only_exact_fallback_cannot_bypass_a_missing_effort() {
-    let mut value = openai_document();
-    for spec in value["specs"].as_array_mut().unwrap() {
-        spec["direct_only"] = json!(true);
-    }
-    let catalog = compile(vec![serde_json::from_value(value).unwrap()]).unwrap();
-    let stock = inventory("openai", "gpt-5.6-sol", "base", "a", &[]);
-    let mut task = definition("llm.plan");
-    task.fallback = Some(AiccFallbackRule {
-        mode: AiccFallbackMode::TargetExact,
-        target: Some("base@a".into()),
-    });
-    assert!(
-        ModelRegistry::build(&catalog, &[stock], vec![task], RegistryLayers::default()).is_err()
-    );
-}
-
-#[test]
-fn d09_explicit_fallback_chain_retains_each_task_requirement() {
-    let catalog = compile(vec![serde_json::from_value(openai_document()).unwrap()]).unwrap();
-    let mut stock = inventory("openai", "gpt-5.6-sol", "weak", "a", &["high"]);
-    stock.models[0].capabilities.remove("tool_call");
-    let mut plan = definition("llm.plan");
-    plan.fallback = Some(AiccFallbackRule {
-        mode: AiccFallbackMode::TargetLogical,
-        target: Some("llm.guard".into()),
-    });
-    let mut guard = definition("llm.guard");
-    guard.min_line.tool_call = true;
-    guard.fallback = Some(AiccFallbackRule {
-        mode: AiccFallbackMode::TargetExact,
-        target: Some("weak:reasoning-high@a".into()),
-    });
-    let registry = ModelRegistry::build(
-        &catalog,
-        &[stock],
-        vec![definition("llm.chat"), plan, guard],
-        RegistryLayers {
-            factory: Some(&gpt_overlay()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let result = registry
-        .resolve_candidates("llm.plan", ApiType::Llm)
-        .unwrap();
-    assert_eq!(result.fallback_chain.len(), 2);
-    assert!(result.candidates.is_empty());
-}
-
-#[test]
 fn routing_commands_scale_and_pin_item_weights_after_every_rebuild() {
     let anthropic: ModelDriverCatalog = serde_json::from_slice(include_bytes!(
         "../../driver_metadata/models/anthropic.model.json"
@@ -1056,8 +940,7 @@ fn routing_commands_scale_and_pin_item_weights_after_every_rebuild() {
             vec![definition("llm"), definition("llm.chat")],
             RegistryLayers {
                 factory: Some(&tree),
-                user: Some(&user),
-                ..Default::default()
+                system: Some(&user),
             },
         )
         .unwrap()

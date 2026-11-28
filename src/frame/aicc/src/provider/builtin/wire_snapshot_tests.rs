@@ -16,7 +16,7 @@ use crate::protocol::*;
 use crate::provider::inventory::ProviderConnectionInput;
 use crate::provider::*;
 use crate::routing::policy::*;
-use crate::routing::{CandidateRuntimeState, ProviderHealthStatus, Router, RoutingRequest};
+use crate::routing::{CandidateRuntimeState, Router, RoutingRequest};
 use crate::settings::{load_builtin_metadata, MetadataSources};
 use base64::Engine as _;
 use buckyos_api::{
@@ -1073,8 +1073,6 @@ async fn profile_run<'a>(
                 CandidateRuntimeState {
                     enabled: true,
                     credential_available: true,
-                    model_available: true,
-                    health: ProviderHealthStatus::Available,
                     provider_privacy: ProviderPrivacy::PublicCloud,
                     trust: Some(ProviderTrustView {
                         provider_type: ProviderType::CloudApi,

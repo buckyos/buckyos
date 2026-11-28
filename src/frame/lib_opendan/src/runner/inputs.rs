@@ -707,6 +707,19 @@ async fn apply_control(
                 }),
             });
         }
+        ControlCommand::RouteGroup { route_group } => {
+            let before = s.config.route_group.clone();
+            let group = route_group.clone().filter(|g| !g.trim().is_empty());
+            if group != before {
+                s.config.route_group = group.clone();
+                s.write_config(&sh.lease)?;
+            }
+            bodies.push(WorklogBody::ControlApplied {
+                input: m.input_ref(),
+                command: "route_group".into(),
+                detail: json!({ "route_group": group, "before": before, "from": m.from }),
+            });
+        }
         ControlCommand::GoalSkills { add, remove } => {
             match super::goal::apply_skills_control(&mut s.state, add, remove) {
                 Ok(()) => bodies.push(WorklogBody::ControlApplied {

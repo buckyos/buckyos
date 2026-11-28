@@ -302,7 +302,7 @@ impl AiccHandler for AiccService {
                         }
                     }
                 }
-                let routing = settings.session_config.get_or_insert_with(Default::default);
+                let routing = settings.routing.get_or_insert_with(Default::default);
                 if let Some(provider_weights) = provider_weights {
                     routing.provider_weights = provider_weights;
                 }
@@ -353,6 +353,62 @@ impl AiccHandler for AiccService {
             events,
             active_warnings,
         })
+    }
+
+    async fn handle_usecase_rpc(
+        &self,
+        method: &str,
+        params: Value,
+        ctx: RPCContext,
+    ) -> Result<Value, RPCErrors> {
+        let caller = self.authorize_opened(&ctx, "read", RESOURCE_INFO).await?;
+        let inference = self.inference.as_ref().ok_or_else(|| {
+            inference_error(
+                AiccErrorCode::InternalError,
+                "inference runtime is unavailable",
+            )
+        })?;
+        if method == buckyos_api::routing_methods::ROUTING_USECASE_SET {
+            let request: buckyos_api::RoutingUsecaseSetRequest =
+                serde_json::from_value(params.clone()).map_err(|error| {
+                    RPCErrors::ParseRequestError(format!("{method}: {error}"))
+                })?;
+            let target = super::inference::UsecaseTarget::parse(&request.target)?;
+            let zone = matches!(target, super::inference::UsecaseTarget::Zone);
+            let route = buckyos_api::AiccUsecaseRoute {
+                model: request.model.clone(),
+                on_unavailable: request.on_unavailable.clone(),
+                enabled: request.enabled,
+            };
+            inference
+                .validate_usecase_route(&caller, zone, &request.usecase, &route)
+                .await?;
+            if zone {
+                let caller = self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
+                let usecase = request.usecase.clone();
+                let snapshot = self
+                    .mutate_settings(&caller, Some(request.revision), move |settings| {
+                        super::inference::apply_zone_usecase_set(
+                            settings.routing.get_or_insert_with(Default::default),
+                            &request,
+                        );
+                        Ok(())
+                    })
+                    .await?;
+                self.events.record(
+                    AiccEventLevel::Info,
+                    events::EVENT_USECASE_UPDATED,
+                    format!("usecase {usecase} changed in the Zone default"),
+                    json!({ "usecase": usecase, "settings_revision": snapshot.settings_revision }),
+                );
+                return serde_json::to_value(buckyos_api::RoutingUsecaseSetResponse {
+                    ok: true,
+                    revision: snapshot.settings_revision,
+                })
+                .map_err(to_rpc_error);
+            }
+        }
+        inference.usecase_rpc(&caller, method, params).await
     }
 
     async fn handle_policy_rpc(
@@ -474,8 +530,17 @@ impl AiccHandler for AiccService {
         request: ProviderValidateRequest,
         ctx: RPCContext,
     ) -> Result<ProviderValidateResponse, RPCErrors> {
-        self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
-        self.validator.validate(request).await
+        let caller = self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
+        let (mut response, inventory) = self.validator.validate_with_inventory(request).await?;
+        if let (Some(inventory), Some(inference)) = (inventory, self.inference.as_ref()) {
+            match inference.coverage_preview(&caller, &inventory).await {
+                Ok(coverage) => response.usecase_coverage = coverage,
+                Err(error) => response
+                    .warnings
+                    .push(format!("usecase coverage could not be computed: {error}")),
+            }
+        }
+        Ok(response)
     }
 
     async fn handle_add_provider(
@@ -617,12 +682,21 @@ impl AiccHandler for AiccService {
             .find(|provider| provider.provider_instance_name == request.provider_instance_name)
             .cloned()
             .ok_or_else(|| RPCErrors::ReasonError("provider instance was not found".into()))?;
+        let previous_faulty = candidate.marked_faulty;
+        let only_fault_mark = request.marked_faulty.is_some()
+            && ProviderUpdateRequest {
+                marked_faulty: None,
+                ..request.clone()
+            } == ProviderUpdateRequest::new(
+                request.provider_instance_name.clone(),
+                request.settings_revision,
+            );
         apply_provider_update(&mut candidate, request.clone());
         SettingsDocument::new(
             current.document.revision.saturating_add(1),
             AiccSettings {
                 providers: vec![candidate.clone()],
-                session_config: None,
+                routing: None,
                 public_named_object_base_url: current
                     .document
                     .settings
@@ -631,7 +705,9 @@ impl AiccHandler for AiccService {
             },
         )
         .map_err(to_rpc_error)?;
-        if candidate.enabled {
+        // Marking a Provider faulty changes no connection setting, so it is
+        // not validated again (a faulty Provider would fail validation).
+        if candidate.enabled && !only_fault_mark {
             let validation = self
                 .validator
                 .validate(validate_settings_provider(&candidate))
@@ -645,6 +721,7 @@ impl AiccHandler for AiccService {
         let name = request.provider_instance_name.clone();
         let mutation_name = name.clone();
         let expected = request.settings_revision;
+        let marked_faulty = candidate.marked_faulty;
         let snapshot = self
             .mutate_settings(&caller, Some(expected), move |settings| {
                 let provider = settings
@@ -658,6 +735,34 @@ impl AiccHandler for AiccService {
                 Ok(())
             })
             .await?;
+        if !only_fault_mark {
+            if let Some(inference) = &self.inference {
+                inference.provider_changed(&name);
+            }
+        }
+        if marked_faulty != previous_faulty {
+            let (kind, message) = if marked_faulty {
+                (
+                    events::EVENT_PROVIDER_MARKED_FAULTY,
+                    format!("{name} was marked faulty: its usecases use their unavailable policy"),
+                )
+            } else {
+                (
+                    events::EVENT_PROVIDER_FAULT_CLEARED,
+                    format!("{name} is no longer marked faulty"),
+                )
+            };
+            self.events.record(
+                if marked_faulty {
+                    AiccEventLevel::Warning
+                } else {
+                    AiccEventLevel::Info
+                },
+                kind,
+                message,
+                json!({ "provider_instance_name": name, "settings_revision": snapshot.settings_revision }),
+            );
+        }
         let provider = snapshot
             .providers
             .iter()
@@ -697,7 +802,7 @@ impl AiccHandler for AiccService {
                 settings
                     .providers
                     .retain(|provider| provider.provider_instance_name != name);
-                if let Some(routing) = settings.session_config.as_mut() {
+                if let Some(routing) = settings.routing.as_mut() {
                     routing.provider_weights.remove(&name);
                 }
                 Ok(())

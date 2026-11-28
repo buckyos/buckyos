@@ -268,6 +268,13 @@ pub enum ControlCommand {
     ReplyMode {
         mode: super::ReplyMode,
     },
+    /// The AICC routing group of the session and of its sub sessions
+    /// without their own (`session_config.route_group`; `None` clears it).
+    /// Takes effect at the next inference.
+    RouteGroup {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        route_group: Option<String>,
+    },
     /// Goal Sessions: change the Goal's current skills (applied by the
     /// driver to the Goal State it owns).
     GoalSkills {
@@ -314,6 +321,7 @@ const CONTROL_COMMANDS: &[&str] = &[
     "activity",
     "perceive",
     "reply_mode",
+    "route_group",
     "goal_skills",
 ];
 
@@ -330,6 +338,7 @@ impl ControlCommand {
             ControlCommand::Activity { .. } => "activity",
             ControlCommand::Perceive { .. } => "perceive",
             ControlCommand::ReplyMode { .. } => "reply_mode",
+            ControlCommand::RouteGroup { .. } => "route_group",
             ControlCommand::GoalSkills { .. } => "goal_skills",
         }
     }

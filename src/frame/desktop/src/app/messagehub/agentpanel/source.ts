@@ -1,8 +1,9 @@
+import { buckyos } from 'buckyos'
 import { agentServiceClient } from '../../../components/conversation/worklog/source'
 import { parseWorkTree, type WorkTree } from '../../../components/conversation/worksessions/model'
 import { mockAgentPanelSource } from '../mock/agentpanel'
 import { isMessageHubMock } from '../store'
-import { parseAgentSummary, parseDeliveries, parseUiConversation, type AgentSummary, type DeliveryPage, type UiConversation } from './model'
+import { parseAgentSummary, parseDeliveries, parseRouteGroups, parseUiConversation, type AgentSummary, type DeliveryPage, type RouteGroup, type UiConversation } from './model'
 
 export type StopScope = 'turn' | 'session'
 
@@ -28,6 +29,10 @@ export interface AgentPanelSource {
   stop(agentDid: string, sid: string, scope: StopScope): Promise<void>
   /** `ui.rotate {sid}`: archives the UI Session; the next message starts a new one. */
   rotate(agentDid: string, sid: string): Promise<void>
+  /** `session.route_group {sid, route_group}`: the viewer's routing group for the session and the work it starts (`null` clears it). */
+  setRouteGroup(agentDid: string, sid: string, routeGroup: string | null): Promise<void>
+  /** AICC `routing.groups.list`: the viewer's own routing groups. */
+  routeGroups(): Promise<RouteGroup[]>
 }
 
 const apiAgentPanelSource: AgentPanelSource = {
@@ -66,6 +71,14 @@ const apiAgentPanelSource: AgentPanelSource = {
   },
   async rotate(agentDid, sid) {
     await (await agentServiceClient(agentDid)).call<unknown, Record<string, unknown>>('ui.rotate', { sid })
+  },
+  async setRouteGroup(agentDid, sid, routeGroup) {
+    await (await agentServiceClient(agentDid)).call<unknown, Record<string, unknown>>('session.route_group', { sid, route_group: routeGroup })
+  },
+  async routeGroups() {
+    const groups = parseRouteGroups(await buckyos.getServiceRpcClient('aicc').call<unknown, Record<string, unknown>>('routing.groups.list', {}))
+    if (!groups) throw Error('Routing groups unavailable')
+    return groups
   },
 }
 

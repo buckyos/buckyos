@@ -84,7 +84,6 @@ const messages: Record<string, [string, string]> = {
   "aiCenter.wizard.serverDefaults": ["Use server default parameters for selected tasks", "为指定用途使用服务端默认参数"],
   "aiCenter.wizard.serverDefaultsHelp": ["Server defaults omit preset reasoning parameters. They do not disable thinking. Only recognized LLMs can enter the tasks you explicitly select; capabilities and access policies still apply.", "服务端默认参数不指定思考预设，也不表示关闭思考。仅已识别的语言模型可进入明确选择的用途，能力和访问策略检查仍然生效。"],
   "aiCenter.wizard.recognizedModels": ["Recognized models", "已识别模型"],
-  "aiCenter.wizard.chatCandidates": ["Configured chat candidates", "已配置聊天候选"],
   "aiCenter.wizard.unmappedPresets": ["Presets without channel mapping", "缺少渠道映射的预设"],
   "aiCenter.wizard.unknownModels": ["Models needing an identity mapping", "需要身份映射的模型"],
   "aiCenter.wizard.readinessScope": ["These checks validate configuration only. Access policies and a real model call are required to confirm conversation readiness.", "以上仅验证配置。还需通过访问策略检查和真实调用，才能确认对话可用。"],

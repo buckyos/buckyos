@@ -145,7 +145,7 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
       {readiness && (
         <div className="rounded-lg border p-3 text-xs" style={{ borderColor: 'var(--cp-border)' }}>
           <p>{t('aiCenter.wizard.recognizedModels', 'Recognized models')}: {readiness.models_recognized?.length ?? 0}</p>
-          <p>{t('aiCenter.wizard.chatCandidates', 'Configured chat candidates')}: {readiness.routing_candidates?.['llm.chat']?.length ?? 0}</p>
+          <p>{t('aiCenter.wizard.coveredUsecases', 'Usecases with a model after adding it')}: {readiness.usecase_coverage?.filter((change) => change.after_coverage === 'covered').length ?? 0}</p>
           <p>{t('aiCenter.wizard.unmappedPresets', 'Presets without channel mapping')}: {readiness.unavailable_presets?.length ?? 0}</p>
           <p>{t('aiCenter.wizard.unknownModels', 'Models needing an identity mapping')}: {readiness.unmatched_models?.length ?? 0}</p>
           {(readiness.filtered_capabilities?.length ?? 0) > 0 && (

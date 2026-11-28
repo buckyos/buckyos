@@ -1,4 +1,5 @@
 import { Boxes, Compass, Folder, Layers } from 'lucide-react'
+import type { RouteFallback } from '../mock/types'
 
 export type DirectoryKind = 'task' | 'spec' | 'family' | 'directory'
 
@@ -102,7 +103,10 @@ export interface RoutePreview {
   expansion: ExpansionStep[]
   ranked: RankedCandidate[]
   filtered: FilteredCandidate[]
-  fallbackChain: { from: string; to: string; reason: string }[]
+  /** `coverage`: the usecase had no model and the fallback LLM's tree was expanded instead. */
+  fallback?: RouteFallback
+  /** The layer of the usecase table that chose the model (`default`, `zone`, `user`, `group:<id>`). */
+  usecaseSource?: string
 }
 
 export type AiccEventLevel = 'info' | 'warning' | 'error'
@@ -245,7 +249,7 @@ export function candidateTree(preview: RoutePreview): { root?: ExpansionStep; no
       winning: leaf ? item.target === selected : children.some((child) => child.winning),
     }
   })
-  const rootPath = preview.fallbackChain.at(-1)?.to ?? preview.path
+  const rootPath = preview.fallback?.kind === 'coverage' ? preview.fallback.to : preview.path
   const root = steps.get(rootPath) ?? steps.get(preview.path)
   return { root, nodes: root ? build(root, new Set([root.path])) : [] }
 }

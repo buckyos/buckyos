@@ -36,7 +36,6 @@ mod tests {
                 output: None,
                 idempotency_key: None,
                 task_options: None,
-                session_id: None,
             }),
             resolved_parameters: BTreeMap::from([(
                 "provider_model_id".to_owned(),

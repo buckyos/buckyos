@@ -123,13 +123,33 @@ export interface OutboxEntry {
   key: string
   msg: unknown
   turn: number
-  purpose?: 'reply' | 'placeholder' | 'final_edit'
+  purpose?: 'reply' | 'placeholder' | 'final_edit' | 'notice'
   status: OutboxStatus
   msg_id?: string
   deliveries?: string[]
   error?: string
   attempts: number
   updated_at_ms: number
+}
+
+/** An answer that did not come from the usecase's own model (AICC `route_trace.fallback`), once per usecase and model. */
+export interface RouteFallbackNote {
+  /** `coverage`: the usecase has no model, the fallback LLM answered. `unavailable`: its model failed, another one answered. */
+  kind: 'coverage' | 'unavailable'
+  usecase: string
+  model: string
+  replaced?: string
+  turn?: number
+  at_ms: number
+}
+
+/** An AICC routing group of the signed-in user (`routing.groups.list`). */
+export interface RouteGroup {
+  group_id: string
+  name: string
+  version: number
+  updated_at_ms: number
+  app_ids?: string[]
 }
 
 export interface SessionState {
@@ -159,6 +179,7 @@ export interface SessionState {
   last_error?: unknown
   pending_decision?: unknown
   stop_requested: boolean
+  route_fallbacks?: RouteFallbackNote[]
   updated_at_ms: number
 }
 
@@ -216,6 +237,8 @@ export interface SessionConfigSummary {
   workspace: unknown
   workspace_binding?: WorkspaceBinding | null
   subscriptions: unknown
+  /** The session's own routing group. */
+  route_group?: string | null
   channels: unknown
   behavior: string
   frozen: { catalog_rev: string; frozen_at_ms: number; frozen_by: string; behaviors: string[] } | null
@@ -234,6 +257,8 @@ export interface SessionDetail {
   lease_holder?: LockInfo | null
   children: string[]
   hosted: HostedStatus | null
+  /** The routing group in force: the session's own or the nearest parent's. */
+  route_group?: { group_id: string; session_id: string } | null
 }
 
 export interface ActiveSession {

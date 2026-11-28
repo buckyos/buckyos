@@ -11,9 +11,11 @@ interface StepReviewProps {
   onToggleAutoSync: (value: boolean) => void
   access?: ProviderAccess
   onAccessChange?: (access: ProviderAccess) => void
+  /** The usecase coverage step in numbers. */
+  coverage?: { newly: number; changed: number; kept: number; uncovered: number }
 }
 
-export function StepReview({ draft, validation, onToggleAutoSync, access = NO_PROVIDER_ACCESS, onAccessChange }: StepReviewProps) {
+export function StepReview({ draft, validation, onToggleAutoSync, access = NO_PROVIDER_ACCESS, onAccessChange, coverage }: StepReviewProps) {
   const { t } = useI18n()
   const providerName = draft.display_name || draft.provider_instance_name || '-'
 
@@ -48,6 +50,12 @@ export function StepReview({ draft, validation, onToggleAutoSync, access = NO_PR
       label: t('aiCenter.providers.models', 'Models'),
       value: `${validation?.models_discovered.length ?? 0}`,
     },
+    ...(coverage
+      ? [{
+        label: t('aiCenter.wizard.coverage.reviewLabel', 'Usecases'),
+        value: t('aiCenter.wizard.coverage.review', 'Newly covered: {{newly}} · Model changes: {{changed}} (kept: {{kept}}) · Still without a model: {{uncovered}}', coverage),
+      }]
+      : []),
     ...(draft.selected_inventory_models
       ? [{
         label: t('aiCenter.wizard.publishedModels', 'Published models'),

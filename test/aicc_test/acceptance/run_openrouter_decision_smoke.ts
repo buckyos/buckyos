@@ -19,7 +19,7 @@ const execute = args.includes("--execute");
 const plan = {
   layer: "T2", case_id: "openrouter-jev-mixed-single", provider_instance: "openrouter-default",
   physical_model: "typesafe/jev-1.13", max_provider_attempts: 1, concurrency: 1,
-  timeout_ms: 60_000, budget_usd: 0.01, sdk_retries: 0, runtime_failover: false,
+  timeout_ms: 60_000, budget_usd: 0.01, sdk_retries: 0,
   fallback: false, judge_calls: 0, temporary_settings: ["provider timeout", "locked routing policy"],
 };
 process.stdout.write(`${JSON.stringify({execute, plan}, null, 2)}\n`);
@@ -67,7 +67,7 @@ async function run(): Promise<void> {
       report.preview = await aicc.call("routing.preview", {paths:["decision"],requirements:decisionRouteRequirements(),explain:true});
       assert.equal(report.preview.entries?.[0]?.available, true, "preview must admit the same mixed requirements");
       report.route = await aicc.call("route.resolve", {api_type:"decision",logical_model:"decision",requirements:decisionRouteRequirements(),
-        policy:{allowed_provider_instances:[plan.provider_instance],allow_fallback:false,runtime_failover:false,max_cost:{amount:plan.budget_usd,currency:"USD"},explain:true}});
+        policy:{allowed_provider_instances:[plan.provider_instance],no_fallback:true,max_cost:{amount:plan.budget_usd,currency:"USD"},explain:true}});
       const exact = report.route.selected_exact_model;
       assert.ok([`${plan.physical_model}@${plan.provider_instance}`, `~typesafe/jev-latest@${plan.provider_instance}`].includes(exact), "route must select the verified physical Jev identity");
       return exact;
@@ -80,10 +80,10 @@ async function run(): Promise<void> {
       const provider = patched.providers.find((p: any) => p.provider_instance_name === plan.provider_instance);
       assert.ok(provider, "existing OpenRouter instance is required");
       provider.timeout_ms = plan.timeout_ms;
-      patched.session_config ??= {};
-      patched.session_config.policy ??= {};
-      Object.assign(patched.session_config.policy, Object.fromEntries(Object.entries({
-        allowed_provider_instances:[plan.provider_instance],allow_fallback:false,allow_exact_model_fallback:false,runtime_failover:false,
+      patched.routing ??= {};
+      patched.routing.policy ??= {};
+      Object.assign(patched.routing.policy, Object.fromEntries(Object.entries({
+        allowed_provider_instances:[plan.provider_instance],
         max_estimated_cost:{amount:plan.budget_usd,currency:"USD"},
       }).map(([key,value]) => [key,{value,locked:true}])));
       return patched;
@@ -107,7 +107,7 @@ async function run(): Promise<void> {
       assert.equal(report.upstream?.model,"typesafe/jev-1.13-20260917");
       assert.equal(report.upstream?.provider,"TypeSafe");
       assert.ok(typeof report.upstream?.id === "string" && report.upstream.id.length > 0);
-      assert.ok(report.traces.every((trace: any) => trace.runtime_failover_count === 0));
+      assert.ok(report.traces.every((trace: any) => !/"kind":"(coverage|unavailable)"/.test(JSON.stringify(trace))));
       const events: any = await aicc.call("events.list",{limit:100});
       report.events = (events.events ?? []).filter((event: any) => JSON.stringify(event).includes(result.task_id) || JSON.stringify(event).includes(traceId));
       assert.equal(report.usage_events.length,1,"one durable charge is required");

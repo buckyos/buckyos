@@ -168,7 +168,7 @@ internal_error, context_length_exceeded
 
 请求/schema/模型名错误映射为 `ParseRequestError`，权限错误映射为 `NoPermission`，其它业务错误映射为 `ReasonError`，其 body 为序列化后的 `AiccError`。调用方应优先用 `AiccError::from_krpc_error` 解码，不能按 message 文本分支。
 
-Protocol 内部错误还保留 request id、retry-after 与是否允许 failover 等信息；对外必须先归一化，不泄露响应正文、header 或凭据。
+Protocol 内部错误还保留 request id、retry-after 与是否可重试等信息（用于同模型重试和判断能否触发用途的“不可用时”策略）；对外必须先归一化，不泄露响应正文、header 或凭据。
 
 ## 7. 冻结后的变更规则
 

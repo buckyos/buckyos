@@ -29,8 +29,8 @@ Model Driver 把原厂模型身份转换为稳定的 AICC 语义；逻辑模型 
 | system-config Model Driver 集合 | Durable | `services/aicc/driver_metadata.model_drivers`，最高优先级 |
 | builtin 功能目录与功能到规格的偏好权重 | 版本化静态数据 | `service/model_defaults.rs`，随二进制发布 |
 | LLM 规格、模型能力、规格归属与 effort | Model Driver 版本化数据 | 每个原厂一份 `models/*.model.json`；版本顺序从官方模型 ID 推导，与 inventory 分离 |
-| system/user 逻辑树与 Provider 权重 | Durable | system-config AICC settings/路由配置，通过 CAS 更新 |
-| request/session overlay | Disposable | 请求或 session 生命周期；含可选 TTL，不作为长期事实源 |
+| system 逻辑树、Provider 权重与用途表管理员层 | Durable | system-config `services/aicc/settings.routing`，通过 CAS 更新 |
+| 用途表用户层、路由策略组、App 绑定 | Durable | AICC 平台 RDB（`aicc_routing_layer` / `aicc_routing_group` / `aicc_routing_binding`），只选用途的精确模型，不改变逻辑树 |
 | 有效 `CatalogSnapshot` / `ModelRegistry` | Disposable | 进程内不可变 snapshot，可由上述来源和 inventory 重建 |
 | Provider inventory LKGS | Durable、可重建 | 平台 RDB；schema 见 provider durable data 文档 |
 | 路由候选、admission 结果、分数 | Disposable | 单次路由计算；审计结果另按 runtime durable schema 保存 |
@@ -53,9 +53,9 @@ system-config 使用一个原子 value，避免读取到多文件的混合版本
 
 ### 3.2 逻辑模型 FS
 
-逻辑 FS 只存在于 `ModelRegistry`。路径用点分隔，例如 `llm.plan`、`image.txt2img`；`@` 仅属于 exact model，逻辑路径禁止包含 `@`。节点由 `LogicalModelDefinition` 定义 API type、minimum line、disable line、mount mode、scheduler profile、fallback、policy 和用户可见 tier。
+逻辑 FS 只存在于 `ModelRegistry`。路径用点分隔，例如 `llm.plan`、`image.txt2img`；`@` 仅属于 exact model，逻辑路径禁止包含 `@`。节点由 `LogicalModelDefinition` 定义 API type、minimum line、disable line、mount mode、scheduler profile、policy 和用户可见 tier。
 
-当前生产装配至少启用 factory overlay 与 settings 中的 session overlay；`RegistryLayers` 已冻结 `factory/system/user/session` 四个插槽，后续接入 system/user 时不得改变层级顺序。
+生产装配启用 factory overlay 与 settings 中的 system overlay（`routing`）；`RegistryLayers` 只有 `factory/system` 两个插槽。用户层、策略组只作用于用途表求值（选精确模型），不进注册表。
 
 ### 3.3 LLM 厂商规格与模型家族
 
@@ -79,12 +79,12 @@ LLM 装配顺序为：
   -> 声明规格目录（零 inventory 也存在）
   -> metadata 与有效 inventory 相交，注册 exact instances
   -> 动态家族 / 固定预设 / 规格到家族预设的版本引用
-  -> factory 功能偏好 -> system -> user -> session overlay
+  -> factory 功能偏好 -> system overlay（管理员 `routing`）
   -> 规格引用、归属、预设、版本顺序与图校验
   -> 原子发布 ModelRegistry
 ```
 
-对外结构为 `功能 -> 规格 -> 模型家族:固定预设 -> 物理 instance`。LLM 功能和规格不启用通用 Auto/Hybrid，不接受 inventory/`auto_mounts` 直接挂载。`llm` 只作命名空间；任务、规格、家族禁止隐式 Parent fallback，默认 strict；`llm.fallback` 默认为空。fallback 只来自系统管理员手工配置，配置后仍保留原任务约束（2026-11-23 修订，原则见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)，代码差距见 [显式 fallback 改造 TODO](../../notepads/aicc-explicit-fallback-todo.md)）。
+对外结构为 `功能 -> 规格 -> 模型家族:固定预设 -> 物理 instance`。LLM 功能和规格不启用通用 Auto/Hybrid，不接受 inventory/`auto_mounts` 直接挂载。`llm` 只作命名空间；任务、规格、家族之间没有 fallback，静态无候选就返回无候选。唯一内置的例外是兜底 LLM `llm.fallback`：默认关闭，管理员在用途表打开后，七个 LLM 用途中静态无候选的由它提供，只带请求自身的硬要求；这一步在用途表求值里做，注册表不含回退边。模型故障时换模型只来自用途的“不可用时”策略（2026-11-27 修订，见 [aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)、[§11](aicc_router.md#11-用途表与配置层次)）。
 
 先过滤可执行候选，跳过空规格，再按功能权重选规格、在规格内按推导的版本值选最新合格稳定家族，最后调度物理实例。OpenAI 的 `5.6 -> 560`、`5.5 -> 550`、`6 -> 600`；同版本允许同值，并以归一化家族 ID 升序稳定排序，不依赖配置声明顺序。版本分段、扩展数字段和无版本模型的处理见 Metadata Schema，不把日期、参数量或产品后缀当版本号。实验版仅在无合格稳定版且策略允许时参与。两层顺序不相乘，Provider 数量不增加家族权重；规格没有静态可用的候选时才看下一个规格，Provider 故障不改变选择。
 
@@ -125,16 +125,16 @@ Provider endpoint、认证、operation、渠道别名、渠道限制和渠道价
 
 | 字段 | 语义 |
 | --- | --- |
-| `inherit` | 可选父配置引用 |
 | `logical_tree` | 递归的 `AiccLogicalNodeOverlay` |
-| `logical_profile(s)` / `active_logical_profile` | profile 组合与当前选择 |
 | `global_exact_model_weights` | exact model 全局权重 |
 | `provider_weights` | Provider Instance 权重 |
+| `routing_commands` | 路由调整命令（目录 item 权重） |
 | `policy` | 锁定值、候选过滤和 scheduler 权重 |
-| `revision` | 调试/发布 revision |
-| `ttl_seconds` | 临时 overlay 生命周期提示 |
+| `usecases` | 用途表的管理员层：用途 → `{model, on_unavailable, enabled}`，见 [aicc_router.md §11](aicc_router.md#11-用途表与配置层次) |
 
-节点可提供 `items`、`item_overrides`、`exact_model_weights`、`disable_line`、`fallback`、`policy` 和子节点。`ModelItem` 固定为 `{ target, weight }`；target 可以是逻辑路径或 exact model。
+它只作为管理员层持久在 `services/aicc/settings.routing`；请求不再携带 overlay。`inherit`、`logical_profile(s)`、`active_logical_profile`、`revision`、`ttl_seconds` 已删除。用户层与路由策略组只含 `usecases` 的内容，存在 AICC RDB，不改变目录树。
+
+节点可提供 `items`、`item_overrides`、`exact_model_weights`、`disable_line`、`policy`、`route_policy_override` 和子节点；节点的 `fallback` 已删除。`ModelItem` 固定为 `{ target, weight }`；target 可以是逻辑路径或 exact model。
 
 ### 4.3 Identity
 
@@ -226,7 +226,7 @@ agent_runtime.computer_use
 
 ## Decision 目录与资格（2026-09-25）
 
-`decision` 是非 LLM Hybrid 入口，默认 strict / cost_first，零库存也可查询；TypeSafe 通过 `logical_mounts` 进入该目录，不声明 `llm` 或 effort。`requirements.decision` 合并请求与目录下限，包括题型集合、结构化输入/规则、题数、选项、等级和字节数。候选还须支持 `decision.probabilities`；exact、preview、fallback 使用相同硬过滤和现有逐层权重展开。见 [Decision API](decision_api.md)。
+`decision` 是非 LLM Hybrid 入口，没有 fallback，默认 `balanced` 调度，零库存也可查询；TypeSafe 通过 `logical_mounts` 进入该目录，不声明 `llm` 或 effort。`requirements.decision` 合并请求与目录下限，包括题型集合、结构化输入/规则、题数、选项、等级和字节数。候选还须支持 `decision.probabilities`；exact、preview 与“不可用时”策略的备选使用相同硬过滤和现有逐层权重展开。见 [Decision API](decision_api.md)。
 
 ## 显式服务端默认用途
 

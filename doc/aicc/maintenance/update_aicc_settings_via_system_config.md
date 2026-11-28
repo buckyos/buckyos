@@ -1,6 +1,6 @@
 # 通过 system_config 更新 AICC 配置
 
-本文说明如何把 AICC Provider settings 写入 `system_config`，并触发 AICC 在线重载。新版模型路由以 `doc/aicc/aicc_router.md` 为准：Provider settings 只负责声明 Provider instance、部署类型、凭据、`base_url` 和 discovery 配置；模型清单来自 Provider inventory，逻辑模型选择由默认逻辑目录配置、`system_config` 中的 AICC 系统配置和 request/session 级 overlay 完成。
+本文说明如何把 AICC Provider settings 写入 `system_config`，并触发 AICC 在线重载。新版模型路由以 `doc/aicc/aicc_router.md` 为准：Provider settings 只负责声明 Provider instance、部署类型、凭据、`base_url` 和 discovery 配置；模型清单来自 Provider inventory；用途选哪个模型由用途表决定（默认 < 管理员层 < 用户层 < App 绑定的策略组 < 会话绑定的策略组，见 [aicc_router.md §11](../aicc_router.md#11-用途表与配置层次)）。settings 里只有管理员层，其余各层存在 AICC 自己的 RDB 里，不在 system-config。
 
 普通 AI Center 前端不得直接使用本文的 system-config 接口，而应调用 AICC `provider.add/update/delete` 管理 API，由 AICC 使用当前调用者 token 和 revision CAS 受控写入。本文的直接写法只供具备相应 RBAC 权限的管理员维护、调试和外部工具使用；无论通过哪条入口，system-config 都是唯一配置真相源。
 
@@ -33,7 +33,7 @@ AICC 启动和 `service.reload_settings` 时读取该 key，并原子重建 Prov
       "provider_rules_id": "openai"
     }
   ],
-  "session_config": {}
+  "routing": {}
 }
 ```
 
@@ -77,6 +77,48 @@ SN 使用独立 `sn-openai` Adapter，并显式选择认证模式。静态 API K
 GLM 默认使用 Bearer。需要由 AICC 从 `key-id.secret` 生成短期 JWT 时，在静态认证中显式增加 `"credential_kind": "glm_jwt"`；其它 Provider 请求未声明的 credential kind 会被拒绝。
 
 Beta 2.2 不读取 Provider family section、`instances[]` 包装、`provider_driver`、`endpoint`、`features`、`alias_map`、section 级 token 或字段别名。`base_url` 是新旧 settings 都保留的正式字段。
+
+Provider 条目还可以带 `"marked_faulty": true`：管理员手工把它标记为故障。被标记的 Provider 仍参与路由、仍显示在用途表里，但请求不再发给它；配置了“不可用时”策略的用途直接改用备选，没配置的立即返回 `no_provider_available`（见 [aicc_router.md §9.6](../aicc_router.md#9-fallback-与失败处理)）。字段为 `false` 时不写。优先用 `provider.update {"marked_faulty": true|false}` 修改：只改这一项时不重新验证 Provider，并会记 `provider_marked_faulty` / `provider_fault_cleared` 事件；直接写 system-config 不记事件。长期故障应停用 Provider（`enabled: false`），默认路由随之重算。
+
+### 2.1 `routing`：管理员的路由配置
+
+`routing` 字段（旧名 `session_config`；settings 拒绝未知字段，仍写旧名的文档会加载失败）是 `AiccRouteOverlay`，即用途表的管理员层加上管理员的高级调权手段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `usecases` | 管理员层（Zone 默认）：`用途 → {model?, on_unavailable?, enabled?}`，见下 |
+| `provider_weights` | Provider 实例权重，进入调度评分的 `preference` 分量；`routing.update` 可改 |
+| `routing_commands` | 路由调整命令（逻辑目录内 item 的权重）；`routing.update` 可改 |
+| `global_exact_model_weights`、`logical_tree` | 精确模型权重、逻辑目录覆盖（`items` / `item_overrides` / `exact_model_weights` / `policy` 等）；只能直接写 settings |
+| `policy` | Zone 的路由策略（`profile`、`scheduler_profiles`、`local_only`、`blocked_provider_instances`、`allowed_provider_instances`、`max_estimated_cost`、`explain`），可用 `{"value": ..., "locked": true}` 锁定；请求只能在此之上收紧（[aicc_router.md §12.3](../aicc_router.md#12-控制面设计)） |
+
+已删除的旧字段：`policy` 里的 `allow_fallback`、`allow_exact_model_fallback`、`runtime_failover` 和 `profile: "cost_first"` 会被拒绝；`scheduler_profiles.cost_first`、逻辑目录节点的 `fallback`，以及 `inherit`、`logical_profile(s)`、`active_logical_profile`、`revision`、`ttl_seconds` 不再有任何作用。默认 profile 是 `balanced`。
+
+`usecases` 示例：
+
+```json
+{
+  "routing": {
+    "usecases": {
+      "llm.code": {
+        "model": { "value": "gpt-codex-5.2@openai-primary", "locked": true },
+        "on_unavailable": "same_model"
+      },
+      "llm.summarize": { "on_unavailable": "not_pricier" },
+      "image.txt2img": { "model": "flux-2-pro@fal" },
+      "llm.fallback": { "enabled": true }
+    }
+  }
+}
+```
+
+- `model`：精确模型 `model@provider`，必须在库存里、API 类型与用途一致、满足用途的硬要求；不写表示跟随默认展开。
+- `on_unavailable`：`none`（默认，不切换）/ `same_model` / `not_pricier` / `next_model`，含义见 [aicc_router.md §9.3](../aicc_router.md#9-fallback-与失败处理)。
+- 两个字段都可以写成 `"x"` 或 `{"value": "x", "locked": true}`；锁定后用户层和策略组不能改这一格。
+- `enabled` 只用于 `llm.fallback`（兜底 LLM），默认关闭；打开后，七个 LLM 用途中静态上没有模型的由它提供。
+- 所选模型从库存消失时配置保留，这一格跟随默认，并记 `usecase_model_missing` 事件。
+
+修改用途优先用 AICC 的 `routing.usecase.set`（`target: "zone"`，带 `revision` 做并发检查，写入前按上面的规则校验并记 `usecase_updated` 事件），或 `buckyos ai usecase set ... --zone-default`。直接写 system-config 跳过这些校验，写错的格子会在路由时被跳过。
 ## 3. 更新方式
 
 通过 `system_config` kRPC 更新：
@@ -222,12 +264,7 @@ POST /kapi/aicc
     "model": {
       "alias": "gpt-5.2@openai-primary"
     },
-    "requirements": {
-      "extra": {
-        "allow_fallback": false,
-        "runtime_failover": false
-      }
-    },
+    "requirements": {},
     "payload": {
       "messages": [
         {
@@ -240,6 +277,8 @@ POST /kapi/aicc
   "sys": [3007, "<session_token>", "trace-aicc-exact"]
 }
 ```
+
+精确模型调用从不切换模型或 Provider，失败时返回该 Provider 的真实错误，适合验证单个 Provider。
 
 ## 9. 常见错误
 
@@ -262,8 +301,8 @@ POST /kapi/aicc
 - `value` 必须是字符串；调用端负责 JSON 序列化。
 - `provider_type=local_inference` 具有安全含义，只能用于可信本地推理实例。
 - 不确定部署边界的代理服务使用 `proxy_unknown`，不要伪装成本地推理。
-- AICC 当前不支持 per-user routing config。系统级 routing 配置持久化在 `services/aicc/settings.routing_config`，例如 `provider_weights`、`global_exact_model_weights`、`policy`、`logical_tree` 和 `logical_definitions`；Ai Center UI 的系统级调整写入这里。调用方如果需要临时调整 provider/model 偏好，应在每次 RPC 的 request 级 `session_overlay` 中表达。
-- `models.list` 返回“默认逻辑目录配置 + system_config 中 AICC 系统配置”的合并视图，不包含 per-session overlay。
+- 只有管理员层在 system-config：`services/aicc/settings.routing`（见 §2.1）。用户层、路由策略组和 App 绑定存在 AICC RDB（`aicc_routing_layer`、`aicc_routing_group`、`aicc_routing_binding`），由用户本人通过 `routing.usecase.set`（`target: "user"` 或 `"group:<id>"`）、`routing.groups.*`、`routing.bindings.*` 修改，不能用本文的 system-config 接口写。会话绑定存在 lib_opendan 的会话配置（`route_group`），请求时带上。请求本身不再携带 overlay（`session_overlay` 已删除），只能用 `policy` 收紧。
+- `models.list` 返回“默认逻辑目录配置 + system_config 中 AICC 系统配置”的合并视图，不包含用户层和策略组；看对某个用户生效的用途表用 `routing.usecases`。
 - 变更后调用 `service.reload_settings`；只写 system_config 不会让运行中的 AICC 立即重建 Provider registry。
 
 ## 11. 参考代码

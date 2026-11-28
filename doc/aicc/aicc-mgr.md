@@ -28,6 +28,8 @@ Provider Instance、Provider Profile 和 Protocol Adapter 是不同身份：
 - `provider.list` / `provider.health`
 - `usage.query` / `trace.query`
 - `routing.get` / `routing.update` / `routing.preview`
+- `routing.usecases` / `routing.usecase.set`（用途表）
+- `routing.groups.list` / `.create` / `.update` / `.delete`、`routing.bindings.list` / `.set` / `.remove`（路由策略组与 App 绑定）
 - `events.list`
 - `driver_metadata_update.get` / `driver_metadata_update.set`
 - `service.reload_settings`
@@ -80,7 +82,7 @@ Provider credential 只存在于统一 Provider Instance 的 typed credential so
       "provider_rules_id": "openai"
     }
   ],
-  "session_config": {},
+  "routing": {},
   "public_named_object_base_url": "https://zone.example/ndn"
 }
 ```
@@ -90,6 +92,8 @@ Provider credential 只存在于统一 Provider Instance 的 typed credential so
 - `provider_instance_name` 是 Zone 内稳定唯一主键。
 - `provider_type` 只表达部署类型，不表达厂商或协议。
 - `provider_profile_id` 必须来自 Known Provider catalog 或 `custom`。
+- `routing`（旧名 `session_config`）是管理员的路由配置 `AiccRouteOverlay`：用途表的管理员层 `usecases`、`provider_weights`、`routing_commands`、`logical_tree`、`policy` 等，见 [aicc_router.md §11](aicc_router.md#11-用途表与配置层次)。
+- Provider 条目的 `marked_faulty: true` 表示管理员手工标记为故障，见 §4.4。
 - `public_named_object_base_url` 可选；仅在 Zone 已部署第三方 Provider 可访问、且无需用户鉴权的 HTTPS Named Object 下载入口时配置。它也是 `UrlOnly` 原始 URL 被 Provider 明确拒绝后的重试能力开关：AICC 下载内容、写入带 tenant/user owner 记录的 Named Object，再用该公网入口生成的新 URL 重试。省略时 `UrlOnly` 保留原失败且不重试。`UrlOrBytes` 的 fallback 使用 bytes，不依赖此配置。直接输入的 tenant/user 私有 Named Object 不因此公开：字节兼容协议由 AICC 鉴权读取后传输，URL-only 协议明确失败。
 - `protocol_family_id` 表达 OpenAI、Claude、Gemini 等协议族；`custom` Provider 必须同时显式提交该族已开放的 `protocol_adapter_id`。
 - Known Provider 的客户端集合只来自 catalog（默认客户端 `protocol_adapter_id` 加 `extra_protocol_adapters`）；settings 里的 `protocol_adapter_id` 对 Known Provider 可省略，提交了也不读取。`custom` Provider 在 UI 中明确选择默认客户端，例如 `openai-chat-completions`、`legacy-openai-chat-completions` 或 `openai-responses`，实例再带上同族其余对自定义开放的客户端。跨族组合必须拒绝，选择结果固化到 settings。
@@ -105,7 +109,7 @@ Provider credential 只存在于统一 Provider Instance 的 typed credential so
 2. 写操作必须使用 `SystemConfigClient::exec_tx`，并用 `services/aicc/settings` 的 revision 作为 `main_key` 做 CAS。
 3. 写成功后默认触发内存 reload，保证 `models.list` 立即反映变更。
 4. 返回值优先使用现有 `models.list` 的 raw inventory 模型，UI 继续在 `aicc_mgr.ts` 内做 Raw -> StoreSnapshot 转换。
-5. 不引入新的存储后端。settings 继续使用 system-config；usage、execution 恢复、route/audit、session exact-model 历史和 artifact 租户归属共用 AICC 现有平台 RDB instance。
+5. 不引入新的存储后端。settings 继续使用 system-config；usage、execution 恢复、route/audit、session exact-model 历史、用途表的用户层 / 路由策略组 / App 绑定和 artifact 租户归属共用 AICC 现有平台 RDB instance。
 
 ## 4. kRPC 接口
 
@@ -209,6 +213,7 @@ Response：
 - `provider_instance_name` 可选；传入时只用于校验命名合法性，不要求已存在。
 - 第一版可以只做参数校验和轻量 HTTP 探测；若能复用已有 provider adapter 的 inventory refresh 逻辑，则返回真实 `models_discovered`。
 - 返回错误不应泄露 token、Authorization header 或完整 URL query。
+- 能拿到草案的库存时，response 的 `usecase_coverage` 列出整个 Zone 29 个用途在加上这个 Provider 前后的模型与覆盖状态（`{usecase, before?, before_coverage, after?, after_coverage}`，覆盖状态为 `covered` / `fallback_llm` / `uncovered`），供添加向导的“用途覆盖”一步使用；算不出时只在 `warnings` 里说明，不让校验失败。它取代原来只算 LLM 用途的 `routing_candidates`。
 
 ### 4.3 `provider.add`
 
@@ -320,7 +325,7 @@ Request 使用 `provider_instance_name` 定位实例，其余字段为需要替�
 }
 ```
 
-接口可以更新 `enabled`、`base_url`、credential、Profile、Adapter、discovery 和实例规则。更新流程必须：
+接口可以更新 `enabled`、`base_url`、credential、Profile、Adapter、discovery、实例规则和 `marked_faulty`。`marked_faulty: true` 是手工标记故障：Provider 仍参与路由和用途表，但请求不再发给它，配置了“不可用时”策略的用途直接改用备选，其余立即返回 `no_provider_available`（`details.reason = "marked_faulty"`）；`false` 清除标记。只改这一项时不重新验证 Provider（故障中的 Provider 会验证失败），标记和清除分别记 `provider_marked_faulty`、`provider_fault_cleared` 事件，`ProviderInstanceView.marked_faulty` 回显。长期故障应停用 Provider（[aicc_router.md §9](aicc_router.md#9-fallback-与失败处理)）。修改 Provider 的其它配置会清掉它已观测的健康状态。更新流程必须：
 
 1. 读取当前 settings 和 revision，确认目标实例存在。
 2. 合并 patch 后完整校验 Profile、Adapter、`base_url`、认证 schema 和 Provider Rules 引用；未知字段拒绝。
@@ -364,6 +369,8 @@ Response：
 4. reload 应先把旧实例标记为 stopping，向其库存刷新定时任务循环发送 `Stop` 事件，并等待循环优雅退出。
 5. 循环退出后从 registry 删除实例，并同步删除或解除其 credential reference；动态 token 只存在内存，无需持久化清理。
 6. 原子发布新 registry；停止过程失败时不得留下仍可路由但 settings 已删除的半状态，必须返回可诊断错误。
+
+删除或停用前，界面用 `routing.usecases {"view": "zone", "without_provider": "<name>"}` 取得“没有这个 Provider 时”的用途表，与当前用途表对比，在确认框里列出受影响的用途、由谁接替、哪些会变成未覆盖。
 
 禁用实例以及因 `base_url`、Profile、Adapter、认证等变化而重建实例时使用相同停止协议：先停止旧实例的定时任务，再发布禁用状态或新实例。AICC 服务停止时应向全部 Provider 定时任务循环广播 `Stop` 并等待退出。
 
@@ -451,6 +458,7 @@ Response 直接复用 `buckyos_api::QueryUsageResponse`：
 - `Usage Detail` 原始事件必须使用 `output_mode=events` + `limit` + `cursor` 分页加载，不应为了前端分页或统计一次性加载全部事件。
 - `Usage Detail` 的 Provider / Model / App 筛选应通过 `provider_instance_names`、`provider_instance_query`、`provider_models`、`provider_model_query`、`caller_app_ids`、`caller_app_query` 下推到后端；数组字段表示多选精确匹配，`*_query` 表示前端输入框的模糊匹配文本。
 - `time_bucket` 支持 `five_minutes`、`hour`、`day`，按 Unix 时间对齐分桶；`explicit` 查询区间为 `[start_time_ms, end_time_ms)`，边缘桶只统计区间内事件。`buckets` 仅返回有事件的桶，前端按需补零。
+- `filters.fallback_only = true` 只返回由用途的“不可用时”策略切换而来的用量；这类事件带 `fallback_from`（被替换的精确模型），用量记在实际执行的模型上。
 - 聚合的 `total_tokens` 逐事件优先使用已上报总量（包括显式的 `0`）；事件未上报总量时累加其输入与输出 Token，缺失的单项按 `0` 计算。该规则统一适用于 `total`、`grouped` 和 `buckets`，原始事件保留上报值。
 
 建议前端调用：
@@ -540,7 +548,7 @@ Rust 契约统一定义在 `buckyos-api::aicc_client` 的 `DriverMetadataUpdate*
 
 ### 5.1 `routing.get` / `routing.update`
 
-`routing.get` 返回当前 settings revision、完整 `AiccRouteOverlay`，以及当前 Registry 对每条路由调整命令的应用结果 `command_status`（`command`、`matched_items`、可选 `stale_reason`）。`routing.update` 使用调用方读取到的 revision 做 CAS，只替换请求中出现的字段：`provider_weights` 和/或 `routing_commands`，其它系统级 routing 字段保持不变；两者都缺省时返回 `invalid_request`。settings 中的内部字段名 `session_config` 不表示 AICC 保存应用 session overlay；请求级 `session_overlay` 始终由调用方传入。
+`routing.get` 返回当前 settings revision、完整 `AiccRouteOverlay`，以及当前 Registry 对每条路由调整命令的应用结果 `command_status`（`command`、`matched_items`、可选 `stale_reason`）。`routing.update` 使用调用方读取到的 revision 做 CAS，只替换请求中出现的字段：`provider_weights` 和/或 `routing_commands`，其它系统级 routing 字段（含用途表的管理员层 `usecases`）保持不变；两者都缺省时返回 `invalid_request`。改用途用 `routing.usecase.set`（§5.4）。
 
 `routing.update` request：
 
@@ -572,11 +580,19 @@ Rust 契约统一定义在 `buckyos-api::aicc_client` 的 `DriverMetadataUpdate*
 
 ### 5.2 `routing.preview`
 
-对逻辑目录执行与真实请求相同的两阶段路由（不调用 Provider、不记录 session 历史），用于 UI 观察和测试当前路由配置。request：`{"paths": [...], "explain": false}`，`paths` 为空时预览全部逻辑目录。response 为 `settings_revision` 和 `entries`，每项包含 `path`、`api_type`、`kind`（`task` 用途目录 / `spec` 规格 / `family` 模型家族 / `directory` 其它目录）、`available`、`selected_exact_model`、`error`；`explain=true` 时额外返回完整路由 trace（`logical_expansion`、`ranked_candidates`、`filtered_candidates`、`fallback_chain`、`scheduler_profile` 等）。`models.list` 的 `logical_definitions` 同样带 `kind`。
+对逻辑目录执行与真实请求相同的两阶段路由（不调用 Provider、不记录 session 历史），用于 UI 观察和测试当前路由配置；用途路径按调用者自己的各层（管理员层、用户层，以及发起调用的 App 绑定的策略组）求值。request：`{"paths": [...], "explain": false}`，`paths` 为空时预览全部逻辑目录。response 为 `settings_revision` 和 `entries`，每项包含 `path`、`api_type`、`kind`（`task` 用途目录 / `spec` 规格 / `family` 模型家族 / `directory` 其它目录）、`available`、`selected_exact_model`、`error`；`explain=true` 时额外返回完整路由 trace（`logical_expansion`、`ranked_candidates`、`filtered_candidates`、`usecase`、`fallback`、`scheduler_profile` 等）。`models.list` 的 `logical_definitions` 同样带 `kind`。
 
 ### 5.3 `events.list`
 
-返回 AICC 值得关注的系统事件，供 AI Center 首页展示。request：`{"limit": 50}`（上限 200）。response：`events`（最新在前的事件历史，内存环形缓冲，最多 200 条，服务重启后清空）和 `active_warnings`（当前仍未解决的告警，例如失效的路由调整命令）。事件字段：`event_id`、`created_at_ms`、`level`（`info`/`warning`/`error`）、`kind`、`message`（英文兜底文案，UI 按 `kind` 本地化）、`details`。当前 `kind`：`routing_command_stale`、`routing_command_recovered`、`routing_commands_updated`、`registry_build_failed`、`registry_recovered`。
+返回 AICC 值得关注的系统事件，供 AI Center 首页展示。request：`{"limit": 50}`（上限 200）。response：`events`（最新在前的事件历史，内存环形缓冲，最多 200 条，服务重启后清空）和 `active_warnings`（当前仍未解决的告警，例如失效的路由调整命令）。事件字段：`event_id`、`created_at_ms`、`level`（`info`/`warning`/`error`）、`kind`、`message`（英文兜底文案，UI 按 `kind` 本地化）、`details`。当前 `kind`：`routing_command_stale`、`routing_command_recovered`、`routing_commands_updated`、`registry_build_failed`、`registry_recovered`、`usecase_updated`、`usecase_model_missing`、`usecase_model_recovered`、`unavailable_fallback`、`provider_marked_faulty`、`provider_fault_cleared`。
+
+### 5.4 用途表、路由策略组与 App 绑定
+
+所有能使用 AI 的用户都能调用，每个用户只能看、改自己的用户层、策略组和绑定；写管理员层（`target: "zone"`）、看 `view: "zone"` 和 `without_provider` 需要管理员。字段与语义见 [aicc_router.md §12](aicc_router.md#12-控制面设计)：
+
+- `routing.usecases {view?, without_provider?}`：对某个视角生效的用途表（29 个用途加 `llm.fallback` 一行），每行给出当前模型、来源层、各层的值与锁、`on_unavailable` 及其来源、“不可用时会换到谁”、覆盖状态与原因；`revision` 是改这个视角那一层时要带的版本。
+- `routing.usecase.set {target, usecase, model?, on_unavailable?, enabled?, clear?, revision}`：改一格。`target: "zone"` 写 settings 的 `routing.usecases`（与 Provider 写接口相同的 CAS 与 reload，记 `usecase_updated` 事件），`user` / `group:<id>` 写 AICC RDB；版本不符返回 `settings_revision_conflict`。
+- `routing.groups.*`、`routing.bindings.*`：策略组的增删改与 App 绑定；删除策略组同时删除它的 App 绑定。
 
 ## 6. system_config 事务模型
 

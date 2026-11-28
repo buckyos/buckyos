@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS aicc_usage_event (
  request_units BIGINT, usage_json TEXT NOT NULL, finance_snapshot_json TEXT,
  finance_amount REAL, finance_currency TEXT, finance_valid INTEGER NOT NULL DEFAULT 0,
  created_at_ms BIGINT NOT NULL, operator_id TEXT, attribution_json TEXT,
- credit_micro BIGINT, credit_status TEXT);
+ credit_micro BIGINT, credit_status TEXT, fallback_from TEXT);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time ON aicc_usage_event(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time ON aicc_usage_event(tenant_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_trace_time ON aicc_usage_event(trace_id, created_at_ms);
@@ -45,11 +45,6 @@ CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_tenant_time ON aicc_route_
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_task_time ON aicc_route_trace_event(task_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_fallback_time ON aicc_route_trace_event(tenant_id, fallback_applied, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_warning_time ON aicc_route_trace_event(tenant_id, warning_count, created_at_ms);
-CREATE TABLE IF NOT EXISTS aicc_session_route_history (
- tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, caller_app_id TEXT NOT NULL,
- session_id TEXT NOT NULL, selected_exact_model TEXT NOT NULL, updated_at_ms BIGINT NOT NULL,
- PRIMARY KEY (tenant_id, user_id, caller_app_id, session_id));
-CREATE INDEX IF NOT EXISTS idx_aicc_session_route_history_updated ON aicc_session_route_history(updated_at_ms);
 CREATE TABLE IF NOT EXISTS aicc_artifact_scope (
  obj_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
  caller_app_id TEXT NOT NULL, created_at_ms BIGINT NOT NULL);

@@ -450,3 +450,27 @@ test('the desktop opens Settings on the page a `?settings=` link names and ignor
   await expect(page).not.toHaveURL(/settings=/)
   await expect(page.getByTestId('window-settings')).toHaveCount(0)
 })
+
+test('the conversation\'s routing group is chosen in the panel, and a fallback model is shown apart', async ({ page }) => {
+  await page.setViewportSize({ width: 1500, height: 900 })
+  await openHub(page, CODER, WORK)
+  // The Agent's note that the fallback LLM answered stands apart from its replies.
+  const notice = bubble(page, 'msg-cw-4n')
+  await expect(notice).toHaveAttribute('data-testid', 'route-fallback-notice')
+  await expect(notice).toHaveAttribute('role', 'note')
+  await expect(notice).toContainText('No model is set up for Planning, so the fallback model qwen3-8b@local is answering.')
+
+  await page.getByTestId('agent-panel-toggle').click()
+  const routing = page.getByTestId('agent-panel').getByTestId('agent-route-group')
+  const select = routing.getByTestId('agent-route-group-select')
+  await expect(select).toHaveValue('')
+  await expect(select.locator('option')).toHaveText(['None', 'Fast and cheap', 'Coding'])
+  await expect(routing.getByTestId('agent-route-fallback')).toHaveText('No model is set up for llm.plan: the fallback model qwen3-8b@local answered.')
+
+  await select.selectOption('rg-coding')
+  await expect(select).toHaveValue('rg-coding')
+  expect(await calls(page, 'session.route_group')).toEqual([{ sid: 'ui-session-work', route_group: 'rg-coding' }])
+  await select.selectOption('')
+  await expect(select).toHaveValue('')
+  expect((await calls(page, 'session.route_group')).at(-1)).toEqual({ sid: 'ui-session-work', route_group: null })
+})

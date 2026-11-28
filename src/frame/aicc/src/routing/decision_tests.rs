@@ -54,8 +54,7 @@ fn decision_registry(inventory_enabled: bool) -> ModelRegistry {
     };
     let mut definition = definition(
         "decision",
-        AiccFallbackMode::Strict,
-        AiccSchedulerProfile::CostFirst,
+        AiccSchedulerProfile::Balanced,
     );
     definition.api_type = ApiType::Decision;
     ModelRegistry::build(
@@ -106,7 +105,8 @@ fn decision_routing_filters_mixed_and_exact_requests_before_weight_group_expansi
         .unwrap();
     assert_eq!(route.selected.exact_model, "jev-1.13.0@full");
     assert!(route
-        .fallback_candidates
+        .trace
+        .ranked_candidates
         .iter()
         .all(|c| c.exact_model != "jev-1.13.0@partial"));
     assert!(Router::new(&registry, &policy, &states)
@@ -246,8 +246,7 @@ fn openrouter_channel_capacity_filters_logical_and_exact_decision_routes() {
     };
     let mut definition = definition(
         "decision",
-        AiccFallbackMode::Strict,
-        AiccSchedulerProfile::CostFirst,
+        AiccSchedulerProfile::Balanced,
     );
     definition.api_type = ApiType::Decision;
     let registry = ModelRegistry::build(

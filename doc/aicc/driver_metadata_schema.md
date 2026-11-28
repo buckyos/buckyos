@@ -196,17 +196,20 @@ request routing retain that selected exact variant. Final wire parameter locking
 is separate Provider/Adapter work.
 
 LLM directories require Manual admission. The `llm` root is a namespace.
-Tasks, specifications and families have no implicit Parent fallback and default to
-`strict`; `llm.fallback` is empty by default. A fallback exists only where a system
-administrator configured one, and it retains the original task/request requirements.
-See [aicc_router.md section 9](aicc_router.md#9-fallback-与失败处理). The current code still
-ships builtin `target_logical` rules to a populated `llm.fallback`, and its single-model
-coverage test requires new non-`direct_only` specifications to be listed there; both are
-removed by the [explicit fallback TODO](../../notepads/aicc-explicit-fallback-todo.md).
-Legacy `llm.{driver}.{model}` names are not aliases.
+Tasks, specifications and families never fall back to a parent or another directory:
+without a static candidate they return no candidate. The one built-in exception is the
+fallback LLM `llm.fallback` (its small-model specifications stay in the catalog): it is off
+by default; when an administrator turns it on in the usecase table, the seven LLM
+usecases that have no static candidate are served by it with only the request's own hard
+requirements. A failing Provider never routes to it; a model switch on failure comes only
+from a usecase's manually set "when unavailable" policy. See
+[aicc_router.md section 9](aicc_router.md#9-fallback-与失败处理). The single-model coverage
+test may still require new non-`direct_only` specifications to be listed under
+`llm.fallback`. Legacy `llm.{driver}.{model}` names are not aliases.
 
-Overlays retain `factory -> system -> user -> session` precedence. Item and
-fallback graphs are checked together for cycles. Rebuilds are deterministic;
+The registry has two overlay layers, `factory -> system` (the administrator's
+`routing` settings); user layers and routing groups only choose a usecase's exact model
+and never change the tree. Item graphs are checked for cycles. Rebuilds are deterministic;
 RuntimeState publishes only complete valid snapshots and preserves the previous
 snapshot on catalog or tree validation failure. Directory RPC shapes are unchanged.
 
@@ -338,9 +341,9 @@ A Known Provider catalog may carry `exchange_rates` with `source_url`,
 `observed_at_ms`, `expires_at_ms`, and `usd_per_unit`. Rates are usable only in the
 half-open observation/expiry interval. Routing uses a 1,000 input / 1,000 output
 reference (request estimates override it), the same tier/time-window resolver as
-settlement, and valid USD conversions. Within the expanded pool, the default
-`cost_first` profile ranks by comparable USD price only; latency and error
-observations never rank candidates. Unknown quotes are last and fail a hard cost
+settlement, and valid USD conversions. Within the expanded pool, the scheduler profile
+(default `balanced`; `cost_first` was removed) weighs this cost with quality and
+preference; latency and error observations never rank candidates. Unknown quotes are last and fail a hard cost
 budget. Specification and family weights only decide which branches expand.
 
 See [Provider upgrade implementation](provider_upgrade_implementation.md) for

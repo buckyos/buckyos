@@ -1,5 +1,5 @@
 import type { AgentPanelSource } from '../agentpanel/source'
-import { parseUiConversation, type AgentSummary, type Delivery, type UiGeneration, type UiSessionView } from '../agentpanel/model'
+import { parseUiConversation, type AgentSummary, type Delivery, type RouteFallbackNote, type UiGeneration, type UiSessionView } from '../agentpanel/model'
 import { getTaskWatchSource } from '../../../components/conversation/tasks'
 import { flattenWork, isWorkFinished, workChildren, type WorkCard, type WorkNode } from '../../../components/conversation/worksessions/model'
 import { MOCK_AGENT_TASKS, MOCK_SELF_DID } from '../../../components/conversation/mock/ids'
@@ -10,7 +10,7 @@ import { MOCK_WORK_UI_SESSION, mockSessionCards } from '../../../components/conv
 const AGENT = 'did:buckyos:agent:codeassistant'
 const ARTIFACTS = 'obj://bucket/user/codeassistant/self/artifacts'
 
-interface MockConversation { uiSession: string | null; generations: UiGeneration[]; paused: UiSessionView['paused']; openTask?: { turn: number; task_id: string }; prompt: UiSessionView['prompt'] }
+interface MockConversation { uiSession: string | null; generations: UiGeneration[]; paused: UiSessionView['paused']; openTask?: { turn: number; task_id: string }; prompt: UiSessionView['prompt']; routeGroup?: string; fallbacks?: RouteFallbackNote[] }
 
 function seedConversations(now: number): Record<string, MockConversation> {
   const minutes = (value: number) => now - value * 60_000
@@ -24,6 +24,7 @@ function seedConversations(now: number): Record<string, MockConversation> {
       paused: null,
       openTask: { turn: 8, task_id: MOCK_AGENT_TASKS.workAnalyze },
       prompt: { frozen_at_ms: minutes(71), current: false, changed: ['role.md', 'cmd_skills/ui_core'] },
+      fallbacks: [{ kind: 'coverage', usecase: 'llm.plan', model: 'qwen3-8b@local' }],
     },
     'session-coder-ask': {
       uiSession: 'ui-session-1',
@@ -150,6 +151,8 @@ export const mockAgentPanelSource: AgentPanelSource = {
       ...(conversation.openTask ? { open_turn: conversation.openTask } : {}),
       unfinished_works: works,
       prompt: conversation.prompt,
+      ...(conversation.routeGroup ? { route_group: conversation.routeGroup } : {}),
+      ...(conversation.fallbacks ? { route_fallbacks: conversation.fallbacks } : {}),
     } : null
     // Parsed as the service's answer is: `route_key` comes from `current`.
     const answer = parseUiConversation(structuredClone({ current, generations: conversation.generations }))
@@ -202,6 +205,16 @@ export const mockAgentPanelSource: AgentPanelSource = {
     const card = findWork(sid)
     if (!card) throw Error(`session ${sid} not found`)
     cascade(card, item => { if (!isWorkFinished(item.state)) Object.assign(item, { state: 'stopped', paused: undefined, finished_at_ms: Date.now() }) })
+  },
+  async setRouteGroup(_agentDid, sid, routeGroup) {
+    await served('session.route_group', { sid, route_group: routeGroup })
+    const conversation = conversationBySid(sid)
+    if (!conversation) throw Error(`session ${sid} not found`)
+    conversation.routeGroup = routeGroup ?? undefined
+  },
+  async routeGroups() {
+    await served('routing.groups.list', {})
+    return [{ group_id: 'rg-fast', name: 'Fast and cheap' }, { group_id: 'rg-coding', name: 'Coding' }]
   },
   async rotate(_agentDid, sid) {
     await served('ui.rotate', { sid })

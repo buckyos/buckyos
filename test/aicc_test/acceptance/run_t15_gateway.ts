@@ -92,7 +92,6 @@ type CaseResult = {
 };
 
 type T15TypedOptions = {
-  sessionId?: string;
   historyMessage?: Record<string, unknown>;
   sourceResource?: Record<string, unknown>;
   foreignProviderState?: {
@@ -788,7 +787,6 @@ export function buildT15TypedParams(
     exact_model: exactModelId,
     execution_mode: executionMode,
     idempotency_key: `${runId}:${requestKey}`,
-    ...(typedOptions.sessionId ? { session_id: typedOptions.sessionId } : {}),
   };
   switch (apiType) {
     case "llm": {
@@ -1831,8 +1829,9 @@ async function executeServerDefaultCase(session: GatewaySession, catalog: Provid
     };
     const validation = await session.aicc.call("provider.validate", draft) as Record<string, unknown>;
     if ((validation.errors as unknown[])?.length) throw new Error(`default configuration validation failed: ${JSON.stringify(validation.errors)}`);
-    const expected = `${config.model_id}@${instance}`;
-    if (!(validation.models_recognized as string[])?.includes(config.model_id) || !(validation.routing_candidates as Record<string, string[]>)?.["llm.chat"]?.includes(expected)) throw new Error("advanced configuration was not reflected in readiness validation");
+    const chatCoverage = (validation.usecase_coverage as Array<{ usecase: string; after_coverage: string }> | undefined)
+      ?.find((row) => row.usecase === "llm.chat");
+    if (!(validation.models_recognized as string[])?.includes(config.model_id) || chatCoverage?.after_coverage !== "covered") throw new Error("advanced configuration was not reflected in readiness validation");
     await session.aicc.call("provider.add", draft);
     added = true;
     const inventory = await waitInventory(session, instance, input.timeoutMs, [config.model_id]);
@@ -1894,7 +1893,6 @@ async function executeProviderSwitchCase(
   };
   testCase.provider_instance = targetInventory.provider_instance_name;
   testCase.expected_provider_instance = targetInventory.provider_instance_name;
-  const sessionId = `${runId}:${testCase.case_id}`;
   let sourceExactModel: string | undefined;
   let targetExactModel: string | undefined;
   let failed: unknown;
@@ -1930,9 +1928,7 @@ async function executeProviderSwitchCase(
         runId,
         "immediate",
         `${testCase.case_id}.source`,
-        {
-          sessionId,
-        },
+        {},
       ),
     ) as Record<string, unknown>;
     await terminal(
@@ -1953,7 +1949,6 @@ async function executeProviderSwitchCase(
         "immediate",
         `${testCase.case_id}.provider-switch`,
         {
-          sessionId,
           foreignProviderState: {
             source: {
               provider_profile_id: catalog.providers.find((provider) =>

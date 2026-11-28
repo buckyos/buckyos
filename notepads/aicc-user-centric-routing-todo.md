@@ -1,6 +1,6 @@
 # AICC 用户视角的模型路由改进 TODO
 
-日期：2026-11-27。状态：立项，代码未实施。owner 当天答复了 §9 的 Q1–Q13，正文已按裁决改写；裁决带出的两个问题见 §9.1，只影响 R2 的池内排序，其余部分可以直接实施。
+日期：2026-11-27。状态：2026-11-28 已实施（未提交、未部署、真实 Zone DV 未跑），实施记录见 §11。owner 答复了 §9 的 Q1–Q13 和 §9.1 的 N1、N2，全部已实施。
 
 基线：`fcd23bfb4`，加上当天工作区里未提交的 AICC 改动（百炼改名等，不涉及路由）。下文行号按这份工作区记录，动手前先复核。
 
@@ -208,7 +208,7 @@
 | App 绑定 | AICC RDB 新表 `aicc_routing_binding`（`owner`、`scope = app:<app_id>`、`group_id`） |
 | 会话绑定 | lib_opendan 的会话配置（§4.6，Q9） |
 
-新增表要把 `STORAGE_SCHEMA_VERSION` 升到 4，会让已部署的 Zone 起不来；与 [用户策略与 Credit TODO](aicc-user-policy-credit-todo.md) 的 Q14 合并成同一次升级，不要各升一次。
+新增表要把 `STORAGE_SCHEMA_VERSION` 升到 4，会让已部署的 Zone 起不来（2026-11-28 owner：这个版本是 breaking change，用户统一重新安装）；与 [用户策略与 Credit TODO](aicc-user-policy-credit-todo.md) 的 Q14 合并成同一次升级，不要各升一次。
 
 ### 4.2 求值
 
@@ -337,8 +337,8 @@ resolve(用途 U, 调用者 C, 请求 R):
 
 ### R2 默认路由稳定
 
-- [ ] 删除 `cost_first`（Q12）：`AiccSchedulerProfile::CostFirst`、请求侧 `RoutePolicyProfile::Cheap`、`scheduler_profiles.cost_first`、websdk 与 Desktop 里的对应值。`EffectiveRoutingPolicy` 的默认 profile（`routing/policy.rs:90` 起）和 `decision` 等用 `CostFirst` 的内置定义改成 `balanced`（`rg CostFirst src/frame/aicc/src` 找全）。
-- [ ] 其余 profile 的 `cost` 分量、会话历史软优先：等 §9.1 N1、N2 答复后再做。
+- [x] 删除 `cost_first`（Q12）：`AiccSchedulerProfile::CostFirst`、请求侧 `RoutePolicyProfile::Cheap`、`scheduler_profiles.cost_first`、websdk 与 Desktop 里的对应值。`EffectiveRoutingPolicy` 的默认 profile（`routing/policy.rs:90` 起）和 `decision` 等用 `CostFirst` 的内置定义改成 `balanced`（`rg CostFirst src/frame/aicc/src` 找全）。
+- [x] 其余 profile 的 `cost` 分量、会话历史软优先：按 N1、N2 删除（§11.7）。
 
 ### R3 不可用时的三种策略
 
@@ -451,12 +451,14 @@ resolve(用途 U, 调用者 C, 请求 R):
 - **Q13 未覆盖的用途。** 去掉 `llm.fallback` 后，只接了一个小模型的 Zone 里 `llm.plan`、`llm.code` 可能没有候选。（建议：不恢复内置兜底；向导和首页列出未覆盖的用途，并为每个给出“用 X 覆盖”的建议，用户确认后写进管理员层。建议只在 API 类型相同、满足该用途硬要求的模型里选。）
 > llm.fallback展示保留，系统管理员启用该配置后意味着至少可以有一个llm用来维护系统。（使用llm.fallback的session应该有警告信息）
 
-### 9.1 裁决带出的问题（待 owner 确认）
+### 9.1 裁决带出的问题（2026-11-28 已答复）
 
-两项都只影响 R2；没有答复前 R2 只删 `cost_first`。
+两项都只影响 R2，已按建议实施（§11.7）。
 
 - **N1 删了 `cost_first` 以后，其余 profile 的 `cost` 分量怎么办。** `balanced` 0.5、`quality_first` 0.3、`latency_first` 0.5、`local_first` 0.3、`strict_local` 0.5 都带成本（`routing/mod.rs:1103-1119`），成本又是按请求的 token 估算的，同一用途仍可能因为请求大小选到不同模型。（建议：池内排序整个不用价格，价格只用于 `not_pricier`、预算上限和展示；排序按偏好权重、规范字段匹配质量、本地优先，最后按默认顺序。`cost` 分量和 `estimated_cost` 参与评分的路径一起删掉。备选：保留 `cost` 分量，改用与请求无关的静态单价。）
+> 按建议，我们实测限制基本只有local_first和strict_local。 
 - **N2 会话历史软优先。** Q12 的后半——删除会话历史软优先和 `aicc_session_route_history` 表——没有答复。它让同一会话倾向上一次用过的模型；默认路由变成确定性以后，它只在池里有多个同分候选时才改变选择。（建议：删除。Agent 对话路径本来也不传 `session_id`。）
+> 按建议
 
 按裁决推出的细则，不阻塞实施，有异议再改：
 
@@ -474,3 +476,74 @@ resolve(用途 U, 调用者 C, 请求 R):
 - 策略组按 App 和会话（含子会话）生效，并且只对它的主人生效。
 - 添加 Provider 时，向导显示整个 Zone 的用途覆盖变化。
 - 打开兜底 LLM 后，没有模型的 LLM 用途仍能工作，会话里看得到警告。
+
+## 11. 实施记录（2026-11-28）
+
+代码未提交、未部署；真实 Zone DV（R7 最后一项）没跑，需要重启本机 Zone。
+
+### 11.1 落点
+
+**共享类型（`buckyos-api`）**
+- 新模块 `kernel/buckyos-api/src/aicc_routing.rs`：`routing_methods`、`OnUnavailable`、`AiccUsecaseRoute(s)`、`RouteFallback`（`kind = coverage | unavailable`）、用途表的请求与响应、策略组与 App 绑定、`UsecaseCoverageChange`。
+- `aicc_client.rs`：删 `AiccFallbackMode`、`AiccFallbackRule`、`AiccSessionLogicalProfile`、`AiccLogicalTreeOverlay`、`OverlayMergeMode`、`AiccSchedulerProfile::CostFirst`（默认改 `balanced`）、`RoutePolicyProfile::Cheap`、`RoutePolicy.allow_fallback/runtime_failover`（换成 `no_fallback`）、`AiccPolicyConfig` 的三个 fallback 字段、`AiccRouteOverlay` 的 profile / `inherit` / `revision` / `ttl_seconds`、请求里的 `session_overlay`（换成 `route_group`）、`RouteResolveResponse.fallback_attempts`、`ProviderValidateResponse.routing_candidates`（换成 `usecase_coverage`）、`AiccErrorCode::FallbackNotAllowed`；加 `AiccRouteOverlay.usecases`、`RouteTrace.fallback`、`marked_faulty`。
+- `aicc_usage_log.rs`：`AiccUsageEvent.fallback_from`、`UsageQueryFilters.fallback_only`。
+
+**AICC**
+- 用途表求值 `frame/aicc/src/routing/usecase.rs`：层合并与锁（`UsecaseLayers::cells`）、`resolve`（各层选的模型从高到低试，不可用跟随下一层，再到默认展开，七个 LLM 用途静态无候选且兜底 LLM 打开时转 `llm.fallback`）、`unavailable_fallback`（三种策略；原 Provider 与被标记故障的 Provider 视作停用）。测试在 `routing/usecase/tests.rs`。
+- 价格比较 `policy/pricing.rs` 的 `not_pricier`：逐计费维度，候选的最高单价（含阶梯、规则、时段）不高于原模型的最低单价，经 `cost_in_usd` 折算；价格未知、币种无汇率、维度对不上都不算。
+- 注册表 `model/mod.rs`：去掉 fallback 链、`with_session_overlay`、profile overlay，`RegistryLayers` 只剩 factory / system。`model_defaults.rs`：定义不再带 fallback，`CostFirst` 改 `Balanced`，头部契约注释第 6 条改写，`assemble_registry`。
+- 路由 `routing/mod.rs`：健康、熔断、冷却不再参与过滤（`CandidateRuntimeState` 去掉 `health`、`model_available`，Provider 未运行并入 `enabled`）；`RoutingRequest` 加 `excluded_providers`、`excluded_models`；`route_pinned`；去掉精确模型 fallback 与 `fallback_candidates`。策略分层 `routing/policy.rs`：directory < zone < request，请求只收紧（`tighten`）。
+- 执行 `execution/mod.rs`：`UnavailableFallback` 代替 failover 列表，每次请求最多换一次；`unavailable_trigger` 集中做失败分类；备选也失败时 `with_original_failure` 把两边原因放进错误；`fallback_from` 跟着绑定写进用量。
+- 推理入口 `service/inference.rs`：`usecase_layers`（zone 来自 settings，用户层、App 绑定的组、请求的 `route_group` 来自 RDB，`route_group` 不属于调用者时忽略并在 trace 标出）、`RouteContext`、`InferenceFallback`（只在需要时算备选，重新物化资源，额度准入在引擎里）、被标记故障时直接用备选或报 `no_provider_available`、额度预检被拒时同样换一次、`Preview`（`routing.preview`、用途表、覆盖预演共用）。
+- 用途表 RPC `service/inference/usecases.rs`；zone 层写入在 `service/management.rs` 的 `handle_usecase_rpc`（走 `mutate_settings`）。`provider.validate` 返回 `usecase_coverage`；`provider.update` 支持 `marked_faulty`（只改这一项时不重新验证）、记事件、清该 Provider 的健康记录。
+- 存储：`storage/policy.sql` 末尾加 `aicc_routing_layer`、`aicc_routing_group`、`aicc_routing_binding`，`schema.sql` 的 `aicc_usage_event` 加 `fallback_from`；版本仍是 4（与用户策略 TODO 的 Q14 同一次），v3 升级时一起加。`storage/routing.rs` + 测试。
+- 设置：`AiccSettings.session_config` 改名 `routing`；`ProviderSettings.marked_faulty`。事件：`unavailable_fallback`、`provider_marked_faulty`、`provider_fault_cleared`、`usecase_model_missing` / `usecase_model_recovered`（zone 层选的模型离开库存，注册表重建时检查，恢复前只记一次）、`usecase_updated`、`model_failing` / `model_recovered`（健康记录里连续失败熔断或模型已下线时记一次，成功后记恢复；健康记录只用于展示、告警和请求的 `max_latency_ms`）。
+
+**其它**（由并行的子任务完成，见 §11.4）：websdk 类型与 CLI、`buckyos-agent`、`aiws/host.js`、Desktop AI Center、lib_opendan 会话 `route_group` 与兜底警告、OpenDAN WebUI、文档与手册、验收用例。
+
+### 11.2 与正文不同或正文没写的取舍
+
+- **注册表里没有回退边。** §R1 写“复用注册表现有的回退链，只留这一条内置的边”；实现把兜底 LLM 放到用途表求值里（§4.2 的伪代码就是这样写的），注册表的 fallback 机制整个删掉，代码更少。
+- **兜底 LLM 只带请求自身的硬要求**，不带原用途的门槛（§3.1 例子里不满足上下文要求的模型由兜底提供）。所以 `llm.vision` 也可能由不支持视觉的小模型兜底，除非请求本身声明了视觉要求；由兜底 LLM 提供 `llm.chat` / `llm.plan` / `llm.vision` 时，联网搜索按 `llm.fallback` 处理（关闭）。
+- **上下文放不下不触发兜底**：用途因请求太大而无候选时仍返回 `context_length_exceeded`，让调用方缩小请求。
+- **请求里的调度 profile 仍可改池内排序**（锁定时忽略）。严格按 §3.2 只有硬约束能影响请求，但删掉 `RoutePolicy.profile` 不在任务里，和 N1 一起定。
+- **请求的屏蔽列表叠加在管理员的上面**，请求的允许列表与管理员的同时生效；成本上限只能调低；`local_only` 只能打开。原来请求的策略整体替换系统配置，管理员锁定的值会让任何带 `policy` 的请求报错，这个缺陷一起修了。
+- **不可用策略只在 AICC 内按用途路由的请求上生效**（`helper.*`）。`route.resolve` 之后再用精确模型发的 typed 请求（buckyos-agent 的媒体命令就是这样）不会切换。要覆盖它们，需要让 typed 请求接受用途名，没做。
+- **`same_model` 还要求同一个思考预设**（variant 相同），否则不算同一个模型。
+- **被标记故障的 Provider 没有策略时**报 `no_provider_available`，details 带 `reason: marked_faulty`、Provider 和精确模型。
+- **用途表的 `self` 视图**只含 zone 层和用户层，不含调用方 App 绑定的组；`routing.preview` 同样。
+- **用户层和策略组里写 `locked` 校验拒绝**；写管理员已锁定的格子返回 `policy_denied`。
+- **CLI 的 `--zone` 改成 `--zone-default`**：`--zone` 和 CLI 的全局选项冲突（交互 shell 里报错）。
+
+### 11.3 验证
+
+- `cargo test -p aicc -- --test-threads=1`：839 通过（含 wire / 库存 / 发现三组快照，快照未变）。新增用例：层合并与锁、不可用模型跟随下一层、默认路由不受延迟观测影响、三种策略在单 Provider / 同模型多 Provider / 多模型多 Provider 下的备选、被标记故障的 Provider 不作备选、`not_pricier` 遇到价格未知 / 汇率折算 / 无汇率币种 / 阶梯价 / 维度不一致、兜底 LLM 只为 LLM 用途兜底、请求只能收紧、无策略时失败 10 次第二个 Provider 收到 0 次请求、每次最多换一次且错误带两边原因、用量归到实际模型并带 `fallback_from`、失败分类表、用户层与策略组存储（版本、归属、删除组同时删绑定）。
+- `cargo check --workspace --tests` 通过；`cargo test -p buckyos-api --lib aicc`、`-p scheduler aicc`、`-p node_updater aicc` 通过。
+- 没跑：真实 Zone DV（§5 R7 的 7 个场景），需要部署新 AICC 并重启本机 Zone。
+
+### 11.4 并行子任务的结果
+
+- **websdk 与 CLI**（`buckyos-websdk/src/aicc_client.ts`、`src/xllm/providers/aicc.ts`、`cli/modules/ai.ts`）：类型和字段白名单同步；新方法 `getRoutingUsecases`、`setRoutingUsecase`、`list/create/update/deleteRoutingGroup`、`list/set/removeRoutingBinding`；`routing.update` 可以发 `routing_commands`；浏览器 / Deno xllm 的 `AiccLlmClient` 可带 `route_group`（Deno 宿主暂时没有来源）。CLI：`buckyos ai routing [--view …] [--json]` 显示用途表，`buckyos ai usecase set … [--zone-default|--group <id>] [--lock]`，`buckyos ai routing-group list|create|delete|bind|unbind`。`dist` 已重新构建。验证：jest 1433 过、1 失败（`file_meta` 的 PDF 样例在仓库外，与本单无关）；`test:cli` 182 过；`test:xllm:deno` 69 过。
+- **buckyos-agent / aiws**：`--no-fallback` 对应 `no_fallback: true`，去掉 `cheap`；个人站翻译（`lib/model.ts`）发 `no_fallback: true`，保持原来“从不换模型”的行为；`aiws/host.js` 不再发策略。`deno test -A lib/` 136 过；aiws 测试 10 过。`rootfs/libexec/buckyos-agent` 是构建产物，要重新构建。
+- **Desktop AI Center**（`src/frame/desktop/src/app/ai-center/`）：新页面“Usecases”（导航在 Routing 前，所有人可见；手机宽度下每个用途一张卡片；编辑面板选模型按厂商分组、显示 Provider 成本价，四个策略各带说明；“Needs attention”筛选；只有 Zone default 视图有锁定勾选）、“Routing groups”（建组、改名、删除、编辑组内用途、绑定 App / Agent）；Routing 改名“Routing details”，保留候选树、权重和 trace，写操作只对管理员；兜底 LLM 是表下单独一张卡片；添加 Provider 向导新增“Usecases”一步（取消勾选的变化在 Provider 建好后写进 Zone default，非管理员只读）；Provider 详情的 Routing 标签有“标记为故障”开关，列表和概览显示标记；删除 / 停用确认列出受影响的 Zone default 用途（用 `without_provider` 对比）；首页三行；用量页“由不可用策略切换”筛选。顺带修了共享侧栏在手机上标题被状态栏盖住的问题。验证：`pnpm check` 过；`pnpm lint` 与基线相同（6 个旧错误，新文件无）；`playwright.aicc.config.ts` 25/25（新增 5 个）；`tests/e2e/pages/ai-center.spec.ts`、`desktop-i18n.spec.ts` 的 9 个失败在改动前就有（找不到 “Est. Cost” 按钮、各语言缺 3 个 `taskCenter.tasks.*` 键）。新键写齐 10 种语言。未做：Models 页的权重控件仍没限制为管理员。替 owner 定的界面取舍：模型按厂商分组、价格显示 Provider 成本价（不是 AI Credit 价）、编辑面板显式保存、“会换到谁”保存后才更新（接口不能预览未保存的选择）。
+
+- **OpenDAN 会话链路**：`SessionConfig.route_group`（可选字段，没升 schema，node_updater 测试过）；控制命令 `route_group` 与 Agent Service kRPC `session.route_group {sid, route_group}`；沿 `parent_session` 链取值的 `libopendan::api::route_group_of`（每次推理时查，改父会话的组立刻对子会话生效），由 `runner/route.rs` 的 `RoutedLlm` 包住 run 的 LLM 客户端；`llm_context` 的 `LlmInferenceRequest.route_group` 与 `LlmClient::infer_routed`（返回 `route_trace`，默认实现，原有客户端不用改）；xllm 只对逻辑模型发 `route_group`。兜底提醒：`SessionState.route_fallbacks` 按 (用途, 模型) 每会话一次；能回复对话的会话在回复前发一条 `notice`（机器意图 `opendan.route_fallback`，群聊不发），文字来自 Jarvis i18n，只有 en / zh。界面：OpenDAN WebUI 会话详情的“Routing group”选择（显示“继承自父会话”）和警告条；Desktop MessageHub 里与自己 Agent 对话的 Agent 面板选择策略组，提醒消息显示为警告卡片。验证：`cargo test -p llm_context` 108 过、`-p libopendan --test route_group` 3 过、`-p opendan` 过、`-p agent_tool` 370 过（3 个 grep 用例因本机没有 `rg` 失败，基线如此）；OpenDAN WebUI playwright 70/70。未做：会话 shell 里跑的 `xllm` 命令不带会话的组；独立配置的 `RunnerDeps.summarizer` 不走组；Work 会话的提醒不在 Desktop 工作卡片上显示；OpenDAN WebUI 的 Agent App 令牌能否调 AICC `routing.groups.list` 没在真实 Zone 验证（不能时选择器显示不可用，仍可选“无”）。
+- **文档与手册**：`doc/aicc/aicc_router.md`（v0.4，§8–§22）、`aicc 逻辑模型目录.md`、`aicc_runtime_durable_data_schema.md`、`aicc_api设计.md`、`frozen_user_api.md`、`aicc-models-mgr.md`、`maintenance/` 下的设置、调用指南等，`product/ai_center/AI_Center_PRD.md` §5.2 / §5.5 / §9，手册 `buckyos_admin/references/providers.md`、`xllm/references/runs.md`；验收用例 `doc/aicc/maintenance/acceptance/` 与 `test/aicc_test/acceptance/*.ts`（`deno check` 的 41 个旧错误前后相同，离线自测 166/166）。历史文档（`archive/`、review 记录、路线图、旧 fallback TODO）没改。
+
+### 11.6 合并后的复核（2026-11-28）
+
+`cargo check --workspace --tests` 通过；`cargo test -p aicc -- --test-threads=1` 839 过（§11.7 之后 837：会话历史的存储和评分用例随功能删除）；`-p buckyos-api --lib` 430 过；`-p llm_context` 108 过；`-p libopendan --test route_group` 3 过；`-p opendan` 过；`-p agent_tool` 370 过、3 个 grep 基线失败。Desktop `pnpm check` 过、`playwright.aicc.config.ts` 25/25；OpenDAN WebUI `pnpm check` 过。
+
+### 11.5 风险与待确认
+
+- 设置字段 `session_config` 改名 `routing`、存储表结构变化：owner 2026-11-28 定这个版本是 breaking change，用户统一重新安装，不做迁移。node_updater 的 AICC reader 审计范围（`policy.sql`、`schema.sql`、设置解析）内的变化按 readers.toml 的流程在周 review 时登记。
+- 兜底提醒的 Agent 文字只有 en / zh，其它语言的对话里不发提醒。
+- 新 CLI 子命令、Desktop 页面、OpenDAN 的组选择都没在真实 Zone 上跑过。
+
+### 11.7 N1、N2（2026-11-28 owner 答复后）
+
+- **N1 按建议**：池内排序不再用价格。`AiccSchedulerProfileWeights` 去掉 `cost`，评分只剩 quality、preference、cache、local；默认权重 `balanced` quality 0.5 / preference 0.5，`quality_first` 0.7 / 0.3，`latency_first` preference 0.5 / local 0.5，`local_first` preference 0.3 / local 0.7，`strict_local` 同 `balanced`（另外只允许本地 Provider）。owner 说明实际起作用的限制基本只有 `local_first` 和 `strict_local`；去掉成本以后 `latency_first`、`quality_first` 与 `balanced` 差别很小，是否删掉这两个 profile 和请求侧的 `fast` / `quality` 可以再定。价格只用于 `not_pricier`、成本上限和展示（`estimated_cost` 仍在 trace 里）。
+- **N2 按建议**：删除会话历史软优先和表 `aicc_session_route_history`（schema 4 不建；v3 升级时删掉）；请求上的 `session_id` 只为它存在，一并删除（`buckyos-api` 的 route.resolve、helper、typed 请求，websdk 类型、白名单和校验，`agent_tool` 媒体理解里的传递，验收脚本）。`ComputerEnvironment.session_id` 是 computer environment 的会话，不受影响。
+- 同时去掉了“已经是 v4 的库启动时补表补列”的兼容代码（owner：统一重新安装）。
+- 文档：`aicc_router.md` §10、§11.5、§12.3，`aicc_runtime_durable_data_schema.md`，`aicc_api设计.md`，`frozen_user_api.md`，`aicc-models-mgr.md`，`aicc_e2e_test_requirements.md` §7.6，验收用例 `l1_routing_stability_health_ignored`。
+- 验证：`cargo check --workspace --tests` 过；`cargo test -p aicc -- --test-threads=1` 837 过；`-p buckyos-api --lib` 430 过；`-p agent_tool` 370 过（3 个 grep 基线失败）；websdk 重新构建，`aicc_client` 与 xllm jest 312 过；Desktop `pnpm check` 过、`playwright.aicc.config.ts` 25/25；OpenDAN WebUI `pnpm check` 过。`test/aicc_test/acceptance` 的 `deno check` 本机缺 `node_modules`（`@types/node`），没跑。
