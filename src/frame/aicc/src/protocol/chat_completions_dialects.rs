@@ -19,28 +19,6 @@ pub(crate) const OPENROUTER_RERANK_OPERATION_ID: &str = "rerank.create";
 pub(crate) const OPENROUTER_NATIVE_ADAPTER_ID: &str = "openrouter-native";
 pub(crate) const RERANK_ADAPTER_ID: &str = "rerank";
 pub(crate) const LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID: &str = "legacy-openai-chat-completions";
-pub(crate) const GLM_CHAT_ADAPTER_ID: &str = "glm-chat";
-
-#[cfg(test)]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ChatCompletionsDialectContract {
-    pub adapter_id: &'static str,
-    pub base_adapter_id: &'static str,
-    pub request_extensions: BTreeSet<&'static str>,
-    pub response_extensions: BTreeSet<&'static str>,
-    pub unsupported_features: BTreeSet<&'static str>,
-}
-
-#[cfg(test)]
-pub(crate) fn glm_chat_contract() -> ChatCompletionsDialectContract {
-    ChatCompletionsDialectContract {
-        adapter_id: GLM_CHAT_ADAPTER_ID,
-        base_adapter_id: LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-        request_extensions: BTreeSet::new(),
-        response_extensions: BTreeSet::from(["tool_stream"]),
-        unsupported_features: BTreeSet::new(),
-    }
-}
 
 pub(crate) fn openrouter_responses_adapter() -> (AdapterDescriptor, CodecRegistration) {
     super::derived_responses::responses_dialect_adapter(
@@ -188,15 +166,8 @@ impl OperationCodec for RerankCodec {
         }
         let mut url = Url::parse(&call.context.base_url)
             .map_err(|_| ProtocolError::invalid_configuration("rerank base URL is invalid"))?;
-        let base = url.path().trim_end_matches('/');
-        let prefix = if base.ends_with("/api/v1") {
-            base.to_owned()
-        } else if base.is_empty() {
-            "/api/v1".to_owned()
-        } else {
-            format!("{base}/api/v1")
-        };
-        url.set_path(&format!("{prefix}/rerank"));
+        let base = url.path().trim_end_matches('/').to_owned();
+        url.set_path(&format!("{base}/rerank"));
         let mut wire = HttpRequest::new(Method::POST, url.to_string());
         wire.headers
             .insert(CONTENT_TYPE, "application/json".parse().unwrap());
@@ -318,7 +289,7 @@ impl OpenAiChatCompletionsDialect for LegacyChatCompletionsDialect {
         value: &Value,
     ) -> ProtocolResultValue<Option<(String, Value)>> {
         let valid = match name {
-            "enable_thinking" | "preserve_thinking" | "tool_stream" => value.is_boolean(),
+            "enable_thinking" | "preserve_thinking" => value.is_boolean(),
             "prompt_cache_key" => nonempty_string(value),
             "thinking" => valid_ecosystem_thinking(value),
             _ => return Ok(None),
@@ -376,14 +347,6 @@ fn valid_ecosystem_thinking(value: &Value) -> bool {
         .is_some_and(|kind| matches!(kind, "enabled" | "disabled" | "adaptive"))
 }
 
-/// The ecosystem Chat Completions client plus one GLM-only behavior: with
-/// `tool_stream` enabled GLM streams tool calls under `delta.tool_stream`.
-pub(crate) fn glm_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    let (mut descriptor, registration) = derived_adapter(GLM_CHAT_ADAPTER_ID, Arc::new(GlmDialect));
-    descriptor.base_adapter_id = Some(LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_owned());
-    (descriptor, registration)
-}
-
 fn derived_adapter(
     adapter_id: &str,
     dialect: Arc<dyn OpenAiChatCompletionsDialect>,
@@ -418,56 +381,6 @@ fn derived_adapter(
             native_task_codecs: Vec::new(),
         },
     )
-}
-
-#[derive(Debug)]
-struct GlmDialect;
-
-impl OpenAiChatCompletionsDialect for GlmDialect {
-    fn token_limit_parameter(&self) -> ChatCompletionsTokenLimitParameter {
-        LegacyChatCompletionsDialect.token_limit_parameter()
-    }
-
-    fn allows_unmapped_message_content(&self, role: AiRole, content: &AiContent) -> bool {
-        LegacyChatCompletionsDialect.allows_unmapped_message_content(role, content)
-    }
-
-    fn transform_resolved_parameter(
-        &self,
-        name: &str,
-        value: &Value,
-    ) -> ProtocolResultValue<Option<(String, Value)>> {
-        LegacyChatCompletionsDialect.transform_resolved_parameter(name, value)
-    }
-
-    fn transform_request(
-        &self,
-        request: &LlmChatInvokeRequest,
-        body: &mut Map<String, Value>,
-        headers: &mut HeaderMap,
-        context: &super::CodecContext,
-    ) -> ProtocolResultValue<()> {
-        LegacyChatCompletionsDialect.transform_request(request, body, headers, context)
-    }
-
-    fn transform_immediate_response(
-        &self,
-        response: &mut Map<String, Value>,
-    ) -> ProtocolResultValue<ChatCompletionsImmediateExtensions> {
-        LegacyChatCompletionsDialect.transform_immediate_response(response)
-    }
-
-    fn transform_stream_chunk(
-        &self,
-        chunk: &mut Map<String, Value>,
-    ) -> ProtocolResultValue<ChatCompletionsStreamExtensions> {
-        normalize_glm_tool_stream(chunk)?;
-        LegacyChatCompletionsDialect.transform_stream_chunk(chunk)
-    }
-
-    fn allows_stream_options_opt_out(&self) -> bool {
-        LegacyChatCompletionsDialect.allows_stream_options_opt_out()
-    }
 }
 
 fn restore_assistant_state(
@@ -572,25 +485,6 @@ fn reasoning_from_stream(
         content: Vec::new(),
         usage: None,
     })
-}
-
-fn normalize_glm_tool_stream(chunk: &mut Map<String, Value>) -> ProtocolResultValue<()> {
-    let Some(delta) = first_choice_part_mut(chunk, "delta")? else {
-        return Ok(());
-    };
-    if delta.contains_key("tool_calls") {
-        delta.remove("tool_stream");
-        return Ok(());
-    }
-    if let Some(tool_stream) = delta.remove("tool_stream") {
-        if !tool_stream.is_array() {
-            return Err(ProtocolError::invalid_response(
-                "GLM tool_stream must be an array",
-            ));
-        }
-        delta.insert("tool_calls".to_owned(), tool_stream);
-    }
-    Ok(())
 }
 
 fn first_choice_part_mut<'a>(
@@ -713,19 +607,6 @@ mod tests {
         assert!(registry_with(legacy)
             .adapter(LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID)
             .is_some());
-        for (contract, adapter) in [(glm_chat_contract(), glm_chat_adapter())] {
-            assert_eq!(
-                contract.base_adapter_id,
-                LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID
-            );
-            assert_eq!(adapter.0.protocol_adapter_id, contract.adapter_id);
-            assert_eq!(
-                adapter.0.base_adapter_id.as_deref(),
-                Some(contract.base_adapter_id)
-            );
-            let registry = registry_with(adapter);
-            assert!(registry.adapter(contract.adapter_id).is_some());
-        }
     }
 
     #[test]
@@ -867,19 +748,12 @@ mod tests {
     }
 
     #[test]
-    fn kimi_and_glm_map_token_thinking_cache_and_tool_extensions() {
-        for (adapter_id, adapter, parameter) in [
-            (
-                LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-                legacy_openai_chat_completions_adapter(),
-                ("prompt_cache_key", json!("session-1")),
-            ),
-            (
-                GLM_CHAT_ADAPTER_ID,
-                glm_chat_adapter(),
-                ("tool_stream", json!(true)),
-            ),
-        ] {
+    fn legacy_chat_maps_token_thinking_and_cache_extensions() {
+        for (adapter_id, adapter, parameter) in [(
+            LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+            legacy_openai_chat_completions_adapter(),
+            ("prompt_cache_key", json!("session-1")),
+        )] {
             let registry = registry_with(adapter);
             let mut codec_input = input(BTreeMap::from([
                 ("thinking".to_owned(), json!({"type": "enabled"})),
@@ -905,18 +779,11 @@ mod tests {
             assert!(body.get("max_completion_tokens").is_none());
         }
 
-        for (adapter_id, adapter, parameter) in [
-            (
-                LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-                legacy_openai_chat_completions_adapter(),
-                ("prompt_cache_key", json!("  ")),
-            ),
-            (
-                GLM_CHAT_ADAPTER_ID,
-                glm_chat_adapter(),
-                ("tool_stream", json!("true")),
-            ),
-        ] {
+        for (adapter_id, adapter, parameter) in [(
+            LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+            legacy_openai_chat_completions_adapter(),
+            ("prompt_cache_key", json!("  ")),
+        )] {
             assert!(registry_with(adapter)
                 .encode(
                     adapter_id,
@@ -1109,27 +976,5 @@ mod tests {
         );
         assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call-1");
         assert_eq!(body["messages"][2]["tool_call_id"], "call-1");
-    }
-
-    #[test]
-    fn glm_stream_maps_reasoning_and_tool_stream_without_copying_base_parser() {
-        let mut chunk = json!({
-            "object": "chat.completion.chunk",
-            "choices": [{
-                "index": 0,
-                "delta": {
-                    "reasoning_content": "plan",
-                    "tool_stream": [{"index": 0, "id": "call-1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]
-                },
-                "finish_reason": null
-            }]
-        });
-        let extensions = GlmDialect
-            .transform_stream_chunk(chunk.as_object_mut().unwrap())
-            .unwrap();
-        assert_eq!(extensions.thinking_delta.as_deref(), Some("plan"));
-        let delta = &chunk["choices"][0]["delta"];
-        assert!(delta.get("tool_stream").is_none());
-        assert_eq!(delta["tool_calls"][0]["function"]["name"], "lookup");
     }
 }

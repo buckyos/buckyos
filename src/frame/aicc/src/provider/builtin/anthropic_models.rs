@@ -379,7 +379,7 @@ mod tests {
         let mut instance = instance();
         instance.provider_instance_name = "minimax-main".to_owned();
         instance.provider_profile_id = "minimax".to_owned();
-        instance.protocol_adapter_id = "minimax-messages".to_owned();
+        instance.protocol_adapter_id = "legacy-claude-messages".to_owned();
         instance.base_url = minimax_connection_contract().default_base_url;
         instance.provider_rules_id = Some("minimax".to_owned());
         instance.region = Some("global".to_owned());

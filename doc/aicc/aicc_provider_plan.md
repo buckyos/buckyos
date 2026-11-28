@@ -37,10 +37,10 @@ SN Provider 是扩展 Provider，不计入本次 11 个首版内置 Provider。S
 | `gemini` | `gemini-interactions` + `gemini-generate-content` | 多模态、embedding、image/audio/video | `x-goog-api-key` |
 | `fal` | `fal-queue` | 图像、音频、视频生成或处理的长尾模型 | `Authorization: Key` |
 | `openrouter` | `openrouter-responses -> openai-responses` + OpenAI 族标准客户端、`rerank`、`openrouter-native` | 聚合 LLM、长尾模型、成本/可用性路由 | Bearer API key |
-| `minimax` | `minimax-messages -> legacy-claude-messages` + `minimax-media` | LLM、speech、image、video、music | named-header API key / 原生 Bearer（按客户端） |
+| `minimax` | `legacy-claude-messages` + `minimax-media` | LLM、speech、image、video、music | named-header API key / 原生 Bearer（按客户端） |
 | `kimi` | `legacy-openai-chat-completions -> openai-chat-completions` | LLM、视觉/视频理解 | Bearer API key |
-| `glm` | `glm-chat -> legacy-openai-chat-completions` + OpenAI 族标准客户端、`glm-video` | LLM、多模态、embedding | Bearer API key；可选短期 JWT |
-| `deepseek` | `deepseek-responses -> openai-responses` | LLM、推理、工具调用 | Bearer API key |
+| `glm` | `legacy-openai-chat-completions` + OpenAI 族标准客户端、`glm-video` | LLM、多模态、embedding | Bearer API key；可选短期 JWT |
+| `deepseek` | `openai-responses` | LLM、推理、工具调用 | Bearer API key |
 | `doubao` | `openai-responses` + `doubao-media`、`doubao-speech` | LLM、多模态、embedding、image/video | Bearer API key |
 | `qwen` | `qwen-responses -> openai-responses` + `legacy-openai-chat-completions`、`qwen-media` | LLM、多模态、embedding、image/video/audio | Bearer API key |
 

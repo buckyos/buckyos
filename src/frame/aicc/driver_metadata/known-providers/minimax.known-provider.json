@@ -2,14 +2,14 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 2,
-  "revision_seq": 6,
+  "revision_seq": 7,
   "catalog_id": "minimax",
   "providers": [
     {
       "provider_profile_id": "minimax",
       "display_name": "MiniMax",
       "base_url": "https://api.minimax.io/anthropic",
-      "protocol_adapter_id": "minimax-messages",
+      "protocol_adapter_id": "legacy-claude-messages",
       "extra_protocol_adapters": [{"id": "minimax-media", "credential": {"kind": "bearer"}}],
       "state_namespace": "minimax",
       "discovery_behavior_id": "standard-models",

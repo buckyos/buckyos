@@ -6,15 +6,11 @@ use super::{
 };
 use async_trait::async_trait;
 use buckyos_api::{AiContent, AiccCall, ApiType};
-use reqwest::{
-    header::{HeaderName, HeaderValue},
-    Url,
-};
+use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-pub(crate) const DEEPSEEK_RESPONSES_ADAPTER_ID: &str = "deepseek-responses";
 pub(crate) const OPENROUTER_RESPONSES_ADAPTER_ID: &str = "openrouter-responses";
 pub(crate) const QWEN_RESPONSES_ADAPTER_ID: &str = "qwen-responses";
 
@@ -23,7 +19,6 @@ const QWEN_SESSION_CACHE_HEADER: &str = "x-dashscope-session-cache";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ResponsesDialectKind {
-    DeepSeek,
     OpenRouter,
     Qwen,
 }
@@ -37,34 +32,21 @@ pub(crate) struct ResponsesDialectContract {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum ResponsesOverridePoint {
-    EndpointPath,
-    ProviderStateNamespace,
     SessionCacheHeader,
 }
 
 impl ResponsesDialectKind {
     pub(crate) fn contract(self) -> ResponsesDialectContract {
         match self {
-            Self::DeepSeek => ResponsesDialectContract {
-                protocol_adapter_id: DEEPSEEK_RESPONSES_ADAPTER_ID,
-                base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
-                override_points: BTreeSet::from([
-                    ResponsesOverridePoint::EndpointPath,
-                    ResponsesOverridePoint::ProviderStateNamespace,
-                ]),
-            },
             Self::OpenRouter => ResponsesDialectContract {
                 protocol_adapter_id: OPENROUTER_RESPONSES_ADAPTER_ID,
                 base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
-                override_points: BTreeSet::from([ResponsesOverridePoint::ProviderStateNamespace]),
+                override_points: BTreeSet::new(),
             },
             Self::Qwen => ResponsesDialectContract {
                 protocol_adapter_id: QWEN_RESPONSES_ADAPTER_ID,
                 base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
-                override_points: BTreeSet::from([
-                    ResponsesOverridePoint::SessionCacheHeader,
-                    ResponsesOverridePoint::ProviderStateNamespace,
-                ]),
+                override_points: BTreeSet::from([ResponsesOverridePoint::SessionCacheHeader]),
             },
         }
     }
@@ -72,7 +54,6 @@ impl ResponsesDialectKind {
     #[cfg(test)]
     fn provider_namespace(self) -> &'static str {
         match self {
-            Self::DeepSeek => "deepseek",
             Self::OpenRouter => "openrouter",
             Self::Qwen => "qwen",
         }
@@ -81,10 +62,7 @@ impl ResponsesDialectKind {
 
 pub(crate) fn openai_responses_compatible_adapters(
 ) -> ProtocolResultValue<Vec<(AdapterDescriptor, CodecRegistration)>> {
-    [ResponsesDialectKind::DeepSeek, ResponsesDialectKind::Qwen]
-        .into_iter()
-        .map(responses_dialect_adapter)
-        .collect()
+    Ok(vec![responses_dialect_adapter(ResponsesDialectKind::Qwen)?])
 }
 
 pub(crate) fn responses_dialect_adapter(
@@ -173,26 +151,6 @@ trait ResponsesDialectStrategy: Send + Sync {
         request: HttpRequest,
         _prepared: PreparedDialectRequest,
     ) -> ProtocolResultValue<HttpRequest> {
-        Ok(request)
-    }
-}
-
-struct DeepSeekDialect;
-
-impl ResponsesDialectStrategy for DeepSeekDialect {
-    fn transform_request(
-        &self,
-        call: &CodecCall<'_>,
-        mut request: HttpRequest,
-        _prepared: PreparedDialectRequest,
-    ) -> ProtocolResultValue<HttpRequest> {
-        let base = Url::parse(&call.context.base_url)
-            .map_err(|_| ProtocolError::invalid_configuration("DeepSeek base URL is invalid"))?;
-        if base.path().trim_matches('/').is_empty() {
-            let mut endpoint = base;
-            endpoint.set_path("/responses");
-            request.url = endpoint.to_string();
-        }
         Ok(request)
     }
 }
@@ -376,7 +334,6 @@ fn rewrite_qwen_video_values(value: &mut Value, video_documents: &[bool], index:
 
 fn dialect_strategy(dialect: ResponsesDialectKind) -> Arc<dyn ResponsesDialectStrategy> {
     match dialect {
-        ResponsesDialectKind::DeepSeek => Arc::new(DeepSeekDialect),
         ResponsesDialectKind::OpenRouter => Arc::new(OpenRouterDialect),
         ResponsesDialectKind::Qwen => Arc::new(QwenDialect),
     }
@@ -535,7 +492,7 @@ mod tests {
     #[test]
     fn derived_adapters_declare_base_and_provider_media_components() {
         let adapters = openai_responses_compatible_adapters().unwrap();
-        assert_eq!(adapters.len(), 2);
+        assert_eq!(adapters.len(), 1);
         for (descriptor, registration) in adapters {
             assert_eq!(
                 descriptor.base_adapter_id.as_deref(),
@@ -553,21 +510,14 @@ mod tests {
             }
             assert!(registration.native_task_codecs.is_empty());
         }
-        assert_eq!(
-            ResponsesDialectKind::DeepSeek.contract().override_points,
-            BTreeSet::from([
-                ResponsesOverridePoint::EndpointPath,
-                ResponsesOverridePoint::ProviderStateNamespace,
-            ])
-        );
         assert!(ResponsesDialectKind::Qwen
             .contract()
             .override_points
             .contains(&ResponsesOverridePoint::SessionCacheHeader));
-        assert_eq!(
-            ResponsesDialectKind::OpenRouter.contract().override_points,
-            BTreeSet::from([ResponsesOverridePoint::ProviderStateNamespace])
-        );
+        assert!(ResponsesDialectKind::OpenRouter
+            .contract()
+            .override_points
+            .is_empty());
     }
 
     #[test]
@@ -583,11 +533,7 @@ mod tests {
         for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
             registry.register_derived(descriptor, registration).unwrap();
         }
-        for adapter_id in [
-            OPENAI_RESPONSES_ADAPTER_ID,
-            DEEPSEEK_RESPONSES_ADAPTER_ID,
-            QWEN_RESPONSES_ADAPTER_ID,
-        ] {
+        for adapter_id in [OPENAI_RESPONSES_ADAPTER_ID, QWEN_RESPONSES_ADAPTER_ID] {
             assert!(registry
                 .operation_descriptor(adapter_id, OPENAI_RESPONSES_OPERATION_ID, ApiType::Llm,)
                 .is_ok());
@@ -603,11 +549,7 @@ mod tests {
 
     #[test]
     fn all_dialects_delegate_the_base_responses_contract() {
-        for dialect in [
-            ResponsesDialectKind::DeepSeek,
-            ResponsesDialectKind::OpenRouter,
-            ResponsesDialectKind::Qwen,
-        ] {
+        for dialect in [ResponsesDialectKind::OpenRouter, ResponsesDialectKind::Qwen] {
             let (_, registration) = responses_dialect_adapter(dialect).unwrap();
             let request = registration.operation_codecs[0]
                 .encode(&CodecCall {
@@ -716,7 +658,7 @@ mod tests {
 
     #[test]
     fn derived_provider_state_round_trips_back_to_the_wire_request() {
-        for dialect in [ResponsesDialectKind::DeepSeek, ResponsesDialectKind::Qwen] {
+        for dialect in [ResponsesDialectKind::OpenRouter, ResponsesDialectKind::Qwen] {
             let (_, registration) = responses_dialect_adapter(dialect).unwrap();
             let mut context = context("https://provider.example/v1");
             context.state_coordinate.adapter_type =
@@ -752,19 +694,6 @@ mod tests {
             };
             assert_eq!(body["input"][0], state);
         }
-    }
-
-    #[test]
-    fn deepseek_empty_base_path_uses_official_responses_endpoint() {
-        let (_, registration) = responses_dialect_adapter(ResponsesDialectKind::DeepSeek).unwrap();
-        let request = registration.operation_codecs[0]
-            .encode(&CodecCall {
-                api_type: ApiType::Llm,
-                input: &input(BTreeMap::new()),
-                context: &context("https://api.deepseek.com"),
-            })
-            .unwrap();
-        assert_eq!(request.url, "https://api.deepseek.com/responses");
     }
 
     #[test]
@@ -855,7 +784,7 @@ mod tests {
     #[test]
     fn provider_parameter_policy_is_not_hardcoded_in_dialects() {
         for (dialect, parameter) in [
-            (ResponsesDialectKind::DeepSeek, "store"),
+            (ResponsesDialectKind::OpenRouter, "store"),
             (ResponsesDialectKind::Qwen, "background"),
         ] {
             let (_, registration) = responses_dialect_adapter(dialect).unwrap();

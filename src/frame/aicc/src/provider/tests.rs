@@ -698,7 +698,7 @@ fn web_search_inventory_requires_model_adapter_and_discovery_support() {
         ("openrouter", "openrouter-responses", "openai/gpt-5.4", true),
         ("gemini", "gemini-interactions", "gemini-3.6-flash", true),
         ("claude", "claude-messages", "claude-sonnet-5", true),
-        ("deepseek", "deepseek-responses", "deepseek-v4-pro", false),
+        ("deepseek", "openai-responses", "deepseek-v4-pro", false),
         ("openai", "openai-chat-completions", "gpt-5.4", false),
     ] {
         for discovery_disables in [false, true] {

@@ -2,6 +2,8 @@
 
 日期：2026-09-25。状态：待决策；代码链路已存在但默认关闭，尚未上线。
 
+> **2026-11-27**：本文已整体并入 [AICC 配置订阅更新 TODO](aicc-config-subscription-todo.md)（多个可信订阅源、签名 Named Object、按可信度再按时间合并、公共组件、价格基准），各决策项和缺陷的去向见那份的 §9、§10。以那份为准，本文保留作记录。
+
 目标：让 Model Driver、Provider Rules（含静态价格 `model_pricing`）和 Known Provider 三类 catalog 能通过官方云端发布、自动下发到各 Zone 的 AICC，且下载链路以 **cyfs:// 协议**为主，而不只是传统 HTTPS。
 
 相关文档：[云更新协议](../doc/aicc/driver_metadata_update_protocol.md)、[持久化边界](../doc/aicc/driver_metadata_update_storage.md)、[价格事实源](../doc/aicc/provider_pricing_sources.md)。代码入口：[cloud_update.rs](../src/frame/aicc/src/service/cloud_update.rs)、[runtime/mod.rs](../src/frame/aicc/src/runtime/mod.rs)、[provider/runtime.rs](../src/frame/aicc/src/provider/runtime.rs)。

@@ -70,7 +70,7 @@ mod tests {
     use super::*;
     use crate::canonical::{CanonicalFallback, CanonicalFieldConverter};
     use crate::catalog::{CatalogBuildOptions, CatalogDocuments, CatalogSnapshot};
-    use crate::protocol::GLM_CHAT_ADAPTER_ID;
+    use crate::protocol::LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID;
     use crate::provider::{CredentialReference, InventoryBuilder, ProviderInstanceConfig};
 
     #[test]
@@ -101,7 +101,7 @@ mod tests {
         assert_eq!(unknown.region.as_deref(), Some("unknown"));
         assert_eq!(
             glm_known_provider().protocol_adapter_id,
-            GLM_CHAT_ADAPTER_ID
+            LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID
         );
         assert_eq!(
             glm_known_provider().discovery_behavior_id,
@@ -154,7 +154,7 @@ mod tests {
             &ProviderInstanceConfig {
                 provider_instance_name: "glm-main".to_owned(),
                 provider_profile_id: GLM_PROVIDER_PROFILE_ID.to_owned(),
-                protocol_adapter_id: GLM_CHAT_ADAPTER_ID.to_owned(),
+                protocol_adapter_id: LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_owned(),
                 base_url: glm_known_provider().base_url,
                 operation_base_urls: BTreeMap::new(),
                 credential: CredentialReference {

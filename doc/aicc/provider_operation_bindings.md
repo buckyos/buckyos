@@ -7,9 +7,9 @@
 claude|claude-messages|llm|messages.create
 claude|claude-messages|vision.caption|messages.create
 claude|claude-messages|vision.ocr|messages.create
-deepseek|deepseek-responses|llm|responses.create
-deepseek|deepseek-responses|vision.caption|responses.create
-deepseek|deepseek-responses|vision.ocr|responses.create
+deepseek|openai-responses|llm|responses.create
+deepseek|openai-responses|vision.caption|responses.create
+deepseek|openai-responses|vision.ocr|responses.create
 doubao-agent-plan|doubao-media|embedding.multimodal|ark.embeddings.multimodal
 doubao-agent-plan|doubao-media|image.img2img|ark.images.generate
 doubao-agent-plan|doubao-media|image.txt2img|ark.images.generate
@@ -60,10 +60,10 @@ gemini|gemini-interactions|vision.caption|interactions.create
 gemini|gemini-interactions|vision.detect|interactions.create
 gemini|gemini-interactions|vision.ocr|interactions.create
 gemini|gemini-interactions|vision.segment|interactions.create
-glm|glm-chat|llm|chat.completions.create
-glm|glm-chat|vision.caption|chat.completions.create
-glm|glm-chat|vision.ocr|chat.completions.create
 glm|glm-video|video.generate|videos.generate
+glm|legacy-openai-chat-completions|llm|chat.completions.create
+glm|legacy-openai-chat-completions|vision.caption|chat.completions.create
+glm|legacy-openai-chat-completions|vision.ocr|chat.completions.create
 glm|openai-audio|audio.asr|audio.transcriptions
 glm|openai-audio|audio.tts|audio.speech
 glm|openai-embeddings|embedding.text|embeddings.create
@@ -71,6 +71,9 @@ glm|openai-images|image.txt2img|images.generate
 kimi|legacy-openai-chat-completions|llm|chat.completions.create
 kimi|legacy-openai-chat-completions|vision.caption|chat.completions.create
 kimi|legacy-openai-chat-completions|vision.ocr|chat.completions.create
+minimax|legacy-claude-messages|llm|messages.create
+minimax|legacy-claude-messages|vision.caption|messages.create
+minimax|legacy-claude-messages|vision.ocr|messages.create
 minimax|minimax-media|audio.asr|speech_to_text.create
 minimax|minimax-media|audio.music|music_generation.create
 minimax|minimax-media|audio.tts|t2a.create
@@ -78,9 +81,6 @@ minimax|minimax-media|image.img2img|image_generation.create
 minimax|minimax-media|image.txt2img|image_generation.create
 minimax|minimax-media|video.generate|video_generation.create
 minimax|minimax-media|video.generate|video_generation.v2.create
-minimax|minimax-messages|llm|messages.create
-minimax|minimax-messages|vision.caption|messages.create
-minimax|minimax-messages|vision.ocr|messages.create
 openai|openai-audio|audio.asr|audio.transcriptions
 openai|openai-audio|audio.tts|audio.speech
 openai|openai-embeddings|embedding.text|embeddings.create

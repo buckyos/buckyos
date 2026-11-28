@@ -1,4 +1,3 @@
-use super::minimax_messages::validate_minimax_response;
 use super::video::{
     generated_video, planned_resource, require_video_parameters, unsupported, video_generate_input,
     video_output, whole_seconds,
@@ -1087,6 +1086,72 @@ fn audio_mime(format: &str) -> &'static str {
     }
 }
 
+/// MiniMax's native APIs report failures in `base_resp`, also under HTTP 200.
+fn validate_minimax_response(response: &HttpResponse) -> ProtocolResultValue<()> {
+    if !response.status.is_success() {
+        return Err(minimax_http_error(response));
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(&response.body) else {
+        return Ok(());
+    };
+    let Some(base_resp) = value.get("base_resp") else {
+        return Ok(());
+    };
+    let status_code = base_resp
+        .get("status_code")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            ProtocolError::invalid_response("MiniMax base_resp.status_code must be an integer")
+                .with_request_id(Some(response.request_id.clone()))
+        })?;
+    if status_code == 0 {
+        return Ok(());
+    }
+    let message = base_resp
+        .get("status_msg")
+        .and_then(Value::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or("MiniMax request failed");
+    let kind = match status_code {
+        1004 => ProtocolErrorKind::Authentication,
+        1001 => ProtocolErrorKind::Timeout,
+        1008 => ProtocolErrorKind::ProviderRejected,
+        1026 | 1027 | 1039 | 1042 | 2013 => ProtocolErrorKind::InvalidRequest,
+        _ => ProtocolErrorKind::Transport,
+    };
+    Err(
+        ProtocolError::new(kind, format!("MiniMax error {status_code}: {message}"))
+            .with_request_id(Some(response.request_id.clone()))
+            .with_retry_after(response.retry_after),
+    )
+}
+
+fn minimax_http_error(response: &HttpResponse) -> ProtocolError {
+    let parsed = serde_json::from_slice::<Value>(&response.body).ok();
+    let message = parsed
+        .as_ref()
+        .and_then(|value| value.pointer("/error/message"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            parsed
+                .as_ref()
+                .and_then(|value| value.pointer("/base_resp/status_msg"))
+                .and_then(Value::as_str)
+        })
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or("MiniMax request failed");
+    let kind = super::protocol_error_kind_from_http_status(response.status);
+    ProtocolError::new(
+        kind,
+        format!(
+            "MiniMax request failed with status {}: {message}",
+            response.status
+        ),
+    )
+    .with_request_id(Some(response.request_id.clone()))
+    .with_retry_after(response.retry_after)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1566,5 +1631,39 @@ mod tests {
         assert!(
             crate::video::plan_video(&contract, &long_1080, &VideoMaterialFacts::new()).is_err()
         );
+    }
+
+    #[test]
+    fn base_resp_failures_map_to_error_kinds_even_under_http_200() {
+        for (code, kind) in [
+            (1004, ProtocolErrorKind::Authentication),
+            (1008, ProtocolErrorKind::ProviderRejected),
+            (2013, ProtocolErrorKind::InvalidRequest),
+        ] {
+            let error = validate_minimax_response(&HttpResponse {
+                status: reqwest::StatusCode::OK,
+                headers: HeaderMap::new(),
+                body: bytes::Bytes::from(
+                    serde_json::to_vec(
+                        &json!({"base_resp":{"status_code":code,"status_msg":"failed"}}),
+                    )
+                    .unwrap(),
+                ),
+                request_id: "request-1".to_owned(),
+                retry_after: None,
+            })
+            .unwrap_err();
+            assert_eq!(error.kind, kind);
+            assert!(error.message.contains(&code.to_string()));
+            assert_eq!(error.request_id.as_deref(), Some("request-1"));
+        }
+        assert!(validate_minimax_response(&HttpResponse {
+            status: reqwest::StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: bytes::Bytes::from_static(br#"{"base_resp":{"status_code":0}}"#),
+            request_id: "request-1".to_owned(),
+            retry_after: None,
+        })
+        .is_ok());
     }
 }

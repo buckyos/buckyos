@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "qwen",
-  "revision_seq": 11,
+  "revision_seq": 12,
   "required_features": [],
   "models": [
     {
@@ -145,6 +145,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "vision": true,
         "tool_call": true,
@@ -201,6 +202,7 @@
         "llm"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -229,6 +231,7 @@
         "llm"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -286,6 +289,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "vision": true,
         "tool_call": true,
@@ -316,6 +320,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "vision": true,
         "tool_call": true,
@@ -347,6 +352,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "vision": true,
         "tool_call": true,
@@ -377,6 +383,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -406,6 +413,7 @@
         "llm"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -434,6 +442,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "vision": true,
         "tool_call": true,
@@ -462,6 +471,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "vision": true,
         "tool_call": true,
@@ -490,6 +500,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "vision": true,
         "tool_call": true,
@@ -574,6 +585,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "vision": true,
         "tool_call": true,
@@ -602,6 +614,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "vision": true,
         "tool_call": true,
@@ -630,6 +643,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "vision": true,
         "tool_call": true,
@@ -659,6 +673,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "vision": true,
         "tool_call": true,
@@ -688,6 +703,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "vision": true,
         "tool_call": true,
@@ -717,6 +733,7 @@
         "vision.caption"
       ],
       "capabilities": {
+        "web_search": true,
         "streaming": true,
         "vision": true,
         "tool_call": true,

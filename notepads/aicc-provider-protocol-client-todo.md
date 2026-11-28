@@ -587,12 +587,19 @@ owner 2026-11-27 的答复，引号里是原话。
 ### 9.4 残余差异（待 owner 定）
 
 - `glm-chat`：只剩流式 `tool_stream` 增量的归一化。内置规则不开 `tool_stream`，内置 Provider 上不会触发。
+> AICC的整体原则就是不做流式推理，我们是基于task update来跟踪长任务的变化
 - `minimax-messages`：`base_resp` 错误信封（HTTP 200 也可能是错误）；图片按内联字节发送。都表达不成配置。
+> 这个要给给修复建议
 - `deepseek-responses`：只差 base 无路径时用 `/responses`，等 P1-11。
+> 自带的各家官方provider,会配置自己的各个协议客户端的path(从base url派生)。这个我觉得历史上应该很少改变吧，可以先写死。
 - Kimi：`partial` 前缀续写丢弃。
+> 好
 - OpenRouter Chat：原 `openrouter-chat` 的纯文本模态声明丢弃；内置规则没有用 OpenRouter Chat 做 LLM。
+> 好
 - `qwen-responses`、`openrouter-responses` 的残余写在 `doc/aicc/protocol_clients.md`。另外 Responses 方言里还保留着给上游请求的命名空间写法（`state_coordinate`），与 §4.5 的 `state_namespace` 有重叠，没有动。
+> 如果官方已经不支持了，可以删除相关实现
 - Kimi、GLM、千问、MiniMax、DeepSeek、OpenRouter、豆包（含 Agent Plan）声明了 `state_namespace`。拒答之类的 provider state 现在也落在这些命名空间下。
+> 好
 
 ### 9.5 核对结论与报告项
 
@@ -609,7 +616,33 @@ owner 2026-11-27 的答复，引号里是原话。
 
 ### 9.6 没做、没验证
 
-- P1-11 没做：`operation_base_urls`、MiniMax 媒体和千问媒体的路径改写、豆包语音逐 operation 地址、rerank 的 `/api/v1`、fal 价格地址、`deepseek-responses` 都还在。
+- P1-11：owner 定“先写死”，不做 endpoint 模板，见 §9.7。
 - 真实环境没有验证：本机 Zone 上的托管 SN（LLM、图片、ASR、视频）和各家真实调用都没跑；`test/aicc_test/acceptance` 的 T1 没跑（要部署新 AICC 并重启，重启 AICC 要 root）。`cargo build -p aicc --release --target x86_64-unknown-linux-musl` 通过，产物在 `src/target/x86_64-unknown-linux-musl/release/aicc`，没有替换到 `/opt/buckyos/bin/aicc/`。
 - 云端目录按新格式发布（Q10）没有做，需要发布时按新格式直接发。
 - websdk 重建 dist 时，两个 `aiws_write-*` 的 source map 跟着变了，与本次无关。
+
+### 9.7 第二轮（2026-11-27，按 owner 在 §9.4 的答复）
+
+- **删除 `glm-chat`**：AICC 不做流式推理，进展靠 task update 跟踪（owner）。`tool_stream` 的流式归一化，以及生态口径 Chat 接受的 `tool_stream` 参数一起删掉。GLM 的默认客户端改为 `legacy-openai-chat-completions`。
+- **删除 `deepseek-responses`**：owner 定内置 Provider 各客户端的路径从 base 派生、先写死。OpenAI 平台客户端（Responses、图片、音频、向量、视频）的 endpoint 改为 `{base}/{path}`，不再在 base 没有路径时补 `/v1`。内置 Provider 的 base 都已带全路径，只有 DeepSeek 的 base 没有路径，正好得到 `/responses`。DeepSeek 改用 `openai-responses`。代价：自定义实例的 base 不带 `/v1` 时不再自动补（添加入口已关闭，以后由探测流程处理）。
+- **`rerank`** 同样改为 `{base}/rerank`，去掉对 OpenRouter `/api/v1` 的假设；URL 不变。
+- **P1-11 不做模板**：原生客户端里的路径规则（MiniMax 媒体、百炼媒体、豆包语音的逐 operation 地址、fal 价格地址）按“先写死”保留在各自的客户端和 metadata 里。
+- **Responses 方言的命名空间**：删掉 `ProviderStateNamespace`、`EndpointPath` 两个已经没有代码对应的覆盖点声明；命名空间只由 Known Provider 的 `state_namespace` 给出。
+- **百炼、OpenRouter 的残余按官方文档核对，都仍受支持，没有删**（核对结果写在 `doc/aicc/protocol_clients.md`）。百炼的 `enable_thinking` 官方已标为将废弃（推荐 `reasoning.effort`）；OpenRouter 的 `route` 已标为废弃（推荐 `provider.sort.partition`），两者都还能用。另有两项是规则关掉、但官方支持的能力，要不要打开请 owner 定：
+  - 百炼 Responses 支持 `web_search`（限所列模型），规则里用 `remove_features` 关着。
+  - OpenRouter Responses 对所有模型接受 `input_file`（PDF），规则里用 `remove_features: ["document"]` 关着。
+- **MiniMax 的修复建议**（依据 MiniMax 官方文档，见 `doc/aicc/protocol_clients.md`）：
+  1. 删掉 `base_resp` 处理。官方文档写明 Anthropic 兼容接口的错误统一用 HTTP 状态码加 Anthropic 错误体，流式里是 `event: error`；`base_resp` 只出现在原生 `chatcompletion_v2` 和 OpenAI 兼容接口。余额不足官方没写状态码，第三方记录是 HTTP 402，通用映射已归为 `ProviderRejected`（不重试）。
+  2. 图片改走 `legacy-claude-messages` 的默认做法（URL 原样传，Zone 内的对象传字节），与 Claude 官方一致。官方支持 URL 和 base64 两种来源。
+  3. 两条都做完，`minimax-messages` 就没有差异了：删除它，MiniMax 的默认客户端改为 `legacy-claude-messages`。wire 快照会有一类变化要接受：URL 形式的图片不再先下载再内联。
+  - owner 同意，已实施，见 §9.8。另外两项能力也已按建议打开。
+- **顺带修的**：Desktop 的规则导入器不认识 `model_driver_vendor_prefixes`，导入内置 `openrouter.provider.json` 会失败（第一轮引入，已在 `cbd8bbc4f` 里）。现在接受这个字段，导出时把 `schema_revision` 升到 2。
+- **验证**：`cargo test -p aicc -- --test-threads=1` 820 过；wire、库存、发现请求三组快照都不变；Desktop `pnpm check`、eslint 通过，相关 Deno 用例 38 过；`ai_provider_test.ts` 2 过。客户端从 25 个减到 23 个。
+
+### 9.8 第三轮（2026-11-27，owner 同意 §9.7 的建议）
+
+- **删除 `minimax-messages`**：MiniMax 的默认客户端改为 `legacy-claude-messages`。`base_resp` 处理只留给 MiniMax 原生媒体接口（`validate_minimax_response` 移到 `minimax_media.rs`）；Anthropic 兼容接口的错误按标准 HTTP 状态码处理。图片随生态口径走 URL 或字节。wire 快照只变了一条：`minimax|MiniMax-M2|llm|decode:messages_base_resp`（带 `base_resp: 1008` 的正常 Messages 响应），原来报错，现在按正常消息解码；没有带 URL 图片的 MiniMax 样例，所以图片那一类没有出现变化。原来借 MiniMax 包装测生态口径 Messages 的 6 个用例移到 `protocol/claude_messages_legacy_tests.rs`，直接测 `legacy-claude-messages`。
+- **打开百炼的 `web_search`**：删掉 Qwen 规则里 8 处 `remove_features: ["web_search"]`（这一项原来不起作用：Qwen 的 Model Driver 没有声明这项能力）。按官方列表，在 Qwen Model Driver 里给 Qwen4-Max、Qwen3.8、Qwen3.7、Qwen3.5 系列共 17 个模型声明 `web_search: true`。库存变化：百炼 20 条；OpenRouter 上同名的 17 个 Qwen 模型也有了这项能力（OpenRouter 官方说明 `openrouter:web_search` 对所有模型可用）；SN 上的 7 个 Qwen 模型在 SN 规则里加 `web_search` 到 `remove_features`，保持不变（SN 是否支持没有核对）。
+- **打开 OpenRouter 的直接发文档**：删掉 OpenRouter 规则里 22 处 `remove_features: ["document"]`。库存变化：OpenRouter 上 58 个 Claude、Gemini、OpenAI 模型有了 `document` 能力，没有别的差异。
+- **验证**：`cargo test -p aicc -- --test-threads=1` 817 过；wire 快照只有上面一条变化，库存快照的变化只有 `web_search` 和 `document` 两项（逐条去掉这两个字段后与原来一致），发现请求快照不变；Desktop `pnpm check` 通过、相关 Deno 用例 38 过。客户端从 23 个减到 22 个，剩下的方言只有 `qwen-responses`、`openrouter-responses`。
+

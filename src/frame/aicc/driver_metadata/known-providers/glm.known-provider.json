@@ -2,14 +2,14 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 2,
-  "revision_seq": 3,
+  "revision_seq": 4,
   "catalog_id": "glm",
   "providers": [
     {
       "provider_profile_id": "glm",
       "display_name": "Z.ai GLM",
       "base_url": "https://api.z.ai/api/paas/v4",
-      "protocol_adapter_id": "glm-chat",
+      "protocol_adapter_id": "legacy-openai-chat-completions",
       "extra_protocol_adapters": [
         {"id": "openai-embeddings"},
         {"id": "openai-images"},

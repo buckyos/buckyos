@@ -123,7 +123,7 @@ Provider Profile/Rules 必须在路由前得到一个确定的客户端和 opera
 
 相同条件下，LLM 的思考强度预设也使用该默认 Provider Rules 中明确匹配模型的 variant 映射。inventory 只注册模型声明支持、且未被 discovery 禁用的预设；请求转换复用同一映射，将 `reasoning-medium` 等内部 variant 转为协议参数，远端 `model` 仍使用原始 `provider_model_id`。显式 Provider Rules 优先，缺少映射的预设仍不可用，不静默改换强度。默认映射不继承官方价格、普通参数改写、非 LLM variant、能力限制或准入规则。
 
-一个 Provider 用到多种 wire 协议时，在 Known Provider 里声明多个客户端，再由模型规则逐模型、逐 API 类型指向客户端（§5.2），不再注册把别的客户端 operation 拷进来的组合 Adapter。例如 MiniMax 的默认客户端是 `minimax-messages`，图片、语音、音乐和视频走 extra 客户端 `minimax-media`；OpenRouter 同一个模型的 LLM 走默认的 `openrouter-responses`，图片走 `openrouter-native/images.generate`，向量走 `openai-embeddings/embeddings.create`。库存和模型注册表里的 `operations` 一律存 `<protocol_adapter_id>/<operation_id>` 限定形式，选路结果和 lowering 的 `protocol_adapter_id` 是本次请求实际选中的客户端。一次路由仍在调用前得到唯一的 `客户端 + operation + codec`，不会运行时试探或静默切换。
+一个 Provider 用到多种 wire 协议时，在 Known Provider 里声明多个客户端，再由模型规则逐模型、逐 API 类型指向客户端（§5.2），不再注册把别的客户端 operation 拷进来的组合 Adapter。例如 MiniMax 的默认客户端是 `legacy-claude-messages`，图片、语音、音乐和视频走 extra 客户端 `minimax-media`；OpenRouter 同一个模型的 LLM 走默认的 `openrouter-responses`，图片走 `openrouter-native/images.generate`，向量走 `openai-embeddings/embeddings.create`。库存和模型注册表里的 `operations` 一律存 `<protocol_adapter_id>/<operation_id>` 限定形式，选路结果和 lowering 的 `protocol_adapter_id` 是本次请求实际选中的客户端。一次路由仍在调用前得到唯一的 `客户端 + operation + codec`，不会运行时试探或静默切换。
 
 ### 2.1.1 可执行绑定表的事实源
 

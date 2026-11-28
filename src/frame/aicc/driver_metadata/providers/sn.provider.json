@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 2,
-  "revision_seq": 18,
+  "revision_seq": 19,
   "provider_profile_id": "sn",
   "model_driver_overrides": {
     "gpt-6-astra": "openai/gpt-6-astra",
@@ -482,14 +482,14 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }, "remove_features": ["document"]
+      }, "remove_features": ["document", "web_search"]
     },
     {
       "id": "qwen3.8-max-0902",
       "operations": {
         "llm": "responses.create",
         "vision.caption": "responses.create"
-      }, "remove_features": ["document"]
+      }, "remove_features": ["document", "web_search"]
     },
     {
       "id": "qwen3-embedding-8b",
@@ -681,27 +681,27 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }, "remove_features": ["document"]
+      }, "remove_features": ["document", "web_search"]
     },
     {
       "id": "qwen3.8-omni-flash",
       "operations": {
         "llm": "responses.create",
         "vision.caption": "responses.create"
-      }, "remove_features": ["document"]
+      }, "remove_features": ["document", "web_search"]
     },
     {
       "id": "qwen3.8-max-prime",
       "operations": {
         "llm": "responses.create",
         "vision.caption": "responses.create"
-      }, "remove_features": ["document"]
+      }, "remove_features": ["document", "web_search"]
     },
     {
       "id": "qwen3.8-27b",
       "operations": {
         "llm": "responses.create"
-      }, "remove_features": ["document"],
+      }, "remove_features": ["document", "web_search"],
       "capability_limits": {
         "max_context_tokens": 262144
       }
@@ -710,7 +710,7 @@
       "id": "qwen3.8-2.4t-a95b",
       "operations": {
         "llm": "responses.create"
-      }, "remove_features": ["document"]
+      }, "remove_features": ["document", "web_search"]
     },
     {
       "id": "kimi-k3.1-pro",

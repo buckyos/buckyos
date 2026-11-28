@@ -116,7 +116,7 @@ export function providerRulesFile(draft: CustomRulesDraft): RuleObject {
   delete catalog.model_variants
   const namesClients = [...ruleArray(catalog.models), ...ruleArray(catalog.patterns)].some((rule) => rule.protocol_adapter_id !== undefined
     || Object.values(ruleObject(rule.operations)).some((value) => String(value).includes('/')))
-  if (namesClients && Number(catalog.schema_revision) < 2) catalog.schema_revision = 2
+  if ((namesClients || catalog.model_driver_vendor_prefixes !== undefined) && Number(catalog.schema_revision) < 2) catalog.schema_revision = 2
   return catalog
 }
 
@@ -124,7 +124,7 @@ export function parseProviderRulesFile(source: string, base?: CustomRulesDraft):
   const catalog = ruleObject(JSON.parse(source))
   const fields = ['format', 'schema_version', 'schema_revision', 'revision_seq', 'provider_profile_id',
     'reported_cost', 'custom_provider_adapters', 'static_inventory_models', 'model_driver_overrides',
-    'server_default_routes', 'supplemental_inventory_api_types', 'models', 'patterns', 'access_rules',
+    'model_driver_vendor_prefixes', 'server_default_routes', 'supplemental_inventory_api_types', 'models', 'patterns', 'access_rules',
     'model_pricing', 'variants']
   if (catalog.format !== 'buckyos.aicc.provider-rules-catalog' || catalog.schema_version !== 1
     || !Number.isInteger(catalog.schema_revision) || ![0, 1, 2].includes(Number(catalog.schema_revision))

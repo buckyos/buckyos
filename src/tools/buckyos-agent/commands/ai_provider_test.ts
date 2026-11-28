@@ -21,7 +21,7 @@ Deno.test("formatProviderListSummary includes actionable provider state", () => 
         provider_instance_name: "glm-main-china",
         provider_type: "cloud_api",
         provider_profile_id: "glm",
-        protocol_adapter_id: "glm-chat",
+        protocol_adapter_id: "legacy-openai-chat-completions",
         base_url: "https://open.bigmodel.cn/api/paas/v4",
         enabled: true,
         auth: {
@@ -50,7 +50,7 @@ Deno.test("formatProviderListSummary includes actionable provider state", () => 
   assertIncludes(summary, "inventory_revision=9:2");
   assertIncludes(summary, "glm-main-china");
   assertIncludes(summary, "profile=glm");
-  assertIncludes(summary, "default_client=glm-chat");
+  assertIncludes(summary, "default_client=legacy-openai-chat-completions");
   assertIncludes(summary, "inventory=loaded/10 models");
   assertIncludes(summary, "health=healthy");
 });

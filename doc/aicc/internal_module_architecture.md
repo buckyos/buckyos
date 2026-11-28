@@ -35,7 +35,7 @@ SN 作为扩展 Provider 保留，但不计入本次 11 个首版内置 Provider
 | OpenRouter | Responses | `openai/responses` | 路由参数、ProviderState namespace、富模型目录与实时价格 |
 | MiniMax | Anthropic-compatible Messages | `claude/messages` | `/anthropic` 基址、兼容差异、`base_resp`；speech/image/video/music 为原生接口 |
 | Kimi | Chat Completions | `openai/chat_completions` | `partial`、思考内容、缓存 key、图片/视频 content 扩展 |
-| GLM | Chat Completions | `openai/chat_completions` | `thinking`、`reasoning_content`、`tool_stream`、JWT 可选鉴权和原生异步 API |
+| GLM | Chat Completions | `openai/chat_completions` | `thinking`、`reasoning_content`、JWT 可选鉴权和原生异步 API |
 | DeepSeek | Responses | `openai/responses` | thinking/reasoning 约束及兼容差异；官方另有 Chat Completions 和 Anthropic 接口，但首版不因此重复实现 |
 | 豆包 | Responses | `openai/responses` | 方舟 `/api/v3` 基址、内置工具，以及方舟实际发现且可唯一解析的聚合模型/接入点语义；Seedream 图片和 Seedance 原生媒体任务 |
 | Qwen | Responses | `openai/responses` | region/workspace 基址、参数支持子集、session cache header；DashScope 原生图片和视频异步任务 |
@@ -210,15 +210,12 @@ ResolvedProviderCall
 
 | Dialect | Base | 只负责 |
 | --- | --- | --- |
-| `legacy-openai-chat-completions` | `openai-chat-completions` | 生态口径：发 `max_tokens`，`reasoning_content` 的解析与回放，响应缺 `object` 不报错，`thinking`、`enable_thinking`、`preserve_thinking`、`tool_stream`、`prompt_cache_key` 的类型校验；哪家带哪些参数由规则决定 |
+| `legacy-openai-chat-completions` | `openai-chat-completions` | 生态口径：发 `max_tokens`，`reasoning_content` 的解析与回放，响应缺 `object` 不报错，`thinking`、`enable_thinking`、`preserve_thinking`、`prompt_cache_key` 的类型校验；哪家带哪些参数由规则决定 |
 | `legacy-claude-messages` | `claude-messages` | 生态口径：`max_tokens` 可省，temperature 上限 2 |
 | `openrouter-responses` | `openai-responses` | OpenRouter routing 参数、`web_search` 工具改名，以及 `usage.cost` 的 USD 合同 |
 | `qwen-responses` | `openai-responses` | `enable_thinking`、session cache 头、视频输入差异；输出媒体归一化与回放沿用基础 codec |
-| `deepseek-responses` | `openai-responses` | 只差 base 没有路径时的 endpoint；endpoint 改由 base 推算后删除 |
-| `glm-chat` | `legacy-openai-chat-completions` | 流式 `tool_stream` 增量参数的归一化；是否保留待定 |
-| `minimax-messages` | `legacy-claude-messages` | `base_resp` 错误信封、图片按内联字节发送；是否保留待定 |
 
-ProviderState 命名空间不再由 dialect 改写，统一由 Known Provider 的 `state_namespace` 给出。Kimi、豆包不再有 dialect：Kimi 直接用 `legacy-openai-chat-completions`，豆包直接用 `openai-responses`，各家差异写在 Provider Rules 里。
+ProviderState 命名空间不再由 dialect 改写，统一由 Known Provider 的 `state_namespace` 给出。Kimi、GLM、MiniMax、豆包、DeepSeek 不再有 dialect：Kimi、GLM 直接用 `legacy-openai-chat-completions`，MiniMax 直接用 `legacy-claude-messages`，豆包、DeepSeek 直接用 `openai-responses`，各家差异写在 Provider Rules 里。
 
 每个 dialect 必须声明 `base_adapter_id`、覆盖点和不支持能力，且不能复制基础 request schema、SSE parser 和 contract tests。实现前必须先用 `.provider.json` 表达参数、header、operation、能力限制等可声明差异；统一 schema 能表达时应删除 dialect 并直接绑定 base。现有 schema 不足不自动构成写代码的理由，应先评审是否值得增加一个有界、可复用、可校验的声明字段。
 
@@ -260,10 +257,10 @@ Protocol Adapter 通过 `ProtocolAdapterPlugin` 注册。构建脚本自动扫�
 | Gemini | `gemini-interactions` + `gemini-generate-content`（向量、长任务） | `standard-models`（Gemini Models API）；价格由 Provider Rules |
 | fal | `fal-queue` | `catalog-only`；四个暂未接入原厂 Provider 的 endpoint 临时归属 fal；其它配置随 fal 官方事实调整 |
 | OpenRouter | `openrouter-responses` + `openai-chat-completions`、`openai-embeddings`、`openai-audio`、`rerank`、`openrouter-native` | `openrouter-models`；使用动态模型、能力和实时价格 |
-| MiniMax | `minimax-messages` + `minimax-media` | `standard-models`（Anthropic-compatible Models API，不发版本头）；媒体由 catalog/rules 补充 |
+| MiniMax | `legacy-claude-messages` + `minimax-media` | `standard-models`（Anthropic-compatible Models API，不发版本头）；媒体由 catalog/rules 补充 |
 | Kimi | `legacy-openai-chat-completions` | `standard-models`；价格由 Provider Rules |
-| GLM | `glm-chat` + `openai-embeddings`、`openai-images`、`openai-audio`、`glm-video` | 有官方机器接口时 discovery，否则 catalog；不得爬取文档页 |
-| DeepSeek | `deepseek-responses` | 有官方机器接口时 discovery，否则 catalog；动态价格优先、静态规则 fallback |
+| GLM | `legacy-openai-chat-completions` + `openai-embeddings`、`openai-images`、`openai-audio`、`glm-video` | 有官方机器接口时 discovery，否则 catalog；不得爬取文档页 |
+| DeepSeek | `openai-responses` | 有官方机器接口时 discovery，否则 catalog；动态价格优先、静态规则 fallback |
 | 豆包 | `openai-responses` + `doubao-media`、`doubao-speech` | `volcengine-ark-models`；可调用模型/接入点由方舟官方 API 或实例配置获得；不限定 `doubao` Model Driver，但只接纳方舟实际返回且在已安装 Model Driver 中可唯一解析的模型；`ep-*` 仍须实例显式给出原厂模型映射 |
 | Qwen | `qwen-responses` + `legacy-openai-chat-completions`（聚合模型）、`qwen-media` | region/workspace 参与 endpoint；DashScope 图片和视频任务使用原生 `/api/v1`；其余事实由官方 API 或 catalog/rules 给出 |
 

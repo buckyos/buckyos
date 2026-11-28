@@ -128,7 +128,7 @@ pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProv
         (
             DEEPSEEK_PROFILE_ID,
             BuiltinDiscoveryKind::OpenAiModelsApi,
-            Some(ResponsesDialectKind::DeepSeek),
+            None,
         ),
         (
             DOUBAO_PROFILE_ID,
@@ -909,7 +909,7 @@ mod tests {
         let instance = ProviderInstanceConfig {
             provider_instance_name: "deepseek-main".to_owned(),
             provider_profile_id: DEEPSEEK_PROFILE_ID.to_owned(),
-            protocol_adapter_id: DEEPSEEK_RESPONSES_ADAPTER_ID.to_owned(),
+            protocol_adapter_id: OPENAI_RESPONSES_ADAPTER_ID.to_owned(),
             base_url: deepseek().known_provider().base_url,
             operation_base_urls: BTreeMap::new(),
             credential: CredentialReference {
@@ -1219,4 +1219,4 @@ mod tests {
 }
 
 #[cfg(test)]
-use crate::protocol::{DEEPSEEK_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID};
+use crate::protocol::{OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID};

@@ -1909,16 +1909,13 @@ fn insert_optional(body: &mut Map<String, Value>, name: &str, value: Option<Valu
     }
 }
 
+/// `{base}/{path}`: a Provider's base carries its full path prefix, such as
+/// `https://api.openai.com/v1` or `https://api.deepseek.com`.
 fn endpoint(base_url: &str, path: &str) -> ProtocolResultValue<String> {
     let mut url = Url::parse(base_url)
         .map_err(|_| ProtocolError::invalid_configuration("OpenAI base URL is invalid"))?;
-    let base_path = url.path().trim_end_matches('/');
-    let prefix = if base_path.is_empty() {
-        "/v1"
-    } else {
-        base_path
-    };
-    url.set_path(&format!("{prefix}/{}", path.trim_start_matches('/')));
+    let base_path = url.path().trim_end_matches('/').to_owned();
+    url.set_path(&format!("{base_path}/{}", path.trim_start_matches('/')));
     Ok(url.to_string())
 }
 

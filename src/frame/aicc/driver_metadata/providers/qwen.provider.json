@@ -28,27 +28,27 @@
   "models": [
     {
       "id": "cmaas-qwen3.8-flash",
-      "operations": { "llm": "responses.create" }, "remove_features": ["web_search"],
+      "operations": { "llm": "responses.create" },
       "remove_api_types": ["vision.ocr", "vision.caption"]
     },
     {
       "id": "qwen3.7-max",
-      "operations": { "llm": "responses.create" }, "remove_features": ["web_search"],
+      "operations": { "llm": "responses.create" },
       "remove_api_types": ["vision.ocr", "vision.caption"]
     },
     {
       "id": "qwen3.7-max-preview",
-      "operations": { "llm": "responses.create" }, "remove_features": ["web_search"],
+      "operations": { "llm": "responses.create" },
       "remove_api_types": ["vision.ocr", "vision.caption"]
     },
     {
       "id": "qwen3.7-max-2026-05-17",
-      "operations": { "llm": "responses.create" }, "remove_features": ["web_search"],
+      "operations": { "llm": "responses.create" },
       "remove_api_types": ["vision.ocr", "vision.caption"]
     },
     {
       "id": "qwen3.7-max-2026-05-20",
-      "operations": { "llm": "responses.create" }, "remove_features": ["web_search"],
+      "operations": { "llm": "responses.create" },
       "remove_api_types": ["vision.ocr", "vision.caption"]
     },
     {
@@ -56,11 +56,11 @@
       "operations": {
         "llm": "responses.create",
         "vision.caption": "responses.create"
-      }, "remove_features": ["web_search"]
+      }
     },
     {
       "id": "qwen3.5-ocr",
-      "operations": { "vision.ocr": "responses.create" }, "remove_features": ["web_search"]
+      "operations": { "vision.ocr": "responses.create" }
     },
     {
       "id": "MiniMax/MiniMax-M2.1",
@@ -137,7 +137,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }, "remove_features": ["web_search"],
+      },
       "request_rules": [
         {
           "remove": [

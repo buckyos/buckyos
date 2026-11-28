@@ -52,11 +52,7 @@ pub(crate) fn minimax_catalog_files() -> Vec<CurrentCatalogFile> {
 mod tests {
     use super::*;
     use crate::catalog::CatalogBuildOptions;
-    use crate::protocol::{
-        claude_messages_adapter, minimax_messages_adapter, minimax_messages_dialect_contract,
-        CodecRegistry, CLAUDE_MESSAGES_ADAPTER_ID, CLAUDE_MESSAGES_OPERATION_ID,
-        MINIMAX_MESSAGES_ADAPTER_ID,
-    };
+    use crate::protocol::{CLAUDE_MESSAGES_OPERATION_ID, LEGACY_CLAUDE_MESSAGES_ADAPTER_ID};
     use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
 
     #[test]
@@ -65,13 +61,11 @@ mod tests {
         let known = minimax_known_provider();
         let rules = minimax_provider_rules(9);
         let models = minimax_model_driver();
-        let contract = minimax_messages_dialect_contract();
-        let (adapter, registration) = minimax_messages_adapter();
 
         assert_eq!(profile.provider_profile_id, MINIMAX_PROVIDER_PROFILE_ID);
         assert_eq!(
             profile.default_protocol_adapter_id,
-            MINIMAX_MESSAGES_ADAPTER_ID
+            LEGACY_CLAUDE_MESSAGES_ADAPTER_ID
         );
         assert_eq!(profile.credential.kind, CredentialKind::NamedHeader);
         assert_eq!(
@@ -206,16 +200,6 @@ mod tests {
             rules.static_inventory_models.len()
         );
         assert_eq!(
-            contract.base_adapter_id,
-            crate::protocol::LEGACY_CLAUDE_MESSAGES_ADAPTER_ID
-        );
-        assert_eq!(
-            adapter.base_adapter_id.as_deref(),
-            Some(crate::protocol::LEGACY_CLAUDE_MESSAGES_ADAPTER_ID)
-        );
-        assert_eq!(registration.operation_codecs.len(), 3);
-        assert!(registration.native_task_codecs.is_empty());
-        assert_eq!(
             known.extra_protocol_adapters[0].id,
             crate::protocol::MINIMAX_MEDIA_ADAPTER_ID
         );
@@ -240,33 +224,5 @@ mod tests {
             .provider_rules(MINIMAX_PROVIDER_PROFILE_ID)
             .is_some());
         assert!(catalog.model_driver(MINIMAX_PROVIDER_PROFILE_ID).is_some());
-    }
-
-    #[test]
-    fn derived_registration_depends_one_way_on_the_unchanged_base_adapter() {
-        let (base_descriptor, base_registration) = claude_messages_adapter();
-        let mut registry = CodecRegistry::default();
-        registry
-            .register_codecs(base_descriptor, base_registration)
-            .unwrap();
-        let (legacy_descriptor, legacy_registration) =
-            crate::protocol::legacy_claude_messages_adapter();
-        registry
-            .register_derived(legacy_descriptor, legacy_registration)
-            .unwrap();
-        let (derived_descriptor, derived_registration) = minimax_messages_adapter();
-        registry
-            .register_derived(derived_descriptor, derived_registration)
-            .unwrap();
-
-        assert!(registry.adapter(CLAUDE_MESSAGES_ADAPTER_ID).is_some());
-        assert!(registry.adapter(MINIMAX_MESSAGES_ADAPTER_ID).is_some());
-
-        let (base_descriptor, base_registration) = claude_messages_adapter();
-        let mut base_only = CodecRegistry::default();
-        base_only
-            .register_codecs(base_descriptor, base_registration)
-            .unwrap();
-        assert!(base_only.adapter(CLAUDE_MESSAGES_ADAPTER_ID).is_some());
     }
 }

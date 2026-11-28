@@ -40,9 +40,6 @@ AICC_UPDATE_CLIENT_CATALOG_DOC=1 cargo test -p aicc protocol_client_catalog_docu
 | `gemini-interactions` | B 官方独有 | Google | `gemini` | — | 否 | `interactions.background`<br>`interactions.create` |
 | `qwen-responses` | 方言 | 阿里云百炼 | `openai` | `openai-responses` | 否 | `responses.create` |
 | `openrouter-responses` | 方言 | OpenRouter | `openai` | `openai-responses` | 否 | `responses.create` |
-| `deepseek-responses` | 方言（待 P1-11 删除） | DeepSeek | `openai` | `openai-responses` | 否 | `responses.create` |
-| `glm-chat` | 方言（残余待 owner 定） | 智谱 | `openai` | `legacy-openai-chat-completions` | 否 | `chat.completions.create` |
-| `minimax-messages` | 方言（残余待 owner 定） | MiniMax | `claude` | `legacy-claude-messages` | 否 | `messages.create` |
 | `fal-queue` | C 原生 | fal | `fal` | — | 否 | `queue.submit` |
 | `minimax-media` | C 原生 | MiniMax | `minimax` | — | 否 | `image_generation.create`<br>`music_generation.create`<br>`speech_to_text.create`<br>`t2a.create`<br>`video_generation.create`<br>`video_generation.v2.create` |
 | `doubao-media` | C 原生 | 火山方舟 | `doubao` | — | 否 | `ark.contents.generate`<br>`ark.embeddings.multimodal`<br>`ark.images.generate` |
@@ -57,20 +54,8 @@ AICC_UPDATE_CLIENT_CATALOG_DOC=1 cargo test -p aicc protocol_client_catalog_docu
 
 ### `qwen-responses`
 
-百炼 Responses 兼容接口的差异：`enable_thinking` 放进请求体；`session_cache` 参数改成 `x-dashscope-session-cache` 请求头；视频类的文档输入改写成视频输入。`web_search` 能力由规则的 `remove_features` 关掉，不在客户端里。
+百炼 Responses 兼容接口的差异（2026-11-27 按官方文档核对，都仍受支持）：`enable_thinking` 放进请求体（官方已标为将废弃，推荐 `reasoning.effort`）；`session_cache` 参数改成 `x-dashscope-session-cache` 请求头；视频输入改写成 `input_video`（官方只支持公网 URL，且只有 `qwen3.8-omni-flash`）。`web_search` 不在客户端里处理：官方列出的 Qwen4-Max、Qwen3.8、Qwen3.7、Qwen3.5 系列在 Model Driver 里声明了这项能力。
 
 ### `openrouter-responses`
 
-OpenRouter Responses 的差异：OpenRouter 自己的请求参数（`provider`、`plugins`、`models`、`route`、`cache_control` 等）透传进请求体；`web_search` 工具类型改写成 `openrouter:web_search`；用量里的费用按 USD 读。直接发文档没有核对，规则用 `remove_features: ["document"]` 关掉。
-
-### `deepseek-responses`
-
-只差 endpoint：base 没有路径时用 `/responses`，而不是官方客户端的 `/v1/responses`。P1-11 用 base 推算表达后删除。
-
-### `glm-chat`
-
-基于 `legacy-openai-chat-completions`。只剩流式里 `tool_stream` 增量参数的归一化（GLM 把工具参数分多块发）。内置规则没有开 `tool_stream`，这段在内置 Provider 上不会触发；是否删除待 owner 定。
-
-### `minimax-messages`
-
-基于 `legacy-claude-messages`。剩两处：响应里的 `base_resp` 错误信封（HTTP 200 也可能是错误），以及图片按内联字节发送（不转 URL）。两处都不能用配置表达，待 owner 定。
+OpenRouter Responses 的差异（2026-11-27 按官方文档核对，都仍受支持）：OpenRouter 自己的请求参数（`provider`、`plugins`、`models`、`cache_control` 等；`route` 已标为废弃）透传进请求体；`web_search` 工具类型改写成官方推荐的 `openrouter:web_search`；用量里的 `cost` 按 USD 读。直接发文档（`input_file`）官方写明对所有模型可用，不再关掉，是否发出由 Model Driver 的 `document` 能力决定。

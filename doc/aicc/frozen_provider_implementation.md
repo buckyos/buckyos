@@ -80,10 +80,10 @@ Beta 2.2 内置 Provider Profile 基线：
 | `gemini` | `gemini-interactions` | `standard-models` |
 | `fal` | `fal-queue` | `catalog-only` |
 | `openrouter` | `openrouter-responses` | `openrouter-models` |
-| `minimax` | `minimax-messages` | `standard-models` |
+| `minimax` | `legacy-claude-messages` | `standard-models` |
 | `kimi` | `legacy-openai-chat-completions` | `standard-models` |
-| `glm` | `glm-chat` | `standard-models` |
-| `deepseek` | `deepseek-responses` | `standard-models` |
+| `glm` | `legacy-openai-chat-completions` | `standard-models` |
+| `deepseek` | `openai-responses` | `standard-models` |
 | `doubao` | `openai-responses` | `volcengine-ark-models` |
 | `qwen` | `qwen-responses` | `standard-models` |
 | `sn` | `openai-responses` | `sn-models`；支持 API key 与动态登录 |

@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 2,
-  "revision_seq": 18,
+  "revision_seq": 19,
   "provider_profile_id": "openrouter",
   "model_driver_vendor_prefixes": {
     "anthropic": "claude",
@@ -39,7 +39,7 @@
       "id": "minimax/hailuo-3",
       "operations": {
         "video.generate": "openrouter-native/videos.create"
-      }, "remove_features": ["document"],
+      },
       "video_generation": {
         "prompt_required": true,
         "prompt_tokens": "minimax",
@@ -74,7 +74,7 @@
       "id": "minimax/hailuo-3-max",
       "operations": {
         "video.generate": "openrouter-native/videos.create"
-      }, "remove_features": ["document"],
+      },
       "video_generation": {
         "prompt_required": true,
         "prompt_tokens": "minimax",
@@ -106,7 +106,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }, "remove_features": ["document"],
+      },
       "provider_options": {
         "background": true,
         "modalities": [
@@ -121,7 +121,7 @@
       "id": "typesafe/jev-1.13",
       "operations": {
         "decision": "openrouter-native/decisions.create"
-      }, "remove_features": ["document"],
+      },
       "capability_limits": {
         "max_context_tokens": 32000,
         "decision.max_input_bytes": 32000,
@@ -132,7 +132,7 @@
       "id": "google/gemini-3.8-flash-lite-tts",
       "operations": {
         "audio.tts": "openrouter-native/audio.speech"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -151,7 +151,7 @@
       "id": "google/gemini-3.1-flash-tts-preview",
       "operations": {
         "audio.tts": "openrouter-native/audio.speech"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -170,7 +170,7 @@
       "id": "google/gemini-3.8-flash-tts",
       "operations": {
         "audio.tts": "openrouter-native/audio.speech"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -189,7 +189,7 @@
       "id": "minimax/speech-2.8-hd",
       "operations": {
         "audio.tts": "openrouter-native/audio.speech"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -209,7 +209,7 @@
       "id": "minimax/speech-2.8-turbo",
       "operations": {
         "audio.tts": "openrouter-native/audio.speech"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -230,7 +230,7 @@
       "operations": {
         "image.txt2img": "openrouter-native/images.generate",
         "image.img2img": "openrouter-native/images.generate"
-      }, "remove_features": ["document"],
+      },
       "capability_limits": {
         "max_context_tokens": 65536
       }
@@ -240,7 +240,7 @@
       "operations": {
         "image.txt2img": "openrouter-native/images.generate",
         "image.img2img": "openrouter-native/images.generate"
-      }, "remove_features": ["document"],
+      },
       "capability_limits": {
         "max_context_tokens": 32768,
         "max_output_tokens": 8192
@@ -252,7 +252,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -284,7 +284,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -316,7 +316,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -357,7 +357,7 @@
         "audio.music": "openrouter-native/chat.completions.create",
         "audio.tts": "openrouter-native/audio.speech",
         "audio.asr": "openai-audio/audio.transcriptions"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -401,7 +401,7 @@
         "audio.music": "openrouter-native/chat.completions.create",
         "audio.tts": "openrouter-native/audio.speech",
         "audio.asr": "openai-audio/audio.transcriptions"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -435,7 +435,7 @@
         "audio.music": "openrouter-native/chat.completions.create",
         "audio.tts": "openrouter-native/audio.speech",
         "audio.asr": "openai-audio/audio.transcriptions"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -469,7 +469,7 @@
         "audio.music": "openrouter-native/chat.completions.create",
         "audio.tts": "openrouter-native/audio.speech",
         "audio.asr": "openai-audio/audio.transcriptions"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -506,7 +506,7 @@
         "audio.music": "openrouter-native/chat.completions.create",
         "audio.tts": "openrouter-native/audio.speech",
         "audio.asr": "openai-audio/audio.transcriptions"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -540,7 +540,7 @@
         "audio.music": "openrouter-native/chat.completions.create",
         "audio.tts": "openrouter-native/audio.speech",
         "audio.asr": "openai-audio/audio.transcriptions"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {
@@ -565,7 +565,7 @@
       "match": "cohere/rerank-*",
       "operations": {
         "rerank": "rerank/rerank.create"
-      }, "remove_features": ["document"]
+      }
     },
     {
       "match": "*",
@@ -579,7 +579,7 @@
         "audio.music": "openrouter-native/chat.completions.create",
         "audio.tts": "openrouter-native/audio.speech",
         "audio.asr": "openai-audio/audio.transcriptions"
-      }, "remove_features": ["document"],
+      },
       "request_rules": [
         {
           "when": {

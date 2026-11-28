@@ -195,7 +195,7 @@ mod wp08d_tests {
         ModelDriverCatalog,
     };
     use crate::protocol::{
-        GLM_CHAT_ADAPTER_ID, LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+        LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
         OPENAI_CHAT_COMPLETIONS_OPERATION_ID, OPENAI_RESPONSES_OPERATION_ID,
         OPENROUTER_RESPONSES_ADAPTER_ID,
     };
@@ -357,7 +357,7 @@ mod wp08d_tests {
             ),
             (
                 glm_profile(),
-                instance("glm", GLM_CHAT_ADAPTER_ID),
+                instance("glm", LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID),
                 discovery("glm-5.1", None),
                 "glm",
                 OPENAI_CHAT_COMPLETIONS_OPERATION_ID,

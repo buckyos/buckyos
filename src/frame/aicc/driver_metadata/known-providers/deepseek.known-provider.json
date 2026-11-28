@@ -2,14 +2,14 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 2,
-  "revision_seq": 3,
+  "revision_seq": 4,
   "catalog_id": "deepseek",
   "providers": [
     {
       "provider_profile_id": "deepseek",
       "display_name": "DeepSeek",
       "base_url": "https://api.deepseek.com",
-      "protocol_adapter_id": "deepseek-responses",
+      "protocol_adapter_id": "openai-responses",
       "state_namespace": "deepseek",
       "discovery_behavior_id": "standard-models",
       "provider_rules_id": "deepseek",

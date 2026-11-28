@@ -110,7 +110,7 @@ Deno.test('custom catalog aliases and explicit OpenAI adapters survive the RPC b
         rules_catalog: { format: 'buckyos.aicc.provider-rules-catalog', provider_profile_id: 'deepseek', patterns: [{ match: '*', operations: { llm: 'chat.completions' } }] },
         model_driver_overrides: { 'deepseek-flash': 'deepseek/deepseek-v4.1-flash' },
       }, {
-        provider_profile_id: 'glm', protocol_adapter_id: 'glm-chat', extra_protocol_adapters: ['openai-embeddings', 'glm-video'], state_namespace: 'glm',
+        provider_profile_id: 'glm', protocol_adapter_id: 'legacy-openai-chat-completions', extra_protocol_adapters: ['openai-embeddings', 'glm-video'], state_namespace: 'glm',
       }] }
       if (method === 'protocol_adapter.list') return { adapters: [
         { protocol_family_id: 'openai', protocol_adapter_id: 'openai-chat-completions', custom_provider_selectable: true },
@@ -140,7 +140,7 @@ Deno.test('custom catalog aliases and explicit OpenAI adapters survive the RPC b
       assert(sent.at(-1)?.protocol_adapter_id === protocol_adapter_id, 'validation must transmit the chosen adapter')
     }
     await manager.validateConnection({
-      provider_profile_id: 'glm', protocol_family_id: null, protocol_adapter_id: 'glm-chat',
+      provider_profile_id: 'glm', protocol_family_id: null, protocol_adapter_id: 'legacy-openai-chat-completions',
       base_url: 'https://api.z.ai/api/paas/v4', operation_base_urls: {},
       display_name: 'GLM', auth_mode: 'api_key', api_key: 'mock-key', auto_sync_models: true,
     })

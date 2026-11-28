@@ -327,7 +327,7 @@ Deno.test('bindings display as client and operation and choices span the client 
 
 Deno.test('provider client sets follow the catalog for Known Providers and the family for custom ones', () => {
   const catalog = {
-    providers: [{ provider_profile_id: 'glm', protocol_adapter_id: 'glm-chat', extra_protocol_adapters: ['openai-embeddings', 'glm-video'] }],
+    providers: [{ provider_profile_id: 'glm', protocol_adapter_id: 'legacy-openai-chat-completions', extra_protocol_adapters: ['openai-embeddings', 'glm-video'] }],
     protocol_families: [
       { protocol_family_id: 'openai', protocol_adapter_id: 'openai-responses', display_name: 'OpenAI Responses' },
       { protocol_family_id: 'openai', protocol_adapter_id: 'openai-images', display_name: 'OpenAI Images' },
@@ -335,7 +335,7 @@ Deno.test('provider client sets follow the catalog for Known Providers and the f
       { protocol_family_id: 'claude', protocol_adapter_id: 'claude-messages', display_name: 'Claude' },
     ],
   } as unknown as Parameters<typeof providerProtocolClients>[1]
-  assert(providerProtocolClients({ provider_profile_id: 'glm', protocol_adapter_id: 'glm-chat' }, catalog).join() === 'glm-chat,openai-embeddings,glm-video', 'Known Providers list their declared clients in order')
+  assert(providerProtocolClients({ provider_profile_id: 'glm', protocol_adapter_id: 'legacy-openai-chat-completions' }, catalog).join() === 'legacy-openai-chat-completions,openai-embeddings,glm-video', 'Known Providers list their declared clients in order')
   assert(providerProtocolClients({ provider_profile_id: 'custom', protocol_adapter_id: 'openai-responses' }, catalog).join() === 'openai-responses,openai-chat-completions,openai-images', 'custom instances add the selectable clients of their family')
   assert(providerProtocolClients({ provider_profile_id: 'custom', protocol_adapter_id: 'claude-messages' }, null).join() === 'claude-messages', 'without a catalog only the default client is known')
 })

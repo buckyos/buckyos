@@ -674,8 +674,7 @@ mod tests {
     use crate::catalog::CatalogKind;
     use crate::protocol::{
         CLAUDE_MESSAGES_ADAPTER_ID, FAL_QUEUE_ADAPTER_ID, FAL_QUEUE_OPERATION_ID,
-        GEMINI_ADAPTER_ID, GLM_CHAT_ADAPTER_ID, LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-        MINIMAX_MESSAGES_ADAPTER_ID,
+        GEMINI_ADAPTER_ID, LEGACY_CLAUDE_MESSAGES_ADAPTER_ID, LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
         OPENAI_CHAT_COMPLETIONS_ADAPTER_ID, OPENAI_RESPONSES_ADAPTER_ID,
         OPENROUTER_RESPONSES_ADAPTER_ID,
     };
@@ -821,7 +820,7 @@ mod tests {
             .map(|adapter| adapter.protocol_adapter_id.as_str())
             .collect::<BTreeSet<_>>();
         assert_eq!(codecs.adapters().len(), adapter_ids.len());
-        assert_eq!(adapter_ids.len(), 25);
+        assert_eq!(adapter_ids.len(), 22);
         for profile in registry.profiles() {
             assert!(adapter_ids.contains(profile.default_protocol_adapter_id.as_str()));
         }
@@ -853,10 +852,9 @@ mod tests {
         for adapter_id in [
             OPENAI_RESPONSES_ADAPTER_ID,
             OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-            MINIMAX_MESSAGES_ADAPTER_ID,
+            LEGACY_CLAUDE_MESSAGES_ADAPTER_ID,
             OPENROUTER_RESPONSES_ADAPTER_ID,
             LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-            GLM_CHAT_ADAPTER_ID,
             FAL_QUEUE_ADAPTER_ID,
         ] {
             assert!(adapter_ids.contains(adapter_id));
@@ -1212,14 +1210,12 @@ mod tests {
                 .resource_input_form()
         };
         // `llm` codecs write the URL string into the request body verbatim, so
-        // the payload must never be downloaded. The derived adapters
-        // (`legacy-openai-chat-completions`, `glm-chat`) must
-        // forward the base declaration.
+        // the payload must never be downloaded. The derived adapter
+        // `legacy-openai-chat-completions` must forward the base declaration.
         for (adapter, operation, api_type) in [
             ("openai-responses", "responses.create", ApiType::Llm),
             ("legacy-openai-chat-completions", "chat.completions.create", ApiType::Llm),
             ("claude-messages", "messages.create", ApiType::Llm),
-            ("glm-chat", "chat.completions.create", ApiType::Llm),
             ("gemini-interactions", "interactions.create", ApiType::Llm),
             (
                 "gemini-generate-content",
@@ -1431,7 +1427,7 @@ mod tests {
         let glm = registry
             .resolve(BuiltinProviderRequest {
                 provider_profile_id: GLM_PROVIDER_PROFILE_ID,
-                protocol_adapter_id: GLM_CHAT_ADAPTER_ID,
+                protocol_adapter_id: LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
                 auth_mode: ProviderAuthMode::ApiKey,
                 credential_kind: Some(CredentialKind::GlmJwt),
                 configured_inventory: Some(configured_inventory()),
@@ -1463,7 +1459,7 @@ mod tests {
         let minimax = registry
             .resolve(BuiltinProviderRequest {
                 provider_profile_id: MINIMAX_PROVIDER_PROFILE_ID,
-                protocol_adapter_id: MINIMAX_MESSAGES_ADAPTER_ID,
+                protocol_adapter_id: LEGACY_CLAUDE_MESSAGES_ADAPTER_ID,
                 auth_mode: ProviderAuthMode::ApiKey,
                 credential_kind: None,
                 configured_inventory: None,
@@ -1664,8 +1660,6 @@ mod tests {
         }
 
         for adapter in [
-            GLM_CHAT_ADAPTER_ID,
-            MINIMAX_MESSAGES_ADAPTER_ID,
             GEMINI_ADAPTER_ID,
             FAL_QUEUE_ADAPTER_ID,
             OPENROUTER_RESPONSES_ADAPTER_ID,
