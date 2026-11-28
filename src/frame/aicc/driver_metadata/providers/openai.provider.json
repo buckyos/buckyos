@@ -1,10 +1,18 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 1,
-  "revision_seq": 7,
+  "schema_revision": 2,
+  "revision_seq": 9,
   "provider_profile_id": "openai",
-  "custom_provider_adapters": ["openai-responses", "openai-chat-completions"],
+  "custom_provider_adapters": [
+    "openai-responses",
+    "openai-chat-completions",
+    "legacy-openai-chat-completions",
+    "openai-embeddings",
+    "openai-images",
+    "openai-audio",
+    "openai-videos"
+  ],
   "models": [
     {
       "id": "gpt-6-astra",
@@ -30,7 +38,7 @@
     {
       "id": "gpt-4o-mini-tts",
       "operations": {
-        "audio.tts": "audio.speech"
+        "audio.tts": "openai-audio/audio.speech"
       },
       "canonical_fields": {
         "/voice": {
@@ -99,7 +107,7 @@
     {
       "match": "tts-*",
       "operations": {
-        "audio.tts": "audio.speech"
+        "audio.tts": "openai-audio/audio.speech"
       },
       "canonical_fields": {
         "/voice": {
@@ -115,14 +123,14 @@
       "match": "*",
       "operations": {
         "llm": "responses.create",
-        "embedding.text": "embeddings.create",
-        "image.txt2img": "images.generate",
-        "image.img2img": "images.edit",
-        "image.inpaint": "images.edit",
-        "audio.tts": "audio.speech",
-        "audio.asr": "audio.transcriptions",
-        "video.generate": "videos.create",
-        "video.edit": "videos.create"
+        "embedding.text": "openai-embeddings/embeddings.create",
+        "image.txt2img": "openai-images/images.generate",
+        "image.img2img": "openai-images/images.edit",
+        "image.inpaint": "openai-images/images.edit",
+        "audio.tts": "openai-audio/audio.speech",
+        "audio.asr": "openai-audio/audio.transcriptions",
+        "video.generate": "openai-videos/videos.create",
+        "video.edit": "openai-videos/videos.create"
       }
     }
   ],

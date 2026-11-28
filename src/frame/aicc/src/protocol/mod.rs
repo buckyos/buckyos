@@ -1,5 +1,8 @@
 mod adapter;
 mod auth;
+mod binding;
+#[cfg(test)]
+mod client_catalog_tests;
 mod chat_completions_dialects;
 mod claude_messages;
 #[cfg(test)]
@@ -9,7 +12,8 @@ mod doubao_media;
 mod doubao_speech;
 mod fal_queue;
 mod gemini;
-mod glm_media;
+mod gemini_generate_content;
+mod glm_video;
 mod minimax_media;
 mod minimax_messages;
 mod openai_chat_completions;
@@ -22,7 +26,6 @@ mod qwen_media;
 mod result;
 #[cfg(test)]
 mod review_tests;
-mod sn_openai;
 mod sse;
 mod task;
 mod transport;
@@ -31,14 +34,16 @@ pub(crate) mod typesafe;
 
 pub(crate) use openrouter_videos::OPENROUTER_VIDEOS_OPERATION_ID;
 pub(crate) use video::finish_video_output;
-pub(crate) use sn_openai::{register_sn_openai_adapter, SN_OPENAI_ADAPTER_ID};
 
-use minimax_media::minimax_media_registration;
-pub(crate) use minimax_media::{minimax_media_adapter, MINIMAX_MEDIA_ADAPTER_ID};
+pub(crate) use minimax_media::minimax_media_adapter;
 
 pub(crate) use crate::error::{
     openai_error_kind, protocol_error_kind_from_http_status, ProtocolError, ProtocolErrorKind,
     ProtocolResultValue,
+};
+pub(crate) use binding::{
+    resolve_binding, BindingQuery, BindingRef, BindingResolveError,
+    ProtocolClientSet,
 };
 pub(crate) use adapter::{
     AdapterCredentialContract, AdapterDescriptor, AdapterStatus, ArtifactUrlReader, CodecCall, CodecContext, CodecInput, CodecLimits,
@@ -52,23 +57,24 @@ pub(crate) use auth::{CredentialAudit, CredentialKind, ResolvedCredential};
 #[cfg(test)]
 pub(crate) use chat_completions_dialects::GLM_CHAT_ADAPTER_ID;
 pub(crate) use chat_completions_dialects::{
-    glm_chat_adapter, kimi_chat_adapter, openrouter_responses_adapter, KIMI_CHAT_ADAPTER_ID,
+    glm_chat_adapter, legacy_openai_chat_completions_adapter, openrouter_native_adapter,
+    openrouter_responses_adapter, rerank_adapter,
     OPENROUTER_RERANK_OPERATION_ID,
 };
 #[cfg(test)]
 pub(crate) use claude_messages::CLAUDE_MESSAGES_OPERATION_ID;
 pub(crate) use claude_messages::{
-    claude_messages_adapter, ClaudeMessagesCodec, CLAUDE_MESSAGES_ADAPTER_ID,
+    claude_messages_adapter, legacy_claude_messages_adapter, LEGACY_CLAUDE_MESSAGES_ADAPTER_ID,
 };
 #[cfg(test)]
 pub(crate) use contract::{GoldenBody, ProtocolContractHarness};
 #[cfg(test)]
 pub(crate) use derived_responses::ResponsesDialectKind;
 pub(crate) use derived_responses::{
-    openai_responses_compatible_adapters, DEEPSEEK_RESPONSES_ADAPTER_ID,
+    openai_responses_compatible_adapters,
     OPENROUTER_RESPONSES_ADAPTER_ID,
 };
-pub(crate) use doubao_media::{doubao_media_adapter, DOUBAO_MEDIA_ADAPTER_ID};
+pub(crate) use doubao_media::doubao_media_adapter;
 pub(crate) use doubao_speech::doubao_speech_adapter;
 pub(crate) use fal_queue::fal_queue_adapter;
 #[cfg(test)]
@@ -78,8 +84,9 @@ pub(crate) use gemini::{
     gemini_api_key, GEMINI_EMBED_CONTENT_OPERATION_ID, GEMINI_INTERACTIONS_OPERATION_ID,
     GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID,
 };
-pub(crate) use gemini::{gemini_interactions_adapter, GEMINI_ADAPTER_ID};
-pub(crate) use glm_media::{glm_media_adapter, GLM_MEDIA_ADAPTER_ID};
+pub(crate) use gemini::gemini_interactions_adapter;
+pub(crate) use gemini_generate_content::gemini_generate_content_adapter;
+pub(crate) use glm_video::glm_video_adapter;
 pub(crate) use minimax_messages::minimax_messages_adapter;
 #[cfg(test)]
 pub(crate) use minimax_messages::{minimax_messages_dialect_contract, MINIMAX_MESSAGES_ADAPTER_ID};
@@ -93,17 +100,27 @@ pub(crate) use openai_chat_completions::{
 #[cfg(test)]
 pub(crate) use openai_responses::OPENAI_VIDEOS_OPERATION_ID;
 pub(crate) use openai_responses::{
-    openai_responses_adapter, OPENAI_AUDIO_SPEECH_OPERATION_ID,
-    OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID, OPENAI_EMBEDDINGS_OPERATION_ID,
-    OPENAI_IMAGES_GENERATE_OPERATION_ID, OPENAI_RESPONSES_ADAPTER_ID,
+    openai_audio_adapter, openai_embeddings_adapter, openai_images_adapter,
+    openai_responses_adapter, openai_videos_adapter,
+    OPENAI_AUDIO_SPEECH_OPERATION_ID,
+    OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID, OPENAI_EMBEDDINGS_OPERATION_ID, OPENAI_RESPONSES_ADAPTER_ID,
     OPENAI_RESPONSES_OPERATION_ID,
 };
 pub(crate) use openrouter_media::{OPENROUTER_IMAGES_OPERATION_ID, OPENROUTER_MUSIC_OPERATION_ID};
 pub(crate) use provider_state::{
-    bind_provider_state_source, drop_foreign_thinking, foreign_provider_state_text,
+    drop_foreign_thinking, finish_provider_state,
+    foreign_provider_state_text, StateNamespaceRename,
     provider_state_is_native,
 };
-pub(crate) use qwen_media::{qwen_media_adapter, QWEN_MEDIA_ADAPTER_ID};
+pub(crate) use qwen_media::qwen_media_adapter;
+#[cfg(test)]
+pub(crate) use self::{
+    claude_messages::CLAUDE_MESSAGES_ADAPTER_ID,
+    chat_completions_dialects::LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+    derived_responses::DEEPSEEK_RESPONSES_ADAPTER_ID, gemini::GEMINI_ADAPTER_ID,
+    gemini_generate_content::GEMINI_GENERATE_CONTENT_ADAPTER_ID,
+    minimax_media::MINIMAX_MEDIA_ADAPTER_ID, provider_state::bind_provider_state_source,
+};
 pub(crate) use result::{
     NativeTaskHandle, NativeTaskState, ProtocolEvent, ProtocolExecution, ProtocolOutput,
     ProtocolStream, ProviderArtifactRef,
@@ -122,3 +139,11 @@ pub(crate) use transport::{
 };
 
 include!(concat!(env!("OUT_DIR"), "/protocol_plugins.rs"));
+
+/// Every built-in protocol client, as the production registry registers them.
+#[cfg(test)]
+pub(crate) fn builtin_codecs_for_test() -> CodecRegistry {
+    let mut registry = CodecRegistry::default();
+    register_builtin_adapter_plugins(&mut registry).expect("built-in adapters register");
+    registry
+}

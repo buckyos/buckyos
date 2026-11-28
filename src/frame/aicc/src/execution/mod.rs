@@ -3247,6 +3247,7 @@ mod tests {
                 resolved_parameters: BTreeMap::new(),
             },
             context: CodecContext {
+                state_namespace: None,
                 base_url: "https://fake.invalid".into(),
                 state_coordinate: buckyos_api::ProviderStateCoordinate {
                     provider_profile_id: "fake".into(),

@@ -1,21 +1,14 @@
 #[cfg(test)]
 use super::super::{DiscoveryMode, ProviderConnectionContract, ProviderProfile};
-use super::anthropic_models::{AnthropicModelsDiscovery, AnthropicModelsSpec};
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
 #[cfg(test)]
 use crate::protocol::claude_messages_adapter;
 #[cfg(test)]
 use crate::protocol::CredentialKind;
-use crate::protocol::HttpTransport;
 
+#[cfg(test)]
 pub(crate) const CLAUDE_PROVIDER_PROFILE_ID: &str = "claude";
-
-pub(super) const CLAUDE_SPEC: AnthropicModelsSpec = AnthropicModelsSpec {
-    provider_profile_id: CLAUDE_PROVIDER_PROFILE_ID,
-    version_header: true,
-    label: "Claude",
-};
 
 #[cfg(test)]
 pub(crate) fn claude_profile() -> ProviderProfile {
@@ -45,10 +38,6 @@ pub(crate) fn claude_model_driver() -> ModelDriverCatalog {
 #[cfg(test)]
 pub(crate) fn claude_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[CLAUDE_PROVIDER_PROFILE_ID])
-}
-
-pub(crate) fn claude_discovery(transport: HttpTransport) -> AnthropicModelsDiscovery {
-    AnthropicModelsDiscovery::new(CLAUDE_SPEC, transport)
 }
 
 #[cfg(test)]

@@ -1,12 +1,11 @@
 use super::{
-    openai_chat_completions_operation_descriptor, openai_responses_adapter, AdapterDescriptor,
-    AdapterStatus, ChatCompletionsImmediateExtensions, ChatCompletionsStreamExtensions,
+    openai_chat_completions_operation_descriptor, AdapterDescriptor, AdapterStatus,
+    ChatCompletionsImmediateExtensions, ChatCompletionsStreamExtensions,
     ChatCompletionsTokenLimitParameter, CodecCall, CodecRegistration, ExecutionMode, HttpBody,
     HttpRequest, HttpResponse, OpenAiChatCompletionsCodec, OpenAiChatCompletionsDialect,
     OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolExecution,
     ProtocolOutput, ProtocolResultValue, OPENAI_AUDIO_SPEECH_OPERATION_ID,
-    OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID, OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-    OPENAI_EMBEDDINGS_OPERATION_ID, OPENAI_PROTOCOL_FAMILY_ID,
+    OPENAI_CHAT_COMPLETIONS_ADAPTER_ID, OPENAI_PROTOCOL_FAMILY_ID,
 };
 use async_trait::async_trait;
 use buckyos_api::{AiContent, AiRole, AiUsage, AiccCall, ApiType, LlmChatInvokeRequest};
@@ -17,81 +16,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub(crate) const OPENROUTER_RERANK_OPERATION_ID: &str = "rerank.create";
-pub(crate) const KIMI_CHAT_ADAPTER_ID: &str = "kimi-chat";
+pub(crate) const OPENROUTER_NATIVE_ADAPTER_ID: &str = "openrouter-native";
+pub(crate) const RERANK_ADAPTER_ID: &str = "rerank";
+pub(crate) const LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID: &str = "legacy-openai-chat-completions";
 pub(crate) const GLM_CHAT_ADAPTER_ID: &str = "glm-chat";
-
-#[derive(Debug, Default)]
-struct OpenRouterChatDialect;
-
-impl OpenAiChatCompletionsDialect for OpenRouterChatDialect {
-    fn transform_resolved_parameter(
-        &self,
-        name: &str,
-        value: &Value,
-    ) -> ProtocolResultValue<Option<(String, Value)>> {
-        if name != "modalities" {
-            return Ok(None);
-        }
-        if value != &json!(["text"]) {
-            return Err(ProtocolError::invalid_request(
-                "OpenRouter Chat Completions only supports the configured text modality",
-            ));
-        }
-        Ok(Some((name.to_owned(), value.clone())))
-    }
-
-    fn transform_request(
-        &self,
-        _request: &LlmChatInvokeRequest,
-        body: &mut Map<String, Value>,
-        _headers: &mut HeaderMap,
-        _context: &super::CodecContext,
-    ) -> ProtocolResultValue<()> {
-        if body.get("modalities") == Some(&json!(["text"])) {
-            require_text_only_for_image_input(body);
-        }
-        Ok(())
-    }
-}
-
-fn require_text_only_for_image_input(body: &mut Map<String, Value>) {
-    const INSTRUCTION: &str = "Return text only and do not generate an image.";
-    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
-    };
-    let Some(content) = messages
-        .iter_mut()
-        .rev()
-        .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
-        .and_then(|message| message.get_mut("content"))
-        .and_then(Value::as_array_mut)
-    else {
-        return;
-    };
-    if !content
-        .iter()
-        .any(|part| part.get("type").and_then(Value::as_str) == Some("image_url"))
-    {
-        return;
-    }
-    if let Some(text_index) = content
-        .iter()
-        .position(|part| part.get("type").and_then(Value::as_str) == Some("text"))
-    {
-        let text = content[text_index]
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        if !text.contains(INSTRUCTION) {
-            content[text_index]["text"] = Value::String(format!("{} {INSTRUCTION}", text.trim()));
-        }
-    }
-}
-
-pub(crate) fn qwen_aggregated_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    derived_adapter("qwen-aggregated-chat", Arc::new(QwenAggregatedDialect))
-}
 
 #[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,131 +32,91 @@ pub(crate) struct ChatCompletionsDialectContract {
 }
 
 #[cfg(test)]
-pub(crate) fn kimi_chat_contract() -> ChatCompletionsDialectContract {
-    ChatCompletionsDialectContract {
-        adapter_id: KIMI_CHAT_ADAPTER_ID,
-        base_adapter_id: OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-        request_extensions: BTreeSet::from([
-            "partial",
-            "prompt_cache_key",
-            "reasoning_content",
-            "thinking",
-            "video_url",
-        ]),
-        response_extensions: BTreeSet::from(["cached_tokens", "reasoning_content"]),
-        unsupported_features: BTreeSet::new(),
-    }
-}
-
-#[cfg(test)]
 pub(crate) fn glm_chat_contract() -> ChatCompletionsDialectContract {
     ChatCompletionsDialectContract {
         adapter_id: GLM_CHAT_ADAPTER_ID,
-        base_adapter_id: OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-        request_extensions: BTreeSet::from(["reasoning_content", "thinking", "tool_stream"]),
-        response_extensions: BTreeSet::from(["reasoning_content", "tool_stream"]),
+        base_adapter_id: LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+        request_extensions: BTreeSet::new(),
+        response_extensions: BTreeSet::from(["tool_stream"]),
         unsupported_features: BTreeSet::new(),
     }
 }
 
 pub(crate) fn openrouter_responses_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    let (mut descriptor, mut registration) = super::derived_responses::responses_dialect_adapter(
+    super::derived_responses::responses_dialect_adapter(
         super::derived_responses::ResponsesDialectKind::OpenRouter,
     )
-    .expect("OpenRouter Responses adapter must be valid");
-    let (openai_descriptor, openai_registration) = openai_responses_adapter();
-    let compatible_operations = BTreeSet::from([
-        OPENAI_EMBEDDINGS_OPERATION_ID,
-        OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
-    ]);
-    for operation_id in &compatible_operations {
-        let operation = openai_descriptor
-            .operations
-            .get(*operation_id)
-            .unwrap_or_else(|| panic!("OpenAI {operation_id} operation must exist"))
-            .clone();
-        descriptor
-            .operations
-            .insert(operation.operation_id.clone(), operation);
-    }
-    registration.operation_codecs.extend(
-        openai_registration
-            .operation_codecs
-            .into_iter()
-            .filter(|codec| {
-                compatible_operations.contains(codec.descriptor().operation_id.as_str())
-            }),
-    );
-    let speech = openai_descriptor
-        .operations
+    .expect("OpenRouter Responses adapter must be valid")
+}
+
+/// OpenRouter's own endpoints: speech, images, music through its audio chat
+/// output, decisions and video jobs.
+pub(crate) fn openrouter_native_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    let (openai_operations, _) = super::openai_responses::openai_platform_registration(None);
+    let speech = openai_operations
         .get(OPENAI_AUDIO_SPEECH_OPERATION_ID)
         .expect("OpenAI speech operation must exist")
         .clone();
-    descriptor
-        .operations
-        .insert(speech.operation_id.clone(), speech.clone());
-    registration
-        .operation_codecs
-        .push(super::openrouter_media::speech_codec(speech));
-    let mut music = openai_chat_completions_operation_descriptor();
-    music
-        .bindings
-        .extend(super::openrouter_media::music_descriptor().bindings);
-    music.max_response_bytes = music.max_response_bytes.max(64 * 1024 * 1024);
-    descriptor
-        .operations
-        .insert(music.operation_id.clone(), music.clone());
-    let chat_dialect: Arc<dyn OpenAiChatCompletionsDialect> = Arc::new(OpenRouterChatDialect);
-    registration.operation_codecs.extend(
-        [ApiType::Llm, ApiType::VisionOcr, ApiType::VisionCaption]
-            .into_iter()
-            .map(|api_type| {
-                Arc::new(
-                    OpenAiChatCompletionsCodec::with_dialect_api_type_and_descriptor(
-                        Arc::clone(&chat_dialect),
-                        api_type,
-                        music.clone(),
-                    ),
-                ) as Arc<dyn OperationCodec>
-            }),
-    );
-    registration
-        .operation_codecs
-        .push(super::openrouter_media::music_codec(music));
+    let music = super::openrouter_media::music_descriptor();
     let images = super::openrouter_media::image_descriptor();
-    descriptor
-        .operations
-        .insert(images.operation_id.clone(), images.clone());
-    registration
-        .operation_codecs
-        .extend(super::openrouter_media::image_codecs(images));
-    let rerank = openrouter_rerank_descriptor();
-    descriptor
-        .operations
-        .insert(rerank.operation_id.clone(), rerank.clone());
-    registration
-        .operation_codecs
-        .push(Arc::new(OpenRouterRerankCodec { descriptor: rerank }));
     let decisions = super::openrouter_decisions::descriptor();
-    descriptor
-        .operations
-        .insert(decisions.operation_id.clone(), decisions.clone());
-    registration.operation_codecs.push(Arc::new(
-        super::openrouter_decisions::OpenRouterDecisionsCodec {
-            descriptor: decisions,
-        },
-    ));
     let videos = super::openrouter_videos::descriptor();
-    descriptor
-        .operations
-        .insert(videos.operation_id.clone(), videos.clone());
-    registration.native_task_codecs.push(Arc::new(
-        super::openrouter_videos::OpenRouterVideoCodec { descriptor: videos },
-    ));
-    (descriptor, registration)
+    let mut operation_codecs = vec![
+        super::openrouter_media::speech_codec(speech.clone()),
+        super::openrouter_media::music_codec(music.clone()),
+        Arc::new(super::openrouter_decisions::OpenRouterDecisionsCodec {
+            descriptor: decisions.clone(),
+        }) as Arc<dyn OperationCodec>,
+    ];
+    operation_codecs.extend(super::openrouter_media::image_codecs(images.clone()));
+    (
+        AdapterDescriptor {
+            protocol_family_id: "openrouter".to_owned(),
+            protocol_adapter_id: OPENROUTER_NATIVE_ADAPTER_ID.to_owned(),
+            interface_generation: "v1".to_owned(),
+            base_adapter_id: None,
+            status: AdapterStatus::Stable,
+            probe_priority: 200,
+            probe_path: None,
+            credential: super::AdapterCredentialContract::bearer(),
+            operations: [speech, music, images, decisions, videos.clone()]
+                .into_iter()
+                .map(|operation| (operation.operation_id.clone(), operation))
+                .collect(),
+        },
+        CodecRegistration {
+            operation_codecs,
+            native_task_codecs: vec![Arc::new(super::openrouter_videos::OpenRouterVideoCodec {
+                descriptor: videos,
+            })],
+        },
+    )
 }
 
-fn openrouter_rerank_descriptor() -> OperationDescriptor {
+/// The `/rerank` endpoint Cohere and Jina defined and aggregators and
+/// self-hosted inference servers implement.
+pub(crate) fn rerank_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    let descriptor = rerank_descriptor();
+    (
+        AdapterDescriptor {
+            protocol_family_id: RERANK_ADAPTER_ID.to_owned(),
+            protocol_adapter_id: RERANK_ADAPTER_ID.to_owned(),
+            interface_generation: "v1".to_owned(),
+            base_adapter_id: None,
+            status: AdapterStatus::Stable,
+            probe_priority: 200,
+            probe_path: None,
+            credential: super::AdapterCredentialContract::bearer(),
+            operations: BTreeMap::from([(descriptor.operation_id.clone(), descriptor.clone())]),
+        },
+        CodecRegistration {
+            operation_codecs: vec![Arc::new(RerankCodec { descriptor })],
+            native_task_codecs: Vec::new(),
+        },
+    )
+}
+
+fn rerank_descriptor() -> OperationDescriptor {
     OperationDescriptor {
         operation_id: OPENROUTER_RERANK_OPERATION_ID.to_owned(),
         bindings: vec![OperationBinding::new(
@@ -243,12 +131,12 @@ fn openrouter_rerank_descriptor() -> OperationDescriptor {
 }
 
 #[derive(Clone)]
-struct OpenRouterRerankCodec {
+struct RerankCodec {
     descriptor: OperationDescriptor,
 }
 
 #[async_trait]
-impl OperationCodec for OpenRouterRerankCodec {
+impl OperationCodec for RerankCodec {
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -267,7 +155,7 @@ impl OperationCodec for OpenRouterRerankCodec {
             .validate_for(self.descriptor.binding(call.api_type)?)?;
         let AiccCall::Rerank(request) = &call.input.canonical_request else {
             return Err(ProtocolError::invalid_request(
-                "OpenRouter rerank codec received the wrong canonical request",
+                "rerank codec received the wrong canonical request",
             ));
         };
         let model = call
@@ -284,7 +172,7 @@ impl OperationCodec for OpenRouterRerankCodec {
                 let text = document.text.as_deref().ok_or_else(|| {
                     ProtocolError::new(
                         super::ProtocolErrorKind::UnsupportedOperation,
-                        "OpenRouter text rerank requires inline document text",
+                        "text rerank requires inline document text",
                     )
                 })?;
                 Ok(Value::String(text.to_owned()))
@@ -299,7 +187,7 @@ impl OperationCodec for OpenRouterRerankCodec {
             body.insert("top_n".to_owned(), Value::from(top_n));
         }
         let mut url = Url::parse(&call.context.base_url)
-            .map_err(|_| ProtocolError::invalid_configuration("OpenRouter base URL is invalid"))?;
+            .map_err(|_| ProtocolError::invalid_configuration("rerank base URL is invalid"))?;
         let base = url.path().trim_end_matches('/');
         let prefix = if base.ends_with("/api/v1") {
             base.to_owned()
@@ -318,7 +206,7 @@ impl OperationCodec for OpenRouterRerankCodec {
             .ok_or_else(|| {
                 ProtocolError::new(
                     super::ProtocolErrorKind::Authentication,
-                    "OpenRouter rerank requires a resolved credential",
+                    "rerank requires a resolved credential",
                 )
             })?
             .apply(&mut wire.headers)?;
@@ -331,33 +219,28 @@ impl OperationCodec for OpenRouterRerankCodec {
 
     async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
         if !response.status.is_success() {
-            return Err(openrouter_rerank_http_error(&response));
+            return Err(rerank_http_error(&response));
         }
         let value: Value = response.json(self.descriptor.max_response_bytes)?;
         let results = value
             .get("results")
             .and_then(Value::as_array)
-            .ok_or_else(|| {
-                ProtocolError::invalid_response("OpenRouter rerank results are missing")
-            })?
+            .ok_or_else(|| ProtocolError::invalid_response("rerank results are missing"))?
             .iter()
             .map(|result| {
-                let index = result.get("index").and_then(Value::as_u64).ok_or_else(|| {
-                    ProtocolError::invalid_response("OpenRouter rerank index is missing")
-                })?;
+                let index = result
+                    .get("index")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| ProtocolError::invalid_response("rerank index is missing"))?;
                 let document = result
                     .get("document")
                     .and_then(Value::as_object)
-                    .ok_or_else(|| {
-                        ProtocolError::invalid_response("OpenRouter rerank document is missing")
-                    })?;
+                    .ok_or_else(|| ProtocolError::invalid_response("rerank document is missing"))?;
                 let score = result
                     .get("relevance_score")
                     .and_then(Value::as_f64)
                     .filter(|score| score.is_finite())
-                    .ok_or_else(|| {
-                        ProtocolError::invalid_response("OpenRouter rerank score is invalid")
-                    })?;
+                    .ok_or_else(|| ProtocolError::invalid_response("rerank score is invalid"))?;
                 Ok(json!({
                     "index": index,
                     "id": index.to_string(),
@@ -381,7 +264,7 @@ impl OperationCodec for OpenRouterRerankCodec {
     }
 }
 
-fn openrouter_rerank_http_error(response: &HttpResponse) -> ProtocolError {
+fn rerank_http_error(response: &HttpResponse) -> ProtocolError {
     let parsed: Option<Value> = serde_json::from_slice(&response.body).ok();
     let provider_code = parsed
         .as_ref()
@@ -396,38 +279,108 @@ fn openrouter_rerank_http_error(response: &HttpResponse) -> ProtocolError {
         .as_ref()
         .and_then(|value| value.pointer("/error/message"))
         .and_then(Value::as_str)
-        .unwrap_or("OpenRouter rerank request failed");
+        .unwrap_or("rerank request failed");
     let kind = super::protocol_error_kind_from_http_status(response.status);
-    ProtocolError::new(kind, format!("OpenRouter rerank: {provider_message}"))
+    ProtocolError::new(kind, format!("rerank: {provider_message}"))
         .with_provider_code(provider_code)
         .with_request_id(Some(response.request_id.clone()))
         .with_retry_after(response.retry_after)
 }
 
-pub(crate) fn kimi_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    derived_adapter(KIMI_CHAT_ADAPTER_ID, Arc::new(KimiDialect))
+/// Chat Completions as compatible vendors and local inference servers
+/// implement it, rather than as OpenAI documents it: the output cap is
+/// `max_tokens`, thinking travels as `reasoning_content` (or `reasoning`) in
+/// both directions, `cached_tokens` may sit at the top of `usage`, a response
+/// may omit `object`, and the common thinking switches are accepted. Which of
+/// them a Provider sends is up to its rules.
+pub(crate) fn legacy_openai_chat_completions_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    derived_adapter(
+        LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+        Arc::new(LegacyChatCompletionsDialect),
+    )
 }
 
-pub(crate) fn glm_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    let (mut descriptor, mut registration) =
-        derived_adapter(GLM_CHAT_ADAPTER_ID, Arc::new(GlmDialect));
-    let (operations, media_registration) = super::glm_media::glm_media_registration();
-    for operation in operations {
-        descriptor
-            .operations
-            .insert(operation.operation_id.clone(), operation);
+#[derive(Debug)]
+struct LegacyChatCompletionsDialect;
+
+impl OpenAiChatCompletionsDialect for LegacyChatCompletionsDialect {
+    fn token_limit_parameter(&self) -> ChatCompletionsTokenLimitParameter {
+        ChatCompletionsTokenLimitParameter::MaxTokens
     }
-    registration
-        .operation_codecs
-        .extend(media_registration.operation_codecs);
-    registration
-        .native_task_codecs
-        .extend(media_registration.native_task_codecs);
-    descriptor.protocol_family_id = "glm".to_owned();
-    descriptor.component_adapter_ids = vec![
-        OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_owned(),
-        super::GLM_MEDIA_ADAPTER_ID.to_owned(),
-    ];
+
+    fn allows_unmapped_message_content(&self, role: AiRole, content: &AiContent) -> bool {
+        role == AiRole::Assistant && matches!(content, AiContent::Thinking { .. })
+    }
+
+    fn transform_resolved_parameter(
+        &self,
+        name: &str,
+        value: &Value,
+    ) -> ProtocolResultValue<Option<(String, Value)>> {
+        let valid = match name {
+            "enable_thinking" | "preserve_thinking" | "tool_stream" => value.is_boolean(),
+            "prompt_cache_key" => nonempty_string(value),
+            "thinking" => valid_ecosystem_thinking(value),
+            _ => return Ok(None),
+        };
+        if !valid {
+            return Err(ProtocolError::invalid_request(format!(
+                "Chat Completions parameter `{name}` has an invalid value"
+            )));
+        }
+        Ok(Some((name.to_owned(), value.clone())))
+    }
+
+    fn transform_request(
+        &self,
+        request: &LlmChatInvokeRequest,
+        body: &mut Map<String, Value>,
+        _headers: &mut HeaderMap,
+        context: &super::CodecContext,
+    ) -> ProtocolResultValue<()> {
+        restore_assistant_state(request, body, false, &context.state_coordinate)
+    }
+
+    fn transform_immediate_response(
+        &self,
+        response: &mut Map<String, Value>,
+    ) -> ProtocolResultValue<ChatCompletionsImmediateExtensions> {
+        if !response.contains_key("object") {
+            response.insert(
+                "object".to_owned(),
+                Value::String("chat.completion".to_owned()),
+            );
+        }
+        reasoning_from_response(response, "")
+    }
+
+    fn transform_stream_chunk(
+        &self,
+        chunk: &mut Map<String, Value>,
+    ) -> ProtocolResultValue<ChatCompletionsStreamExtensions> {
+        reasoning_from_stream(chunk)
+    }
+
+    fn allows_stream_options_opt_out(&self) -> bool {
+        true
+    }
+}
+
+/// `{"type": "enabled" | "disabled" | "adaptive", ...}`; the other fields
+/// are each vendor's own.
+fn valid_ecosystem_thinking(value: &Value) -> bool {
+    value
+        .as_object()
+        .and_then(|object| object.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| matches!(kind, "enabled" | "disabled" | "adaptive"))
+}
+
+/// The ecosystem Chat Completions client plus one GLM-only behavior: with
+/// `tool_stream` enabled GLM streams tool calls under `delta.tool_stream`.
+pub(crate) fn glm_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    let (mut descriptor, registration) = derived_adapter(GLM_CHAT_ADAPTER_ID, Arc::new(GlmDialect));
+    descriptor.base_adapter_id = Some(LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_owned());
     (descriptor, registration)
 }
 
@@ -450,18 +403,10 @@ fn derived_adapter(
             protocol_adapter_id: adapter_id.to_owned(),
             interface_generation: "v1".to_owned(),
             base_adapter_id: Some(OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_owned()),
-            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 200,
             probe_path: None,
-            credential: if adapter_id == GLM_CHAT_ADAPTER_ID {
-                super::AdapterCredentialContract {
-                    kind: super::CredentialKind::GlmJwt,
-                    header_name: None,
-                }
-            } else {
-                super::AdapterCredentialContract::bearer()
-            },
+            credential: super::AdapterCredentialContract::bearer(),
             operations: BTreeMap::from([(operation.operation_id.clone(), operation)]),
         },
         CodecRegistration {
@@ -476,75 +421,15 @@ fn derived_adapter(
 }
 
 #[derive(Debug)]
-struct KimiDialect;
-
-impl OpenAiChatCompletionsDialect for KimiDialect {
-    fn token_limit_parameter(&self) -> ChatCompletionsTokenLimitParameter {
-        ChatCompletionsTokenLimitParameter::MaxTokens
-    }
-
-    fn allows_unmapped_message_content(&self, role: AiRole, content: &AiContent) -> bool {
-        role == AiRole::Assistant
-            && (matches!(content, AiContent::Thinking { .. })
-                || matches!(
-                    content,
-                    AiContent::ProviderState { provider, .. } if provider == "kimi"
-                ))
-    }
-
-    fn transform_resolved_parameter(
-        &self,
-        name: &str,
-        value: &Value,
-    ) -> ProtocolResultValue<Option<(String, Value)>> {
-        let valid = match name {
-            "thinking" => valid_kimi_thinking(value),
-            "prompt_cache_key" => nonempty_string(value),
-            _ => return Ok(None),
-        };
-        if !valid {
-            return Err(ProtocolError::invalid_request(format!(
-                "Kimi parameter `{name}` has an invalid value"
-            )));
-        }
-        Ok(Some((name.to_owned(), value.clone())))
-    }
-
-    fn transform_request(
-        &self,
-        request: &LlmChatInvokeRequest,
-        body: &mut Map<String, Value>,
-        _headers: &mut HeaderMap,
-        context: &super::CodecContext,
-    ) -> ProtocolResultValue<()> {
-        restore_assistant_state(request, body, true, &context.state_coordinate)
-    }
-
-    fn transform_immediate_response(
-        &self,
-        response: &mut Map<String, Value>,
-    ) -> ProtocolResultValue<ChatCompletionsImmediateExtensions> {
-        reasoning_from_response(response, "kimi")
-    }
-
-    fn transform_stream_chunk(
-        &self,
-        chunk: &mut Map<String, Value>,
-    ) -> ProtocolResultValue<ChatCompletionsStreamExtensions> {
-        reasoning_from_stream(chunk)
-    }
-}
-
-#[derive(Debug)]
 struct GlmDialect;
 
 impl OpenAiChatCompletionsDialect for GlmDialect {
     fn token_limit_parameter(&self) -> ChatCompletionsTokenLimitParameter {
-        ChatCompletionsTokenLimitParameter::MaxTokens
+        LegacyChatCompletionsDialect.token_limit_parameter()
     }
 
     fn allows_unmapped_message_content(&self, role: AiRole, content: &AiContent) -> bool {
-        role == AiRole::Assistant && matches!(content, AiContent::Thinking { .. })
+        LegacyChatCompletionsDialect.allows_unmapped_message_content(role, content)
     }
 
     fn transform_resolved_parameter(
@@ -552,41 +437,24 @@ impl OpenAiChatCompletionsDialect for GlmDialect {
         name: &str,
         value: &Value,
     ) -> ProtocolResultValue<Option<(String, Value)>> {
-        let valid = match name {
-            "thinking" => valid_thinking(value),
-            "tool_stream" => value.is_boolean(),
-            _ => return Ok(None),
-        };
-        if !valid {
-            return Err(ProtocolError::invalid_request(format!(
-                "GLM parameter `{name}` has an invalid value"
-            )));
-        }
-        Ok(Some((name.to_owned(), value.clone())))
+        LegacyChatCompletionsDialect.transform_resolved_parameter(name, value)
     }
 
     fn transform_request(
         &self,
         request: &LlmChatInvokeRequest,
         body: &mut Map<String, Value>,
-        _headers: &mut HeaderMap,
+        headers: &mut HeaderMap,
         context: &super::CodecContext,
     ) -> ProtocolResultValue<()> {
-        body.remove("stream_options");
-        restore_assistant_state(request, body, false, &context.state_coordinate)
+        LegacyChatCompletionsDialect.transform_request(request, body, headers, context)
     }
 
     fn transform_immediate_response(
         &self,
         response: &mut Map<String, Value>,
     ) -> ProtocolResultValue<ChatCompletionsImmediateExtensions> {
-        if !response.contains_key("object") {
-            response.insert(
-                "object".to_owned(),
-                Value::String("chat.completion".to_owned()),
-            );
-        }
-        reasoning_from_response(response, "glm")
+        LegacyChatCompletionsDialect.transform_immediate_response(response)
     }
 
     fn transform_stream_chunk(
@@ -594,65 +462,11 @@ impl OpenAiChatCompletionsDialect for GlmDialect {
         chunk: &mut Map<String, Value>,
     ) -> ProtocolResultValue<ChatCompletionsStreamExtensions> {
         normalize_glm_tool_stream(chunk)?;
-        reasoning_from_stream(chunk)
-    }
-}
-
-#[derive(Debug)]
-struct QwenAggregatedDialect;
-
-impl OpenAiChatCompletionsDialect for QwenAggregatedDialect {
-    fn token_limit_parameter(&self) -> ChatCompletionsTokenLimitParameter {
-        ChatCompletionsTokenLimitParameter::MaxTokens
+        LegacyChatCompletionsDialect.transform_stream_chunk(chunk)
     }
 
-    fn allows_unmapped_message_content(&self, role: AiRole, content: &AiContent) -> bool {
-        role == AiRole::Assistant && matches!(content, AiContent::Thinking { .. })
-    }
-
-    fn transform_request(
-        &self,
-        request: &LlmChatInvokeRequest,
-        body: &mut Map<String, Value>,
-        _headers: &mut HeaderMap,
-        context: &super::CodecContext,
-    ) -> ProtocolResultValue<()> {
-        restore_assistant_state(request, body, false, &context.state_coordinate)
-    }
-
-    fn transform_resolved_parameter(
-        &self,
-        name: &str,
-        value: &Value,
-    ) -> ProtocolResultValue<Option<(String, Value)>> {
-        let valid = match name {
-            "enable_thinking" | "preserve_thinking" | "tool_stream" => value.is_boolean(),
-            "thinking" => value
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(|kind| matches!(kind, "enabled" | "disabled" | "adaptive")),
-            _ => return Ok(None),
-        };
-        if !valid {
-            return Err(ProtocolError::invalid_request(format!(
-                "Qwen aggregated Chat Completions parameter `{name}` has an invalid value"
-            )));
-        }
-        Ok(Some((name.to_owned(), value.clone())))
-    }
-
-    fn transform_immediate_response(
-        &self,
-        response: &mut Map<String, Value>,
-    ) -> ProtocolResultValue<ChatCompletionsImmediateExtensions> {
-        reasoning_from_response(response, "qwen")
-    }
-
-    fn transform_stream_chunk(
-        &self,
-        chunk: &mut Map<String, Value>,
-    ) -> ProtocolResultValue<ChatCompletionsStreamExtensions> {
-        reasoning_from_stream(chunk)
+    fn allows_stream_options_opt_out(&self) -> bool {
+        LegacyChatCompletionsDialect.allows_stream_options_opt_out()
     }
 }
 
@@ -825,33 +639,6 @@ fn take_optional_string(
     Ok(result)
 }
 
-fn valid_thinking(value: &Value) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    object.len() == 1
-        && matches!(
-            object.get("type").and_then(Value::as_str),
-            Some("enabled" | "disabled")
-        )
-}
-
-fn valid_kimi_thinking(value: &Value) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    if !matches!(
-        object.get("type").and_then(Value::as_str),
-        Some("enabled" | "disabled")
-    ) || object.len() > 2
-    {
-        return false;
-    }
-    object
-        .get("keep")
-        .is_none_or(|keep| keep.as_str() == Some("all"))
-}
-
 fn nonempty_string(value: &Value) -> bool {
     value.as_str().is_some_and(|value| !value.trim().is_empty())
 }
@@ -860,9 +647,8 @@ fn nonempty_string(value: &Value) -> bool {
 mod tests {
     use super::*;
     use crate::protocol::{
-        glm_media_adapter, openai_chat_completions_adapter, CodecContext, CodecInput, CodecLimits,
-        CodecRegistry, HttpBody, HttpResponse, ResolvedCredential,
-        OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+        CodecContext, CodecInput, CodecLimits, CodecRegistry, HttpBody, HttpResponse,
+        ResolvedCredential, OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
     };
     use buckyos_api::{
         AiMessage, AiccCall, ApiType, LlmChatInvokeRequest, RerankDocument, RerankRequest,
@@ -871,15 +657,13 @@ mod tests {
     use reqwest::StatusCode;
     use std::time::Duration;
 
+    /// The production registry; `derived` replaces the registered client of
+    /// the same ID when it is not registered there.
     fn registry_with(derived: (AdapterDescriptor, CodecRegistration)) -> CodecRegistry {
-        let mut registry = CodecRegistry::default();
-        let (base, codecs) = openai_chat_completions_adapter();
-        registry.register_codecs(base, codecs).unwrap();
-        let (base, codecs) = openai_responses_adapter();
-        registry.register_codecs(base, codecs).unwrap();
-        let (media, codecs) = glm_media_adapter();
-        registry.register_codecs(media, codecs).unwrap();
-        registry.register_derived(derived.0, derived.1).unwrap();
+        let mut registry = crate::protocol::builtin_codecs_for_test();
+        if registry.adapter(&derived.0.protocol_adapter_id).is_none() {
+            registry.register_derived(derived.0, derived.1).unwrap();
+        }
         registry
     }
 
@@ -901,6 +685,7 @@ mod tests {
 
     fn context() -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: "https://example.test/v1".to_owned(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
                 provider_profile_id: "test".into(),
@@ -920,11 +705,19 @@ mod tests {
 
     #[test]
     fn all_dialects_declare_and_register_one_way_base_reuse() {
-        for (contract, adapter) in [
-            (kimi_chat_contract(), kimi_chat_adapter()),
-            (glm_chat_contract(), glm_chat_adapter()),
-        ] {
-            assert_eq!(contract.base_adapter_id, OPENAI_CHAT_COMPLETIONS_ADAPTER_ID);
+        let legacy = legacy_openai_chat_completions_adapter();
+        assert_eq!(
+            legacy.0.base_adapter_id.as_deref(),
+            Some(OPENAI_CHAT_COMPLETIONS_ADAPTER_ID)
+        );
+        assert!(registry_with(legacy)
+            .adapter(LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID)
+            .is_some());
+        for (contract, adapter) in [(glm_chat_contract(), glm_chat_adapter())] {
+            assert_eq!(
+                contract.base_adapter_id,
+                LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID
+            );
             assert_eq!(adapter.0.protocol_adapter_id, contract.adapter_id);
             assert_eq!(
                 adapter.0.base_adapter_id.as_deref(),
@@ -994,7 +787,7 @@ mod tests {
         };
         let request = registry
             .encode(
-                super::super::OPENROUTER_RESPONSES_ADAPTER_ID,
+                RERANK_ADAPTER_ID,
                 OPENROUTER_RERANK_OPERATION_ID,
                 ApiType::Rerank,
                 &input,
@@ -1012,7 +805,7 @@ mod tests {
 
         let ProtocolExecution::Immediate(output) = registry
             .decode(
-                super::super::OPENROUTER_RESPONSES_ADAPTER_ID,
+                RERANK_ADAPTER_ID,
                 OPENROUTER_RERANK_OPERATION_ID,
                 ApiType::Rerank,
                 HttpResponse {
@@ -1052,7 +845,7 @@ mod tests {
         ] {
             let error = registry
                 .decode(
-                    super::super::OPENROUTER_RESPONSES_ADAPTER_ID,
+                    RERANK_ADAPTER_ID,
                     OPENROUTER_RERANK_OPERATION_ID,
                     ApiType::Rerank,
                     HttpResponse {
@@ -1077,8 +870,8 @@ mod tests {
     fn kimi_and_glm_map_token_thinking_cache_and_tool_extensions() {
         for (adapter_id, adapter, parameter) in [
             (
-                KIMI_CHAT_ADAPTER_ID,
-                kimi_chat_adapter(),
+                LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+                legacy_openai_chat_completions_adapter(),
                 ("prompt_cache_key", json!("session-1")),
             ),
             (
@@ -1114,8 +907,8 @@ mod tests {
 
         for (adapter_id, adapter, parameter) in [
             (
-                KIMI_CHAT_ADAPTER_ID,
-                kimi_chat_adapter(),
+                LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+                legacy_openai_chat_completions_adapter(),
                 ("prompt_cache_key", json!("  ")),
             ),
             (
@@ -1137,45 +930,36 @@ mod tests {
     }
 
     #[test]
-    fn kimi_accepts_keep_all_and_rejects_other_thinking_extensions() {
-        let request = registry_with(kimi_chat_adapter())
-            .encode(
-                KIMI_CHAT_ADAPTER_ID,
+    fn legacy_chat_passes_vendor_thinking_fields_and_rejects_unknown_modes() {
+        let encode = |thinking: Value| {
+            registry_with(legacy_openai_chat_completions_adapter()).encode(
+                LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
                 OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
                 ApiType::Llm,
-                &input(BTreeMap::from([(
-                    "thinking".to_owned(),
-                    json!({"type": "enabled", "keep": "all"}),
-                )])),
+                &input(BTreeMap::from([("thinking".to_owned(), thinking)])),
                 &context(),
             )
-            .unwrap();
+        };
+        let request = encode(json!({"type": "enabled", "keep": "all"})).unwrap();
         let HttpBody::Json(body) = request.body else {
             panic!()
         };
         assert_eq!(body["thinking"], json!({"type": "enabled", "keep": "all"}));
-
         for thinking in [
-            json!({"type": "enabled", "keep": "none"}),
-            json!({"type": "enabled", "keep": "all", "extra": true}),
+            json!({"type": "on"}),
+            json!("enabled"),
+            json!({"keep": "all"}),
         ] {
-            assert!(registry_with(kimi_chat_adapter())
-                .encode(
-                    KIMI_CHAT_ADAPTER_ID,
-                    OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
-                    ApiType::Llm,
-                    &input(BTreeMap::from([("thinking".to_owned(), thinking)])),
-                    &context(),
-                )
-                .is_err());
+            assert!(encode(thinking).is_err());
         }
     }
 
     #[test]
-    fn kimi_round_trips_partial_thinking_and_cached_usage() {
-        let registry = registry_with(kimi_chat_adapter());
+    fn legacy_chat_replays_reasoning_and_normalizes_cached_usage() {
+        let registry = registry_with(legacy_openai_chat_completions_adapter());
         let mut call_context = context();
-        call_context.state_coordinate.adapter_type = KIMI_CHAT_ADAPTER_ID.to_string();
+        call_context.state_coordinate.adapter_type =
+            LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_string();
         let mut codec_input = input(BTreeMap::new());
         if let AiccCall::ChatCompletionsCreate(request) = &mut codec_input.canonical_request {
             request.messages.push(AiMessage::new(
@@ -1190,17 +974,12 @@ mod tests {
                         text: Some("prior reasoning".to_owned()),
                         provider_metadata: None,
                     },
-                    AiContent::ProviderState {
-                        source: call_context.state_coordinate.clone(),
-                        provider: "kimi".to_owned(),
-                        value: json!({"partial": true}),
-                    },
                 ],
             ));
         }
         let request = registry
             .encode(
-                KIMI_CHAT_ADAPTER_ID,
+                LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
                 OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
                 ApiType::Llm,
                 &codec_input,
@@ -1210,11 +989,10 @@ mod tests {
         let HttpBody::Json(body) = request.body else {
             panic!()
         };
-        assert_eq!(body["messages"][1]["partial"], true);
+        assert!(body["messages"][1].get("partial").is_none());
         assert_eq!(body["messages"][1]["reasoning_content"], "prior reasoning");
 
         let mut response = json!({
-            "object": "chat.completion",
             "choices": [{
                 "index": 0,
                 "message": {"role": "assistant", "content": "answer", "reasoning_content": "thought"},
@@ -1222,7 +1000,7 @@ mod tests {
             }],
             "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cached_tokens": 2}
         });
-        let extensions = KimiDialect
+        let extensions = LegacyChatCompletionsDialect
             .transform_immediate_response(response.as_object_mut().unwrap())
             .unwrap();
         assert!(matches!(
@@ -1230,18 +1008,52 @@ mod tests {
             AiContent::Thinking { text: Some(text), .. } if text == "thought"
         ));
         assert_eq!(extensions.content.len(), 1);
+        assert_eq!(response["object"], "chat.completion");
         assert_eq!(
             response.pointer("/usage/prompt_tokens_details/cached_tokens"),
             Some(&json!(2))
         );
     }
 
+    #[test]
+    fn legacy_chat_stream_options_opt_out_is_explicit() {
+        let encode = |parameters: BTreeMap<String, Value>| {
+            let mut codec_input = input(parameters);
+            if let AiccCall::ChatCompletionsCreate(request) = &mut codec_input.canonical_request {
+                request.execution_mode = buckyos_api::AiccExecutionMode::Stream;
+            }
+            let request = registry_with(legacy_openai_chat_completions_adapter())
+                .encode(
+                    LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+                    OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                    ApiType::Llm,
+                    &codec_input,
+                    &context(),
+                )
+                .unwrap();
+            let HttpBody::Json(body) = request.body else {
+                panic!()
+            };
+            body
+        };
+        assert_eq!(
+            encode(BTreeMap::new())["stream_options"],
+            json!({"include_usage": true})
+        );
+        let body = encode(BTreeMap::from([(
+            "stream_options".to_owned(),
+            json!(false),
+        )]));
+        assert!(body.get("stream_options").is_none());
+        assert_eq!(body["stream"], true);
+    }
+
     #[tokio::test]
-    async fn qwen_aggregated_replays_decoded_reasoning_for_tool_continuation() {
-        let registry = registry_with(qwen_aggregated_chat_adapter());
+    async fn legacy_chat_replays_decoded_reasoning_for_tool_continuation() {
+        let registry = registry_with(legacy_openai_chat_completions_adapter());
         let ProtocolExecution::Immediate(output) = registry
             .decode(
-                "qwen-aggregated-chat",
+                LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
                 OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
                 ApiType::Llm,
                 HttpResponse {
@@ -1281,7 +1093,7 @@ mod tests {
         }
         let request = registry
             .encode(
-                "qwen-aggregated-chat",
+                LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
                 OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
                 ApiType::Llm,
                 &codec_input,

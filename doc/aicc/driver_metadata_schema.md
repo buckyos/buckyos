@@ -2,9 +2,11 @@
 
 Implemented contract: Model Driver **2.1**, 2026-09-27. Revision 1 adds explicit
 additional specification bindings to the Model Driver v2 contract.
-Provider Rules, Known Provider and the system-config envelope keep their existing
-versions. Implementation, offline coverage and remaining Provider integration are
-recorded in [the implementation report](model_driver_v2_implementation.md).
+Provider Rules and Known Provider accept `schema_revision: 2` for the protocol
+client fields ([below](#protocol-client-fields2026-11-27)); the
+system-config envelope keeps its version. Implementation, offline coverage and
+remaining Provider integration are recorded in
+[the implementation report](model_driver_v2_implementation.md).
 
 ## LLM target contract: vendor specifications and model families
 
@@ -114,7 +116,9 @@ non-LLM membership. Defaults only supply missing semantics to an existing exact
 entry. `resolve_model(driver, model)` rejects unknown IDs.
 
 Inventory identity is resolved across all loaded drivers: instance
-`model_driver_overrides` → Provider Rules `model_driver_overrides` → optional Provider matcher → exact ID → longest bounded
+`model_driver_overrides` → Provider Rules `model_driver_overrides` → optional Provider matcher →
+Provider Rules `model_driver_vendor_prefixes` (only when declared and the ID is `<vendor>/<model>`;
+a miss is terminal) → exact ID → longest bounded
 case-insensitive containment. A containment match must begin at a non-alphanumeric
 boundary and end at the string end or a date-shaped suffix (`-YYYY-MM-DD`,
 `-YYYYMMDD`, `-YYMMDD`, `-MMDD`). Equal longest candidates are ambiguous.
@@ -313,8 +317,10 @@ including `reasoning-minimal` and `reasoning-thinking`. Invalid exact/cached
 variants are rejected. A selected preset owns its thinking parameters after
 canonical and request-rule rewrites.
 
-Inventory schema 2 exposes `identity_source`, `inventory_source`,
-`unmatched_models` and `unavailable_presets`. `list_providers` includes identity,
+Inventory schema 3 exposes `identity_source`, `inventory_source`,
+`unmatched_models` and `unavailable_presets`; each model also records its default
+`protocol_adapter_id`, and its `operations` hold qualified
+`<protocol_adapter_id>/<operation_id>` bindings. `list_providers` includes identity,
 preset and unpriced diagnostics; refresh replies include `unmatched_count`.
 Old inventory caches and removed Provider fields are rejected.
 
@@ -355,6 +361,31 @@ OpenRouter Jev 渠道通过 Provider Rules `capability_limits` 将上述模型�
 子集并整体替换它，OpenRouter discovery 再用 `/api/v1/videos/models` 的事实覆盖输出字段。三处使用同一
 校验，未知字段拒绝；没有合同的模型不进入 `video.generate` 路由。合同字段、执行顺序与 Provider 支持矩阵
 见 [统一视频生成协议](video_generation.md)。
+
+## Protocol client fields（2026-11-27）
+
+Provider Rules 与 Known Provider 支持到 `schema_revision: 2`。下表字段都要求 revision 2，revision 更低的文档带这些字段时
+catalog 构建失败。字段语义、客户端集合与绑定解析顺序见 [Provider schema](provider_profile_schema.md#21-协议客户端)
+§2.1 与 §5.2，客户端清单见 [protocol_clients.md](protocol_clients.md)。
+
+| 文档 | 字段 | 约束 |
+| --- | --- | --- |
+| Known Provider | `providers[].extra_protocol_adapters` | 有序 `[{id, credential?}]`；`id` 非空、不重复、不等于默认客户端 `protocol_adapter_id`；`credential` 与默认凭据同结构 |
+| Known Provider | `providers[].state_namespace` | 非空；这家 Provider 的 provider state 命名空间 |
+| Provider Rules | `models[]` / `patterns[]` 的 `protocol_adapter_id` | 规则级客户端；非空且不含 `/` |
+| Provider Rules | `operations` 的限定值 | `<protocol_adapter_id>/<operation_id>`，两段都非空，只有一个 `/`；裸写 operation 不需要 revision 2 |
+| Provider Rules | `model_driver_vendor_prefixes` | `vendor` 到 Model Driver ID 的映射；`vendor` 非空、小写、不含 `/`，目标 Model Driver 必须存在 |
+
+Known Provider 的 `protocol_adapter_id` 语义改为默认客户端。与注册表的交叉校验在 Provider registry 装配时执行：
+Known Provider 声明的客户端必须已注册，规则引用的客户端必须在该 Provider 的客户端集合内，限定绑定的 operation
+必须在该客户端里注册。`discovery_behavior_id` 只剩 `standard-models`、`catalog-only`、`volcengine-ark-models`、
+`openrouter-models`、`sn-models`；发现不再从模型列表读取模型事实（Kimi 的 `supports_*`、方舟的 `task_type`），
+方舟的 `status` 保留。
+
+Model Driver 新增布尔能力 `capabilities.document`：模型能直接读取请求里的文档部件（PDF 等）。它同时是 binding
+feature `document`，与其它 feature 一样取 Model Driver、客户端 binding 和渠道的交集，Provider Rules 可以用
+`remove_features` 删掉；`llm_understand_media` 按 `route.resolve` 的 `enabled_capabilities` 是否含 `document`
+决定是否直接发文档。Model Driver 的 `schema_revision` 不变。
 
 ## Reviewed parameter descriptions
 

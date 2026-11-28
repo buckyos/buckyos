@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 1,
   "model_driver_id": "openai",
-  "revision_seq": 9,
+  "revision_seq": 10,
   "specs": [
     {"id": "gpt-nano"},
     {"id": "gpt-mini"},
@@ -18,7 +18,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true,
+        "reasoning": true, "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000, "max_output_tokens": 128000
       },
       "llm": {
@@ -39,7 +39,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true,
+        "reasoning": true, "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000, "max_output_tokens": 128000
       },
       "llm": {
@@ -56,7 +56,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true,
+        "reasoning": true, "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000, "max_output_tokens": 128000
       },
       "llm": {
@@ -76,7 +76,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true,
+        "reasoning": true, "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000, "max_output_tokens": 128000
       },
       "llm": {
@@ -93,7 +93,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true,
+        "reasoning": true, "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 400000,
         "max_output_tokens": 128000
       },
@@ -111,7 +111,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true,
+        "reasoning": true, "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000, "max_output_tokens": 128000
       },
       "llm": {
@@ -128,7 +128,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true,
+        "reasoning": true, "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 400000,
         "max_output_tokens": 128000
       },
@@ -146,7 +146,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true,
+        "reasoning": true, "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
       },
@@ -164,7 +164,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true,
+        "reasoning": true, "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
       },
@@ -182,7 +182,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true,
+        "reasoning": true, "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000, "max_output_tokens": 128000
       },
       "llm": {
@@ -203,7 +203,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true,
+        "reasoning": true, "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000, "max_output_tokens": 128000
       },
       "llm": {
@@ -220,7 +220,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true,
+        "reasoning": true, "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000, "max_output_tokens": 128000
       },
       "llm": {
@@ -237,7 +237,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img"],
       "capabilities": {
         "streaming": false, "tool_call": true, "web_search": true, "reasoning": true,
-        "vision": true, "image_generation": true,
+        "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000,
         "json_schema": true
@@ -256,7 +256,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img"],
       "capabilities": {
         "streaming": true, "tool_call": true, "web_search": true, "reasoning": true,
-        "vision": true, "image_generation": true,
+        "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
       },
@@ -274,7 +274,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true,
+        "reasoning": true, "document": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000, "max_output_tokens": 128000
       },
       "llm": {
@@ -291,7 +291,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true,
-        "vision": true,
+        "document": true, "vision": true,
         "max_context_tokens": 400000,
         "max_output_tokens": 128000
       },

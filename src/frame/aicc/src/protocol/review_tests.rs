@@ -20,18 +20,7 @@ fn response(value: Value) -> HttpResponse {
 }
 
 fn registry() -> CodecRegistry {
-    let mut registry = CodecRegistry::default();
-    for (descriptor, codecs) in [
-        doubao_media_adapter(),
-        qwen_media_adapter(),
-        glm_media_adapter(),
-        minimax_media_adapter(),
-        doubao_speech_adapter(),
-        openai_responses_adapter(),
-    ] {
-        registry.register_codecs(descriptor, codecs).unwrap();
-    }
-    registry
+    crate::protocol::builtin_codecs_for_test()
 }
 
 fn cost(price: Value, usage: &AiUsage) -> f64 {
@@ -68,7 +57,7 @@ async fn native_failures_preserve_business_errors_and_pending_poll_intervals() {
             5,
         ),
         (
-            "glm-media",
+            "glm-video",
             "videos.generate",
             json!({"task_status":"FAIL","error":{"code":"1301","message":"blocked media"}}),
             json!({"task_status":"PROCESSING"}),
@@ -174,7 +163,7 @@ async fn video_result_usage_matches_billable_dimensions() {
     }
     let NativeTaskOutput::Status { result_usage, .. } = registry
         .decode_native(
-            "openai-responses",
+            "openai-videos",
             "videos.create",
             ApiType::VideoGenerate,
             NativeTaskOperation::Status,
@@ -222,7 +211,7 @@ async fn glm_query_does_not_require_submit_id_and_minimax_cancelled_is_terminal(
         state, result_ref, ..
     } = registry
         .decode_native(
-            "glm-media",
+            "glm-video",
             "videos.generate",
             ApiType::VideoGenerate,
             NativeTaskOperation::Status,
@@ -313,6 +302,7 @@ async fn tts_uses_requested_format_final_usage_and_http_error_status() {
 
 fn context() -> CodecContext {
     CodecContext {
+        state_namespace: None,
         base_url: "https://example.com/v1".into(),
         state_coordinate: buckyos_api::ProviderStateCoordinate {
             provider_profile_id: "test".into(),
@@ -347,7 +337,7 @@ fn media_request_lowering_uses_integer_duration_and_provider_sizes() {
             "qwen",
             "wan2.6-t2v",
         ),
-        ("glm-media", "videos.generate", "glm", "cogvideox-3"),
+        ("glm-video", "videos.generate", "glm", "cogvideox-3"),
     ] {
         let contract = crate::video::test_support::model_contract(driver, model);
         let mut request = buckyos_api::VideoGenerateRequest::new("m@p", Some("cat".into()));

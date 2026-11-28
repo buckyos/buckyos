@@ -10,7 +10,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use buckyos_api::{
     AiArtifact, AiUsage, AiccCall, ApiType, AudioSpeechRecognitionRequest, ResourceRef,
 };
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use reqwest::{Method, Url};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -58,7 +58,6 @@ pub(crate) fn doubao_speech_adapter() -> (AdapterDescriptor, CodecRegistration) 
             protocol_adapter_id: DOUBAO_SPEECH_ADAPTER_ID.to_owned(),
             interface_generation: "openspeech-plan-v3".to_owned(),
             base_adapter_id: None,
-            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 200,
             probe_path: None,
@@ -1122,39 +1121,16 @@ fn apply_speech_credential(
     headers: &mut HeaderMap,
     context: &CodecContext,
 ) -> ProtocolResultValue<()> {
-    let credential = context.credential.as_ref().ok_or_else(|| {
-        ProtocolError::new(
-            ProtocolErrorKind::Authentication,
-            "Doubao speech requires an API key",
-        )
-    })?;
-    let mut source = HeaderMap::new();
-    credential.apply(&mut source)?;
-    let secret = if let Some(value) = source.get(AUTHORIZATION) {
-        value
-            .to_str()
-            .ok()
-            .and_then(|value| value.strip_prefix("Bearer "))
-    } else {
-        source.values().next().and_then(|value| value.to_str().ok())
-    }
-    .filter(|value| !value.is_empty())
-    .ok_or_else(|| {
-        ProtocolError::new(
-            ProtocolErrorKind::Authentication,
-            "Doubao speech credential is invalid",
-        )
-    })?;
-    headers.insert(
-        HeaderName::from_static("x-api-key"),
-        HeaderValue::from_str(secret).map_err(|_| {
+    context
+        .credential
+        .as_ref()
+        .ok_or_else(|| {
             ProtocolError::new(
                 ProtocolErrorKind::Authentication,
-                "Doubao speech credential is invalid",
+                "Doubao speech requires an API key",
             )
-        })?,
-    );
-    Ok(())
+        })?
+        .apply(headers)
 }
 
 fn audio_format(media_type: &str) -> ProtocolResultValue<&'static str> {
@@ -1250,6 +1226,7 @@ mod tests {
 
     fn context(base_url: &str) -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: base_url.to_owned(),
             state_coordinate: ProviderStateCoordinate {
                 provider_profile_id: "doubao-speech".to_owned(),

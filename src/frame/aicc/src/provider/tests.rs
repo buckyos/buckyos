@@ -16,6 +16,49 @@ struct FakeCodec {
     descriptor: OperationDescriptor,
 }
 
+
+fn openai_family_clients() -> Vec<ProtocolClientProfile> {
+    [
+        "openai-chat-completions",
+        "openai-embeddings",
+        "openai-images",
+        "openai-audio",
+        "openai-videos",
+    ]
+    .into_iter()
+    .map(|id| ProtocolClientProfile {
+        protocol_adapter_id: id.into(),
+        credential: None,
+    })
+    .collect()
+}
+
+fn resolve_operation(
+    adapter: &crate::protocol::AdapterDescriptor,
+    overrides: &BTreeMap<String, String>,
+    remote_methods: Option<&BTreeSet<String>>,
+    api_type: ApiType,
+    _api_type_name: &str,
+    default_operation: Option<&str>,
+) -> ProviderResult<Option<String>> {
+    let codecs = crate::provider::builtin_provider_codecs().unwrap();
+    crate::protocol::resolve_binding(
+        &codecs,
+        &crate::protocol::BindingQuery {
+            clients: &crate::protocol::ProtocolClientSet::single(
+                adapter.protocol_adapter_id.clone(),
+            ),
+            rule_adapter_id: None,
+            overrides,
+            remote_methods,
+            api_type,
+            default_operation,
+        },
+    )
+    .map(|binding| binding.map(|binding| binding.operation_id))
+    .map_err(|error| ProviderError::Inventory(error.to_string()))
+}
+
 #[test]
 fn provider_auth_modes_are_structurally_exclusive() {
     let api_key: ProviderAuthConfig = serde_json::from_value(serde_json::json!({
@@ -304,6 +347,8 @@ fn profile() -> ProviderProfile {
         },
         default_inventory: None,
         accepts_any_adapter: false,
+        extra_protocol_adapters: Vec::new(),
+        state_namespace: None,
     }
 }
 
@@ -549,7 +594,6 @@ fn codecs() -> Arc<CodecRegistry> {
         protocol_adapter_id: "openai-responses".into(),
         interface_generation: "responses-v1".into(),
         base_adapter_id: None,
-        component_adapter_ids: Vec::new(),
         status: AdapterStatus::Stable,
         probe_priority: 0,
         probe_path: Some("probe".to_owned()),
@@ -637,31 +681,20 @@ impl DynamicLoginCredentialResolver for FakeDynamicCredentialResolver {
 
 #[test]
 fn web_search_inventory_requires_model_adapter_and_discovery_support() {
-    let catalog = crate::model::llm_tests::builtin_catalog();
-    let mut codecs = CodecRegistry::default();
-    for (descriptor, registration) in [
-        crate::protocol::openai_responses_adapter(),
-        crate::protocol::claude_messages_adapter(),
-        crate::protocol::gemini_interactions_adapter(),
-        crate::protocol::openai_chat_completions_adapter(),
-        crate::protocol::doubao_media_adapter(),
-        crate::protocol::qwen_media_adapter(),
-        crate::protocol::doubao_speech_adapter(),
-    ] {
-        codecs.register_codecs(descriptor, registration).unwrap();
+    let catalog = crate::settings::MetadataSources {
+        builtin: crate::settings::load_builtin_metadata().unwrap(),
+        ..Default::default()
     }
-    for (descriptor, registration) in
-        crate::protocol::openai_responses_compatible_adapters().unwrap()
-    {
-        codecs.register_derived(descriptor, registration).unwrap();
-    }
-    crate::protocol::register_sn_openai_adapter(&mut codecs).unwrap();
-    let (descriptor, registration) = crate::protocol::openrouter_responses_adapter();
-    codecs.register_derived(descriptor, registration).unwrap();
+    .build_snapshot(
+        crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+        &Default::default(),
+    )
+    .unwrap();
+    let codecs = crate::protocol::builtin_codecs_for_test();
 
     for (provider, adapter, model, supported) in [
         ("openai", "openai-responses", "gpt-5.4", true),
-        ("sn", "sn-openai", "gpt-5.4", true),
+        ("sn", "openai-responses", "gpt-5.4", true),
         ("openrouter", "openrouter-responses", "openai/gpt-5.4", true),
         ("gemini", "gemini-interactions", "gemini-3.6-flash", true),
         ("claude", "claude-messages", "claude-sonnet-5", true),
@@ -675,6 +708,9 @@ fn web_search_inventory_requires_model_adapter_and_discovery_support() {
             let mut config = instance("primary");
             config.provider_profile_id = provider.into();
             config.protocol_adapter_id = adapter.into();
+            if provider == "deepseek" {
+                config.provider_rules_id = Some(provider.into());
+            }
             let mut discovered = discovery(model);
             discovered.models[0].supported_features = None;
             discovered.models[0].remote_methods = None;
@@ -720,7 +756,7 @@ fn inventory_intersects_capabilities_and_uses_dynamic_pricing() {
     assert_eq!(inventory.models.len(), 1);
     let model = &inventory.models[0];
     assert_eq!(model.api_types, vec![ApiType::Llm]);
-    assert_eq!(model.operations["llm"], "responses.create");
+    assert_eq!(model.operation_ids()["llm"], "responses.create");
     assert_eq!(model.capabilities["tool_call"], Value::Bool(true));
     assert_eq!(model.capabilities["json_schema"], Value::Bool(true));
     assert_eq!(model.capabilities["context_tokens"], Value::from(8192));
@@ -946,7 +982,7 @@ async fn draft_validation_classifies_connection_auth_discovery_and_adapter_failu
         credential_kind: None,
     });
     invalid_adapter.protocol_adapter_id = "missing-adapter".into();
-    let error = manager
+    let negotiated = manager
         .validate_draft(
             &invalid_adapter,
             &connection_contract(),
@@ -954,10 +990,8 @@ async fn draft_validation_classifies_connection_auth_discovery_and_adapter_failu
             None,
         )
         .await
-        .unwrap_err();
-    assert_eq!(error.stage, ProviderDraftValidationStage::Protocol);
-    assert!(error.message.contains("missing-adapter"));
-    assert!(error.message.contains("requires adapter"));
+        .unwrap();
+    assert_eq!(negotiated.protocol_adapter_id, "openai-responses");
 
     let failed_discovery = ScriptedDiscovery::new(
         [Err(
@@ -993,7 +1027,7 @@ async fn draft_validation_classifies_connection_auth_discovery_and_adapter_failu
     assert_eq!(error.stage, ProviderDraftValidationStage::Authentication);
     assert_eq!(error.kind, ProviderRefreshFailure::Credential);
 
-    assert_eq!(discovery_impl.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(discovery_impl.calls.load(Ordering::SeqCst), 1);
     assert_eq!(store.commits.load(Ordering::SeqCst), 0);
     assert!(manager.runtimes.lock().await.is_empty());
     assert!(manager.registry().await.list().is_empty());
@@ -1639,13 +1673,9 @@ fn custom_channel_defaults_each_api_type_to_its_preferred_operation() {
         (
             ApiType::VideoGenerate,
             "video.generate",
-            "models.predictLongRunning",
+            "interactions.create",
         ),
-        (
-            ApiType::VideoExtend,
-            "video.extend",
-            "models.predictLongRunning",
-        ),
+        (ApiType::VideoExtend, "video.extend", "interactions.create"),
         (ApiType::VideoEdit, "video.edit", "interactions.create"),
         (
             ApiType::ImageTextToImage,
@@ -1661,11 +1691,6 @@ fn custom_channel_defaults_each_api_type_to_its_preferred_operation() {
             ApiType::AudioTextToSpeech,
             "audio.tts",
             "interactions.create",
-        ),
-        (
-            ApiType::EmbeddingText,
-            "embedding.text",
-            "models.embedContent",
         ),
     ] {
         assert_eq!(
@@ -1703,10 +1728,10 @@ fn custom_channel_defaults_each_api_type_to_its_preferred_operation() {
         Some("interactions.create".to_string())
     );
     // An explicit override always wins.
-    let overrides = BTreeMap::from([("llm".to_string(), "models.embedContent".to_string())]);
+    let overrides = BTreeMap::from([("llm".to_string(), "interactions.create".to_string())]);
     assert_eq!(
         resolve_operation(&adapter, &overrides, None, ApiType::Llm, "llm", None).unwrap(),
-        Some("models.embedContent".to_string())
+        Some("interactions.create".to_string())
     );
 }
 
@@ -1817,7 +1842,7 @@ fn custom_openai_inventory_uses_model_operations_and_discovery_limits() {
         let model = &inventory.models[0];
         assert_eq!(model.provider_model_id, model_id);
         assert_eq!(
-            model.operations,
+            model.operation_ids(),
             expected
                 .into_iter()
                 .map(|(api_type, operation)| (api_type.to_owned(), operation.to_owned()))
@@ -2056,6 +2081,7 @@ fn custom_openai_image_inventory_respects_discovery_and_explicit_mappings() {
     let mut profile = profile();
     profile.provider_profile_id = "custom".into();
     profile.accepts_any_adapter = true;
+    profile.extra_protocol_adapters = openai_family_clients();
     let mut config = instance("custom-provider");
     config.provider_profile_id = "custom".into();
     for remote_methods in [None, Some(BTreeSet::from(["responses.create".into()]))] {
@@ -2075,7 +2101,7 @@ fn custom_openai_image_inventory_respects_discovery_and_explicit_mappings() {
             ("image.img2img", "images.edit"),
         ] {
             assert_eq!(
-                model.operations[api],
+                model.operation_ids()[api],
                 if remote_methods.is_some() {
                     "responses.create"
                 } else {
@@ -2114,21 +2140,25 @@ fn custom_openai_image_inventory_respects_discovery_and_explicit_mappings() {
 
 #[test]
 fn custom_operation_priority_ties_are_rejected() {
-    let (mut adapter, _) = crate::protocol::openai_responses_adapter();
-    for operation in adapter.operations.values_mut() {
-        for binding in &mut operation.bindings {
-            binding.default_priority = 0;
-        }
-    }
-    assert!(resolve_operation(
-        &adapter,
-        &BTreeMap::new(),
-        None,
-        ApiType::ImageImageToImage,
-        "image.img2img",
-        None
-    )
-    .is_err());
+    let codecs = builtin_provider_codecs().unwrap();
+    let clients = crate::protocol::ProtocolClientSet {
+        default: "openai-images".into(),
+        extras: vec!["openai-chat-completions".into(), "openai-responses".into()],
+    };
+    assert!(matches!(
+        crate::protocol::resolve_binding(
+            &codecs,
+            &crate::protocol::BindingQuery {
+                clients: &clients,
+                rule_adapter_id: None,
+                overrides: &BTreeMap::new(),
+                remote_methods: None,
+                api_type: ApiType::Llm,
+                default_operation: None,
+            },
+        ),
+        Err(crate::protocol::BindingResolveError::Ambiguous { .. })
+    ));
 }
 
 #[test]
@@ -2147,6 +2177,7 @@ fn missing_protocol_bindings_filter_cells_and_preserve_supported_capabilities() 
     let mut profile = profile();
     profile.provider_profile_id = "custom".into();
     profile.accepts_any_adapter = true;
+    profile.extra_protocol_adapters = openai_family_clients();
     let mut config = instance("filtered-cells");
     config.provider_profile_id = "custom".into();
     config.provider_rules_id = Some("openrouter".into());
@@ -2156,7 +2187,11 @@ fn missing_protocol_bindings_filter_cells_and_preserve_supported_capabilities() 
     let inventory =
         InventoryBuilder::build(&profile, &config, discovered.clone(), &catalog, &codecs).unwrap();
     let model = &inventory.models[0];
-    assert!(model.api_types.contains(&ApiType::ImageTextToImage));
+    assert!(inventory
+        .filtered_capabilities
+        .iter()
+        .any(|item| item.api_type == "image.txt2img" && item.reason == "unregistered_binding"));
+    assert!(!model.api_types.contains(&ApiType::ImageTextToImage));
     assert!(!model.api_types.contains(&ApiType::ImageImageToImage));
     assert!(!model.operations.contains_key("image.img2img"));
     let filtered = inventory
@@ -2165,7 +2200,8 @@ fn missing_protocol_bindings_filter_cells_and_preserve_supported_capabilities() 
         .find(|item| item.api_type == "image.img2img")
         .unwrap();
     assert_eq!(filtered.provider_model_id, "google/gemini-2.5-flash-image");
-    assert_eq!(filtered.protocol_adapter_id, "openai-responses");
+    // The OpenRouter rules bind images to a client this custom instance lacks.
+    assert_eq!(filtered.protocol_adapter_id, "openrouter-native");
     assert_eq!(filtered.operation_id.as_deref(), Some("images.generate"));
     assert_eq!(filtered.reason, "unregistered_binding");
     let wire = serde_json::to_value(&inventory).unwrap();
@@ -2176,6 +2212,8 @@ fn missing_protocol_bindings_filter_cells_and_preserve_supported_capabilities() 
     );
 
     config.protocol_adapter_id = "openai-chat-completions".into();
+    let mut profile = profile;
+    profile.default_protocol_adapter_id = "openai-chat-completions".into();
     let inventory =
         InventoryBuilder::build(&profile, &config, discovered, &catalog, &codecs).unwrap();
     assert!(inventory.models[0].api_types.is_empty());
@@ -2201,6 +2239,7 @@ fn unsupported_adapter_capabilities_are_reported_without_an_operation() {
     let mut config = instance("unsupported-cells");
     config.provider_profile_id = "custom".into();
     config.protocol_adapter_id = "openai-chat-completions".into();
+    profile.default_protocol_adapter_id = "openai-chat-completions".into();
     let mut discovered = discovery("google/gemini-2.5-flash-image");
     discovered.models[0].api_types = None;
     discovered.models[0].remote_methods = None;
@@ -2233,8 +2272,10 @@ fn filtering_llm_binding_removes_server_default_routes() {
     });
     let mut discovered = discovery("gpt-test");
     discovered.models[0].remote_methods = None;
+    let mut profile = profile();
+    profile.default_protocol_adapter_id = "openai-chat-completions".into();
     let inventory = InventoryBuilder::build(
-        &profile(),
+        &profile,
         &config,
         discovered,
         &catalog,
@@ -2273,16 +2314,9 @@ fn custom_multi_operation_defaults_respect_every_discovered_subset() {
             ("gemini-interactions", "audio.asr"),
             "interactions.background",
         ),
-        (
-            ("gemini-interactions", "video.generate"),
-            "models.predictLongRunning",
-        ),
-        (
-            ("gemini-interactions", "video.extend"),
-            "models.predictLongRunning",
-        ),
-        (("openai-responses", "image.txt2img"), "images.generate"),
-        (("openai-responses", "image.img2img"), "images.edit"),
+        (("openai-responses", "image.txt2img"), "responses.create"),
+        (("openai-responses", "image.img2img"), "responses.create"),
+        (("openai-responses", "vision.ocr"), "responses.create"),
     ]);
     let catalog = crate::model::llm_tests::builtin_catalog();
     let registry = builtin_provider_registry(&catalog).unwrap();
@@ -2413,7 +2447,7 @@ fn custom_instance_catalog_updates_inventory_and_retains_disabled_discovery() {
             .input_token,
         Some(0.25)
     );
-    assert_eq!(inventory.models[0].operations["llm"], "responses.create");
+    assert_eq!(inventory.models[0].operation_ids()["llm"], "responses.create");
     assert_eq!(inventory.models[0].server_default_routes, BTreeSet::from(["llm.chat".into()]));
     config
         .instance_rules
@@ -2455,7 +2489,7 @@ fn custom_provider_unconfigured_efforts_are_not_published() {
         ..Default::default()
     }.build_snapshot(crate::settings::BUILTIN_CATALOG_REVISION_SEQ, &Default::default()).unwrap();
     let providers = builtin_provider_registry(&catalog).unwrap();
-    for (adapter, id) in [("openai-responses", "gpt-6.1-sol"), ("gemini-interactions", "gemini-4-argon")] {
+    for (adapter, id) in [("openai-responses", "gpt-6.1-sol"), ("gemini-generate-content", "gemini-4-argon")] {
         let mut config = instance("custom-explicit");
         config.provider_profile_id = "custom".into();
         config.protocol_adapter_id = adapter.into();

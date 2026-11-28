@@ -15,8 +15,8 @@ use buckyos_api::ApiType;
 #[cfg(test)]
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
 pub(crate) const GLM_PROVIDER_PROFILE_ID: &str = "glm";
-const GLM_CHAT_ADAPTER_ID: &str = "glm-chat";
 
 #[cfg(test)]
 pub(crate) fn glm_profile() -> ProviderProfile {
@@ -65,24 +65,12 @@ pub(crate) fn glm_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[GLM_PROVIDER_PROFILE_ID])
 }
 
-pub(crate) fn glm_models_discovery(
-    transport: crate::protocol::HttpTransport,
-) -> super::openai_responses_compatible::OpenAiCompatibleModelsDiscovery {
-    super::openai_compatible_models_discovery(
-        GLM_PROVIDER_PROFILE_ID,
-        GLM_CHAT_ADAPTER_ID,
-        transport,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::canonical::{CanonicalFallback, CanonicalFieldConverter};
     use crate::catalog::{CatalogBuildOptions, CatalogDocuments, CatalogSnapshot};
-    use crate::protocol::{
-        glm_chat_adapter, openai_chat_completions_adapter, CodecRegistry, GLM_CHAT_ADAPTER_ID,
-    };
+    use crate::protocol::GLM_CHAT_ADAPTER_ID;
     use crate::provider::{CredentialReference, InventoryBuilder, ProviderInstanceConfig};
 
     #[test]
@@ -115,7 +103,10 @@ mod tests {
             glm_known_provider().protocol_adapter_id,
             GLM_CHAT_ADAPTER_ID
         );
-        assert_eq!(glm_known_provider().discovery_behavior_id, "glm-models");
+        assert_eq!(
+            glm_known_provider().discovery_behavior_id,
+            "standard-models"
+        );
         assert_eq!(glm_profile().discovery_mode, DiscoveryMode::MachineApi);
         assert_eq!(
             glm_provider_rules(5)
@@ -141,13 +132,7 @@ mod tests {
             &CatalogBuildOptions::default(),
         )
         .unwrap();
-        let mut codecs = CodecRegistry::default();
-        let (descriptor, registration) = openai_chat_completions_adapter();
-        codecs.register_codecs(descriptor, registration).unwrap();
-        let (descriptor, registration) = crate::protocol::glm_media_adapter();
-        codecs.register_codecs(descriptor, registration).unwrap();
-        let (descriptor, registration) = glm_chat_adapter();
-        codecs.register_derived(descriptor, registration).unwrap();
+        let codecs = crate::protocol::builtin_codecs_for_test();
         let discovery = ProviderDiscoverySnapshot {
             revision: Some("models-etag".to_owned()),
             discovered_at_ms: 1,
@@ -197,7 +182,7 @@ mod tests {
             .unwrap();
         assert_eq!(glm_53.api_types, vec![ApiType::Llm]);
         assert_eq!(
-            glm_53.operations["llm"],
+            glm_53.operation_ids()["llm"],
             OPENAI_CHAT_COMPLETIONS_OPERATION_ID
         );
         assert!(glm_53.logical_mounts.is_empty());
@@ -212,7 +197,10 @@ mod tests {
             .find(|model| model.provider_model_id == "glm-image")
             .unwrap();
         assert_eq!(glm_image.api_types, vec![ApiType::ImageTextToImage]);
-        assert_eq!(glm_image.operations["image.txt2img"], "images.generate");
+        assert_eq!(
+            glm_image.operation_ids()["image.txt2img"],
+            "images.generate"
+        );
         assert!(glm_image
             .logical_mounts
             .contains(&"image.txt2img".to_owned()));
@@ -223,7 +211,7 @@ mod tests {
             .find(|model| model.provider_model_id == "glm-tts")
             .unwrap();
         assert_eq!(glm_tts.api_types, vec![ApiType::AudioTextToSpeech]);
-        assert_eq!(glm_tts.operations["audio.tts"], "audio.speech");
+        assert_eq!(glm_tts.operation_ids()["audio.tts"], "audio.speech");
         assert!(glm_tts.logical_mounts.contains(&"audio.tts".to_owned()));
         let voice = glm_tts.canonical_fields.get("/voice").unwrap();
         assert_eq!(voice.converter, CanonicalFieldConverter::GlmTtsVoiceV1);

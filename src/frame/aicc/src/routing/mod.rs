@@ -1245,18 +1245,20 @@ fn selected_route(
     directory_disable: &ModelDisable,
 ) -> SelectedRoute {
     let model = &candidate.pending.candidate.model;
+    let binding = crate::protocol::BindingRef::parse(
+        resolve_operation(model, request).expect("ranked model has operation"),
+        &model.identity.protocol_adapter_id,
+    );
     SelectedRoute {
         exact_model: model.exact_model.as_str().into(),
         model_uid: model.model_uid.as_stable_string(),
         provider_instance_name: model.identity.provider_instance_name.clone(),
         provider_profile_id: model.identity.provider_profile_id.clone(),
-        protocol_adapter_id: model.identity.protocol_adapter_id.clone(),
+        protocol_adapter_id: binding.protocol_adapter_id,
         model_driver_id: model.identity.model_driver_id.clone(),
         origin_model_id: model.identity.origin_model_id.clone(),
         provider_model_id: model.identity.provider_model_id.clone(),
-        operation: resolve_operation(model, request)
-            .expect("ranked model has operation")
-            .into(),
+        operation: binding.operation_id,
         inventory_revision: model.inventory_revision.clone(),
         enabled_capabilities: enabled_features(model, directory_disable, &request.disable),
         disabled_capabilities: disabled_features(directory_disable, &request.disable),
@@ -1586,6 +1588,7 @@ mod tests {
             protocol_adapter_id: "adapter".into(),
             inventory_revision: format!("rev-{instance}"),
             models: vec![InventoryModel {
+                protocol_adapter_id: "adapter".into(),
                 provider_model_id: id.into(),
                 model_driver_id: "driver".into(),
                 origin_model_id: id.into(),

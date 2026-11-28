@@ -25,7 +25,7 @@ use pipeline::{
     audio_entry, choose_text, document_format_from_mime, document_format_from_name,
     frame_entries, freeze_reader, goal_pages, goal_terms, image_dimensions, normalize_text,
     object_head, parse_pages_arg, plan_pages, progress,
-    protocol_accepts_documents, read_manifest, read_object_bytes, run_pipeline,
+    read_manifest, read_object_bytes, run_pipeline,
     window_done_line, Coverage, DocumentLimits, ImageLimits, PageText, PipelineOutcome,
     PipelineRequest, PipelineTrace, PlanRequest, VideoLimits, WindowWatch,
     CATALOG_WINDOW_PAGES, FAMILY_DOCUMENT, FAMILY_IMAGE, FAMILY_PDF, FAMILY_VIDEO,
@@ -2037,19 +2037,16 @@ async fn prepare_media_content(
             decision,
         ));
     }
-    let protocol = resolve_protocol(model_alias, session_id).await;
-    if protocol.as_deref().map(protocol_accepts_documents).unwrap_or(false)
-        && media.size <= DocumentLimits::from_env().direct_max_bytes
-    {
-        let decision = MediaDecision::direct(media, "protocol accepts documents");
+    let route = resolve_document_route(model_alias, session_id).await;
+    if route.accepts_documents && media.size <= DocumentLimits::from_env().direct_max_bytes {
+        let decision = MediaDecision::direct(media, "the model route accepts documents");
         return direct_document(media, decision).await;
     }
     Err(PrepareError::new(
         MediaDecision::direct(media, "unsupported"),
         format!(
-            "media mime `{}` is not accepted by model protocol `{}` and no system pipeline converts it",
-            media.mime,
-            protocol.unwrap_or_else(|| "unknown".to_string())
+            "media mime `{}` is not accepted by model route `{}` and no system pipeline converts it",
+            media.mime, route.label
         ),
     ))
 }
@@ -2079,11 +2076,9 @@ async fn prepare_pdf(
     model_alias: &str,
 ) -> Result<PreparedMedia, PrepareError> {
     let limits = DocumentLimits::from_env();
-    let protocol = resolve_protocol(model_alias, opts.session_id.as_deref())
-        .await
-        .unwrap_or_else(|| "unknown".to_string());
-    if !protocol_accepts_documents(&protocol) {
-        let reason = format!("protocol `{protocol}` does not take documents");
+    let route = resolve_document_route(model_alias, opts.session_id.as_deref()).await;
+    if !route.accepts_documents {
+        let reason = format!("model route `{}` does not take documents", route.label);
         return prepare_document(media, opts, None, reason).await;
     }
     if media.size > limits.direct_max_bytes {
@@ -2108,8 +2103,8 @@ async fn prepare_pdf(
         return prepare_document(media, opts, None, reason).await;
     }
     let reason = format!(
-        "protocol `{protocol}` takes documents; {pages} pages, {} bytes",
-        media.size
+        "model route `{}` takes documents; {pages} pages, {} bytes",
+        route.label, media.size
     );
     let mut prepared = direct_document(media, MediaDecision::direct(media, reason)).await?;
     prepared.trace = Some(trace);
@@ -2119,16 +2114,35 @@ async fn prepare_pdf(
 
 /// The protocol adapter the chosen model routes to (`claude-messages`,
 /// `openai-chat-completions`, ...); `None` when routing is unavailable.
-async fn resolve_protocol(model_alias: &str, session_id: Option<&str>) -> Option<String> {
-    let runtime = get_buckyos_api_runtime().ok()?;
-    let client = runtime.get_aicc_client().await.ok()?;
-    let mut request = RouteResolveRequest::new(ApiType::Llm, model_alias);
-    request.session_id = session_id.map(str::to_string);
-    client
-        .route_resolve(request)
-        .await
-        .ok()
-        .map(|route| route.protocol_adapter_id)
+struct DocumentRoute {
+    label: String,
+    accepts_documents: bool,
+}
+
+/// Whether the LLM route AICC picks for `model_alias` takes document parts:
+/// the model, its protocol client and the Provider all allow `document`.
+async fn resolve_document_route(model_alias: &str, session_id: Option<&str>) -> DocumentRoute {
+    let route = async {
+        let runtime = get_buckyos_api_runtime().ok()?;
+        let client = runtime.get_aicc_client().await.ok()?;
+        let mut request = RouteResolveRequest::new(ApiType::Llm, model_alias);
+        request.session_id = session_id.map(str::to_string);
+        client.route_resolve(request).await.ok()
+    }
+    .await;
+    match route {
+        Some(route) => DocumentRoute {
+            accepts_documents: route
+                .enabled_capabilities
+                .iter()
+                .any(|feature| feature == buckyos_api::features::DOCUMENT),
+            label: format!("{} via {}", route.selected_exact_model, route.protocol_adapter_id),
+        },
+        None => DocumentRoute {
+            label: "unknown".to_string(),
+            accepts_documents: false,
+        },
+    }
 }
 
 async fn frozen_input(media: &ResolvedMedia, decision: &MediaDecision) -> Result<ObjId, PrepareError> {

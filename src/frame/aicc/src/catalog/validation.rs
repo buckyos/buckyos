@@ -352,6 +352,45 @@ pub(super) fn validate_provider_rules(
     for rule in &catalog.patterns {
         validate_provider_rule_data(&catalog.provider_profile_id, rule)?;
     }
+    let names_clients = catalog
+        .models
+        .iter()
+        .map(|rule| (rule.protocol_adapter_id.as_ref(), &rule.operations))
+        .chain(
+            catalog
+                .patterns
+                .iter()
+                .map(|rule| (rule.protocol_adapter_id.as_ref(), &rule.operations)),
+        )
+        .any(|(adapter, operations)| {
+            adapter.is_some() || operations.values().any(|value| value.contains('/'))
+        });
+    if let Some(prefixes) = &catalog.model_driver_vendor_prefixes {
+        if catalog.schema_revision < 2 {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: catalog.provider_profile_id.clone(),
+                field: "schema_revision",
+                reason: "model_driver_vendor_prefixes requires schema_revision 2".to_owned(),
+            });
+        }
+        if let Some(vendor) = prefixes.keys().find(|vendor| {
+            vendor.is_empty() || vendor.contains('/') || vendor.to_ascii_lowercase() != **vendor
+        }) {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: catalog.provider_profile_id.clone(),
+                field: "model_driver_vendor_prefixes.vendor",
+                reason: format!("`{vendor}` must be a lowercase prefix without `/`"),
+            });
+        }
+    }
+    if catalog.schema_revision < 2 && names_clients {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: catalog.provider_profile_id.clone(),
+            field: "schema_revision",
+            reason: "protocol_adapter_id and qualified operations require schema_revision 2"
+                .to_owned(),
+        });
+    }
     validate_model_pricing(&catalog.provider_profile_id, &catalog.model_pricing)?;
     for variant in catalog
         .variants
@@ -375,6 +414,7 @@ pub(super) fn validate_provider_rules(
 }
 
 trait ProviderRuleValidation {
+    fn protocol_adapter_id(&self) -> Option<&String>;
     fn operations(&self) -> &BTreeMap<String, String>;
     fn request_rules(&self) -> &[RequestRule];
     fn canonical_fields(&self) -> &BTreeMap<String, crate::canonical::CanonicalFieldMapping>;
@@ -387,6 +427,9 @@ trait ProviderRuleValidation {
 macro_rules! impl_provider_rule_validation {
     ($type:ty) => {
         impl ProviderRuleValidation for $type {
+            fn protocol_adapter_id(&self) -> Option<&String> {
+                self.protocol_adapter_id.as_ref()
+            }
             fn operations(&self) -> &BTreeMap<String, String> {
                 &self.operations
             }
@@ -464,6 +507,25 @@ fn validate_provider_rule_data(
                 reason: "keys and operation names must be non-empty".to_owned(),
             });
         }
+        if value.contains('/') && crate::protocol::BindingRef::parse_qualified(value).is_none() {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "operations",
+                reason: format!(
+                    "{value:?} must be an operation ID or <protocol_adapter_id>/<operation_id>"
+                ),
+            });
+        }
+    }
+    if rule
+        .protocol_adapter_id()
+        .is_some_and(|adapter| adapter.trim().is_empty() || adapter.contains('/'))
+    {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: owner.to_owned(),
+            field: "protocol_adapter_id",
+            reason: "expected a protocol adapter ID".to_owned(),
+        });
     }
     for request_rule in rule.request_rules() {
         for pointer in &request_rule.remove {
@@ -1065,6 +1127,46 @@ pub(super) fn validate_known_provider_catalog(
                 reason: "must use an http or https URL".to_owned(),
             });
         }
+        if catalog.schema_revision < 2
+            && (!provider.extra_protocol_adapters.is_empty() || provider.state_namespace.is_some())
+        {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: catalog.catalog_id.clone(),
+                field: "schema_revision",
+                reason: "extra_protocol_adapters and state_namespace require schema_revision 2"
+                    .to_owned(),
+            });
+        }
+        let mut clients = BTreeSet::from([provider.protocol_adapter_id.as_str()]);
+        for extra in &provider.extra_protocol_adapters {
+            validate_nonempty_field(
+                CatalogKind::KnownProvider,
+                &catalog.catalog_id,
+                "providers.extra_protocol_adapters.id",
+                &extra.id,
+            )?;
+            if !clients.insert(extra.id.as_str()) {
+                return Err(CatalogBuildError::InvalidValue {
+                    owner: catalog.catalog_id.clone(),
+                    field: "providers.extra_protocol_adapters",
+                    reason: format!(
+                        "protocol adapter {:?} is listed twice or repeats the default",
+                        extra.id
+                    ),
+                });
+            }
+            if let Some(credential) = &extra.credential {
+                validate_provider_credential(&catalog.catalog_id, credential)?;
+            }
+        }
+        if let Some(namespace) = &provider.state_namespace {
+            validate_nonempty_field(
+                CatalogKind::KnownProvider,
+                &catalog.catalog_id,
+                "providers.state_namespace",
+                namespace,
+            )?;
+        }
         validate_provider_configuration(&catalog.catalog_id, provider)?;
         if !profiles.insert(provider.provider_profile_id.as_str()) {
             return Err(CatalogBuildError::DuplicateKnownProvider {
@@ -1280,6 +1382,19 @@ pub(super) fn validate_references(
         }
     }
     for (owner, catalog) in provider_rules {
+        for target in catalog
+            .document
+            .model_driver_vendor_prefixes
+            .iter()
+            .flat_map(BTreeMap::values)
+        {
+            require_model_driver(
+                model_drivers,
+                owner,
+                "model_driver_vendor_prefixes.model_driver",
+                target,
+            )?;
+        }
         for target in catalog.document.model_driver_overrides.values() {
             let (driver, model) =
                 target

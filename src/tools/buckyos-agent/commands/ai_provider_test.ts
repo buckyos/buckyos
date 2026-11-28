@@ -50,6 +50,7 @@ Deno.test("formatProviderListSummary includes actionable provider state", () => 
   assertIncludes(summary, "inventory_revision=9:2");
   assertIncludes(summary, "glm-main-china");
   assertIncludes(summary, "profile=glm");
+  assertIncludes(summary, "default_client=glm-chat");
   assertIncludes(summary, "inventory=loaded/10 models");
   assertIncludes(summary, "health=healthy");
 });
@@ -61,6 +62,10 @@ Deno.test("filterModels keeps the models and names of one api_type", () => {
         exact_model: "veo-lite@gemini-default",
         api_types: ["video.generate", "video.edit"],
         logical_mounts: ["video.generate.veo", "video.edit.veo"],
+        operations: {
+          "video.generate": "gemini-generate-content/models.predictLongRunning",
+          "video.edit": "gemini-interactions/interactions.create",
+        },
         attributes: {
           pricing: {
             value: { amount: 0.05, currency: "USD", unit: "video_second" },
@@ -74,5 +79,9 @@ Deno.test("filterModels keeps the models and names of one api_type", () => {
   const summary = formatModelsSummary(models);
   assertIncludes(summary, "1 model(s)");
   assertIncludes(summary, "veo-lite@gemini-default: video.generate");
+  assertIncludes(
+    summary,
+    "via=gemini-generate-content/models.predictLongRunning;",
+  );
   assertIncludes(summary, "price=0.05 USD/video_second");
 });

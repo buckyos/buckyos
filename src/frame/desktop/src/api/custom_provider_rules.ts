@@ -1,4 +1,5 @@
 import type { ModelCatalog } from '../app/ai-center/datamodel/model-catalog'
+import type { ProviderSetupCatalog } from '../app/ai-center/mock/types'
 import { parseProviderAdvancedRules } from './provider_model_selection'
 
 export type RuleObject = Record<string, unknown>
@@ -10,6 +11,7 @@ export interface CustomRulesDraft {
 export interface ModelRuleDraft {
   alias: string
   routes: string
+  protocol_adapter_id: string
   operations: string
   variants: string
   pricing: string
@@ -112,6 +114,9 @@ export function providerRulesFile(draft: CustomRulesDraft): RuleObject {
     ]
   }
   delete catalog.model_variants
+  const namesClients = [...ruleArray(catalog.models), ...ruleArray(catalog.patterns)].some((rule) => rule.protocol_adapter_id !== undefined
+    || Object.values(ruleObject(rule.operations)).some((value) => String(value).includes('/')))
+  if (namesClients && Number(catalog.schema_revision) < 2) catalog.schema_revision = 2
   return catalog
 }
 
@@ -122,7 +127,7 @@ export function parseProviderRulesFile(source: string, base?: CustomRulesDraft):
     'server_default_routes', 'supplemental_inventory_api_types', 'models', 'patterns', 'access_rules',
     'model_pricing', 'variants']
   if (catalog.format !== 'buckyos.aicc.provider-rules-catalog' || catalog.schema_version !== 1
-    || !Number.isInteger(catalog.schema_revision) || ![0, 1].includes(Number(catalog.schema_revision))
+    || !Number.isInteger(catalog.schema_revision) || ![0, 1, 2].includes(Number(catalog.schema_revision))
     || !Number.isSafeInteger(catalog.revision_seq) || Number(catalog.revision_seq) < 0
     || typeof catalog.provider_profile_id !== 'string' || !catalog.provider_profile_id.trim()
     || Object.keys(catalog).some((key) => !fields.includes(key))) {
@@ -157,6 +162,7 @@ export function modelRuleDraft(file: CustomRulesDraft, id: string, resolved: Rul
   return {
     alias: String(ruleObject(instance.model_driver_overrides)[id] ?? ruleObject(catalog.model_driver_overrides)[id] ?? ''),
     routes: ((ruleObject(instance.server_default_routes)[id] ?? []) as string[]).join(', '),
+    protocol_adapter_id: String(exact?.protocol_adapter_id ?? ruleObject(resolved.rule).protocol_adapter_id ?? ''),
     operations: rulesJson(exact?.operations ?? ruleObject(resolved.rule).operations ?? {}),
     request_rules: rulesJson(exact?.request_rules ?? ruleObject(resolved.rule).request_rules ?? []),
     disabled_api_types: rulesJson(exact?.remove_api_types ?? ruleObject(resolved.rule).remove_api_types ?? []),
@@ -191,9 +197,13 @@ export function applyModelRuleEdits(file: CustomRulesDraft, edits: Record<string
         delete catalogRoutes[id]
         if (tasks.length) routes[id] = [...new Set(tasks)]
       }
-      if (changes.operations !== undefined || changes.request_rules !== undefined || changes.disabled_api_types !== undefined || changes.scoped_request_rules !== undefined) {
+      if (changes.operations !== undefined || changes.protocol_adapter_id !== undefined || changes.request_rules !== undefined || changes.disabled_api_types !== undefined || changes.scoped_request_rules !== undefined) {
         const old = models.find((rule) => rule.id === id) ?? ruleObject(resolved[id]?.rule)
-        const rule = { ...old, id }
+        const rule: RuleObject = { ...old, id }
+        if (changes.protocol_adapter_id !== undefined) {
+          delete rule.protocol_adapter_id
+          if (changes.protocol_adapter_id.trim()) rule.protocol_adapter_id = changes.protocol_adapter_id.trim()
+        }
         if (changes.operations !== undefined) {
           const operations: unknown = JSON.parse(changes.operations)
           if (!operations || typeof operations !== 'object' || Array.isArray(operations)
@@ -261,8 +271,8 @@ export function previewRules(file: CustomRulesDraft, category: RuleCategory): un
     case 'aliases': return { ...ruleObject(catalog.model_driver_overrides), ...ruleObject(file.instance_rules.model_driver_overrides) }
     case 'routes': return file.instance_rules.server_default_routes ?? {}
     case 'operations': return {
-      models: ruleArray(catalog.models).map(({ id, operations }) => ({ id, operations: operations ?? {} })),
-      patterns: ruleArray(catalog.patterns).map((rule) => ({ match: rule.match, operations: rule.operations ?? {} })),
+      models: ruleArray(catalog.models).map(({ id, protocol_adapter_id, operations }) => ({ id, ...(protocol_adapter_id === undefined ? {} : { protocol_adapter_id }), operations: operations ?? {} })),
+      patterns: ruleArray(catalog.patterns).map((rule) => ({ match: rule.match, ...(rule.protocol_adapter_id === undefined ? {} : { protocol_adapter_id: rule.protocol_adapter_id }), operations: rule.operations ?? {} })),
     }
     case 'variants': return providerRulesFile(file).variants ?? []
     case 'pricing': return catalog.model_pricing ?? []
@@ -379,19 +389,78 @@ export function replaceScopedRequestRules(source: string, apiType: string, rules
   return rulesJson([...remaining, ...rules.map((rule) => ({ ...rule, when: { ...ruleObject(rule.when), api_type: [apiType] } }))])
 }
 
-export function validateRuleEditor(file: CustomRulesDraft, edits: Record<string, Partial<ModelRuleDraft>>, resolved: Record<string, RuleObject>, options: ProviderRuleOptions, adapterId: string): void {
-  const adapter = options.adapters.find((adapter) => adapter.id === adapterId)
+export function splitBinding(value: string): { client?: string; operation: string } {
+  const index = value.indexOf('/')
+  return index < 0 ? { operation: value } : { client: value.slice(0, index), operation: value.slice(index + 1) }
+}
+
+export function bindingLabel(value: string): string {
+  const { client, operation } = splitBinding(value)
+  return client ? `${client} · ${operation}` : operation
+}
+
+export function providerProtocolClients(
+  config: { provider_profile_id: string; protocol_adapter_id: string },
+  catalog: Pick<ProviderSetupCatalog, 'providers' | 'protocol_families'> | null,
+): string[] {
+  const primary = config.protocol_adapter_id
+  if (config.provider_profile_id === 'custom') {
+    const family = catalog?.protocol_families.find((option) => option.protocol_adapter_id === primary)?.protocol_family_id
+    const extras = (catalog?.protocol_families ?? [])
+      .filter((option) => family && option.protocol_family_id === family && option.protocol_adapter_id !== primary)
+      .map((option) => option.protocol_adapter_id)
+    return [primary, ...[...new Set(extras)].sort()]
+  }
+  const extras = catalog?.providers.find((profile) => profile.provider_profile_id === config.provider_profile_id)?.extra_protocol_adapters ?? []
+  return [primary, ...extras.filter((id) => id !== primary)]
+}
+
+export function ruleClients(options: ProviderRuleOptions, clients: string[], primary: string): RuleAdapterDefinition[] {
+  const ordered = [primary, ...clients.filter((id) => id !== primary)]
+  return ordered.map((id) => options.adapters.find((adapter) => adapter.id === id)).filter((adapter) => adapter !== undefined)
+}
+
+export function bindingChoice(value: string, primary: string): string {
+  const { client, operation } = splitBinding(value)
+  return client === primary ? operation : value
+}
+
+export function bindingChoices(clients: RuleAdapterDefinition[], primary: string, apiType: string): string[] {
+  return clients.flatMap((client) => client.operations.filter((operation) => operation.apiTypes.includes(apiType))
+    .map((operation) => client.id === primary ? operation.id : `${client.id}/${operation.id}`))
+}
+
+export function bindingSupported(clients: RuleAdapterDefinition[], primary: string, value: string, apiType: string): boolean {
+  const { client = primary, operation } = splitBinding(value)
+  return clients.some((item) => item.id === client && item.operations.some((candidate) => candidate.id === operation && candidate.apiTypes.includes(apiType)))
+}
+
+export function defaultRuleBinding(row: ModelRuleDraft, resolved: RuleObject, clients: RuleAdapterDefinition[], primary: string, apiType: string): string | undefined {
+  const saved = ruleObject(resolved.rule)
+  const actual = ruleObject(resolved.operations)[apiType]
+  if (typeof actual === 'string' && String(saved.protocol_adapter_id ?? '') === row.protocol_adapter_id && !(apiType in ruleObject(saved.operations))) return actual
+  for (const client of clients) {
+    const operation = client.defaults[apiType]
+    if (operation) return client.id === primary ? operation : `${client.id}/${operation}`
+  }
+  return undefined
+}
+
+export function validateRuleEditor(file: CustomRulesDraft, edits: Record<string, Partial<ModelRuleDraft>>, resolved: Record<string, RuleObject>, options: ProviderRuleOptions, clients: string[]): void {
   for (const id of Object.keys(edits)) {
     const row = modelRuleDraft(file, id, resolved[id])
     const metadata = ruleModelDefinition(id, row, resolved[id] ?? {}, options)
     const operations = ruleObject(JSON.parse(row.operations))
     const variants = ruleArray(JSON.parse(row.variants))
     const routes = row.routes.split(',').map((route) => route.trim()).filter(Boolean)
+    const primary = row.protocol_adapter_id || clients[0]
+    const definitions = ruleClients(options, clients, primary)
     if (routes.some((route) => !options.tasks.includes(route))) throw new Error(`${id}: unknown LLM task`)
     if (row.alias && !metadata) throw new Error(`${id}: select a recognized built-in model`)
     if ((!metadata || metadata.directOnly || !metadata.apiTypes.includes('llm')) && routes.length) throw new Error(`${id}: this model cannot use server-default tasks`)
+    if (row.protocol_adapter_id && !clients.includes(row.protocol_adapter_id)) throw new Error(`${id}: ${row.protocol_adapter_id} is not a protocol client of this provider`)
     for (const [apiType, operation] of Object.entries(operations)) {
-      if (!metadata?.apiTypes.includes(apiType) || !adapter?.operations.some((item) => item.id === operation && item.apiTypes.includes(apiType))) {
+      if (!metadata?.apiTypes.includes(apiType) || typeof operation !== 'string' || !bindingSupported(definitions, primary, operation, apiType)) {
         throw new Error(`${id}: unsupported protocol mapping for ${apiType}`)
       }
     }

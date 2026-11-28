@@ -1,8 +1,8 @@
 {
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
-  "revision_seq": 1,
+  "schema_revision": 2,
+  "revision_seq": 3,
   "catalog_id": "gemini",
   "providers": [
     {
@@ -10,7 +10,8 @@
       "display_name": "Google Gemini",
       "base_url": "https://generativelanguage.googleapis.com/v1beta",
       "protocol_adapter_id": "gemini-interactions",
-      "discovery_behavior_id": "gemini-models",
+      "extra_protocol_adapters": [{"id": "gemini-generate-content"}],
+      "discovery_behavior_id": "standard-models",
       "provider_rules_id": "gemini",
       "credential": { "kind": "named_header", "header_name": "x-goog-api-key" },
       "connection": {

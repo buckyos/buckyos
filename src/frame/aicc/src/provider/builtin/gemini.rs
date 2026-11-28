@@ -8,9 +8,9 @@ use super::super::{
 };
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ProviderRulesCatalog};
-use crate::protocol::{
-    CredentialKind, HttpRequest, HttpResponse, HttpTransport, GEMINI_ADAPTER_ID,
-};
+#[cfg(test)]
+use crate::protocol::{CredentialKind, GEMINI_ADAPTER_ID};
+use crate::protocol::{HttpRequest, HttpResponse, HttpTransport};
 use async_trait::async_trait;
 use reqwest::{Method, Url};
 use serde::Deserialize;
@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(test)]
 pub(crate) const GEMINI_PROVIDER_PROFILE_ID: &str = "gemini";
 
 const MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
@@ -70,39 +71,19 @@ impl GeminiModelsTransport for HttpTransport {
 
 #[derive(Clone)]
 pub(crate) struct GeminiDiscovery {
-    provider_profile_id: String,
-    protocol_adapter_id: String,
     transport: Arc<dyn GeminiModelsTransport>,
 }
 
 impl GeminiDiscovery {
     pub(crate) fn new(transport: HttpTransport) -> Self {
         Self {
-            provider_profile_id: GEMINI_PROVIDER_PROFILE_ID.to_owned(),
-            protocol_adapter_id: GEMINI_ADAPTER_ID.to_owned(),
-            transport: Arc::new(transport),
-        }
-    }
-
-    pub(crate) fn for_profile(
-        provider_profile_id: impl Into<String>,
-        protocol_adapter_id: impl Into<String>,
-        transport: HttpTransport,
-    ) -> Self {
-        Self {
-            provider_profile_id: provider_profile_id.into(),
-            protocol_adapter_id: protocol_adapter_id.into(),
             transport: Arc::new(transport),
         }
     }
 
     #[cfg(test)]
     fn with_transport(transport: Arc<dyn GeminiModelsTransport>) -> Self {
-        Self {
-            provider_profile_id: GEMINI_PROVIDER_PROFILE_ID.to_owned(),
-            protocol_adapter_id: GEMINI_ADAPTER_ID.to_owned(),
-            transport,
-        }
+        Self { transport }
     }
 }
 
@@ -112,11 +93,6 @@ impl ProviderDiscovery for GeminiDiscovery {
         &self,
         context: &DiscoveryContext<'_>,
     ) -> ProviderResult<ProviderDiscoverySnapshot> {
-        validate_gemini_context(
-            &self.provider_profile_id,
-            &self.protocol_adapter_id,
-            context,
-        )?;
         let mut models = BTreeMap::<String, DiscoveredModel>::new();
         let mut page_token = None;
         let mut seen_page_tokens = BTreeSet::new();
@@ -177,31 +153,6 @@ impl ProviderDiscovery for GeminiDiscovery {
             "Gemini Models API exceeded the pagination limit".to_owned(),
         ))
     }
-}
-
-fn validate_gemini_context(
-    provider_profile_id: &str,
-    protocol_adapter_id: &str,
-    context: &DiscoveryContext<'_>,
-) -> ProviderResult<()> {
-    if context.profile.provider_profile_id != provider_profile_id
-        || context.profile.default_protocol_adapter_id != protocol_adapter_id
-        || context.instance.provider_profile_id != provider_profile_id
-        || context.instance.protocol_adapter_id != protocol_adapter_id
-    {
-        return Err(ProviderError::InvalidConfiguration(
-            "Gemini discovery requires the Gemini profile and Interactions adapter".to_owned(),
-        ));
-    }
-    if context.credential.audit().kind != CredentialKind::NamedHeader {
-        return Err(ProviderError::Credential(
-            "Gemini discovery requires a named-header credential".to_owned(),
-        ));
-    }
-    Url::parse(&context.instance.base_url).map_err(|_| {
-        ProviderError::InvalidConfiguration("Gemini base_url is invalid".to_owned())
-    })?;
-    Ok(())
 }
 
 fn models_endpoint(base_url: &str, page_token: Option<&str>) -> ProviderResult<String> {
@@ -462,11 +413,11 @@ mod tests {
         );
         assert_eq!(
             rules.patterns[0].operations["embedding.multimodal"],
-            GEMINI_EMBED_CONTENT_OPERATION_ID
+            format!("gemini-generate-content/{GEMINI_EMBED_CONTENT_OPERATION_ID}")
         );
         assert_eq!(
             rules.patterns[0].operations["video.extend"],
-            GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID
+            format!("gemini-generate-content/{GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID}")
         );
     }
 
@@ -637,7 +588,7 @@ mod tests {
             .iter()
             .find(|model| model.provider_model_id == "gemini-3.8-flash")
             .unwrap()
-            .operations;
+            .operation_ids();
         assert_eq!(operations["llm"], GEMINI_INTERACTIONS_OPERATION_ID);
         assert!(!operations.contains_key("embedding.text"));
         assert!(!operations.contains_key("video.txt2video"));
@@ -646,9 +597,12 @@ mod tests {
             .iter()
             .find(|model| model.provider_model_id == "gemini-4-argon")
             .unwrap();
-        assert_eq!(argon.operations["llm"], GEMINI_INTERACTIONS_OPERATION_ID);
         assert_eq!(
-            argon.operations["audio.asr"],
+            argon.operation_ids()["llm"],
+            GEMINI_INTERACTIONS_OPERATION_ID
+        );
+        assert_eq!(
+            argon.operation_ids()["audio.asr"],
             GEMINI_INTERACTIONS_OPERATION_ID
         );
         assert_eq!(argon.capabilities["max_output_tokens"], 65_536);

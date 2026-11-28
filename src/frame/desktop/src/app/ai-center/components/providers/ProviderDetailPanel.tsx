@@ -7,7 +7,8 @@ import { useAICCStore } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { LongField } from '../shared/LongField'
-import { isManagedSnProvider, isSettingsRevisionConflict, type AuthStatus, type ModelMetadata, type ProviderView } from '../../../../api/aicc_mgr'
+import { isManagedSnProvider, isSettingsRevisionConflict, type AuthStatus, type ModelMetadata, type ProviderSetupCatalog, type ProviderView } from '../../../../api/aicc_mgr'
+import { providerProtocolClients } from '../../../../api/custom_provider_rules'
 
 type TFn = (key: string, fallback?: string, variables?: Record<string, string | number>) => string
 type FilterKey = 'apiType' | 'logicalMount' | 'health' | 'costClass' | 'latencyClass' | 'tier'
@@ -111,6 +112,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
   const [filters, setFilters] = useState<InventoryFilters>(() => emptyInventoryFilters())
   const [inventoryFiltersOpen, setInventoryFiltersOpen] = useState(false)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set())
+  const [setupCatalog, setSetupCatalog] = useState<ProviderSetupCatalog | null>(null)
   const actionsRef = useRef<HTMLDivElement | null>(null)
 
   const { config, status, account, inventory } = provider
@@ -123,6 +125,16 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
     [models, searchQuery, filters],
   )
   const filterOptions = useMemo(() => buildInventoryFilterOptions(models), [models])
+  const protocolClients = providerProtocolClients(config, setupCatalog)
+
+  useEffect(() => {
+    if (visibleSection !== 'overview' || setupCatalog) return
+    let cancelled = false
+    void store.fetchProviderSetupCatalog()
+      .then((catalog) => { if (!cancelled) setSetupCatalog(catalog) })
+      .catch((error) => console.error('aicc.fetchProviderSetupCatalog failed', error))
+    return () => { cancelled = true }
+  }, [visibleSection, setupCatalog, store])
 
   const parsedWeight = Number(weightDraft)
   const weightValid = Number.isFinite(parsedWeight) && parsedWeight >= 0
@@ -473,6 +485,11 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
       >
         <Row label={t('aiCenter.providers.profile', 'Profile')} value={config.provider_profile_id} copyValue={config.provider_profile_id} />
+        <Row
+          label={t('aiCenter.providers.protocolClients', 'Protocol clients')}
+          value={[`${protocolClients[0]} (${t('aiCenter.rules.default', 'default')})`, ...protocolClients.slice(1)].join(', ')}
+          expandable
+        />
         <Row label={t('aiCenter.providers.enabled', 'Enabled')} value={config.enabled ? t('common.on', 'On') : t('common.off', 'Off')} />
         <Row label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={`${formatWeight(routingWeight)} / ${routingWeightLabel}`} />
         <Row label={t('aiCenter.providers.runtimeType', 'Runtime Type')} value={config.provider_runtime_type} copyValue={config.provider_runtime_type} />

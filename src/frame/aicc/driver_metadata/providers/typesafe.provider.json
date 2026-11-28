@@ -2,9 +2,12 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 1,
+  "revision_seq": 3,
   "provider_profile_id": "typesafe",
-  "custom_provider_adapters": ["typesafe-systemone"],
+  "model_driver_overrides": {
+    "jev-latest": "typesafe/jev-1.13.0",
+    "jev-preview": "typesafe/jev-1.13.0"
+  },
   "static_inventory_models": [
     "jev-1.13.0"
   ],

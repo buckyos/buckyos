@@ -1,6 +1,6 @@
 import {
-  applyModelRuleEdits, createCustomRulesDraft, disabledRuleModels, setRuleModelEnabled, modelRuleDraft, paginateRuleModels,
-  parseProviderRulesFile, providerRulesFile, previewRules, ruleObject, rulesJson, toProviderRuleOptions, ruleModelDefinition, replaceScopedRequestRules, validateRuleEditor,
+  applyModelRuleEdits, bindingChoice, bindingChoices, bindingLabel, createCustomRulesDraft, defaultRuleBinding, disabledRuleModels, setRuleModelEnabled, modelRuleDraft, paginateRuleModels,
+  parseProviderRulesFile, providerProtocolClients, providerRulesFile, previewRules, ruleClients, ruleObject, rulesJson, toProviderRuleOptions, ruleModelDefinition, replaceScopedRequestRules, validateRuleEditor,
 } from '../../src/api/custom_provider_rules.ts'
 
 function assert(value: unknown, message: string): asserts value {
@@ -163,7 +163,7 @@ Deno.test('structured editor choices use model metadata, finite LLM tasks and ad
   assert(ruleModelDefinition('endpoint', row, {}, options)?.apiTypes.includes('llm'), 'the selected built-in model must drive API choices')
   const edits = { endpoint: { alias: row.alias, routes: 'llm.chat', operations: '{}', variants: '[]' } }
   const saved = applyModelRuleEdits(file, edits, {})
-  validateRuleEditor(saved, edits, {}, options, 'gemini-interactions')
+  validateRuleEditor(saved, edits, {}, options, ['gemini-interactions'])
   assert(modelRuleDraft(saved, 'endpoint').operations === '{}', 'using a default must not create an operation override')
   for (const invalid of [
     { ...edits.endpoint, routes: 'llm.spec' },
@@ -171,7 +171,7 @@ Deno.test('structured editor choices use model metadata, finite LLM tasks and ad
     { ...edits.endpoint, variants: '[{"model_driver":"gemini","variant":"reasoning-max","match":"*","provider_options":{}}]' },
   ]) {
     let rejected = false
-    try { const data = { endpoint: invalid }; validateRuleEditor(applyModelRuleEdits(file, data, {}), data, {}, options, 'gemini-interactions') } catch { rejected = true }
+    try { const data = { endpoint: invalid }; validateRuleEditor(applyModelRuleEdits(file, data, {}), data, {}, options, ['gemini-interactions']) } catch { rejected = true }
     assert(rejected, 'unsupported tasks, operations and efforts must be rejected')
   }
 })
@@ -199,7 +199,7 @@ Deno.test('effort configuration distinguishes an explicit empty object from an u
     scoped_request_rules: { llm: '[{"remove":["/temperature"]}]' },
   } }
   const changed = applyModelRuleEdits(file, edits, {})
-  validateRuleEditor(changed, edits, {}, options, 'gemini-interactions')
+  validateRuleEditor(changed, edits, {}, options, ['gemini-interactions'])
   const variants = JSON.parse(modelRuleDraft(changed, 'endpoint').variants)
   assert(variants.length === 1 && Object.keys(variants[0].provider_options).length === 0, 'an explicit empty provider_options mapping must remain enabled')
   const disabled = applyModelRuleEdits(changed, { endpoint: { variants: '[]', effort_options: { low: '{' } } }, {})
@@ -267,4 +267,75 @@ Deno.test('per-model effort edits export standard variants without changing othe
   let rejected = false
   try { parseProviderRulesFile(rulesJson(invalid)) } catch { rejected = true }
   assert(rejected, 'the file importer must reject the nonstandard field')
+})
+
+function clientOptions() {
+  return toProviderRuleOptions({
+    revision: 1, vendors: [{ id: 'openai', revision: 1, specs: [], models: [{
+      id: 'gpt-image', providers: [], metadata: { api_types: ['llm', 'image.txt2img'] },
+    }] }],
+  }, [], [
+    { protocol_adapter_id: 'openai-responses', default_operations: { llm: 'responses.create' },
+      operations: [{ operation_id: 'responses.create', api_types: ['llm'] }] },
+    { protocol_adapter_id: 'openai-images', default_operations: { 'image.txt2img': 'images.generate' },
+      operations: [{ operation_id: 'images.generate', api_types: ['image.txt2img'] }] },
+  ])
+}
+
+Deno.test('qualified bindings and the rule-level client round-trip through the rules file', () => {
+  const options = clientOptions()
+  const clients = ['openai-responses', 'openai-images']
+  const file = createCustomRulesDraft({})
+  const edits = { local: { alias: 'openai/gpt-image', protocol_adapter_id: 'openai-images', operations: '{"llm":"openai-responses/responses.create","image.txt2img":"images.generate"}' } }
+  const changed = applyModelRuleEdits(file, edits, {})
+  validateRuleEditor(changed, edits, {}, options, clients)
+  const exported = providerRulesFile(changed)
+  assert(exported.schema_revision === 2, 'naming a client requires schema revision 2')
+  const rule = (exported.models as Record<string, unknown>[]).find((item) => item.id === 'local')!
+  assert(rule.protocol_adapter_id === 'openai-images', 'the rule-level client must be written')
+  assert(ruleObject(rule.operations).llm === 'openai-responses/responses.create', 'qualified bindings must be written unchanged')
+  const imported = parseProviderRulesFile(rulesJson(exported), file)
+  const row = modelRuleDraft(imported, 'local')
+  assert(row.protocol_adapter_id === 'openai-images' && row.operations.includes('openai-responses/responses.create'), 'the client and bindings must survive import')
+  const cleared = providerRulesFile(applyModelRuleEdits(imported, { local: { protocol_adapter_id: '' } }, {}))
+  const kept = (cleared.models as Record<string, unknown>[]).find((item) => item.id === 'local')!
+  assert(!('protocol_adapter_id' in kept) && ruleObject(kept.operations).llm === 'openai-responses/responses.create', 'clearing the client must keep the other fields')
+  assert(providerRulesFile(createCustomRulesDraft({})).schema_revision === 1, 'files that name no client keep their revision')
+  for (const invalid of [
+    { ...edits.local, protocol_adapter_id: 'claude-messages' },
+    { ...edits.local, operations: '{"image.txt2img":"openai-responses/images.generate"}' },
+    { ...edits.local, protocol_adapter_id: '', operations: '{"image.txt2img":"images.generate"}' },
+  ]) {
+    let rejected = false
+    try { const data = { local: invalid }; validateRuleEditor(applyModelRuleEdits(file, data, {}), data, {}, options, clients) } catch { rejected = true }
+    assert(rejected, 'clients outside the instance and operations of the wrong client must be rejected')
+  }
+})
+
+Deno.test('bindings display as client and operation and choices span the client set', () => {
+  assert(bindingLabel('openai-images/images.generate') === 'openai-images · images.generate', 'qualified bindings show the client')
+  assert(bindingLabel('responses.create') === 'responses.create', 'bare bindings have no client part')
+  const clients = ruleClients(clientOptions(), ['openai-responses', 'openai-images', 'missing'], 'openai-responses')
+  assert(clients.map((client) => client.id).join() === 'openai-responses,openai-images', 'unknown clients are skipped')
+  assert(JSON.stringify(bindingChoices(clients, 'openai-responses', 'image.txt2img')) === '["openai-images/images.generate"]', 'other clients are qualified')
+  assert(bindingChoice('openai-responses/responses.create', 'openai-responses') === 'responses.create', 'the primary client is bare')
+  const row = modelRuleDraft(createCustomRulesDraft({}), 'local')
+  assert(defaultRuleBinding(row, {}, clients, 'openai-responses', 'image.txt2img') === 'openai-images/images.generate', 'defaults come from the client set')
+  const resolved = { operations: { 'image.txt2img': 'openai-images/images.generate', llm: 'openai-responses/responses.create' } }
+  assert(defaultRuleBinding(row, resolved, clients, 'openai-responses', 'llm') === 'openai-responses/responses.create', 'the server binding is the default')
+})
+
+Deno.test('provider client sets follow the catalog for Known Providers and the family for custom ones', () => {
+  const catalog = {
+    providers: [{ provider_profile_id: 'glm', protocol_adapter_id: 'glm-chat', extra_protocol_adapters: ['openai-embeddings', 'glm-video'] }],
+    protocol_families: [
+      { protocol_family_id: 'openai', protocol_adapter_id: 'openai-responses', display_name: 'OpenAI Responses' },
+      { protocol_family_id: 'openai', protocol_adapter_id: 'openai-images', display_name: 'OpenAI Images' },
+      { protocol_family_id: 'openai', protocol_adapter_id: 'openai-chat-completions', display_name: 'OpenAI Chat Completions' },
+      { protocol_family_id: 'claude', protocol_adapter_id: 'claude-messages', display_name: 'Claude' },
+    ],
+  } as unknown as Parameters<typeof providerProtocolClients>[1]
+  assert(providerProtocolClients({ provider_profile_id: 'glm', protocol_adapter_id: 'glm-chat' }, catalog).join() === 'glm-chat,openai-embeddings,glm-video', 'Known Providers list their declared clients in order')
+  assert(providerProtocolClients({ provider_profile_id: 'custom', protocol_adapter_id: 'openai-responses' }, catalog).join() === 'openai-responses,openai-chat-completions,openai-images', 'custom instances add the selectable clients of their family')
+  assert(providerProtocolClients({ provider_profile_id: 'custom', protocol_adapter_id: 'claude-messages' }, null).join() === 'claude-messages', 'without a catalog only the default client is known')
 })

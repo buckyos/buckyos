@@ -43,10 +43,10 @@ pub(crate) const GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID: &str = "models.predic
 /// without hand-written rules. Highest wins:
 /// `interactions.background` > `models.predictLongRunning` > `interactions.create`.
 const BACKGROUND_INTERACTIONS_PRIORITY: u8 = 30;
-const PREDICT_LONG_RUNNING_PRIORITY: u8 = 20;
+pub(super) const PREDICT_LONG_RUNNING_PRIORITY: u8 = 20;
 const INTERACTIONS_PRIORITY: u8 = 10;
 
-const GEMINI_PROVIDER_NAMESPACE: &str = "gemini";
+pub(super) const GEMINI_PROVIDER_NAMESPACE: &str = "gemini";
 const DEFAULT_MAX_REQUEST_BYTES: usize = 100 * 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -69,6 +69,7 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
                     features::TOOL_CALL,
                     features::JSON_SCHEMA,
                     features::VISION,
+                    features::DOCUMENT,
                     features::WEB_SEARCH,
                 ],
             ),
@@ -111,14 +112,6 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         ],
         false,
     );
-    let embeddings = operation(
-        GEMINI_EMBED_CONTENT_OPERATION_ID,
-        vec![
-            binding(ApiType::EmbeddingText, [ExecutionMode::Immediate], []),
-            binding(ApiType::EmbeddingMultimodal, [ExecutionMode::Immediate], []),
-        ],
-        false,
-    );
     let mut background_interactions = operation(
         GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID,
         vec![
@@ -129,6 +122,7 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
                     features::TOOL_CALL,
                     features::JSON_SCHEMA,
                     features::VISION,
+                    features::DOCUMENT,
                     features::WEB_SEARCH,
                 ],
             ),
@@ -144,26 +138,16 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         ],
         true,
     );
-    let mut video = operation(
-        GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID,
-        vec![
-            binding(ApiType::VideoGenerate, [ExecutionMode::NativeTask], []),
-            binding(ApiType::VideoExtend, [ExecutionMode::NativeTask], []),
-        ],
-        false,
-    );
     set_default_priority(&mut interactions, INTERACTIONS_PRIORITY);
     set_default_priority(
         &mut background_interactions,
         BACKGROUND_INTERACTIONS_PRIORITY,
     );
-    set_default_priority(&mut video, PREDICT_LONG_RUNNING_PRIORITY);
     let descriptor = AdapterDescriptor {
         protocol_family_id: "gemini".to_string(),
         protocol_adapter_id: GEMINI_ADAPTER_ID.to_string(),
         interface_generation: "interactions-v1beta".to_string(),
         base_adapter_id: None,
-        component_adapter_ids: Vec::new(),
         status: AdapterStatus::Preview,
         probe_priority: 0,
         probe_path: Some("interactions".to_owned()),
@@ -174,8 +158,6 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
                 background_interactions.operation_id.clone(),
                 background_interactions.clone(),
             ),
-            (embeddings.operation_id.clone(), embeddings.clone()),
-            (video.operation_id.clone(), video.clone()),
         ]),
     };
     let direct_types = [
@@ -193,47 +175,29 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         ApiType::VideoEdit,
         ApiType::VideoExtend,
     ];
-    let mut operation_codecs: Vec<Arc<dyn OperationCodec>> = direct_types
+    let operation_codecs = direct_types
         .into_iter()
         .map(|api_type| {
             Arc::new(GeminiInteractionCodec::new(interactions.clone(), api_type))
                 as Arc<dyn OperationCodec>
         })
         .collect();
-    operation_codecs.extend([
-        Arc::new(GeminiEmbeddingCodec::new(
-            embeddings.clone(),
-            ApiType::EmbeddingText,
-        )) as Arc<dyn OperationCodec>,
-        Arc::new(GeminiEmbeddingCodec::new(
-            embeddings,
-            ApiType::EmbeddingMultimodal,
-        )) as Arc<dyn OperationCodec>,
-    ]);
-    let mut native_task_codecs: Vec<Arc<dyn NativeTaskCodec>> =
-        [ApiType::VideoGenerate, ApiType::VideoExtend]
-            .into_iter()
-            .map(|api_type| {
-                Arc::new(GeminiVideoCodec::new(video.clone(), api_type)) as Arc<dyn NativeTaskCodec>
-            })
-            .collect();
-    native_task_codecs.extend(
-        [
-            ApiType::Llm,
-            ApiType::VisionOcr,
-            ApiType::VisionCaption,
-            ApiType::VisionDetect,
-            ApiType::VisionSegment,
-            ApiType::AudioSpeechRecognition,
-        ]
-        .into_iter()
-        .map(|api_type| {
-            Arc::new(GeminiBackgroundInteractionCodec::new(
-                background_interactions.clone(),
-                api_type,
-            )) as Arc<dyn NativeTaskCodec>
-        }),
-    );
+    let native_task_codecs = [
+        ApiType::Llm,
+        ApiType::VisionOcr,
+        ApiType::VisionCaption,
+        ApiType::VisionDetect,
+        ApiType::VisionSegment,
+        ApiType::AudioSpeechRecognition,
+    ]
+    .into_iter()
+    .map(|api_type| {
+        Arc::new(GeminiBackgroundInteractionCodec::new(
+            background_interactions.clone(),
+            api_type,
+        )) as Arc<dyn NativeTaskCodec>
+    })
+    .collect();
     (
         descriptor,
         CodecRegistration {
@@ -243,7 +207,7 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
     )
 }
 
-fn operation(
+pub(super) fn operation(
     operation_id: &str,
     bindings: Vec<OperationBinding>,
     supports_cancel: bool,
@@ -258,13 +222,13 @@ fn operation(
     }
 }
 
-fn set_default_priority(operation: &mut OperationDescriptor, priority: u8) {
+pub(super) fn set_default_priority(operation: &mut OperationDescriptor, priority: u8) {
     for binding in &mut operation.bindings {
         binding.default_priority = priority;
     }
 }
 
-fn binding<const N: usize>(
+pub(super) fn binding<const N: usize>(
     api_type: ApiType,
     modes: impl IntoIterator<Item = ExecutionMode>,
     features: [&str; N],
@@ -1590,20 +1554,20 @@ fn resource_kind<'a>(source: &ResourceRef, fallback: &'a str) -> &'a str {
     }
 }
 
-fn finite_number(name: &str, value: f64) -> ProtocolResultValue<Value> {
+pub(super) fn finite_number(name: &str, value: f64) -> ProtocolResultValue<Value> {
     serde_json::Number::from_f64(value)
         .map(Value::Number)
         .ok_or_else(|| ProtocolError::invalid_request(format!("{name} must be finite")))
 }
 
 #[derive(Clone)]
-struct GeminiEmbeddingCodec {
+pub(super) struct GeminiEmbeddingCodec {
     descriptor: OperationDescriptor,
     api_type: ApiType,
 }
 
 impl GeminiEmbeddingCodec {
-    fn new(descriptor: OperationDescriptor, api_type: ApiType) -> Self {
+    pub(super) fn new(descriptor: OperationDescriptor, api_type: ApiType) -> Self {
         Self {
             descriptor,
             api_type,
@@ -1753,7 +1717,7 @@ fn encode_text_embedding_item(
 ) -> ProtocolResultValue<Value> {
     match item {
         EmbeddingTextItem::Text { text, .. } => Ok(json!({"text":text})),
-        EmbeddingTextItem::Resource { resource, .. } => embedding_resource_part(resource, context),
+        EmbeddingTextItem::Resource { resource, .. } => resource_part(resource, context),
     }
 }
 
@@ -1778,12 +1742,12 @@ fn encode_multimodal_embedding(
         parts.push(json!({"text":text}));
     }
     if let Some(image) = &item.image {
-        parts.push(embedding_resource_part(image, context)?);
+        parts.push(resource_part(image, context)?);
     }
     Ok(json!({"parts":parts}))
 }
 
-fn embedding_resource_part(
+pub(super) fn resource_part(
     resource: &ResourceRef,
     context: &CodecContext,
 ) -> ProtocolResultValue<Value> {
@@ -1800,7 +1764,7 @@ fn embedding_resource_part(
         }
         ResourceRef::Base64 { mime, data_base64 } => {
             STANDARD.decode(data_base64).map_err(|_| {
-                ProtocolError::invalid_request("embedding resource contains invalid base64")
+                ProtocolError::invalid_request("Gemini resource contains invalid base64")
             })?;
             Ok(json!({"inlineData":{"mimeType":mime,"data":data_base64}}))
         }
@@ -2397,7 +2361,7 @@ fn decode_resource(value: &Value) -> ProtocolResultValue<ResourceRef> {
     decode_resource_with_default(value, "application/octet-stream")
 }
 
-fn decode_resource_with_default(
+pub(super) fn decode_resource_with_default(
     value: &Value,
     default_mime: &str,
 ) -> ProtocolResultValue<ResourceRef> {
@@ -2676,13 +2640,13 @@ fn decode_interaction_frame(
 }
 
 #[derive(Clone)]
-struct GeminiVideoCodec {
+pub(super) struct GeminiVideoCodec {
     descriptor: OperationDescriptor,
     api_type: ApiType,
 }
 
 impl GeminiVideoCodec {
-    fn new(descriptor: OperationDescriptor, api_type: ApiType) -> Self {
+    pub(super) fn new(descriptor: OperationDescriptor, api_type: ApiType) -> Self {
         Self {
             descriptor,
             api_type,
@@ -3101,7 +3065,9 @@ fn find_media_value<'a>(value: &'a Value, kind: &str) -> Option<&'a Value> {
     }
 }
 
-fn provider_model_id(parameters: &BTreeMap<String, Value>) -> ProtocolResultValue<String> {
+pub(super) fn provider_model_id(
+    parameters: &BTreeMap<String, Value>,
+) -> ProtocolResultValue<String> {
     parameters
         .get("provider_model_id")
         .and_then(Value::as_str)
@@ -3110,7 +3076,7 @@ fn provider_model_id(parameters: &BTreeMap<String, Value>) -> ProtocolResultValu
         .ok_or_else(|| ProtocolError::invalid_request("missing resolved `provider_model_id`"))
 }
 
-fn api_endpoint(base_url: &str, path: &str) -> ProtocolResultValue<String> {
+pub(super) fn api_endpoint(base_url: &str, path: &str) -> ProtocolResultValue<String> {
     let mut url = Url::parse(base_url)
         .map_err(|_| ProtocolError::invalid_configuration("Gemini base URL is invalid"))?;
     let base_path = url.path().trim_end_matches('/');
@@ -3137,7 +3103,7 @@ fn json_request(
     finish_request(&mut request, context)
 }
 
-fn finish_request(
+pub(super) fn finish_request(
     request: &mut HttpRequest,
     context: &CodecContext,
 ) -> ProtocolResultValue<HttpRequest> {
@@ -3149,7 +3115,7 @@ fn finish_request(
     )
 }
 
-fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
+pub(super) fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
     if response.status.is_success() {
         return Ok(());
     }
@@ -3174,7 +3140,7 @@ fn ensure_stream_success(response: &StreamingHttpResponse) -> ProtocolResultValu
     .with_retry_after(response.retry_after))
 }
 
-fn gemini_http_error(
+pub(super) fn gemini_http_error(
     status: StatusCode,
     body: &[u8],
     request_id: &str,
@@ -3201,7 +3167,7 @@ fn gemini_http_error(
     .with_retry_after(retry_after)
 }
 
-fn is_sse(value: Option<&HeaderValue>) -> bool {
+pub(super) fn is_sse(value: Option<&HeaderValue>) -> bool {
     value
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/event-stream"))
@@ -3223,6 +3189,7 @@ mod tests {
 
     fn context() -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: "https://generativelanguage.googleapis.com".to_string(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
                 provider_profile_id: "gemini".into(),
@@ -3267,20 +3234,14 @@ mod tests {
     fn descriptor_registers_frozen_operations_without_generate_content() {
         let (descriptor, registration) = gemini_interactions_adapter();
         assert_eq!(descriptor.protocol_adapter_id, GEMINI_ADAPTER_ID);
-        assert_eq!(descriptor.operations.len(), 4);
+        assert_eq!(descriptor.operations.len(), 2);
         assert!(descriptor
             .operations
             .contains_key(GEMINI_INTERACTIONS_OPERATION_ID));
         assert!(descriptor
             .operations
             .contains_key(GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID));
-        assert!(descriptor
-            .operations
-            .contains_key(GEMINI_EMBED_CONTENT_OPERATION_ID));
-        assert!(descriptor
-            .operations
-            .contains_key(GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID));
-        assert!(!format!("{descriptor:?}").contains("generateContent"));
+        assert!(!format!("{descriptor:?}").contains("models."));
         let mut registry = super::super::CodecRegistry::default();
         registry.register_codecs(descriptor, registration).unwrap();
         registry
@@ -3293,24 +3254,10 @@ mod tests {
         registry
             .operation_descriptor(
                 GEMINI_ADAPTER_ID,
-                GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID,
-                ApiType::VideoExtend,
-            )
-            .unwrap();
-        registry
-            .operation_descriptor(
-                GEMINI_ADAPTER_ID,
                 GEMINI_INTERACTIONS_OPERATION_ID,
                 ApiType::VideoEdit,
             )
             .unwrap();
-        assert!(registry
-            .operation_descriptor(
-                GEMINI_ADAPTER_ID,
-                GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID,
-                ApiType::VideoEdit,
-            )
-            .is_err());
     }
 
     #[tokio::test]
@@ -3977,8 +3924,10 @@ mod tests {
 
     #[test]
     fn embeddings_encode_text_and_multimodal_content() {
-        let descriptor =
-            gemini_interactions_adapter().0.operations[GEMINI_EMBED_CONTENT_OPERATION_ID].clone();
+        let descriptor = crate::protocol::gemini_generate_content_adapter()
+            .0
+            .operations[GEMINI_EMBED_CONTENT_OPERATION_ID]
+            .clone();
         let text_codec = GeminiEmbeddingCodec::new(descriptor.clone(), ApiType::EmbeddingText);
         let text = CodecInput {
             canonical_request: AiccCall::EmbeddingText(EmbeddingTextRequest::new(
@@ -4079,8 +4028,10 @@ mod tests {
 
     #[tokio::test]
     async fn embedding_response_and_http_error_are_mapped() {
-        let descriptor =
-            gemini_interactions_adapter().0.operations[GEMINI_EMBED_CONTENT_OPERATION_ID].clone();
+        let descriptor = crate::protocol::gemini_generate_content_adapter()
+            .0
+            .operations[GEMINI_EMBED_CONTENT_OPERATION_ID]
+            .clone();
         let codec = GeminiEmbeddingCodec::new(descriptor, ApiType::EmbeddingText);
         let ProtocolExecution::Immediate(output) = codec.decode(response(StatusCode::OK, "application/json", json!({"embedding":{"values":[0.1,0.2]},"usageMetadata":{"promptTokenCount":2,"totalTokenCount":2}}))).await.unwrap() else { panic!("expected immediate") };
         assert_eq!(
@@ -4252,8 +4203,9 @@ mod tests {
 
     #[tokio::test]
     async fn video_native_task_maps_submit_status_and_result() {
-        let descriptor = gemini_interactions_adapter().0.operations
-            [GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID]
+        let descriptor = crate::protocol::gemini_generate_content_adapter()
+            .0
+            .operations[GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID]
             .clone();
         let codec = GeminiVideoCodec::new(descriptor, ApiType::VideoGenerate);
         let generate = VideoGenerateRequest::new("veo@google", Some("ocean".to_string()));
@@ -4387,8 +4339,9 @@ mod tests {
         contract: &crate::video::VideoGenerationContract,
         request: VideoGenerateRequest,
     ) -> ProtocolResultValue<Value> {
-        let descriptor = gemini_interactions_adapter().0.operations
-            [GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID]
+        let descriptor = crate::protocol::gemini_generate_content_adapter()
+            .0
+            .operations[GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID]
             .clone();
         let codec = GeminiVideoCodec::new(descriptor, ApiType::VideoGenerate);
         let plan = crate::video::plan_video(contract, &request, &VideoMaterialFacts::new())

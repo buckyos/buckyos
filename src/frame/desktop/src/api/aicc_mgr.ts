@@ -124,21 +124,21 @@ const EMPTY_SNAPSHOT: StoreSnapshot = {
   settingsRevision: 0,
 }
 
-const BUILTIN_PROVIDER_NAMES: Array<[ProviderType, string, string, string]> = [
-  ['sn', 'SN Router', 'https://sn.buckyos.ai/api/v1/ai', 'sn-openai'],
-  ['openai', 'OpenAI', 'https://api.openai.com/v1', 'openai-responses'],
+const BUILTIN_PROVIDER_NAMES: Array<[ProviderType, string, string, string, string[]?]> = [
+  ['sn', 'SN Router', 'https://sn.buckyos.ai/api/v1/ai', 'openai-responses', ['openai-chat-completions', 'openai-embeddings', 'openai-images', 'openai-audio', 'openai-videos']],
+  ['openai', 'OpenAI', 'https://api.openai.com/v1', 'openai-responses', ['openai-embeddings', 'openai-images', 'openai-audio', 'openai-videos']],
   ['claude', 'Anthropic Claude', 'https://api.anthropic.com/v1', 'claude-messages'],
-  ['gemini', 'Google Gemini', 'https://generativelanguage.googleapis.com/v1beta', 'gemini-interactions'],
+  ['gemini', 'Google Gemini', 'https://generativelanguage.googleapis.com/v1beta', 'gemini-interactions', ['gemini-generate-content']],
   ['fal', 'fal', 'https://queue.fal.run', 'fal-queue'],
-  ['openrouter', 'OpenRouter', 'https://openrouter.ai/api/v1', 'openrouter-responses'],
-  ['minimax', 'MiniMax', 'https://api.minimax.io/anthropic', 'minimax-messages'],
-  ['kimi', 'Moonshot Kimi', 'https://api.moonshot.ai/v1', 'kimi-chat'],
-  ['glm', 'Z.ai GLM', 'https://api.z.ai/api/paas/v4', 'glm-chat'],
+  ['openrouter', 'OpenRouter', 'https://openrouter.ai/api/v1', 'openrouter-responses', ['openai-chat-completions', 'openai-embeddings', 'openai-audio', 'rerank', 'openrouter-native']],
+  ['minimax', 'MiniMax', 'https://api.minimax.io/anthropic', 'minimax-messages', ['minimax-media']],
+  ['kimi', 'Moonshot Kimi', 'https://api.moonshot.ai/v1', 'legacy-openai-chat-completions'],
+  ['glm', 'Z.ai GLM', 'https://api.z.ai/api/paas/v4', 'glm-chat', ['openai-embeddings', 'openai-images', 'openai-audio', 'glm-video']],
   ['deepseek', 'DeepSeek', 'https://api.deepseek.com', 'deepseek-responses'],
-  ['doubao', 'Doubao (Volcengine Ark Standard Account)', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-responses'],
-  ['doubao-speech', 'Doubao Speech (Volcengine Doubao Voice)', 'https://openspeech.bytedance.com/api/v3/tts', 'doubao-responses'],
-  ['doubao-agent-plan', 'Doubao (Volcengine Ark Agent Plan)', 'https://ark.cn-beijing.volces.com/api/plan/v3', 'doubao-responses'],
-  ['qwen', 'Qwen（阿里云百炼）', 'https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1', 'qwen-responses'],
+  ['doubao', 'Doubao (Volcengine Ark Standard Account)', 'https://ark.cn-beijing.volces.com/api/v3', 'openai-responses', ['doubao-media', 'doubao-speech']],
+  ['doubao-speech', 'Doubao Speech (Volcengine Doubao Voice)', 'https://openspeech.bytedance.com/api/v3/tts', 'doubao-speech'],
+  ['doubao-agent-plan', 'Doubao (Volcengine Ark Agent Plan)', 'https://ark.cn-beijing.volces.com/api/plan/v3', 'openai-responses', ['doubao-media', 'doubao-speech']],
+  ['qwen', 'Qwen（阿里云百炼）', 'https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1', 'qwen-responses', ['legacy-openai-chat-completions', 'qwen-media']],
 ]
 
 const PROVIDER_INFLUENCE_ORDER = new Map<ProviderType, number>(
@@ -167,7 +167,7 @@ function isDoubaoProfile(provider_profile_id: ProviderType): boolean {
 
 const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
   catalog_revision: 1,
-  providers: BUILTIN_PROVIDER_NAMES.map(([provider_profile_id, display_name, base_url, protocol_adapter_id]) => ({
+  providers: BUILTIN_PROVIDER_NAMES.map(([provider_profile_id, display_name, base_url, protocol_adapter_id, extra_protocol_adapters = []]) => ({
     provider_profile_id,
     display_name,
     base_url,
@@ -195,6 +195,7 @@ const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
         } as Record<string, string>
       : undefined,
     protocol_adapter_id,
+    extra_protocol_adapters,
     discovery_behavior_id: provider_profile_id === 'doubao-speech' || provider_profile_id === 'fal'
       ? 'catalog-only'
       : `${provider_profile_id}-models`,
@@ -245,8 +246,12 @@ const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
   protocol_families: [
     { protocol_family_id: 'openai', protocol_adapter_id: 'openai-chat-completions', display_name: 'OpenAI Chat Completions' },
     { protocol_family_id: 'openai', protocol_adapter_id: 'openai-responses', display_name: 'OpenAI Responses' },
+    { protocol_family_id: 'openai', protocol_adapter_id: 'openai-embeddings', display_name: 'OpenAI Embeddings' },
+    { protocol_family_id: 'openai', protocol_adapter_id: 'openai-images', display_name: 'OpenAI Images' },
+    { protocol_family_id: 'openai', protocol_adapter_id: 'openai-audio', display_name: 'OpenAI Audio' },
+    { protocol_family_id: 'openai', protocol_adapter_id: 'openai-videos', display_name: 'OpenAI Videos' },
     { protocol_family_id: 'claude', protocol_adapter_id: 'claude-messages', display_name: 'Claude compatible' },
-    { protocol_family_id: 'gemini', protocol_adapter_id: 'gemini-interactions', display_name: 'Gemini compatible' },
+    { protocol_family_id: 'gemini', protocol_adapter_id: 'gemini-generate-content', display_name: 'Gemini compatible' },
   ],
 }
 
@@ -799,10 +804,12 @@ class MockAiccProvider implements AiccDataProvider {
       operations: Object.entries(defaults).map(([api_type, operation_id]) => ({ operation_id, api_types: [api_type] })),
     })
     return toProviderRuleOptions(catalog, routing.directories, [
-      adapter('openai-responses', { llm: 'responses.create', 'image.txt2img': 'images.generate' }),
-      adapter('openai-chat-completions', { llm: 'chat.completions' }),
+      adapter('openai-responses', { llm: 'responses.create' }),
+      adapter('openai-chat-completions', { llm: 'chat.completions.create' }),
+      adapter('openai-embeddings', { 'embedding.text': 'embeddings.create' }),
+      adapter('openai-images', { 'image.txt2img': 'images.generate' }),
       adapter('claude-messages', { llm: 'messages.create' }),
-      adapter('gemini-interactions', { llm: 'interactions.create' }),
+      adapter('gemini-generate-content', { llm: 'models.generateContent' }),
     ])
   }
 
@@ -1452,7 +1459,7 @@ function toProviderWritePayload(draft: WizardDraft): Record<string, unknown> {
     provider_rules_id: draft.provider_rules_id?.trim() || undefined,
     provider_profile_id: providerType,
     protocol_family_id: providerType === 'custom' ? draft.protocol_family_id : undefined,
-    protocol_adapter_id: draft.protocol_adapter_id,
+    protocol_adapter_id: providerType === 'custom' ? draft.protocol_adapter_id : undefined,
     base_url: draft.base_url.trim(),
     operation_base_urls: Object.fromEntries(
       Object.entries(draft.operation_base_urls)
@@ -2784,6 +2791,7 @@ function toProviderSetupCatalog(
         region_base_urls: asStringRecord(entry.region_base_urls),
         operation_base_urls: asStringRecord(entry.operation_base_urls),
         protocol_adapter_id: asNonEmptyString(entry.protocol_adapter_id, ''),
+        extra_protocol_adapters: toStringArray(entry.extra_protocol_adapters),
         discovery_behavior_id: asNonEmptyString(entry.discovery_behavior_id, ''),
         provider_rules_id: asOptionalString(entry.provider_rules_id),
         model_driver_overrides: asStringRecord(entry.model_driver_overrides),
@@ -2804,11 +2812,9 @@ function toProviderSetupCatalog(
       return {
         protocol_family_id: asNonEmptyString(adapter.protocol_family_id, ''),
         protocol_adapter_id,
-        display_name: protocol_adapter_id === 'openai-chat-completions'
-          ? 'OpenAI Chat Completions'
-          : protocol_adapter_id === 'openai-responses'
-            ? 'OpenAI Responses'
-            : labelFromPath(protocol_adapter_id),
+        display_name: protocol_adapter_id.startsWith('openai-')
+          ? `OpenAI ${labelFromPath(protocol_adapter_id.slice('openai-'.length))}`
+          : labelFromPath(protocol_adapter_id),
       }
     })
     .sort((a, b) => a.display_name.localeCompare(b.display_name))

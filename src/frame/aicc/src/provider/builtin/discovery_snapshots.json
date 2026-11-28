@@ -1,0 +1,168 @@
+{
+  "claude|*|discovery": {
+    "outcome": {
+      "models": 0
+    },
+    "requests": [
+      {
+        "headers": {
+          "accept": "*/*",
+          "anthropic-version": "2023-06-01",
+          "x-api-key": "***",
+          "x-request-id": "<id>"
+        },
+        "request": "GET /v1/models?limit=1000 HTTP/1.1"
+      }
+    ]
+  },
+  "deepseek|*|discovery": {
+    "outcome": {
+      "models": 0
+    },
+    "requests": [
+      {
+        "headers": {
+          "accept": "*/*",
+          "authorization": "Bearer ***",
+          "x-request-id": "<id>"
+        },
+        "request": "GET /models HTTP/1.1"
+      }
+    ]
+  },
+  "doubao|*|discovery": {
+    "outcome": {
+      "models": 0
+    },
+    "requests": [
+      {
+        "headers": {
+          "accept": "*/*",
+          "authorization": "Bearer ***",
+          "x-request-id": "<id>"
+        },
+        "request": "GET /api/v3/models HTTP/1.1"
+      }
+    ]
+  },
+  "gemini|*|discovery": {
+    "outcome": {
+      "models": 0
+    },
+    "requests": [
+      {
+        "headers": {
+          "accept": "*/*",
+          "x-goog-api-key": "***",
+          "x-request-id": "<id>"
+        },
+        "request": "GET /v1beta/models?pageSize=1000 HTTP/1.1"
+      }
+    ]
+  },
+  "glm|*|discovery": {
+    "outcome": {
+      "models": 0
+    },
+    "requests": [
+      {
+        "headers": {
+          "accept": "*/*",
+          "authorization": "Bearer ***",
+          "x-request-id": "<id>"
+        },
+        "request": "GET /api/paas/v4/models HTTP/1.1"
+      }
+    ]
+  },
+  "kimi|*|discovery": {
+    "outcome": {
+      "models": 0
+    },
+    "requests": [
+      {
+        "headers": {
+          "accept": "*/*",
+          "authorization": "Bearer ***",
+          "x-request-id": "<id>"
+        },
+        "request": "GET /v1/models HTTP/1.1"
+      }
+    ]
+  },
+  "minimax|*|discovery": {
+    "outcome": {
+      "models": 0
+    },
+    "requests": [
+      {
+        "headers": {
+          "accept": "*/*",
+          "x-api-key": "***",
+          "x-request-id": "<id>"
+        },
+        "request": "GET /anthropic/v1/models?limit=1000 HTTP/1.1"
+      }
+    ]
+  },
+  "openai|*|discovery": {
+    "outcome": {
+      "models": 0
+    },
+    "requests": [
+      {
+        "headers": {
+          "accept": "*/*",
+          "authorization": "Bearer ***",
+          "x-request-id": "<id>"
+        },
+        "request": "GET /v1/models HTTP/1.1"
+      }
+    ]
+  },
+  "openrouter|*|discovery": {
+    "outcome": {
+      "models": 0
+    },
+    "requests": [
+      {
+        "headers": {
+          "accept": "*/*",
+          "authorization": "Bearer ***",
+          "x-request-id": "<id>"
+        },
+        "request": "GET /api/v1/models?output_modalities=all HTTP/1.1"
+      }
+    ]
+  },
+  "qwen|*|discovery": {
+    "outcome": {
+      "models": 0
+    },
+    "requests": [
+      {
+        "headers": {
+          "accept": "*/*",
+          "authorization": "Bearer ***",
+          "x-request-id": "<id>"
+        },
+        "request": "GET /compatible-mode/v1/models HTTP/1.1"
+      }
+    ]
+  },
+  "sn|*|discovery": {
+    "outcome": {
+      "models": 0
+    },
+    "requests": [
+      {
+        "headers": {
+          "accept": "*/*",
+          "authorization": "Bearer ***",
+          "x-request-id": "<id>"
+        },
+        "request": "GET /api/v1/ai/models HTTP/1.1"
+      }
+    ]
+  }
+}

@@ -1003,7 +1003,7 @@ fn validate_settings_provider(provider: &ProviderSettings) -> ProviderValidateRe
         provider_type: provider.provider_type.clone(),
         provider_profile_id: provider.provider_profile_id.clone(),
         protocol_family_id: provider.protocol_family_id.clone(),
-        protocol_adapter_id: Some(provider.protocol_adapter_id.clone()),
+        protocol_adapter_id: provider.protocol_adapter_id.clone(),
         base_url: provider.base_url.clone(),
         operation_base_urls: provider.operation_base_urls.clone(),
         credentials: provider.credentials.clone(),
@@ -1023,10 +1023,18 @@ fn provider_from_add(
     request: ProviderAddRequest,
     resolved_adapter: Option<String>,
 ) -> Result<ProviderSettings, RPCErrors> {
-    let protocol_adapter_id = request
-        .protocol_adapter_id
-        .or(resolved_adapter)
-        .ok_or_else(|| RPCErrors::ReasonError("provider adapter was not resolved".to_string()))?;
+    let protocol_adapter_id = if request.provider_profile_id == "custom" {
+        Some(
+            request
+                .protocol_adapter_id
+                .or(resolved_adapter)
+                .ok_or_else(|| {
+                    RPCErrors::ReasonError("provider adapter was not resolved".to_string())
+                })?,
+        )
+    } else {
+        None
+    };
     let dynamic_login = request
         .auth
         .as_ref()
@@ -1079,7 +1087,9 @@ fn apply_provider_update(provider: &mut ProviderSettings, request: ProviderUpdat
         provider.protocol_family_id = Some(family);
     }
     if let Some(adapter) = request.protocol_adapter_id {
-        provider.protocol_adapter_id = adapter;
+        if provider.provider_profile_id == "custom" {
+            provider.protocol_adapter_id = Some(adapter);
+        }
     }
     if let Some(discovery) = request.discovery {
         provider.discovery = Some(discovery);
@@ -1609,7 +1619,16 @@ fn runtime_admin_snapshot(
                 provider_instance_name: settings.provider_instance_name.clone(),
                 provider_type: settings.provider_type.clone(),
                 provider_profile_id: settings.provider_profile_id.clone(),
-                protocol_adapter_id: settings.protocol_adapter_id.clone(),
+                protocol_adapter_id: settings
+                    .protocol_adapter_id
+                    .clone()
+                    .or_else(|| {
+                        snapshot
+                            .catalog
+                            .known_provider(&settings.provider_profile_id)
+                            .map(|provider| provider.protocol_adapter_id.clone())
+                    })
+                    .unwrap_or_default(),
                 base_url: settings.base_url.clone(),
                 operation_base_urls: settings.operation_base_urls.clone(),
                 enabled: settings.enabled,
@@ -1652,6 +1671,12 @@ fn runtime_admin_snapshot(
                     region_base_urls: provider.connection.region_base_urls.clone(),
                     operation_base_urls: provider.connection.operation_base_urls.clone(),
                     protocol_adapter_id: provider.protocol_adapter_id.clone(),
+                    extra_protocol_adapters: provider
+                        .extra_protocol_adapters
+                        .iter()
+                        .map(|client| client.id.clone())
+                        .collect(),
+                    state_namespace: provider.state_namespace.clone(),
                     discovery_behavior_id: provider.discovery_behavior_id.clone(),
                     dynamic_login_behavior_id: provider.dynamic_login_behavior_id.clone(),
                     connection_behavior_id: provider.connection_behavior_id.clone(),
@@ -1892,8 +1917,15 @@ fn protocol_adapter_response(
                 default_operations: adapter.operations.values().flat_map(|operation| operation.bindings.iter())
                     .filter_map(|binding| {
                         let api_type = serde_json::to_value(binding.api_type).ok()?.as_str()?.to_string();
-                        let operation = crate::provider::resolve_operation(adapter, &BTreeMap::new(), None, binding.api_type, &api_type, None).ok()??;
-                        Some((api_type, operation))
+                        let operation = crate::protocol::resolve_binding(codecs, &crate::protocol::BindingQuery {
+                            clients: &crate::protocol::ProtocolClientSet::single(adapter.protocol_adapter_id.clone()),
+                            rule_adapter_id: None,
+                            overrides: &BTreeMap::new(),
+                            remote_methods: None,
+                            api_type: binding.api_type,
+                            default_operation: None,
+                        }).ok()??;
+                        Some((api_type, operation.operation_id))
                     }).collect(),
                 protocol_family_id: adapter.protocol_family_id.clone(),
                 protocol_adapter_id: adapter.protocol_adapter_id.clone(),
@@ -1908,7 +1940,6 @@ fn protocol_adapter_response(
                 probe_priority: adapter.probe_priority,
                 probe_path: adapter.probe_path.clone(),
                 base_adapter_id: adapter.base_adapter_id.clone(),
-                component_adapter_ids: adapter.component_adapter_ids.clone(),
                 operations: adapter
                     .operations
                     .values()

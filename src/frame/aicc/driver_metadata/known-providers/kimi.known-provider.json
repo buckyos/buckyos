@@ -1,16 +1,17 @@
 {
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
-  "schema_revision": 1,
-  "revision_seq": 3,
+  "schema_revision": 2,
+  "revision_seq": 5,
   "catalog_id": "kimi",
   "providers": [
     {
       "provider_profile_id": "kimi",
       "display_name": "Moonshot Kimi",
       "base_url": "https://api.moonshot.ai/v1",
-      "protocol_adapter_id": "kimi-chat",
-      "discovery_behavior_id": "kimi-models",
+      "protocol_adapter_id": "legacy-openai-chat-completions",
+      "state_namespace": "kimi",
+      "discovery_behavior_id": "standard-models",
       "provider_rules_id": "kimi",
       "credential": { "kind": "bearer" },
       "connection": {

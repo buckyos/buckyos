@@ -1,8 +1,8 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 1,
-  "revision_seq": 6,
+  "schema_revision": 2,
+  "revision_seq": 7,
   "provider_profile_id": "deepseek",
   "model_driver_overrides": {
     "deepseek-flash": "deepseek/deepseek-v4.1-flash",
@@ -26,7 +26,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      },
+      }, "remove_features": ["web_search"],
       "request_rules": [
         {
           "remove": [

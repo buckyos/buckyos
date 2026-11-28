@@ -363,6 +363,7 @@ export interface KnownProviderProfile {
   region_base_urls: Record<string, string>
   operation_base_urls?: Record<string, string>
   protocol_adapter_id: string
+  extra_protocol_adapters: string[]
   discovery_behavior_id: string
   provider_rules_id?: string
   model_driver_overrides?: Record<string, string>

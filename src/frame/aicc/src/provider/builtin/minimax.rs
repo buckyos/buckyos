@@ -3,20 +3,13 @@ use super::super::{
     DiscoveryMode, ProviderConnectionContract, ProviderConnectionInput, ProviderProfile,
     ProviderResult,
 };
-use super::anthropic_models::{AnthropicModelsDiscovery, AnthropicModelsSpec};
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
 #[cfg(test)]
 use crate::protocol::CredentialKind;
-use crate::protocol::HttpTransport;
 
+#[cfg(test)]
 pub(crate) const MINIMAX_PROVIDER_PROFILE_ID: &str = "minimax";
-
-pub(super) const MINIMAX_SPEC: AnthropicModelsSpec = AnthropicModelsSpec {
-    provider_profile_id: MINIMAX_PROVIDER_PROFILE_ID,
-    version_header: false,
-    label: "MiniMax",
-};
 
 #[cfg(test)]
 pub(crate) fn minimax_profile() -> ProviderProfile {
@@ -53,10 +46,6 @@ pub(crate) fn minimax_model_driver() -> ModelDriverCatalog {
 #[cfg(test)]
 pub(crate) fn minimax_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[MINIMAX_PROVIDER_PROFILE_ID])
-}
-
-pub(crate) fn minimax_discovery(transport: HttpTransport) -> AnthropicModelsDiscovery {
-    AnthropicModelsDiscovery::new(MINIMAX_SPEC, transport)
 }
 
 #[cfg(test)]
@@ -151,7 +140,10 @@ mod tests {
             ("MiniMax-H3-Max", "video_generation.v2.create"),
         ] {
             let rule = rules.models.iter().find(|rule| rule.id == model).unwrap();
-            assert_eq!(rule.operations["video.generate"], operation);
+            assert_eq!(
+                rule.operations["video.generate"],
+                format!("minimax-media/{operation}")
+            );
             assert!(rule.provider_options.is_empty());
             assert!(rule.request_rules.is_empty());
         }
@@ -213,13 +205,20 @@ mod tests {
                 .len(),
             rules.static_inventory_models.len()
         );
-        assert_eq!(contract.base_adapter_id, CLAUDE_MESSAGES_ADAPTER_ID);
+        assert_eq!(
+            contract.base_adapter_id,
+            crate::protocol::LEGACY_CLAUDE_MESSAGES_ADAPTER_ID
+        );
         assert_eq!(
             adapter.base_adapter_id.as_deref(),
-            Some(CLAUDE_MESSAGES_ADAPTER_ID)
+            Some(crate::protocol::LEGACY_CLAUDE_MESSAGES_ADAPTER_ID)
         );
-        assert_eq!(registration.operation_codecs.len(), 8);
-        assert_eq!(registration.native_task_codecs.len(), 2);
+        assert_eq!(registration.operation_codecs.len(), 3);
+        assert!(registration.native_task_codecs.is_empty());
+        assert_eq!(
+            known.extra_protocol_adapters[0].id,
+            crate::protocol::MINIMAX_MEDIA_ADAPTER_ID
+        );
         let builtin = minimax_catalog_files()
             .into_iter()
             .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))
@@ -250,13 +249,14 @@ mod tests {
         registry
             .register_codecs(base_descriptor, base_registration)
             .unwrap();
-        let (media_descriptor, media_registration) = crate::protocol::minimax_media_adapter();
+        let (legacy_descriptor, legacy_registration) =
+            crate::protocol::legacy_claude_messages_adapter();
         registry
-            .register_codecs(media_descriptor, media_registration)
+            .register_derived(legacy_descriptor, legacy_registration)
             .unwrap();
         let (derived_descriptor, derived_registration) = minimax_messages_adapter();
         registry
-            .register_codecs(derived_descriptor, derived_registration)
+            .register_derived(derived_descriptor, derived_registration)
             .unwrap();
 
         assert!(registry.adapter(CLAUDE_MESSAGES_ADAPTER_ID).is_some());

@@ -25,7 +25,7 @@ AICC 不应把所有 Provider 都实现成同一种声明式配置，但 Provide
 
 这些逻辑不作为外部 Provider 参数配置暴露。Provider API 升级且确实改变上述执行逻辑时，由专用实现和测试一起升级。
 
-专用 Provider 仍然必须使用本厂商独立的 `.provider.json`，并复用 Model Driver metadata。Provider variant 转换、operation、请求参数差异、能力收窄和静态价格写入 `.provider.json`。身份特例和已确认的 moving alias 由可选 `match_model_driver` 实现，不再配置 origin 变换 DSL。只有统一配置 schema 无法安全表达的个性逻辑才允许留在代码中。
+专用 Provider 仍然必须使用本厂商独立的 `.provider.json`，并复用 Model Driver metadata。Provider variant 转换、operation、请求参数差异、能力收窄和静态价格写入 `.provider.json`。已确认的 moving alias 和聚合渠道的 vendor 前缀写进 `.provider.json` 的 `model_driver_overrides`、`model_driver_vendor_prefixes`；配置表达不了的身份特例才由可选 `match_model_driver` 实现，不再配置 origin 变换 DSL。只有统一配置 schema 无法安全表达的个性逻辑才允许留在代码中。
 
 ### 1.2 配置型 Provider
 
@@ -77,11 +77,17 @@ Provider 参数配置是官方支持 Provider 的渠道声明层，不是可执�
 
 Provider Instance 的名称、凭据、区域和用户自定义 `base_url` 属于实例私有配置，也不进入可云更新的 Provider 参数文件。
 
-### 2.1 基础协议与派生 Adapter
+### 2.1 协议客户端
 
-OpenAI、Claude、Google Gemini 必须各自拥有专门实现、独立注册和独立验收的协议族。协议族不是可执行 Adapter；同一厂商的新旧 API 形态使用不同的内部 `protocol_adapter_id`，不能在一个 Adapter 内按 endpoint 能力或 Provider ID 切换。基础协议首先实现并维护官方推荐的新接口；历史接口不要求预先完整实现，只有首个真实 Provider 需要某个历史 API 代际时才增加对应 Adapter。这个 Adapter 属于协议族并可被所有兼容 Provider 复用，不属于首个触发需求的派生 Provider，也不能在后续 Provider 中重复实现。
+AICC 内部是一组协议客户端（代码里叫 Protocol Adapter，ID 是 `protocol_adapter_id`）。一个客户端实现一种 API 类型：一组 endpoint 路径、请求和响应结构、凭据放在哪个头。客户端只注册自己实现的 operation 和 codec，不把其它客户端的 operation 拷进自己名下；组合 Adapter 和 `component_adapter_ids` 已删除。全部客户端的层、协议族、基础客户端、是否对自定义开放、operation 列表和方言的残余差异见 [`protocol_clients.md`](protocol_clients.md)，该清单由测试与注册表逐项校验。
 
-内置厂商 Adapter 可以复用基础协议，并声明语义上的子类关系。派生 Adapter 是声明式配置无法表达时的最后手段，不是承载厂商参数表的默认位置：
+**只有两类调整需要发版本：API 类型升级、协议客户端升级**（新增或修改客户端，包括方言；同时修改客户端清单）。其余调整都必须能靠更新配置文件完成，包括内置 Provider 的能力升级：给某家加模型、让它多用一个已有的客户端、改它的模型规则、把协议里的模型名映射到 AICC 标准模型名，都只改 `driver_metadata/*.json`，可以在线下发。模型目录可以在线更新；目录不认识的模型名就是不识别。能用配置表达的差异不得写进客户端代码。
+
+OpenAI、Claude、Google Gemini 必须各自拥有专门实现、独立注册和独立验收的协议族。协议族不是可执行客户端，而是一组可以共用同一个 endpoint 和凭据的客户端；同一厂商的新旧 API 形态使用不同的内部 `protocol_adapter_id`，不能在一个 Adapter 内按 endpoint 能力或 Provider ID 切换。基础协议首先实现并维护官方推荐的新接口；历史接口不要求预先完整实现，只有首个真实 Provider 需要某个历史 API 代际时才增加对应 Adapter。这个 Adapter 属于协议族并可被所有兼容 Provider 复用，不属于首个触发需求的派生 Provider，也不能在后续 Provider 中重复实现。
+
+标准客户端分两种口径，分开实现：官方口径按 API 所属平台的官方文档严格实现；生态口径按兼容厂商和本地推理的通行约定实现，ID 以 `legacy-` 开头（`legacy-openai-chat-completions`、`legacy-claude-messages`），`base_adapter_id` 指向官方口径的客户端，只覆盖差异。各家在生态约定之内的差别（带哪些扩展参数、去掉哪个字段）用 Provider Rules 的 `provider_options`、`request_rules`、`variants` 表达，不进客户端代码。
+
+生态口径客户端和方言客户端都是派生客户端。方言是声明式配置和生态口径都无法表达时的最后手段，不是承载厂商参数表的默认位置，残余差异必须写进客户端清单：
 
 ```text
 derived protocol_adapter_id
@@ -93,61 +99,44 @@ derived protocol_adapter_id
 “子类”只约束语义和依赖方向，实现可以采用继承、组合、委托或共享无状态协议组件。必须满足：
 
 - 派生 Adapter 使用独立 `protocol_adapter_id`，不能冒充基础 Adapter；
+- 派生 Adapter 与基础 Adapter 属于同一个 `protocol_family_id`，注册表拒绝跨协议族派生；
 - 依赖从派生 Adapter 指向基础 Adapter，基础 Adapter 不引用派生 Adapter；
 - 基础 Adapter 不读取派生 Provider 的配置字段，不按 Provider ID 分支；
 - 派生 Adapter 只覆盖差异点，未覆盖行为保持基础协议语义；
 - 删除派生 Adapter、Profile、Rules 和测试后，基础 Adapter 的代码、schema 和行为不变。
 
-初始 registry 关系至少包括：
-
-| `protocol_family_id` | `protocol_adapter_id` | `base_adapter_id` | `component_adapter_ids` | 定位 |
-| --- | --- | --- | --- | --- |
-| `openai` | `openai-responses` | 无 | 无 | OpenAI 官方默认的新接口实现 |
-| `openai` | `openai-chat-completions` | 无 | 无 | 首个真实需求出现时才注册，之后由兼容 Provider 共享的 Chat Completions 实现 |
-| `openai` | `openai-completions` | 无 | 无 | 首个真实需求出现时才注册，之后由兼容 Provider 共享的旧 Text Completions 实现 |
-| `claude` | `claude-messages` | 无 | 无 | Claude 官方默认 Messages 实现 |
-| `claude` | `claude-completions` | 无 | 无 | 按首次真实需求实现，之后在协议族内共享 |
-| `gemini` | `gemini-interactions` | 无 | 无 | Gemini 官方默认的新接口实现 |
-| `gemini` | `gemini-generate-content` | 无 | 无 | 按首次真实需求实现，之后在协议族内共享 |
-| `openai` | `sn-openai` | `openai-responses` | 无 | SN 鉴权扩展，当前复用 Responses 实现 |
-| `openai` | `openrouter-responses` | `openai-responses` | 无 | OpenRouter 渠道扩展，复用 OpenResponses 兼容接口 |
-| `glm` | `glm-chat` | `openai-chat-completions` | `openai-chat-completions`, `glm-media` | GLM 多协议复合 Adapter |
-| `minimax` | `minimax-messages` | `claude-messages` | `claude-messages`, `minimax-media` | MiniMax 多协议复合 Adapter |
+当前注册的客户端及其 `protocol_family_id`、`base_adapter_id` 以 [`protocol_clients.md`](protocol_clients.md) 为准，本文不另抄一份。
 
 新接口 Adapter 与兼容 Adapter 是平级实现。兼容 Adapter 不继承新接口 Adapter，也不通过调用新接口失败后回退旧接口。两者只允许复用低层、无状态且协议中立的组件，例如 HTTP transport、SSE framing、通用 JSON/错误工具和 AICC normalized IR；endpoint path、request schema、response event、错误映射和能力声明保持各自内聚。
 
-同一个历史 API 代际只实现一份共享 Adapter。Provider 没有额外差异时，Provider Profile 或 Instance 直接保存这个 Adapter ID。确有渠道差异时，先用 `.provider.json` 的 operation、provider options、request rules、能力收窄及其它受限声明表达；只有不同 wire envelope、流事件状态机、签名/动态认证算法、任务生命周期或无法声明化的错误语义，才建立独立派生 Adapter，并用 `base_adapter_id` 指向共享历史 Adapter。多个派生 Adapter 可以引用同一个历史 Adapter，各自只实现剩余的最小逻辑差异，不复制历史 wire protocol，也不在代码中保存可由 Provider Rules 表达的参数表。
+同一个历史 API 代际只实现一份共享 Adapter。Provider 没有额外差异时，Known Provider 或自定义实例直接引用这个 Adapter ID。确有渠道差异时，先用 `.provider.json` 的 operation、provider options、request rules、能力收窄及其它受限声明表达；只有不同 wire envelope、流事件状态机、签名/动态认证算法、任务生命周期或无法声明化的错误语义，才建立独立派生 Adapter，并用 `base_adapter_id` 指向共享历史 Adapter。多个派生 Adapter 可以引用同一个历史 Adapter，各自只实现剩余的最小逻辑差异，不复制历史 wire protocol，也不在代码中保存可由 Provider Rules 表达的参数表。
 
-Provider Profile/Rules 必须在路由前得到一个确定的 Adapter 和 operation。内置 Provider 的默认选择由 Known Provider catalog 和 `.provider.json` 固定；用户添加 `custom` Provider 时必须显式选择 `protocol_adapter_id`，同时提交所属 `protocol_family_id`。OpenAI Chat Completions 与 Responses 是独立选项。接入验证不发送协议探测请求，不枚举候选 Adapter；运行时只使用已固化 Adapter，不在一次调用中切换新旧 Adapter。
+每个 Provider 实例有一个客户端集合，第一个是默认客户端：
 
-实例没有 Provider Rules 时，inventory 先按 discovery 的 `remote_methods` 和 Adapter binding 的 `default_priority` 选择 operation。若仍有多个候选，且当前 Adapter 与该协议族 Known Provider 的默认 Adapter 完全一致，则按 `origin_model_id` 查询其 Provider Rules，用 `operations` 中属于当前候选集的映射消除歧义。例如 OpenAI 协议下 GPT 的图像能力使用 `responses.create`，独立图像模型使用 `images.generate` / `images.edit`；没有有效映射时仍报告歧义。
+- **Known Provider**：`protocol_adapter_id` 是默认客户端；可选的有序列表 `extra_protocol_adapters` 声明这家还用到的客户端，每项是 `{id, credential?}`（凭据见 §3.0）。实例的客户端集合只从 catalog 来，settings 里的 `protocol_adapter_id` 对 Known Provider 不读取，管理接口也不要求提交。让一家 Provider 多用一个已有的客户端，只改 Known Provider 和它的 Provider Rules。
+- **自定义实例**：settings 里的 `protocol_adapter_id` 是默认客户端，必须由用户显式选择，后端不探测、不自动识别；客户端集合是这个默认客户端，加上同一协议族里所有对自定义开放的客户端。哪些客户端对自定义开放由 Provider Rules 的 `custom_provider_adapters` 声明（§4）。
+- Known Provider 的 Provider Rules 引用的客户端必须在它的集合内，每个限定绑定必须在注册表里存在，否则 catalog 装配失败。自定义实例的规则指向集合外的客户端时，只滤除该能力项（`unregistered_binding`）。
+
+Provider Profile/Rules 必须在路由前得到一个确定的客户端和 operation。内置 Provider 的选择由 Known Provider catalog 和 `.provider.json` 固定；用户添加 `custom` Provider 时必须显式选择 `protocol_adapter_id`，可同时提交所属 `protocol_family_id`，两者不一致时拒绝。OpenAI Responses、官方口径和生态口径的 Chat Completions 是独立选项。接入验证不发送协议探测请求，不枚举候选 Adapter；运行时只使用已固化的客户端集合，不在一次调用中切换新旧 Adapter。
+
+实例没有 Provider Rules 时，inventory 先按 discovery 的 `remote_methods` 和 binding 的 `default_priority` 在实例的客户端集合里选择 operation（§5.2）。若仍有多个候选，且实例的默认客户端与该协议族 Known Provider 的默认客户端完全一致，则按 `origin_model_id` 查询其 Provider Rules，用 `operations` 中属于当前候选集的映射消除歧义。例如 OpenAI 协议下 GPT 的图像能力使用 `responses.create`，独立图像模型使用 `images.generate` / `images.edit`；没有有效映射时仍报告歧义。
 
 相同条件下，LLM 的思考强度预设也使用该默认 Provider Rules 中明确匹配模型的 variant 映射。inventory 只注册模型声明支持、且未被 discovery 禁用的预设；请求转换复用同一映射，将 `reasoning-medium` 等内部 variant 转为协议参数，远端 `model` 仍使用原始 `provider_model_id`。显式 Provider Rules 优先，缺少映射的预设仍不可用，不静默改换强度。默认映射不继承官方价格、普通参数改写、非 LLM variant、能力限制或准入规则。
 
-一个 Provider 需要多套 protocol client 时，不把实例字段扩成无约束的 Adapter 数组。
-Adapter 是该 Provider 的可执行协议边界，可以注册多个按 operation 分派的
-`OperationCodec`/`NativeTaskCodec`，每个 codec 可委托不同的基础协议实现。MiniMax 的
-Messages、T2A、图片、音乐和视频即按此方式组合；OpenRouter 的 Responses、embedding、rerank 与 alpha Decisions 也按
-operation 显式组合。每套独立 wire 协议先注册可单独测试和复用的 Adapter，再由 Provider 的复合 Adapter 通过
-`component_adapter_ids` 显式声明组件，并按 operation 绑定对应 codec。当前 `glm-chat`
-由 `openai-chat-completions + glm-media` 组成，`minimax-messages` 由
-`claude-messages + minimax-media` 组成；GLM/MiniMax 复合 Adapter 使用自己的
-`protocol_family_id`，不再冒充 OpenAI/Claude。Registry 要求组件先注册且引用不可悬空，
-`protocol_adapter.list` 会返回组件关系。一次路由仍在调用前得到唯一的
-`composite adapter + operation + codec`，不会运行时试探或静默切换。
+一个 Provider 用到多种 wire 协议时，在 Known Provider 里声明多个客户端，再由模型规则逐模型、逐 API 类型指向客户端（§5.2），不再注册把别的客户端 operation 拷进来的组合 Adapter。例如 MiniMax 的默认客户端是 `minimax-messages`，图片、语音、音乐和视频走 extra 客户端 `minimax-media`；OpenRouter 同一个模型的 LLM 走默认的 `openrouter-responses`，图片走 `openrouter-native/images.generate`，向量走 `openai-embeddings/embeddings.create`。库存和模型注册表里的 `operations` 一律存 `<protocol_adapter_id>/<operation_id>` 限定形式，选路结果和 lowering 的 `protocol_adapter_id` 是本次请求实际选中的客户端。一次路由仍在调用前得到唯一的 `客户端 + operation + codec`，不会运行时试探或静默切换。
 
 ### 2.1.1 可执行绑定表的事实源
 
-完整的 `provider × api_type × operation × codec` 关系见
-[`provider_operation_bindings.md`](provider_operation_bindings.md)。
+完整的 `provider × 客户端 × api_type × operation` 关系见
+[`provider_operation_bindings.md`](provider_operation_bindings.md)，客户端一列是实际选中的客户端。
 运行时通过 `protocol_adapter.list` 返回当前注册的 Adapter、operation、API type 和执行模式；
 Provider Rules 再给出每个模型的 operation 选择。`call::tests::every_builtin_provider_operation_has_a_golden_lowering_binding`
-从这两份事实源生成、去重并校验全部内置绑定及文档（当前 84 条）。因此新增或删除绑定必须修改
+从这两份事实源生成、去重并校验全部内置绑定及文档（当前 132 条）。因此新增或删除绑定必须修改
 metadata/Adapter，并同步更新由测试强制校验的绑定文档。
 
-### 2.2 SN Provider 的 OpenAI 子类语义
+### 2.2 SN Provider 的认证
 
-SN Provider 当前使用独立的 `sn-openai` Protocol Adapter，属于 `openai` 协议族，并声明 `base_adapter_id: "openai-responses"`。它复用 OpenAI Responses 请求、响应、stream、错误和 operation 语义，SN 特性只实现在派生层。
+SN 基于 LiteLLM，用 OpenAI 族的标准客户端接入，没有专用协议客户端：默认客户端是 `openai-responses`，extra 是 `openai-chat-completions`、`openai-embeddings`、`openai-images`、`openai-audio`、`openai-videos`。SN 特有的动态登录和模型发现是 Provider 行为，分别由 Known Provider 的 `dynamic_login_behavior_id: "sn"` 和 `discovery_behavior_id: "sn-models"` 选择，不属于协议客户端。
 
 SN Provider 支持两种显式且互斥的认证模式：
 
@@ -171,7 +160,7 @@ SN Provider 支持两种显式且互斥的认证模式：
 ```
 
 - `api_key` 模式与 OpenAI Bearer API Key 方式一致。
-- `dynamic_login` 模式由 SN 派生层在运行时登录、缓存并按过期时间刷新 token，再把已解析的 Bearer credential 交给 OpenAI 基础调用路径。
+- `dynamic_login` 模式由 SN 动态登录行为在运行时登录、缓存并按过期时间刷新 token，再把已解析的 Bearer credential 交给 OpenAI 客户端。
 - 动态 token 不进入 Provider catalog、inventory、trace、日志或持久 metadata；并发刷新需要合并，认证失败只按 SN 认证错误返回。
 - OpenAI 基础 Adapter 只消费已解析的认证材料，不知道 token 来自静态 API Key 还是 SN 登录。
 - 不允许把动态登录作为 OpenAI Adapter 的可选分支；这保证 SN 将来采用独立协议时可以干净拆除。
@@ -188,7 +177,7 @@ GLM JWT 使用同一个 `api_key` 模式并显式选择 typed credential variant
 }
 ```
 
-其他内置厂商也可以使用同样的派生 Adapter 模式，但必须有独立 ID、明确差异面和基础/派生两层验收。
+其他内置厂商需要不可声明的认证或发现时，同样以 behavior ID 声明 Provider 行为；确需派生客户端时，必须有独立 ID、明确差异面和基础/派生两层验收（§2.1）。
 
 ## 3. Model Driver 与 Provider 配置边界
 
@@ -196,7 +185,13 @@ GLM JWT 使用同一个 `api_key` 模式并显式选择 typed credential variant
 
 Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯一 metadata 来源。每项必须直接包含 typed `credential`、`connection` 与 `discovery_behavior_id`，可按需声明 `dynamic_login_behavior_id`、`connection_behavior_id`，不得从 `ui_hints` 推断。`CatalogSnapshot::resolve_provider_configuration()` 同时解析 Known Provider 和其 `provider_rules_id`，校验 Rules 存在且 identity 一致后，返回默认配置与稳定 behavior IDs。
 
-行为 registry 以稳定 behavior ID 注册 discovery、动态登录或其它不可声明执行行为，不是 Provider Profile 白名单。Known Provider 必须在 metadata 中选择已注册 discovery behavior；通用 OpenAI-compatible/Claude/Gemini discovery 也有稳定 ID，可由任意新 Profile 复用。refresh 时从当前 Provider Rules 的 `static_inventory_models` 重建显式 default inventory。任何未知或冲突 behavior 均拒绝装配，不允许读取 `ui_hints`、按 Provider ID 猜测或静默 first-match。
+`schema_revision: 2` 起，Known Provider 还可以声明客户端集合与命名空间（§2.1）：
+
+- `protocol_adapter_id` 是默认客户端；`extra_protocol_adapters` 是有序的 `[{id, credential?}]`，ID 必须已注册、不重复、不等于默认客户端。
+- 实例只有一份密钥，按本次请求选中的客户端决定怎么放进请求：实例显式选了 `credential_kind` 时，所有客户端都按它（取自 `credential` / `credential_variants`）；否则默认客户端用 `credential`，extra 客户端用该项的 `credential`，没写时用客户端自己声明的凭据（`AdapterDescriptor.credential`）。自定义实例没有这层声明，每个客户端用自己声明的凭据，`credential_kind` 只能等于默认客户端的凭据类型。
+- 可选 `state_namespace` 是这家 Provider 的 provider state 命名空间：客户端按所属协议族的命名空间写 provider state，执行层把它改写成声明的值；不声明时保持客户端自己的命名空间。它取代了原来各方言客户端各自改写命名空间的代码。
+
+行为 registry 以稳定 behavior ID 注册 discovery、动态登录或其它不可声明执行行为，不是 Provider Profile 白名单。Known Provider 必须在 metadata 中选择已注册 discovery behavior。通用发现是 `standard-models`，按实例默认客户端的协议族选择：OpenAI 族 `{base}/models`，Claude 族 `/v1/models`（官方口径发 `anthropic-version`，生态口径不发），Gemini 族 `models`；任意新 Profile 都可复用。另外只有 `catalog-only`（不联网，库存来自规则）、`volcengine-ark-models`（标准列表加方舟的 `status`）、`openrouter-models`（OpenRouter 目录协议）和 `sn-models`（SN 的信封）。发现不从模型列表读取模型事实，模型事实只从 Model Driver 读；方舟的 `status` 是渠道当前的可用状态，保留。refresh 时从当前 Provider Rules 的 `static_inventory_models` 重建显式 default inventory。任何未知或冲突 behavior 均拒绝装配，不允许读取 `ui_hints`、按 Provider ID 猜测或静默 first-match。
 
 可选 credential 由 typed `credential_variants[]` 声明，实例在 `auth.mode=api_key` 时用 `credential_kind` 显式选择；省略则使用 `credential` 默认值。区域入口由 typed `connection.region_base_urls` 声明，只有实例未显式提供 `base_url` 时才按解析后的 region 选择；管理 UI 选择某个接入点时应直接把该映射 URL 写入实例 `base_url`，从而使 Review、验证和实际调用看到同一个地址。`region` 表示 API 接入点及其渠道计价维度，`instance_rules.policy_region` 表示居住地/账号地区及模型访问政策，两者不得混用。GLM 的 `glm_jwt` 和 GLM/MiniMax 的区域入口均通过这两个 typed 字段进入 production registry。SN 的 `device_jwt` 是 SN 登录实现支持的稳定行为 ID，由显式 `auth.login_profile` 选择和校验，不从可选的 `ui_hints` 推断。
 
@@ -210,11 +205,12 @@ Model Driver v2 声明精确模型 ID、API/能力、LLM 规格和 supported_eff
 
 | 字段 | 职责 |
 | --- | --- |
-| `custom_provider_adapters` | 允许 Custom Provider 选用的同协议族 Adapter 白名单 |
+| `custom_provider_adapters` | 对自定义 Provider 开放的客户端，必须与本 Provider 的默认客户端同协议族；自定义实例自动带上同族的全部开放客户端 |
 | `static_inventory_models` | 明确的渠道库存，不从技术/价格规则推导 |
-| `model_driver_overrides` | 聚合渠道稳定物理 ID 到精确 `<model_driver_id>/<model_id>` 的映射；不改写实际调用 ID |
+| `model_driver_overrides` | 聚合渠道稳定物理 ID 到精确 `<model_driver_id>/<model_id>` 的映射；不改写实际调用 ID。渠道发布的浮动别名（如 TypeSafe 的 `jev-latest`）也写在这里 |
+| `model_driver_vendor_prefixes` | `schema_revision: 2`。声明后，`<vendor>/<model>` 形式的 ID 在该 vendor 对应的 Model Driver 里匹配（未列出的 vendor 用同名 Driver），例如 OpenRouter 的 `anthropic` 对 `claude` |
 | `supplemental_inventory_api_types` | 动态查询未覆盖、允许静态补充的 API 集合 |
-| `models` / `patterns` | operation、参数、排除、能力收窄 |
+| `models` / `patterns` | 客户端与 operation、参数、排除、能力收窄 |
 | `variants` | 渠道可准确执行的参数映射，与 Model Driver supported_efforts 求交 |
 | `model_pricing` | 渠道价格；可按模型和 region/workspace/account 匹配 |
 | `reported_cost` | 自报实际费用的 currency 和 `total_request_cost` 语义 |
@@ -237,7 +233,7 @@ LLM 通过 `规格 -> 家族预设 -> exact model` 动态挂载，原始 `logica
 
 该模式下无法探测账号实际开通了哪些模型，所以 Known Provider 用 `ui_hints.selectable_inventory_models` 把候选清单交给 UI —— 有序的 `[{"id","label"}]` 数组。管理 UI 据此让用户勾选，默认全选；用户的选择按实例持久化为 `instance_rules.enabled_inventory_models`。二者关系是：**Provider Rules 声明"渠道能提供什么"，实例规则声明"这个账号开通了什么"**。
 
-同一实例凭据是单数的，所以不同的鉴权体系（如 ARK API key 与豆包语音控制台签发的 key）必须拆成不同 Profile 而不是同一 Profile 的不同模型。豆包因此有 `doubao`（标准 ARK）、`doubao-speech`（语音，`audio.tts`/`audio.asr`）、`doubao-agent-plan` 三个 Profile，共用 `doubao-responses` Adapter 与同一个 setup group。
+同一实例凭据是单数的，所以不同的鉴权体系（如 ARK API key 与豆包语音控制台签发的 key）必须拆成不同 Profile 而不是同一 Profile 的不同模型。豆包因此有 `doubao`（标准 ARK）、`doubao-speech`（语音，`audio.tts`/`audio.asr`）、`doubao-agent-plan` 三个 Profile，共用同一个 setup group；`doubao` 与 `doubao-agent-plan` 的默认客户端是 `openai-responses`（extra 为 `doubao-media`、`doubao-speech`），`doubao-speech` 的默认客户端是 `doubao-speech`。
 
 ## 4. Custom Provider 的最小规则
 
@@ -255,7 +251,7 @@ LLM 通过 `规格 -> 家族预设 -> exact model` 动态挂载，原始 `logica
 {"instance_rules":{"policy_region":"cn","exclude_models":[],"enabled_inventory_models":["doubao-seed-tts-2.0"]}}
 ```
 
-Custom Provider 只能选择 Provider Rules 的 `custom_provider_adapters` 显式开放的 Adapter；每个 Adapter 必须与声明它的内置 Provider 属于同一 protocol family，且不能被多个 Provider Rules 重复开放。
+Custom Provider 只能选择 Provider Rules 的 `custom_provider_adapters` 显式开放的 Adapter 作为默认客户端，实例同时带上同一协议族里其余开放的客户端（§2.1）；每个 Adapter 必须与声明它的内置 Provider 的默认客户端属于同一 protocol family，且不能被多个 Provider Rules 重复开放。用户必须显式选择，后端不探测、不按协议族自动挑选。
 
 ## 5. 模型规则
 
@@ -270,7 +266,8 @@ Custom Provider 只能选择 Provider Rules 的 `custom_provider_adapters` 显�
 | `id` | 无 | `models` 中精确匹配模型；内部归一化为单维 `MatchRule` | 复用现有字段 |
 | `match` | 无 | `patterns` 中的 `MatchRule`；通常直接写 wildcard 字符串 | 统一字段 |
 | `exclude` | `false` | 从当前 Provider inventory 排除模型 | 从 Model Driver metadata 移入 |
-| `operations` | `{}` | method/api_type 到 adapter operation 的映射 | 新增 |
+| `protocol_adapter_id` | 实例默认客户端 | 本模型裸写的 `operations` 和未映射 API 类型优先使用的客户端，必须在 Provider 的客户端集合内；`schema_revision: 2` | 新增 |
+| `operations` | `{}` | method/api_type 到 operation 的映射；值可裸写 `<operation_id>`，或写成 `<protocol_adapter_id>/<operation_id>` 指定客户端（限定写法需要 `schema_revision: 2`） | 新增 |
 | `provider_options` | `{}` | 调用该模型时附加的 Provider 参数 | 从 Model Driver metadata 移入 |
 | `canonical_fields` | `{}` | 以 Rust converter 和失败策略覆盖 Model Driver 的 canonical 字段映射 | 新增 |
 | `request_rules` | `[]` | 请求默认值、条件改写和不兼容参数删除 | 新增 |
@@ -336,22 +333,42 @@ Provider model rule 的字符串 `match` 默认匹配 `provider_model_id`。需�
 
 ### 5.2 Operation
 
-`operations` 的 key 可以是 AICC method 或 api_type，解析优先级固定为：
+`operations` 的 key 可以是 AICC method 或 api_type，值是一个绑定（客户端 + operation）。解析优先级固定为：
 
 ```text
-method exact key > api_type key > adapter default operation
+method exact key > api_type key > 实例客户端集合里的默认 operation
 ```
 
-「adapter default operation」不是该 api_type 的唯一绑定：一个 Provider 常用多个 operation 支持同一个 api_type
-（例如 `interactions.background`、`models.predictLongRunning`、`interactions.create` 都能产出视频）。
-没有任何 override 命中时，adapter 用 operation 各自声明的默认优先级 `default_priority` 收窄候选：
+值写成 `<protocol_adapter_id>/<operation_id>` 时使用它指定的客户端；裸写时属于规则级 `protocol_adapter_id`，规则没写时属于实例的默认客户端。`/` 不在两种 ID 的合法字符里。下文把规则级客户端（没有时是实例默认客户端）称为该模型的主客户端。建库存和 lowering 用同一个解析函数，选路直接使用库存里已解析的限定绑定；lowering 按规则重新解析的结果与选路不一致时报 `RouteOperationMismatch`。
 
-- 只保留得分最高的候选；`0` 表示该 operation 只能被显式选中（由 `operations` 指定，或由 provider discovery
-  把候选收窄到一个），从不作为默认。
-- 最高分仍然并列时报 `multiple default operations`，要求 Provider 显式配置，不做猜测。
+「默认 operation」不是该 api_type 的唯一绑定：一个 Provider 常用多个 operation 支持同一个 api_type
+（例如 Gemini 的 `interactions.create` 与 `gemini-generate-content` 的 `models.predictLongRunning` 都能产出视频）。
+没有任何映射命中时，在实例客户端集合的全部绑定里按各自声明的默认优先级 `default_priority` 收窄候选：
+
+- 有 discovery 的 `remote_methods` 时，先只保留其中列出的 operation。
+- 取最高的正分，跨客户端比较；最高分并列时只保留主客户端的绑定。例如自定义 OpenAI 实例的默认客户端是
+  `openai-responses` 时，`image.txt2img` 选 `openai-images/images.generate`（100），不选 `responses.create`（1）；
+  `llm` 在 `responses.create` 与两个 Chat Completions 客户端之间同为 1 分，选主客户端的 `responses.create`。
+- `0` 表示该绑定一般只能被显式选中：只有所有候选都是 0 分时，主客户端上唯一的 0 分绑定才会被选中，
+  其它客户端的 0 分绑定从不作为默认。例如 `openai-chat-completions` 的 `audio.asr` 是 0 分，SN 规则
+  显式写 `openai-chat-completions/chat.completions.create` 才会用它做 ASR。
+- 仍然并列时，实例没有 Provider Rules 而使用协议族默认 Rules（§2.1）的，用其中的映射消除歧义；否则报
+  `multiple default operations`，要求 Provider 显式配置，不做猜测。
 - 内置 Gemini 的取值是 `interactions.background`（30）> `models.predictLongRunning`（20）>
-  `interactions.create`（10）。因此没有 `operations` 的自定义 Gemini 渠道同样能解析出默认 operation，
-  并正常刷新模型目录。
+  `interactions.create`（10），前两者分属 `gemini-interactions` 与 `gemini-generate-content`。因此 Gemini
+  官方 Provider 的视频在规则没写映射时落到 `gemini-generate-content/models.predictLongRunning`。
+
+指定客户端的写法，例如 OpenRouter 同一个模型的 LLM 走默认客户端，图片和向量走另外两个客户端：
+
+```json
+{
+  "operations": {
+    "llm": "responses.create",
+    "image.txt2img": "openrouter-native/images.generate",
+    "embedding.text": "openai-embeddings/embeddings.create"
+  }
+}
+```
 
 例如 video 下不同 method 分别选择接口：
 
@@ -539,6 +556,8 @@ unknown 而不是 0——先让价格口径可表达，等计数器落地即自�
 ### 5.6 能力收窄
 
 `remove_api_types` / `remove_features` 只能从 Model Driver 结果中删除能力。
+例如 `document`（模型直接读取 PDF 等文档部件）要同时满足 Model Driver 的 `capabilities.document` 和客户端
+binding 的支持；渠道没有核对过直接发文档时，规则用 `remove_features: ["document"]` 关掉（OpenRouter、SN 即如此）。
 `capability_limits` 接受正整数上限：`max_context_tokens`、`max_images` 与 `decision.max_questions`、
 `decision.max_options`、`decision.max_levels`、`decision.max_input_bytes`、
 `decision.max_state_question_bytes`。仅对 Model Driver 已存在的整数容量取 min；
@@ -553,7 +572,7 @@ Model Driver 静态能力
 
 ## 6. 匹配流程
 
-实例 `model_driver_overrides` → Provider Rules `model_driver_overrides` → Provider matcher → 完全匹配 → 忽略大小写的最长受限包含 → unmatched。实例映射用于用户自己的 endpoint ID 等本地事实；Provider Rules 映射用于官方聚合渠道稳定发布、但不与原厂 ID 恒等的物理模型名。两者的目标都必须是已存在的精确 `<model_driver_id>/<model_id>`，且只确定 AICC 身份，实际调用仍保留 discovery 返回的 `provider_model_id`。匹配段前须为字符串开头或非字母数字，末尾只允许空或日期形状后缀；同长候选为歧义。Provider Failed 和无效 Matched 均不得继续通用匹配。已知浮动别名未确认版本或缺 metadata 时使用 unresolved_alias。
+实例 `model_driver_overrides` → Provider Rules `model_driver_overrides` → Provider matcher → Provider Rules `model_driver_vendor_prefixes`（仅在声明时，且 ID 为 `<vendor>/<model>`；先精确、再唯一的忽略大小写匹配，未命中为 unresolved_alias，多个为歧义，都不再继续通用匹配）→ 完全匹配 → 忽略大小写的最长受限包含 → unmatched。实例映射用于用户自己的 endpoint ID 等本地事实；Provider Rules 映射用于官方聚合渠道稳定发布、但不与原厂 ID 恒等的物理模型名。两者的目标都必须是已存在的精确 `<model_driver_id>/<model_id>`，且只确定 AICC 身份，实际调用仍保留 discovery 返回的 `provider_model_id`。匹配段前须为字符串开头或非字母数字，末尾只允许空或日期形状后缀；同长候选为歧义。Provider Failed 和无效 Matched 均不得继续通用匹配。已知浮动别名未确认版本或缺 metadata 时使用 unresolved_alias。
 
 匹配成功后求交模型事实、Adapter 支持和真实渠道限制，再应用参数/价格映射并生成合法预设。warning 对未变化的 `(instance, model, reason)` 去重。`list_providers.inventory` 暴露 `unmatched_models`、`unavailable_presets`、`unpriced_models`，刷新响应增加 `unmatched_count`。
 
@@ -603,10 +622,10 @@ OpenRouter 是内置专用 Provider，而不是配置型 Provider。
 以下渠道规则应由 `openrouter.provider.json` 声明并纳入发布测试：
 
 - 解析 `vendor/model` 命名并映射到候选 Model Driver；
-- 维护 OpenRouter vendor slug 与 Model Driver 的别名关系；
+- 用 `model_driver_vendor_prefixes` 维护 OpenRouter vendor slug 与 Model Driver 的别名关系；
 - 未经核验的 moving alias、Provider variant alias 和虚拟模型不可执行；有限 Jev alias 按下述身份链验证；
 - 保留原始 `provider_model_id` 完成实际调用；
-- 按模型和 AICC `api_type` 选择 OpenRouter Responses、embedding、rerank 和 `decisions.create` operation；
+- 按模型和 AICC `api_type` 选择客户端与 operation：LLM 走默认的 `openrouter-responses`，向量、转写走 `openai-embeddings`、`openai-audio`，rerank 走 `rerank`，语音、图片、音乐、视频和 `decisions.create` 走 `openrouter-native`；
 - 从 OpenRouter discovery 获取价格并覆盖 `model_pricing` 里的静态价；
 - 对可声明差异随 metadata catalog 进行版本发布。
 
@@ -614,7 +633,7 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 
 ## 10. 特殊命名和浮动别名
 
-OpenRouter matcher 解析 vendor/model，anthropic → claude、google → gemini、moonshotai → kimi、z-ai → glm，然后校验模型 ID。无法绑定的浮动/变体调用名保留在 discovery 并产生 unresolved_alias，不静默过滤。
+OpenRouter 的 vendor/model 按 `openrouter.provider.json` 的 `model_driver_vendor_prefixes` 解析：anthropic → claude、google → gemini、moonshotai → kimi、z-ai → glm，其余 vendor 对同名 Model Driver，然后校验模型 ID。OpenRouter matcher 只剩 Jev 渠道 ID 的身份确认。无法绑定的浮动/变体调用名保留在 discovery 并产生 unresolved_alias，不静默过滤。
 
 DeepSeek 官方旧 V4 Flash 调用名已重定向，V4.1 metadata 尚未接入时隔离为 unresolved_alias；其它 Provider 的固定 V4 Flash 身份不受影响。自定义网关需要点号/连字符归一化时，实现局部 matcher 或配置精确 instance override；不更改全局匹配语义。
 
@@ -637,22 +656,23 @@ DeepSeek 官方旧 V4 Flash 调用名已重定向，V4.1 metadata 尚未接入�
 ## 12. 已确定的实现约束
 
 1. 首版 11 家内置 Provider 包括 OpenAI、Claude、Google Gemini、fal、OpenRouter、MiniMax、Kimi、GLM、DeepSeek、豆包和 Qwen；SN 作为独立扩展 Provider 保留。它们都必须在集成测试阶段进入对应的 T1/T1.5 和 T2 验收矩阵。
-2. 配置型 Provider 只能使用运行时已经注册的 Protocol Adapter；用户只提供协议族和连接信息，接入测试自动解析并固化具体 Adapter。AICC 不开放第三方 Provider 插件或任意协议 ID。
+2. 配置型 Provider 只能使用运行时已经注册的 Protocol Adapter；自定义 Provider 由用户显式选择默认客户端（`protocol_adapter_id`）并提供连接信息，后端不探测、不自动识别协议，实例的客户端集合按 §2.1 从协议族推出。AICC 不开放第三方 Provider 插件或任意协议 ID。
 3. Provider Rules、Model Driver、Pricing 和 Known Provider 保持独立对象和 revision；文件发现、下载、校验、替换及目标 seq 由 NDN 保证。AICC 在推理前或 Provider 定时库存刷新时统一收敛所有 applied seq 落后的 Provider；列表未变化且 seq 相同时只探测。
 4. Provider variant 优先定义当前渠道中具体模型的 variant 集合及 adapter 参数 lowering；Provider 对该模型无任何 variant 命中时，才使用 Model Driver variant 及其默认 `provider_options`。Provider 可以增加、减少或替换 Model Driver 声明的 variant，不要求按 `model_driver + variant` 完整覆盖。
 5. 旧 settings 中 `provider_driver` 承担的职责拆为实例级 `provider_profile_id`、`protocol_adapter_id` 和模型级 `model_driver_id`；新 settings 不兼容读取 `provider_driver`，但不因此删除 `buckyos-api` 和验收报告中已经导出的同名兼容字段。
 6. OpenAI、Claude、Google Gemini 分别实现专用协议族；优先实现官方新接口。历史 API 代际由首个真实 Provider 需求触发实现，注册为协议族级共享 Adapter，后续 Provider 直接引用或通过 `base_adapter_id` 复用，不重复实现。
-7. SN 使用独立 `sn-openai` Adapter，并以 `openai-responses` 为 `base_adapter_id`；支持 `api_key` 与 `dynamic_login` 两种认证模式。
+7. SN 使用 OpenAI 族的标准客户端，不设专用客户端；动态登录是 Provider 行为，支持 `api_key` 与 `dynamic_login` 两种认证模式。
 8. 基础 Adapter 不依赖派生 Adapter。派生 Provider 的删除测试必须证明不需要修改基础 Adapter。
-9. 官方 Profile 默认新接口；自定义 Provider 接入测试先测新接口，再测已注册的历史接口，用户不选择接口版本。解析完成后新旧 Adapter 不互相 fallback，只复用协议中立的底层组件。
+9. 官方 Profile 默认新接口；自定义 Provider 的默认客户端由用户显式选择，接入验证只验证所选客户端，不发探测请求，也不在新旧接口之间试选。新旧 Adapter 不互相 fallback，只复用协议中立的底层组件。
 10. Provider Rules、request/pricing rules 和发布 track 复用 `MatchRule`；Model Driver 成员关系只允许有限精确 ID，不用通配符引入未知模型。
 11. 每个官方支持的 Provider（包括内置专用 Provider）必须提供独立 `.provider.json`；每个模型原厂必须提供独立 `.model.json`。Rust builtin 模块不得构造生产用 `ProviderRulesCatalog`、`KnownProviderCatalog` 或模型 metadata 作为第二真相源。
 12. 未被官方支持的小型或自建代理可注册为 `custom` Provider，并用 `{}` 表示无渠道规则。其协议族只决定调用协议；模型归属必须通过统一匹配链搜索全部 Model Driver，零命中和多重命中均记录 unmatched，只隔离该模型。
 13. 特殊 dialect 必须先尝试由 `.provider.json` 的有界声明表达；schema 不足时先评审统一 schema 扩展。只有无法安全声明化的 wire、认证、流式/任务状态机或错误语义才进入代码，并保持最小差异面。
+14. 只有 API 类型升级和协议客户端升级需要发版本；其余调整（包括内置 Provider 的能力升级）都通过可在线更新的 metadata 完成，见 §2.1。
 
 ## TypeSafe Provider（2026-09-25）
 
-新增 Known Provider `typesafe`，默认 adapter `typesafe-systemone`，Bearer，base URL `https://api.typesafe.ai/v1`，discovery `typesafe-catalog`。Rules 将 decision 绑定到 `systemone.evaluate`，静态库存只列 `jev-1.13.0`；别名身份经显式 matcher 确认，不通配未来版本。输入单价 USD 4.2e-8/token，输出单价明确为 0，真实 output_tokens 保留；其他渠道无可靠费率时仍为 unknown。完整契约、示例及核验来源见 [Decision API](decision_api.md)。
+新增 Known Provider `typesafe`，默认 adapter `typesafe-systemone`，Bearer，base URL `https://api.typesafe.ai/v1`，discovery `catalog-only`。Rules 将 decision 绑定到 `systemone.evaluate`，静态库存只列 `jev-1.13.0`；`jev-latest`、`jev-preview` 由 Rules 的 `model_driver_overrides` 指向 `typesafe/jev-1.13.0`，不通配未来版本。`typesafe-systemone` 不对自定义 Provider 开放。输入单价 USD 4.2e-8/token，输出单价明确为 0，真实 output_tokens 保留；其他渠道无可靠费率时仍为 unknown。完整契约、示例及核验来源见 [Decision API](decision_api.md)。
 
 ### 9.1 Jev alpha Decisions（2026-09-25 核验）
 

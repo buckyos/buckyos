@@ -27,6 +27,7 @@ fn decision_registry(inventory_enabled: bool) -> ModelRegistry {
             protocol_adapter_id: "typesafe-systemone".into(),
             inventory_revision: "1".into(),
             models: vec![InventoryModel {
+                protocol_adapter_id: "typesafe-systemone".into(),
                 provider_model_id: "jev-1.13.0".into(),
                 model_driver_id: "typesafe".into(),
                 origin_model_id: "jev-1.13.0".into(),
@@ -225,6 +226,7 @@ fn openrouter_channel_capacity_filters_logical_and_exact_decision_routes() {
         protocol_adapter_id: "openrouter-responses".into(),
         inventory_revision: "fixture".into(),
         models: vec![InventoryModel {
+            protocol_adapter_id: "openrouter-responses".into(),
             provider_model_id: "typesafe/jev-1.13".into(),
             model_driver_id: "typesafe".into(),
             origin_model_id: "jev-1.13.0".into(),

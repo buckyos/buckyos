@@ -426,6 +426,7 @@ mod tests {
 
     fn context() -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: "https://openrouter.ai/api/v1".to_owned(),
             state_coordinate: ProviderStateCoordinate {
                 provider_profile_id: "openrouter".to_owned(),

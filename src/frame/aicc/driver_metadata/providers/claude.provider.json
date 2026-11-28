@@ -2,9 +2,9 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 6,
+  "revision_seq": 7,
   "provider_profile_id": "claude",
-  "custom_provider_adapters": ["claude-messages"],
+  "custom_provider_adapters": ["claude-messages", "legacy-claude-messages"],
   "patterns": [
     {
       "match": "*",

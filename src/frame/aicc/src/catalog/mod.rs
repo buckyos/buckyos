@@ -39,8 +39,8 @@ const MODEL_DRIVER_SCHEMA_VERSION: u32 = 2;
 const PROVIDER_RULES_SCHEMA_VERSION: u32 = 1;
 const KNOWN_PROVIDER_SCHEMA_VERSION: u32 = 1;
 const MODEL_DRIVER_SUPPORTED_SCHEMA_REVISION: u32 = 1;
-const PROVIDER_RULES_SUPPORTED_SCHEMA_REVISION: u32 = 1;
-const KNOWN_PROVIDER_SUPPORTED_SCHEMA_REVISION: u32 = 1;
+const PROVIDER_RULES_SUPPORTED_SCHEMA_REVISION: u32 = 2;
+const KNOWN_PROVIDER_SUPPORTED_SCHEMA_REVISION: u32 = 2;
 
 #[derive(Clone, Debug)]
 struct CompiledModelDriverCatalog {
@@ -411,6 +411,45 @@ impl CatalogSnapshot {
         )
     }
 
+    /// Matches `<vendor>/<model>` through the rules' vendor prefixes: the exact
+    /// model ID first, then a unique case-insensitive one.
+    pub(crate) fn provider_vendor_prefixed_identity(
+        &self,
+        provider_rules_id: &str,
+        provider_model_id: &str,
+    ) -> Option<Result<ModelIdentity, ModelMatchFailure>> {
+        let prefixes = self
+            .provider_rules(provider_rules_id)?
+            .model_driver_vendor_prefixes
+            .as_ref()?;
+        let (vendor, model) = provider_model_id.split_once('/')?;
+        let vendor = vendor.to_ascii_lowercase();
+        let driver = prefixes.get(&vendor).map_or(vendor.as_str(), String::as_str);
+        if self.resolve_model(driver, model).is_ok() {
+            return Some(Ok(ModelIdentity {
+                model_driver_id: driver.into(),
+                model_id: model.into(),
+            }));
+        }
+        let matches = self
+            .model_driver(driver)
+            .into_iter()
+            .flat_map(|catalog| &catalog.models)
+            .filter(|entry| entry.id.eq_ignore_ascii_case(model))
+            .map(|entry| ModelIdentity {
+                model_driver_id: driver.into(),
+                model_id: entry.id.clone(),
+            })
+            .collect::<Vec<_>>();
+        Some(match matches.as_slice() {
+            [identity] => Ok(identity.clone()),
+            [] => Err(ModelMatchFailure::UnresolvedAlias),
+            _ => Err(ModelMatchFailure::Ambiguous {
+                candidates: matches,
+            }),
+        })
+    }
+
     pub(crate) fn cost_in_usd(
         &self,
         cost: buckyos_api::Money,
@@ -501,6 +540,8 @@ impl CatalogSnapshot {
             credential_variants: provider.credential_variants.clone(),
             connection: provider.connection.clone(),
             protocol_adapter_id: provider.protocol_adapter_id.clone(),
+            extra_protocol_adapters: provider.extra_protocol_adapters.clone(),
+            state_namespace: provider.state_namespace.clone(),
             discovery_behavior_id: provider.discovery_behavior_id.clone(),
             dynamic_login_behavior_id: provider.dynamic_login_behavior_id.clone(),
             connection_behavior_id: provider.connection_behavior_id.clone(),

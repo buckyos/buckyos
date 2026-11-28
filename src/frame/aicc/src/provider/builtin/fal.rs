@@ -349,7 +349,7 @@ mod tests {
                 .iter()
                 .find(|model| model.provider_model_id == "fal-ai/video-upscaler")
                 .unwrap()
-                .operations["video.upscale"],
+                .operation_ids()["video.upscale"],
             FAL_QUEUE_OPERATION_ID
         );
         assert_eq!(inventory.protocol_adapter_id, FAL_QUEUE_ADAPTER_ID);

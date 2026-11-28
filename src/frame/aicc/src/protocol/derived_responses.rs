@@ -1,12 +1,11 @@
 use super::{
     AdapterDescriptor, AdapterStatus, CodecCall, CodecInput, CodecRegistration, ExecutionMode,
-    HttpRequest, HttpResponse, OperationCodec, OperationDescriptor, ProtocolError, ProtocolEvent,
-    ProtocolExecution, ProtocolOutput, ProtocolResultValue, ProtocolStream, StreamingHttpResponse,
+    HttpRequest, HttpResponse, OperationCodec, OperationDescriptor, ProtocolError,
+    ProtocolExecution, ProtocolResultValue, ProtocolStream, StreamingHttpResponse,
     OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID,
 };
 use async_trait::async_trait;
 use buckyos_api::{AiContent, AiccCall, ApiType};
-use futures_util::StreamExt;
 use reqwest::{
     header::{HeaderName, HeaderValue},
     Url,
@@ -16,7 +15,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub(crate) const DEEPSEEK_RESPONSES_ADAPTER_ID: &str = "deepseek-responses";
-pub(crate) const DOUBAO_RESPONSES_ADAPTER_ID: &str = "doubao-responses";
 pub(crate) const OPENROUTER_RESPONSES_ADAPTER_ID: &str = "openrouter-responses";
 pub(crate) const QWEN_RESPONSES_ADAPTER_ID: &str = "qwen-responses";
 
@@ -26,7 +24,6 @@ const QWEN_SESSION_CACHE_HEADER: &str = "x-dashscope-session-cache";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ResponsesDialectKind {
     DeepSeek,
-    Doubao,
     OpenRouter,
     Qwen,
 }
@@ -56,11 +53,6 @@ impl ResponsesDialectKind {
                     ResponsesOverridePoint::ProviderStateNamespace,
                 ]),
             },
-            Self::Doubao => ResponsesDialectContract {
-                protocol_adapter_id: DOUBAO_RESPONSES_ADAPTER_ID,
-                base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
-                override_points: BTreeSet::from([ResponsesOverridePoint::ProviderStateNamespace]),
-            },
             Self::OpenRouter => ResponsesDialectContract {
                 protocol_adapter_id: OPENROUTER_RESPONSES_ADAPTER_ID,
                 base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
@@ -81,7 +73,6 @@ impl ResponsesDialectKind {
     fn provider_namespace(self) -> &'static str {
         match self {
             Self::DeepSeek => "deepseek",
-            Self::Doubao => "doubao",
             Self::OpenRouter => "openrouter",
             Self::Qwen => "qwen",
         }
@@ -90,36 +81,27 @@ impl ResponsesDialectKind {
 
 pub(crate) fn openai_responses_compatible_adapters(
 ) -> ProtocolResultValue<Vec<(AdapterDescriptor, CodecRegistration)>> {
-    [
-        ResponsesDialectKind::DeepSeek,
-        ResponsesDialectKind::Doubao,
-        ResponsesDialectKind::Qwen,
-    ]
-    .into_iter()
-    .map(responses_dialect_adapter)
-    .collect()
+    [ResponsesDialectKind::DeepSeek, ResponsesDialectKind::Qwen]
+        .into_iter()
+        .map(responses_dialect_adapter)
+        .collect()
 }
 
 pub(crate) fn responses_dialect_adapter(
     dialect: ResponsesDialectKind,
 ) -> ProtocolResultValue<(AdapterDescriptor, CodecRegistration)> {
     let reported_cost_currency = (dialect == ResponsesDialectKind::OpenRouter).then_some("USD");
-    let (base_descriptor, base_registration) =
-        super::openai_responses::openai_responses_adapter_with_reported_cost_currency(
-            reported_cost_currency,
-        );
-    let mut operation = base_descriptor
+    let (base_descriptor, base_registration) = super::openai_responses::openai_platform_client(
+        OPENAI_RESPONSES_ADAPTER_ID,
+        None,
+        &[OPENAI_RESPONSES_OPERATION_ID],
+        reported_cost_currency,
+    );
+    let operation = base_descriptor
         .operations
         .get(OPENAI_RESPONSES_OPERATION_ID)
         .cloned()
         .ok_or_else(|| ProtocolError::invalid_configuration("Responses operation is missing"))?;
-    if dialect != ResponsesDialectKind::OpenRouter {
-        for binding in &mut operation.bindings {
-            binding
-                .supported_features
-                .remove(buckyos_api::features::WEB_SEARCH);
-        }
-    }
     let base_codecs = base_registration
         .operation_codecs
         .into_iter()
@@ -134,12 +116,11 @@ pub(crate) fn responses_dialect_adapter(
         ));
     }
     let contract = dialect.contract();
-    let mut descriptor = AdapterDescriptor {
+    let descriptor = AdapterDescriptor {
         protocol_family_id: base_descriptor.protocol_family_id,
         protocol_adapter_id: contract.protocol_adapter_id.to_string(),
         interface_generation: "responses-v1".to_string(),
         base_adapter_id: Some(contract.base_adapter_id.to_string()),
-        component_adapter_ids: Vec::new(),
         status: AdapterStatus::Stable,
         probe_priority: 200,
         probe_path: None,
@@ -147,7 +128,7 @@ pub(crate) fn responses_dialect_adapter(
         operations: BTreeMap::from([(operation.operation_id.clone(), operation.clone())]),
     };
     let strategy = dialect_strategy(dialect);
-    let mut registration = CodecRegistration {
+    let registration = CodecRegistration {
         operation_codecs: base_codecs
             .into_iter()
             .map(|base| {
@@ -161,66 +142,6 @@ pub(crate) fn responses_dialect_adapter(
             .collect(),
         native_task_codecs: Vec::new(),
     };
-    let media = match dialect {
-        ResponsesDialectKind::Doubao => Some((
-            "doubao",
-            super::DOUBAO_MEDIA_ADAPTER_ID,
-            super::doubao_media::doubao_media_registration(),
-        )),
-        ResponsesDialectKind::Qwen => Some((
-            "qwen",
-            super::QWEN_MEDIA_ADAPTER_ID,
-            super::qwen_media::qwen_media_registration(),
-        )),
-        _ => None,
-    };
-    if let Some((family, component_id, (operations, media_registration))) = media {
-        descriptor.protocol_family_id = family.to_owned();
-        descriptor.component_adapter_ids = vec![
-            OPENAI_RESPONSES_ADAPTER_ID.to_owned(),
-            component_id.to_owned(),
-        ];
-        for operation in operations {
-            descriptor
-                .operations
-                .insert(operation.operation_id.clone(), operation);
-        }
-        registration
-            .operation_codecs
-            .extend(media_registration.operation_codecs);
-        registration
-            .native_task_codecs
-            .extend(media_registration.native_task_codecs);
-    }
-    if dialect == ResponsesDialectKind::Qwen {
-        let (chat_descriptor, chat_registration) =
-            super::chat_completions_dialects::qwen_aggregated_chat_adapter();
-        for operation in chat_descriptor.operations.into_values() {
-            descriptor
-                .operations
-                .insert(operation.operation_id.clone(), operation);
-        }
-        registration
-            .operation_codecs
-            .extend(chat_registration.operation_codecs);
-    }
-    if dialect == ResponsesDialectKind::Doubao {
-        let (operations, speech_registration) = super::doubao_speech::doubao_speech_registration();
-        descriptor
-            .component_adapter_ids
-            .push(super::doubao_speech::DOUBAO_SPEECH_ADAPTER_ID.to_owned());
-        for operation in operations {
-            descriptor
-                .operations
-                .insert(operation.operation_id.clone(), operation);
-        }
-        registration
-            .operation_codecs
-            .extend(speech_registration.operation_codecs);
-        registration
-            .native_task_codecs
-            .extend(speech_registration.native_task_codecs);
-    }
     Ok((descriptor, registration))
 }
 
@@ -239,8 +160,6 @@ struct PreparedDialectRequest {
 }
 
 trait ResponsesDialectStrategy: Send + Sync {
-    fn provider_namespace(&self) -> &'static str;
-
     fn prepare_parameters(
         &self,
         _parameters: &mut BTreeMap<String, Value>,
@@ -258,21 +177,9 @@ trait ResponsesDialectStrategy: Send + Sync {
     }
 }
 
-struct StandardDialect(&'static str);
-
-impl ResponsesDialectStrategy for StandardDialect {
-    fn provider_namespace(&self) -> &'static str {
-        self.0
-    }
-}
-
 struct DeepSeekDialect;
 
 impl ResponsesDialectStrategy for DeepSeekDialect {
-    fn provider_namespace(&self) -> &'static str {
-        "deepseek"
-    }
-
     fn transform_request(
         &self,
         call: &CodecCall<'_>,
@@ -293,10 +200,6 @@ impl ResponsesDialectStrategy for DeepSeekDialect {
 struct OpenRouterDialect;
 
 impl ResponsesDialectStrategy for OpenRouterDialect {
-    fn provider_namespace(&self) -> &'static str {
-        "openrouter"
-    }
-
     fn prepare_parameters(
         &self,
         parameters: &mut BTreeMap<String, Value>,
@@ -339,10 +242,6 @@ impl ResponsesDialectStrategy for OpenRouterDialect {
 struct QwenDialect;
 
 impl ResponsesDialectStrategy for QwenDialect {
-    fn provider_namespace(&self) -> &'static str {
-        "qwen"
-    }
-
     fn prepare_parameters(
         &self,
         parameters: &mut BTreeMap<String, Value>,
@@ -478,7 +377,6 @@ fn rewrite_qwen_video_values(value: &mut Value, video_documents: &[bool], index:
 fn dialect_strategy(dialect: ResponsesDialectKind) -> Arc<dyn ResponsesDialectStrategy> {
     match dialect {
         ResponsesDialectKind::DeepSeek => Arc::new(DeepSeekDialect),
-        ResponsesDialectKind::Doubao => Arc::new(StandardDialect("doubao")),
         ResponsesDialectKind::OpenRouter => Arc::new(OpenRouterDialect),
         ResponsesDialectKind::Qwen => Arc::new(QwenDialect),
     }
@@ -526,26 +424,14 @@ impl OperationCodec for ResponsesDialectCodec {
     }
 
     async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
-        let execution = self.base.decode(response).await?;
-        Ok(rewrite_execution_namespace(
-            execution,
-            self.dialect.provider_namespace(),
-        ))
+        self.base.decode(response).await
     }
 
     async fn decode_stream(
         &self,
         response: StreamingHttpResponse,
     ) -> ProtocolResultValue<ProtocolStream> {
-        let stream = self.base.decode_stream(response).await?;
-        let namespace = self.dialect.provider_namespace();
-        Ok(ProtocolStream {
-            events: Box::pin(
-                stream
-                    .events
-                    .map(move |event| event.map(|event| rewrite_event_namespace(event, namespace))),
-            ),
-        })
+        self.base.decode_stream(response).await
     }
 }
 
@@ -593,65 +479,6 @@ fn take_openrouter_parameters(
     Ok(extensions)
 }
 
-fn rewrite_execution_namespace(
-    execution: ProtocolExecution,
-    namespace: &'static str,
-) -> ProtocolExecution {
-    match execution {
-        ProtocolExecution::Immediate(mut output) => {
-            rewrite_value_namespace(&mut output.value, namespace);
-            ProtocolExecution::Immediate(output)
-        }
-        ProtocolExecution::Stream(stream) => {
-            ProtocolExecution::Stream(ProtocolStream {
-                events: Box::pin(stream.events.map(move |event| {
-                    event.map(|event| rewrite_event_namespace(event, namespace))
-                })),
-            })
-        }
-    }
-}
-
-fn rewrite_event_namespace(event: ProtocolEvent, namespace: &str) -> ProtocolEvent {
-    match event {
-        ProtocolEvent::Delta(mut value) => {
-            rewrite_value_namespace(&mut value, namespace);
-            ProtocolEvent::Delta(value)
-        }
-        ProtocolEvent::Progress(mut value) => {
-            rewrite_value_namespace(&mut value, namespace);
-            ProtocolEvent::Progress(value)
-        }
-        ProtocolEvent::Final(mut output) => {
-            rewrite_output_namespace(&mut output, namespace);
-            ProtocolEvent::Final(output)
-        }
-    }
-}
-
-fn rewrite_output_namespace(output: &mut ProtocolOutput, namespace: &str) {
-    rewrite_value_namespace(&mut output.value, namespace);
-}
-
-fn rewrite_value_namespace(value: &mut Value, namespace: &str) {
-    match value {
-        Value::Array(values) => {
-            for value in values {
-                rewrite_value_namespace(value, namespace);
-            }
-        }
-        Value::Object(values) => {
-            if values.get("provider").and_then(Value::as_str) == Some("openai") {
-                values.insert("provider".to_string(), Value::String(namespace.to_string()));
-            }
-            for value in values.values_mut() {
-                rewrite_value_namespace(value, namespace);
-            }
-        }
-        _ => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,6 +514,7 @@ mod tests {
 
     fn context(base_url: &str) -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: base_url.to_string(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
                 provider_profile_id: "test".into(),
@@ -707,7 +535,7 @@ mod tests {
     #[test]
     fn derived_adapters_declare_base_and_provider_media_components() {
         let adapters = openai_responses_compatible_adapters().unwrap();
-        assert_eq!(adapters.len(), 3);
+        assert_eq!(adapters.len(), 2);
         for (descriptor, registration) in adapters {
             assert_eq!(
                 descriptor.base_adapter_id.as_deref(),
@@ -716,48 +544,14 @@ mod tests {
             assert!(descriptor
                 .operations
                 .contains_key(OPENAI_RESPONSES_OPERATION_ID));
-            if descriptor.protocol_adapter_id == DEEPSEEK_RESPONSES_ADAPTER_ID {
-                assert_eq!(descriptor.operations.len(), 1);
+            assert_eq!(descriptor.operations.len(), 1);
+            for api_type in [ApiType::Llm, ApiType::VisionOcr, ApiType::VisionCaption] {
                 assert!(registration
                     .operation_codecs
                     .iter()
-                    .any(|codec| codec.api_type() == ApiType::Llm));
-                assert!(registration
-                    .operation_codecs
-                    .iter()
-                    .any(|codec| codec.api_type() == ApiType::VisionOcr));
-                assert!(registration
-                    .operation_codecs
-                    .iter()
-                    .any(|codec| codec.api_type() == ApiType::VisionCaption));
-                assert!(registration.native_task_codecs.is_empty());
-            } else {
-                let expected_operations = match descriptor.protocol_adapter_id.as_str() {
-                    // `responses.create` + 3 Doubao media operations
-                    // (`ark.images.generate`, `ark.contents.generate`,
-                    // `ark.embeddings.multimodal`) + 4 Doubao speech operations
-                    // (`tts.unidirectional`, `asr.recognize.flash`,
-                    // `asr.recognize.submit`, `asr.recognize.idle.submit`).
-                    DOUBAO_RESPONSES_ADAPTER_ID => 8,
-                    QWEN_RESPONSES_ADAPTER_ID => 6,
-                    _ => 3,
-                };
-                assert_eq!(descriptor.operations.len(), expected_operations);
-                assert!(registration.operation_codecs.len() >= 1);
-                assert!(!registration.native_task_codecs.is_empty());
-                let expected_components =
-                    if descriptor.protocol_adapter_id == DOUBAO_RESPONSES_ADAPTER_ID {
-                        3
-                    } else {
-                        2
-                    };
-                assert_eq!(descriptor.component_adapter_ids.len(), expected_components);
-                if descriptor.protocol_adapter_id == QWEN_RESPONSES_ADAPTER_ID {
-                    assert!(descriptor
-                        .operations
-                        .contains_key("chat.completions.create"));
-                }
+                    .any(|codec| codec.api_type() == api_type));
             }
+            assert!(registration.native_task_codecs.is_empty());
         }
         assert_eq!(
             ResponsesDialectKind::DeepSeek.contract().override_points,
@@ -783,11 +577,7 @@ mod tests {
         registry
             .register_codecs(base_descriptor, base_registration)
             .unwrap();
-        for (descriptor, registration) in [
-            super::super::doubao_media_adapter(),
-            super::super::doubao_speech_adapter(),
-            super::super::qwen_media_adapter(),
-        ] {
+        for (descriptor, registration) in [super::super::qwen_media_adapter()] {
             registry.register_codecs(descriptor, registration).unwrap();
         }
         for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
@@ -796,7 +586,6 @@ mod tests {
         for adapter_id in [
             OPENAI_RESPONSES_ADAPTER_ID,
             DEEPSEEK_RESPONSES_ADAPTER_ID,
-            DOUBAO_RESPONSES_ADAPTER_ID,
             QWEN_RESPONSES_ADAPTER_ID,
         ] {
             assert!(registry
@@ -816,7 +605,6 @@ mod tests {
     fn all_dialects_delegate_the_base_responses_contract() {
         for dialect in [
             ResponsesDialectKind::DeepSeek,
-            ResponsesDialectKind::Doubao,
             ResponsesDialectKind::OpenRouter,
             ResponsesDialectKind::Qwen,
         ] {
@@ -881,8 +669,12 @@ mod tests {
             context("https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1");
         qwen_context.state_coordinate.adapter_type = QWEN_RESPONSES_ADAPTER_ID.to_owned();
         qwen_context.state_coordinate.origin_provider = "qwen".to_owned();
-        crate::protocol::bind_provider_state_source(
+        crate::protocol::finish_provider_state(
             &mut output.value,
+            Some(&crate::protocol::StateNamespaceRename {
+                from: "openai".to_owned(),
+                to: "qwen".to_owned(),
+            }),
             &qwen_context.state_coordinate,
         );
 
@@ -924,11 +716,7 @@ mod tests {
 
     #[test]
     fn derived_provider_state_round_trips_back_to_the_wire_request() {
-        for dialect in [
-            ResponsesDialectKind::DeepSeek,
-            ResponsesDialectKind::Doubao,
-            ResponsesDialectKind::Qwen,
-        ] {
+        for dialect in [ResponsesDialectKind::DeepSeek, ResponsesDialectKind::Qwen] {
             let (_, registration) = responses_dialect_adapter(dialect).unwrap();
             let mut context = context("https://provider.example/v1");
             context.state_coordinate.adapter_type =
@@ -1082,55 +870,6 @@ mod tests {
                 panic!("expected JSON request")
             };
             assert_eq!(body[parameter], Value::Bool(true));
-        }
-    }
-
-    #[test]
-    fn provider_state_is_namespaced_to_the_derived_provider() {
-        let mut value = serde_json::json!({
-            "message": {"content": [{"provider": "openai", "value": {"type": "vendor_tool"}}]},
-            "provider_states": [{"provider": "openai", "value": {"type": "vendor_tool"}}]
-        });
-        rewrite_value_namespace(&mut value, "doubao");
-        assert_eq!(
-            value.pointer("/provider_states/0/provider"),
-            Some(&Value::String("doubao".to_string()))
-        );
-        assert_eq!(
-            value.pointer("/message/content/0/provider"),
-            Some(&Value::String("doubao".to_string()))
-        );
-    }
-}
-
-#[cfg(test)]
-mod review_stream_tests {
-    use super::*;
-    #[tokio::test]
-    async fn buffered_sse_rewrites_delta_and_final_namespaces() {
-        let value = serde_json::json!({"provider":"openai","value":{}});
-        let execution = ProtocolExecution::Stream(ProtocolStream {
-            events: Box::pin(futures_util::stream::iter([
-                Ok(ProtocolEvent::Delta(value.clone())),
-                Ok(ProtocolEvent::Final(ProtocolOutput {
-                    value,
-                    usage: None,
-                    artifacts: Vec::new(),
-                })),
-            ])),
-        });
-        let ProtocolExecution::Stream(mut stream) =
-            rewrite_execution_namespace(execution, "doubao")
-        else {
-            panic!()
-        };
-        while let Some(event) = stream.events.next().await {
-            let value = match event.unwrap() {
-                ProtocolEvent::Delta(value) => value,
-                ProtocolEvent::Final(output) => output.value,
-                _ => panic!(),
-            };
-            assert_eq!(value["provider"], "doubao");
         }
     }
 }

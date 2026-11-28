@@ -42,11 +42,11 @@ pub(crate) struct OperationBinding {
     /// request treats as optional. Call lowering fills an omitted
     /// `max_output_tokens` with this value, clamped to the model's capability.
     pub default_max_output_tokens: Option<u64>,
-    /// Preference among the operations that bind this API type when a provider
-    /// instance declares no `operations` override of its own — a custom channel,
-    /// for instance, which must still refresh its catalog. The highest value
-    /// wins; `0` means the operation is only ever selected explicitly, by an
-    /// override or by provider discovery narrowing the candidates.
+    /// Preference among the operations, across an instance's protocol
+    /// clients, that bind this API type when the model's rule names none. The
+    /// highest value wins and the primary client wins a tie; `1` is the
+    /// ordinary value, and `0` marks an alternate that is only ever selected
+    /// explicitly, by a rule or by provider discovery narrowing the candidates.
     pub default_priority: u8,
 }
 
@@ -61,8 +61,14 @@ impl OperationBinding {
             supported_features: BTreeSet::new(),
             execution_modes: execution_modes.into_iter().collect(),
             default_max_output_tokens: None,
-            default_priority: 0,
+            default_priority: 1,
         }
+    }
+
+    /// An alternate binding that only an explicit rule selects.
+    pub(crate) fn explicit_only(mut self) -> Self {
+        self.default_priority = 0;
+        self
     }
 
     fn validate(&self) -> ProtocolResultValue<()> {
@@ -157,7 +163,6 @@ pub(crate) struct AdapterDescriptor {
     pub protocol_adapter_id: String,
     pub interface_generation: String,
     pub base_adapter_id: Option<String>,
-    pub component_adapter_ids: Vec<String>,
     pub status: AdapterStatus,
     pub probe_priority: u32,
     pub probe_path: Option<String>,
@@ -199,26 +204,6 @@ impl AdapterDescriptor {
                     "adapter cannot use itself as its base",
                 ));
             }
-        }
-        let mut components = BTreeSet::new();
-        for component_adapter_id in &self.component_adapter_ids {
-            validate_id("component adapter", component_adapter_id)?;
-            if component_adapter_id == &self.protocol_adapter_id
-                || !components.insert(component_adapter_id)
-            {
-                return Err(ProtocolError::invalid_configuration(
-                    "component adapter IDs must be unique and cannot reference the composite",
-                ));
-            }
-        }
-        if self
-            .base_adapter_id
-            .as_ref()
-            .is_some_and(|base| !components.is_empty() && !components.contains(base))
-        {
-            return Err(ProtocolError::invalid_configuration(
-                "a composite adapter must include its base adapter as a component",
-            ));
         }
         if self.probe_path.as_ref().is_some_and(|path| {
             path.is_empty()
@@ -417,6 +402,10 @@ impl CodecLimits {
 pub(crate) struct CodecContext {
     pub base_url: String,
     pub state_coordinate: ProviderStateCoordinate,
+    /// The provider state namespace the Provider declares. A standard client
+    /// writes provider state under its protocol family's namespace; the
+    /// execution layer renames that to this one.
+    pub state_namespace: Option<String>,
     pub credential: Option<ResolvedCredential>,
     pub resources: BTreeMap<String, MaterializedResource>,
     pub limits: CodecLimits,
@@ -1065,19 +1054,9 @@ impl CodecRegistry {
                     "base protocol adapter is not registered",
                 )
             })?;
-            if base.protocol_family_id != descriptor.protocol_family_id
-                && descriptor.component_adapter_ids.is_empty()
-            {
+            if base.protocol_family_id != descriptor.protocol_family_id {
                 return Err(ProtocolError::invalid_configuration(
                     "derived and base adapters must belong to the same protocol family",
-                ));
-            }
-        }
-        for component_adapter_id in &descriptor.component_adapter_ids {
-            if !self.adapters.contains_key(component_adapter_id) {
-                return Err(ProtocolError::new(
-                    super::ProtocolErrorKind::UnknownAdapter,
-                    "component protocol adapter is not registered",
                 ));
             }
         }
@@ -1086,6 +1065,20 @@ impl CodecRegistry {
 
     pub(crate) fn adapter(&self, adapter_id: &str) -> Option<&AdapterDescriptor> {
         self.adapters.get(adapter_id)
+    }
+
+    /// Whether `adapter_id` is `ancestor_id` or a dialect built on it.
+    pub(crate) fn derives_from(&self, adapter_id: &str, ancestor_id: &str) -> bool {
+        let mut current = Some(adapter_id);
+        while let Some(id) = current {
+            if id == ancestor_id {
+                return true;
+            }
+            current = self
+                .adapter(id)
+                .and_then(|adapter| adapter.base_adapter_id.as_deref());
+        }
+        false
     }
 
     pub(crate) fn adapters(
@@ -1800,7 +1793,6 @@ mod tests {
             protocol_adapter_id: id.to_string(),
             interface_generation: "v1".to_string(),
             base_adapter_id: None,
-            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 0,
             probe_path: Some("probe".to_owned()),
@@ -1811,6 +1803,7 @@ mod tests {
 
     fn context(base_url: &str, secret: &str) -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: base_url.to_string(),
             state_coordinate: ProviderStateCoordinate {
                 provider_profile_id: "test".into(),

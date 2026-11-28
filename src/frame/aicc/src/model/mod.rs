@@ -155,6 +155,7 @@ pub(crate) struct InventoryModelVariant {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InventoryModel {
     pub provider_model_id: String,
+    pub protocol_adapter_id: String,
     pub model_driver_id: String,
     pub origin_model_id: String,
     pub api_types: Vec<ApiType>,
@@ -1340,7 +1341,7 @@ impl ModelRegistry {
         let model_uid = ModelUid::new(
             &model.model_driver_id,
             &model.origin_model_id,
-            &inventory.protocol_adapter_id,
+            &model.protocol_adapter_id,
             variant_name,
         )?;
         let mut logical_mounts = model.logical_mounts.clone();
@@ -1371,7 +1372,7 @@ impl ModelRegistry {
             identity: ProviderModelIdentity {
                 provider_instance_name: inventory.provider_instance_name.clone(),
                 provider_profile_id: inventory.provider_profile_id.clone(),
-                protocol_adapter_id: inventory.protocol_adapter_id.clone(),
+                protocol_adapter_id: model.protocol_adapter_id.clone(),
                 model_driver_id: model.model_driver_id.clone(),
                 origin_model_id: model.origin_model_id.clone(),
                 provider_model_id: model.provider_model_id.clone(),
@@ -2506,6 +2507,7 @@ mod tests {
 
     fn inventory_model(id: &str, tool_call: bool) -> InventoryModel {
         InventoryModel {
+            protocol_adapter_id: "openai-responses".to_owned(),
             provider_model_id: id.to_owned(),
             model_driver_id: "openai".to_owned(),
             origin_model_id: id.to_owned(),

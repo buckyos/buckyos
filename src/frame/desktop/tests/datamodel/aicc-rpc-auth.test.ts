@@ -71,7 +71,7 @@ Deno.test('provider inventory displays only direct LLM family mounts from the ex
       if (method === 'models.list') return directory
       if (method === 'provider.list') return {
         settings_revision: 1,
-        providers: [{ provider_instance_name: 'sn-main', provider_profile_id: 'sn', protocol_adapter_id: 'sn-openai', enabled: true, inventory: { state: 'loaded' }, health: { state: 'healthy' }, auth: { mode: 'api_key', configured: true } }],
+        providers: [{ provider_instance_name: 'sn-main', provider_profile_id: 'sn', protocol_adapter_id: 'openai-responses', enabled: true, inventory: { state: 'loaded' }, health: { state: 'healthy' }, auth: { mode: 'api_key', configured: true } }],
       }
       return {}
     },
@@ -109,6 +109,8 @@ Deno.test('custom catalog aliases and explicit OpenAI adapters survive the RPC b
         provider_profile_id: 'deepseek', provider_rules_id: 'deepseek',
         rules_catalog: { format: 'buckyos.aicc.provider-rules-catalog', provider_profile_id: 'deepseek', patterns: [{ match: '*', operations: { llm: 'chat.completions' } }] },
         model_driver_overrides: { 'deepseek-flash': 'deepseek/deepseek-v4.1-flash' },
+      }, {
+        provider_profile_id: 'glm', protocol_adapter_id: 'glm-chat', extra_protocol_adapters: ['openai-embeddings', 'glm-video'], state_namespace: 'glm',
       }] }
       if (method === 'protocol_adapter.list') return { adapters: [
         { protocol_family_id: 'openai', protocol_adapter_id: 'openai-chat-completions', custom_provider_selectable: true },
@@ -122,9 +124,11 @@ Deno.test('custom catalog aliases and explicit OpenAI adapters survive the RPC b
   try {
     const manager = createAICCMgr({ useMock: false })
     const catalog = await manager.fetchProviderSetupCatalog()
-    assert(catalog.providers[0].model_driver_overrides?.['deepseek-flash'] === 'deepseek/deepseek-v4.1-flash', 'preset aliases must be available to Connection')
-    assert(catalog.providers[0].rules_catalog?.provider_profile_id === 'deepseek', 'preset import must receive the complete rules catalog')
-    assert(JSON.stringify(catalog.providers[0].rules_catalog?.patterns).includes('chat.completions'), 'protocol rules must survive the RPC boundary')
+    assert(JSON.stringify(catalog.providers.find((profile) => profile.provider_profile_id === 'glm')?.extra_protocol_adapters) === '["openai-embeddings","glm-video"]', 'extra protocol clients must survive in order')
+    const deepseek = catalog.providers.find((profile) => profile.provider_profile_id === 'deepseek')!
+    assert(deepseek.model_driver_overrides?.['deepseek-flash'] === 'deepseek/deepseek-v4.1-flash', 'preset aliases must be available to Connection')
+    assert(deepseek.rules_catalog?.provider_profile_id === 'deepseek', 'preset import must receive the complete rules catalog')
+    assert(JSON.stringify(deepseek.rules_catalog?.patterns).includes('chat.completions'), 'protocol rules must survive the RPC boundary')
     assert(catalog.protocol_families.length === 2, 'only selectable OpenAI adapters must be shown')
     for (const protocol_adapter_id of ['openai-chat-completions', 'openai-responses']) {
       assert(catalog.protocol_families.some((option) => option.protocol_adapter_id === protocol_adapter_id), 'OpenAI APIs must be separate choices')
@@ -135,6 +139,12 @@ Deno.test('custom catalog aliases and explicit OpenAI adapters survive the RPC b
       })
       assert(sent.at(-1)?.protocol_adapter_id === protocol_adapter_id, 'validation must transmit the chosen adapter')
     }
+    await manager.validateConnection({
+      provider_profile_id: 'glm', protocol_family_id: null, protocol_adapter_id: 'glm-chat',
+      base_url: 'https://api.z.ai/api/paas/v4', operation_base_urls: {},
+      display_name: 'GLM', auth_mode: 'api_key', api_key: 'mock-key', auto_sync_models: true,
+    })
+    assert(sent.at(-1)?.protocol_adapter_id === undefined, 'a Known Provider takes its protocol clients from the catalog')
   } finally {
     sdk.getAccountInfo = originalAccountInfo
     sdk.getServiceRpcClient = originalClient

@@ -44,7 +44,10 @@ pub(crate) struct ProviderSettings {
     pub provider_profile_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_family_id: Option<String>,
-    pub protocol_adapter_id: String,
+    /// A custom instance's default protocol client. A Known Provider's clients
+    /// come from its catalog entry, so the field is ignored for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_adapter_id: Option<String>,
     pub base_url: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub operation_base_urls: BTreeMap<String, String>,
@@ -192,7 +195,16 @@ impl ProviderSettings {
         if let Some(protocol_family_id) = &self.protocol_family_id {
             validate_id("protocol_family_id", protocol_family_id)?;
         }
-        validate_id("protocol_adapter_id", &self.protocol_adapter_id)?;
+        match &self.protocol_adapter_id {
+            Some(protocol_adapter_id) => validate_id("protocol_adapter_id", protocol_adapter_id)?,
+            None if self.provider_profile_id == "custom" => {
+                return Err(SettingsError::InvalidField {
+                    field: "protocol_adapter_id",
+                    reason: "custom providers require a protocol adapter".into(),
+                })
+            }
+            None => {}
+        }
         if let Some(provider_rules_id) = &self.provider_rules_id {
             validate_id("provider_rules_id", provider_rules_id)?;
         }

@@ -2,7 +2,7 @@ import { Autocomplete, Drawer, TextField } from '@mui/material'
 import { X } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import {
-  ruleArray, ruleObject, ruleModelDefinition, rulesJson, scopedRequestRules,
+  bindingChoice, bindingChoices, bindingLabel, defaultRuleBinding, ruleArray, ruleClients, ruleObject, ruleModelDefinition, rulesJson, scopedRequestRules,
   type ModelRuleDraft, type ProviderRuleOptions, type RuleObject,
 } from '../../../../api/custom_provider_rules'
 
@@ -33,19 +33,21 @@ function parsedArray(source: string): RuleObject[] {
   try { return ruleArray(JSON.parse(source)) } catch { return [] }
 }
 
-export function ModelRuleEditor({ id, row, options, resolved, adapterId, editing, saving, loading, loadError, onRetry, onChange, onClose }: {
-  id: string; row: ModelRuleDraft; options: ProviderRuleOptions; resolved: RuleObject; adapterId: string
+export function ModelRuleEditor({ id, row, options, resolved, clients, editing, saving, loading, loadError, onRetry, onChange, onClose }: {
+  id: string; row: ModelRuleDraft; options: ProviderRuleOptions; resolved: RuleObject; clients: string[]
   editing: boolean; saving: boolean; loading: boolean; loadError: string; onRetry: () => void
   onChange: <K extends keyof ModelRuleDraft>(key: K, value: ModelRuleDraft[K]) => void
   onClose: () => void
 }) {
   const { t } = useI18n()
   const metadata = ruleModelDefinition(id, row, resolved, options)
-  const adapter = options.adapters.find((item) => item.id === adapterId)
+  const defaultClient = clients[0]
+  const primary = row.protocol_adapter_id || defaultClient
+  const definitions = ruleClients(options, clients, primary)
   const operations = parsedObject(row.operations)
   const variants = parsedArray(row.variants)
   const disabledTypes = new Set<string>((() => { try { return JSON.parse(row.disabled_api_types) as string[] } catch { return [] } })())
-  const knownTypes = metadata?.apiTypes.filter((apiType) => adapter?.operations.some((operation) => operation.apiTypes.includes(apiType))) ?? []
+  const knownTypes = metadata?.apiTypes.filter((apiType) => definitions.some((client) => client.operations.some((operation) => operation.apiTypes.includes(apiType)))) ?? []
   const apiTypes = [...new Set([...knownTypes, ...Object.keys(operations), ...disabledTypes])].sort()
   const tasks = row.routes.split(',').map((task) => task.trim()).filter(Boolean)
   const canUseTasks = metadata?.apiTypes.includes('llm') && !metadata.directOnly
@@ -71,7 +73,7 @@ export function ModelRuleEditor({ id, row, options, resolved, adapterId, editing
       <div className="flex items-start justify-between gap-3 border-b px-6 py-4" style={{ borderColor: 'var(--cp-border)' }}>
         <div className="min-w-0">
           <h2 className="break-all text-base font-semibold">{id}</h2>
-          <p className="mt-1 break-all text-xs" style={{ color: 'var(--cp-muted)' }}>{metadata?.target ?? t('aiCenter.rules.unrecognized', 'Model identity is not resolved')} · {adapterId}</p>
+          <p className="mt-1 break-all text-xs" style={{ color: 'var(--cp-muted)' }}>{metadata?.target ?? t('aiCenter.rules.unrecognized', 'Model identity is not resolved')} · {primary}</p>
           {editing && <p className="mt-2 text-xs" style={{ color: 'var(--cp-accent)' }}>{t('aiCenter.rules.draftHelp', 'Changes stay in the page draft. Finish editing on the main page to apply them.')}</p>}
         </div>
         <button type="button" onClick={onClose} aria-label={t('common.close', 'Close')} className="rounded-lg p-2"><X size={20} /></button>
@@ -98,11 +100,21 @@ export function ModelRuleEditor({ id, row, options, resolved, adapterId, editing
         <section className={section} style={{ borderColor: 'var(--cp-border)' }}>
           <h3 className="text-sm font-semibold">{t('aiCenter.rules.operations', 'Protocol mappings')}</h3>
           <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.rules.defaultHelp', 'Without an override, each supported API type uses the adapter default operation. Disabling a capability is separate from removing its override.')}</p>
+          <label className="flex flex-col gap-1 text-xs">{t('aiCenter.providers.adapter', 'Protocol Adapter')}
+            <select aria-label={t('aiCenter.providers.adapter', 'Protocol Adapter')} value={row.protocol_adapter_id} disabled={controlsDisabled}
+              className="w-full rounded-lg border p-2" onChange={(event) => onChange('protocol_adapter_id', event.target.value)}>
+              <option value="">{t('aiCenter.rules.useDefault', 'Use adapter default')} · {defaultClient}</option>
+              {row.protocol_adapter_id && !clients.includes(row.protocol_adapter_id) && <option value={row.protocol_adapter_id}>{row.protocol_adapter_id} · {t('aiCenter.rules.unsupported', 'Unsupported')}</option>}
+              {clients.map((client) => <option key={client} value={client}>{client}</option>)}
+            </select>
+          </label>
           {apiTypes.map((apiType) => {
             const allowed = knownTypes.includes(apiType)
-            const choices = adapter?.operations.filter((operation) => operation.apiTypes.includes(apiType)) ?? []
-            const selected = typeof operations[apiType] === 'string' ? operations[apiType] as string : ''
-            const defaultLabel = adapter?.defaults[apiType] ?? t('aiCenter.rules.serverSelects', 'Resolved by the server')
+            const choices = bindingChoices(definitions, primary, apiType)
+            const selected = typeof operations[apiType] === 'string' ? bindingChoice(operations[apiType] as string, primary) : ''
+            const fallback = defaultRuleBinding(row, resolved, definitions, primary, apiType)
+            const defaultLabel = fallback ? bindingLabel(fallback) : t('aiCenter.rules.serverSelects', 'Resolved by the server')
+            const choiceLabel = (choice: string) => bindingLabel(choice.includes('/') ? choice : `${primary}/${choice}`)
             let scoped: string
             try { scoped = rulesJson(scopedRequestRules(row.request_rules, apiType)) } catch { scoped = '[]' }
             return <div key={apiType} className="flex flex-col gap-3 rounded-lg border p-3" style={{ borderColor: 'var(--cp-border)' }}>
@@ -125,8 +137,8 @@ export function ModelRuleEditor({ id, row, options, resolved, adapterId, editing
                     onChange('operations', rulesJson(next))
                   }}>
                   <option value="">{t('aiCenter.rules.useDefault', 'Use adapter default')} · {defaultLabel}</option>
-                  {selected && (!allowed || !choices.some((choice) => choice.id === selected)) && <option value={selected}>{selected} · {t('aiCenter.rules.unsupported', 'Unsupported')}</option>}
-                  {allowed && choices.map((operation) => <option key={operation.id} value={operation.id}>{operation.id}</option>)}
+                  {selected && (!allowed || !choices.includes(selected)) && <option value={selected}>{choiceLabel(selected)} · {t('aiCenter.rules.unsupported', 'Unsupported')}</option>}
+                  {allowed && choices.map((choice) => <option key={choice} value={choice}>{choiceLabel(choice)}</option>)}
                 </select>
               </label>
               <details><summary className="cursor-pointer text-xs font-medium">{t('aiCenter.rules.requestRules', 'Advanced request rules')}</summary>

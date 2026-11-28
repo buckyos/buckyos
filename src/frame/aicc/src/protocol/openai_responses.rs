@@ -43,13 +43,111 @@ const OPENAI_PROVIDER_NAMESPACE: &str = "openai";
 const DEFAULT_MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
+pub(crate) const OPENAI_EMBEDDINGS_ADAPTER_ID: &str = "openai-embeddings";
+pub(crate) const OPENAI_IMAGES_ADAPTER_ID: &str = "openai-images";
+pub(crate) const OPENAI_AUDIO_ADAPTER_ID: &str = "openai-audio";
+pub(crate) const OPENAI_VIDEOS_ADAPTER_ID: &str = "openai-videos";
+
+/// OpenAI Responses: `responses.create` and, selected only explicitly, the
+/// background form of the same endpoint.
 pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    openai_responses_adapter_with_reported_cost_currency(None)
+    let (mut descriptor, mut registration) = openai_platform_client(
+        OPENAI_RESPONSES_ADAPTER_ID,
+        Some("responses"),
+        &[OPENAI_RESPONSES_OPERATION_ID],
+        None,
+    );
+    let (background, background_codecs) = background_responses_registration();
+    descriptor
+        .operations
+        .insert(background.operation_id.clone(), background);
+    registration.native_task_codecs.extend(background_codecs);
+    (descriptor, registration)
 }
 
-pub(super) fn openai_responses_adapter_with_reported_cost_currency(
+pub(crate) fn openai_embeddings_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    openai_platform_client(
+        OPENAI_EMBEDDINGS_ADAPTER_ID,
+        None,
+        &[OPENAI_EMBEDDINGS_OPERATION_ID],
+        None,
+    )
+}
+
+pub(crate) fn openai_images_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    openai_platform_client(
+        OPENAI_IMAGES_ADAPTER_ID,
+        None,
+        &[OPENAI_IMAGES_GENERATE_OPERATION_ID, OPENAI_IMAGES_EDIT_OPERATION_ID],
+        None,
+    )
+}
+
+pub(crate) fn openai_audio_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    openai_platform_client(
+        OPENAI_AUDIO_ADAPTER_ID,
+        None,
+        &[
+            OPENAI_AUDIO_SPEECH_OPERATION_ID,
+            OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
+        ],
+        None,
+    )
+}
+
+pub(crate) fn openai_videos_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    openai_platform_client(
+        OPENAI_VIDEOS_ADAPTER_ID,
+        None,
+        &[OPENAI_VIDEOS_OPERATION_ID],
+        None,
+    )
+}
+
+/// One client of the OpenAI platform: the named operations and their codecs.
+pub(super) fn openai_platform_client(
+    protocol_adapter_id: &str,
+    probe_path: Option<&str>,
+    operation_ids: &[&str],
     reported_cost_currency: Option<&'static str>,
 ) -> (AdapterDescriptor, CodecRegistration) {
+    let (operations, registration) = openai_platform_registration(reported_cost_currency);
+    let keep = |operation_id: &str| operation_ids.contains(&operation_id);
+    (
+        AdapterDescriptor {
+            protocol_family_id: "openai".to_string(),
+            protocol_adapter_id: protocol_adapter_id.to_string(),
+            interface_generation: "v1".to_string(),
+            base_adapter_id: None,
+            status: AdapterStatus::Stable,
+            probe_priority: 0,
+            probe_path: probe_path.map(str::to_owned),
+            credential: super::AdapterCredentialContract::bearer(),
+            operations: operations
+                .into_iter()
+                .filter(|(operation_id, _)| keep(operation_id))
+                .collect(),
+        },
+        CodecRegistration {
+            operation_codecs: registration
+                .operation_codecs
+                .into_iter()
+                .filter(|codec| keep(&codec.descriptor().operation_id))
+                .collect(),
+            native_task_codecs: registration
+                .native_task_codecs
+                .into_iter()
+                .filter(|codec| keep(&codec.descriptor().operation_id))
+                .collect(),
+        },
+    )
+}
+
+/// Every OpenAI platform operation with its codecs, before they are grouped
+/// into clients.
+pub(super) fn openai_platform_registration(
+    reported_cost_currency: Option<&'static str>,
+) -> (BTreeMap<String, OperationDescriptor>, CodecRegistration) {
     let responses = operation(
         OPENAI_RESPONSES_OPERATION_ID,
         vec![
@@ -62,6 +160,7 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
                     buckyos_api::features::WEB_SEARCH,
                     "reasoning",
                     buckyos_api::features::VISION,
+                    buckyos_api::features::DOCUMENT,
                 ],
             ),
             binding(
@@ -126,6 +225,7 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
         ],
         false,
     );
+    // The Images API wins over image generation through Responses.
     for operation in [&mut images_generate, &mut images_edit] {
         for binding in &mut operation.bindings {
             binding.default_priority = 100;
@@ -162,10 +262,15 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
                 [ExecutionMode::NativeTask],
                 std::iter::empty::<&str>(),
             ),
+            binding(
+                ApiType::VideoExtend,
+                [ExecutionMode::NativeTask],
+                std::iter::empty::<&str>(),
+            )
+            .explicit_only(),
         ],
         true,
     );
-
     let operations = BTreeMap::from([
         (responses.operation_id.clone(), responses.clone()),
         (embeddings.operation_id.clone(), embeddings.clone()),
@@ -181,18 +286,6 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
         ),
         (videos.operation_id.clone(), videos.clone()),
     ]);
-    let descriptor = AdapterDescriptor {
-        protocol_family_id: "openai".to_string(),
-        protocol_adapter_id: OPENAI_RESPONSES_ADAPTER_ID.to_string(),
-        interface_generation: "responses-v1".to_string(),
-        base_adapter_id: None,
-        component_adapter_ids: Vec::new(),
-        status: AdapterStatus::Stable,
-        probe_priority: 0,
-        probe_path: Some("responses".to_owned()),
-        credential: super::AdapterCredentialContract::bearer(),
-        operations,
-    };
     let operation_codecs: Vec<Arc<dyn OperationCodec>> = vec![
         Arc::new(OpenAiResponsesCodec::new(
             responses.clone(),
@@ -248,10 +341,11 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
             videos.clone(),
             ApiType::VideoGenerate,
         )),
-        Arc::new(OpenAiVideoCodec::new(videos, ApiType::VideoEdit)),
+        Arc::new(OpenAiVideoCodec::new(videos.clone(), ApiType::VideoEdit)),
+        Arc::new(OpenAiVideoCodec::new(videos, ApiType::VideoExtend)),
     ];
     (
-        descriptor,
+        operations,
         CodecRegistration {
             operation_codecs,
             native_task_codecs,
@@ -2814,7 +2908,7 @@ pub(super) fn background_responses_registration() -> (OperationDescriptor, Vec<A
     let api_types = [ApiType::VisionOcr, ApiType::ImageTextToImage, ApiType::ImageImageToImage];
     let descriptor = operation(OPENAI_RESPONSES_BACKGROUND_OPERATION_ID,
         api_types.into_iter().map(|api_type| binding(api_type, [ExecutionMode::NativeTask],
-            [if api_type == ApiType::VisionOcr { buckyos_api::features::VISION } else { "image_generation" }])).collect(), true);
+            [if api_type == ApiType::VisionOcr { buckyos_api::features::VISION } else { "image_generation" }]).explicit_only()).collect(), true);
     let codecs = api_types.into_iter().map(|api_type| Arc::new(OpenAiBackgroundResponsesCodec {
         descriptor:descriptor.clone(),api_type,reported_cost_currency:None,
     }) as Arc<dyn NativeTaskCodec>).collect();
@@ -2964,6 +3058,55 @@ impl NativeTaskCodec for OpenAiVideoCodec {
     }
 }
 
+/// `POST /videos/extensions`: continues a completed video, identified by the
+/// Provider's video ID, for `seconds` more; the source keeps its resolution.
+fn encode_video_extension(
+    request: &buckyos_api::VideoExtendRequest,
+    input: &NativeTaskInput<'_>,
+) -> ProtocolResultValue<HttpRequest> {
+    let resource = input.context.materialized_resource(&request.video)?;
+    let id = resource
+        .provider_artifact_id
+        .as_deref()
+        .or(request.continuation_handle.as_deref())
+        .filter(|id| !id.is_empty() && id.len() <= 2048 && !id.chars().any(char::is_control))
+        .ok_or_else(|| {
+            ProtocolError::invalid_request(
+                "OpenAI video extension requires a source video ID or explicit continuation handle",
+            )
+        })?;
+    if resource.provider_artifact_id.is_some()
+        && request
+            .continuation_handle
+            .as_deref()
+            .is_some_and(|handle| handle != id)
+    {
+        return Err(ProtocolError::invalid_request(
+            "OpenAI video continuation handle must match the source artifact",
+        ));
+    }
+    if request.resolution.is_some() {
+        return Err(video_unsupported(
+            "OpenAI video extension inherits the source resolution",
+        ));
+    }
+    let mut body = json!({"video": {"id": id}, "prompt": request.prompt});
+    if let Some(seconds) = request.duration_seconds {
+        if !seconds.is_finite() || seconds <= 0.0 || seconds.fract() != 0.0 {
+            return Err(ProtocolError::invalid_request(
+                "OpenAI video extension duration must be a positive whole number of seconds",
+            ));
+        }
+        body["seconds"] = json!(format!("{seconds:.0}"));
+    }
+    let mut http_request = HttpRequest::new(
+        Method::POST,
+        endpoint(&input.context.base_url, "videos/extensions")?,
+    );
+    http_request.body = HttpBody::Json(body);
+    finish_request(&mut http_request, input.context)
+}
+
 fn encode_video_submit(
     input: &NativeTaskInput<'_>,
     api_type: ApiType,
@@ -3010,6 +3153,11 @@ fn encode_video_submit(
         // keeps the source video's model.
         body.push(MultipartPart::bytes("prompt", request.prompt.clone()))?;
         return multipart_request_context(input.context, Method::POST, "videos/edits", body);
+    }
+    if let (AiccCall::VideoExtend(request), ApiType::VideoExtend) =
+        (&codec_input.canonical_request, api_type)
+    {
+        return encode_video_extension(request, input);
     }
     if api_type != ApiType::VideoGenerate {
         return Err(ProtocolError::invalid_request(
@@ -3277,6 +3425,7 @@ mod tests {
 
     fn context() -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: "https://api.openai.com/v1".to_string(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
                 provider_profile_id: "openai".into(),
@@ -3326,20 +3475,43 @@ mod tests {
     }
 
     fn registry() -> CodecRegistry {
-        let (descriptor, codecs) = openai_responses_adapter();
-        let mut registry = CodecRegistry::default();
-        registry.register_codecs(descriptor, codecs).unwrap();
-        crate::protocol::register_sn_openai_adapter(&mut registry).unwrap();
-        registry
+        crate::protocol::builtin_codecs_for_test()
     }
 
     #[test]
-    fn registers_seven_operations_without_derived_provider_branches() {
+    fn registers_the_openai_platform_as_one_client_per_api() {
         let registry = registry();
         let descriptor = registry.adapter(OPENAI_RESPONSES_ADAPTER_ID).unwrap();
         assert_eq!(descriptor.protocol_family_id, "openai");
         assert_eq!(descriptor.base_adapter_id, None);
-        assert_eq!(descriptor.operations.len(), 7);
+        assert_eq!(
+            descriptor.operations.keys().map(String::as_str).collect::<Vec<_>>(),
+            [OPENAI_RESPONSES_BACKGROUND_OPERATION_ID, OPENAI_RESPONSES_OPERATION_ID]
+        );
+        assert!(descriptor.operations[OPENAI_RESPONSES_BACKGROUND_OPERATION_ID]
+            .bindings
+            .iter()
+            .all(|binding| binding.default_priority == 0));
+        for (adapter, operations) in [
+            (OPENAI_EMBEDDINGS_ADAPTER_ID, vec![OPENAI_EMBEDDINGS_OPERATION_ID]),
+            (
+                OPENAI_IMAGES_ADAPTER_ID,
+                vec![OPENAI_IMAGES_EDIT_OPERATION_ID, OPENAI_IMAGES_GENERATE_OPERATION_ID],
+            ),
+            (
+                OPENAI_AUDIO_ADAPTER_ID,
+                vec![OPENAI_AUDIO_SPEECH_OPERATION_ID, OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID],
+            ),
+            (OPENAI_VIDEOS_ADAPTER_ID, vec![OPENAI_VIDEOS_OPERATION_ID]),
+        ] {
+            let descriptor = registry.adapter(adapter).unwrap();
+            assert_eq!(descriptor.protocol_family_id, "openai");
+            assert_eq!(
+                descriptor.operations.keys().map(String::as_str).collect::<Vec<_>>(),
+                operations,
+                "{adapter}"
+            );
+        }
         assert!(registry
             .operation_descriptor(
                 OPENAI_RESPONSES_ADAPTER_ID,
@@ -3349,7 +3521,7 @@ mod tests {
             .is_ok());
         assert!(registry
             .native_task_codec(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
                 ApiType::VideoGenerate,
             )
@@ -3389,7 +3561,7 @@ mod tests {
         let context = context();
         let request = input(AiccCall::ImagesGenerate(TextToImageInvokeRequest::new("test@p", "A blue square")));
         let parameters = &request.resolved_parameters;
-        let wire = registry.encode_native(crate::protocol::SN_OPENAI_ADAPTER_ID,
+        let wire = registry.encode_native(OPENAI_RESPONSES_ADAPTER_ID,
             OPENAI_RESPONSES_BACKGROUND_OPERATION_ID, ApiType::ImageTextToImage,
             &NativeTaskInput {operation:NativeTaskOperation::Submit,remote_task_id:None,
                 codec_input:Some(&request),resolved_parameters:parameters,context:&context}).unwrap();
@@ -3398,35 +3570,35 @@ mod tests {
         assert_eq!(body["stream"], false);
         assert_eq!(body["tools"][0]["type"], "image_generation");
         let id = format!("resp_{}=", "x".repeat(512));
-        let NativeTaskOutput::Submitted(handle) = registry.decode_native(crate::protocol::SN_OPENAI_ADAPTER_ID,
+        let NativeTaskOutput::Submitted(handle) = registry.decode_native(OPENAI_RESPONSES_ADAPTER_ID,
             OPENAI_RESPONSES_BACKGROUND_OPERATION_ID, ApiType::ImageTextToImage, NativeTaskOperation::Submit,
             response_fixture(json!({"id":id,"status":"queued","background":true}))).await.unwrap() else {panic!("submit expected")};
         assert_eq!(handle.state, NativeTaskState::Queued);
         assert!(handle.cancel_supported);
-        assert!(registry.decode_native(crate::protocol::SN_OPENAI_ADAPTER_ID,
+        assert!(registry.decode_native(OPENAI_RESPONSES_ADAPTER_ID,
             OPENAI_RESPONSES_BACKGROUND_OPERATION_ID,ApiType::ImageTextToImage,NativeTaskOperation::Submit,
             response_fixture(json!({"id":id,"status":"completed","background":false}))).await.is_err());
         for (operation, method, suffix) in [(NativeTaskOperation::Status, Method::GET, ""),
             (NativeTaskOperation::Result, Method::GET, ""), (NativeTaskOperation::Cancel, Method::POST, "/cancel")] {
-            let wire = registry.encode_native(crate::protocol::SN_OPENAI_ADAPTER_ID, OPENAI_RESPONSES_BACKGROUND_OPERATION_ID,
+            let wire = registry.encode_native(OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_BACKGROUND_OPERATION_ID,
                 ApiType::ImageTextToImage, &NativeTaskInput {operation, remote_task_id:Some(&id),codec_input:None,
                     resolved_parameters:parameters,context:&context}).unwrap();
             assert_eq!(wire.method, method);
             assert!(wire.url.ends_with(&format!("responses/{id}{suffix}")));
         }
         for status in ["failed", "incomplete", "unknown"] {
-            assert!(registry.decode_native(crate::protocol::SN_OPENAI_ADAPTER_ID, OPENAI_RESPONSES_BACKGROUND_OPERATION_ID,
+            assert!(registry.decode_native(OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_BACKGROUND_OPERATION_ID,
                 ApiType::ImageTextToImage, NativeTaskOperation::Status,
                 response_fixture(json!({"id":id,"status":status,"error":{"code":"server_error","message":"failed"}}))).await.is_err());
         }
-        let NativeTaskOutput::Result(output) = registry.decode_native(crate::protocol::SN_OPENAI_ADAPTER_ID,
+        let NativeTaskOutput::Result(output) = registry.decode_native(OPENAI_RESPONSES_ADAPTER_ID,
             OPENAI_RESPONSES_BACKGROUND_OPERATION_ID, ApiType::VisionOcr, NativeTaskOperation::Result,
             response_fixture(json!({"id":id,"status":"completed","output":[{"type":"message","role":"assistant",
                 "content":[{"type":"output_text","text":"4827"}]}],"usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7}})))
             .await.unwrap() else {panic!("result expected")};
         assert_eq!(output.value["text"], "4827");
         assert_eq!(output.usage.unwrap().total_tokens, Some(7));
-        assert!(matches!(registry.decode_native(crate::protocol::SN_OPENAI_ADAPTER_ID, OPENAI_RESPONSES_BACKGROUND_OPERATION_ID,
+        assert!(matches!(registry.decode_native(OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_BACKGROUND_OPERATION_ID,
             ApiType::VisionOcr, NativeTaskOperation::Cancel,
             response_fixture(json!({"id":id,"status":"cancelled"}))).await.unwrap(), NativeTaskOutput::Cancelled {accepted:true}));
         assert!(validate_response_id("../other").is_err());
@@ -4066,7 +4238,7 @@ mod tests {
         );
         let wire = registry()
             .encode(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_EMBEDDINGS_ADAPTER_ID,
                 OPENAI_EMBEDDINGS_OPERATION_ID,
                 ApiType::EmbeddingText,
                 &input(AiccCall::EmbeddingText(request)),
@@ -4095,7 +4267,7 @@ mod tests {
             .unwrap();
         let ProtocolExecution::Immediate(output) = registry()
             .decode(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_EMBEDDINGS_ADAPTER_ID,
                 OPENAI_EMBEDDINGS_OPERATION_ID,
                 ApiType::EmbeddingText,
                 response,
@@ -4138,7 +4310,7 @@ mod tests {
 
         let wire = registry()
             .encode(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_IMAGES_ADAPTER_ID,
                 OPENAI_IMAGES_GENERATE_OPERATION_ID,
                 ApiType::ImageTextToImage,
                 &input(AiccCall::ImagesGenerate(generate)),
@@ -4179,7 +4351,7 @@ mod tests {
 
         let wire = registry()
             .encode(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_IMAGES_ADAPTER_ID,
                 OPENAI_IMAGES_EDIT_OPERATION_ID,
                 ApiType::ImageImageToImage,
                 &input(AiccCall::ImageToImage(edit)),
@@ -4210,7 +4382,7 @@ mod tests {
         };
         assert!(registry()
             .encode(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_IMAGES_ADAPTER_ID,
                 OPENAI_IMAGES_EDIT_OPERATION_ID,
                 ApiType::ImageInpaint,
                 &input(AiccCall::ImageInpaint(inpaint)),
@@ -4229,7 +4401,7 @@ mod tests {
             .unwrap();
         let ProtocolExecution::Immediate(output) = registry()
             .decode(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_IMAGES_ADAPTER_ID,
                 OPENAI_IMAGES_GENERATE_OPERATION_ID,
                 ApiType::ImageTextToImage,
                 response,
@@ -4267,7 +4439,7 @@ mod tests {
             .unwrap();
         let ProtocolExecution::Immediate(output) = registry()
             .decode(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_AUDIO_ADAPTER_ID,
                 OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
                 ApiType::AudioSpeechRecognition,
                 response,
@@ -4298,7 +4470,7 @@ mod tests {
             .insert("voice".to_string(), json!("alloy"));
         let wire = registry()
             .encode(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_AUDIO_ADAPTER_ID,
                 OPENAI_AUDIO_SPEECH_OPERATION_ID,
                 ApiType::AudioTextToSpeech,
                 &speech_input,
@@ -4317,7 +4489,7 @@ mod tests {
             .unwrap();
         let ProtocolExecution::Immediate(output) = registry()
             .decode(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_AUDIO_ADAPTER_ID,
                 OPENAI_AUDIO_SPEECH_OPERATION_ID,
                 ApiType::AudioTextToSpeech,
                 response,
@@ -4341,7 +4513,7 @@ mod tests {
         transcription.timestamps = Some("segment".to_string());
         let error = registry()
             .encode(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_AUDIO_ADAPTER_ID,
                 OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
                 ApiType::AudioSpeechRecognition,
                 &input(AiccCall::AudioSpeechRecognition(transcription.clone())),
@@ -4355,7 +4527,7 @@ mod tests {
         assert!(!rendered_error.contains("top-secret"));
         let wire = registry()
             .encode(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_AUDIO_ADAPTER_ID,
                 OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
                 ApiType::AudioSpeechRecognition,
                 &input(AiccCall::AudioSpeechRecognition(transcription)),
@@ -4394,7 +4566,7 @@ mod tests {
             .unwrap();
         let ProtocolExecution::Immediate(output) = registry()
             .decode(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_AUDIO_ADAPTER_ID,
                 OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
                 ApiType::AudioSpeechRecognition,
                 response,
@@ -4415,7 +4587,7 @@ mod tests {
         let transcription = AudioSpeechRecognitionRequest::new("ignored@instance", audio);
         let wire = registry()
             .encode(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_AUDIO_ADAPTER_ID,
                 OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
                 ApiType::AudioSpeechRecognition,
                 &input(AiccCall::AudioSpeechRecognition(transcription)),
@@ -4460,7 +4632,7 @@ mod tests {
         };
         let request = registry
             .encode_native(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
                 ApiType::VideoGenerate,
                 &submit,
@@ -4515,7 +4687,7 @@ mod tests {
         };
         let request = registry
             .encode_native(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
                 ApiType::VideoGenerate,
                 &image_submit,
@@ -4561,7 +4733,7 @@ mod tests {
         };
         let request = registry
             .encode_native(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
                 ApiType::VideoEdit,
                 &video_submit,
@@ -4592,7 +4764,7 @@ mod tests {
         };
         let request = registry
             .encode_native(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
                 ApiType::VideoEdit,
                 &video_upload_submit,
@@ -4629,7 +4801,7 @@ mod tests {
             .unwrap();
         let NativeTaskOutput::Submitted(handle) = registry
             .decode_native(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
                 ApiType::VideoGenerate,
                 NativeTaskOperation::Submit,
@@ -4670,7 +4842,7 @@ mod tests {
             result_artifacts, ..
         } = registry
             .decode_native(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
                 ApiType::VideoGenerate,
                 NativeTaskOperation::Status,
@@ -4698,7 +4870,7 @@ mod tests {
             .unwrap();
         let error = registry
             .decode_native(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
                 ApiType::VideoGenerate,
                 NativeTaskOperation::Status,
@@ -4735,7 +4907,7 @@ mod tests {
             };
             let request = registry
                 .encode_native(
-                    OPENAI_RESPONSES_ADAPTER_ID,
+                    OPENAI_VIDEOS_ADAPTER_ID,
                     OPENAI_VIDEOS_OPERATION_ID,
                     ApiType::VideoGenerate,
                     &input,
@@ -4757,7 +4929,7 @@ mod tests {
         };
         assert!(registry
             .encode_native(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
                 ApiType::VideoGenerate,
                 &invalid,
@@ -4775,7 +4947,7 @@ mod tests {
             .unwrap();
         let NativeTaskOutput::Result(output) = registry
             .decode_native(
-                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
                 ApiType::VideoGenerate,
                 NativeTaskOperation::Result,
@@ -4800,7 +4972,7 @@ mod tests {
         assert!(matches!(
             registry
                 .decode_native(
-                    OPENAI_RESPONSES_ADAPTER_ID,
+                    OPENAI_VIDEOS_ADAPTER_ID,
                     OPENAI_VIDEOS_OPERATION_ID,
                     ApiType::VideoGenerate,
                     NativeTaskOperation::Cancel,

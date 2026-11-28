@@ -1,22 +1,10 @@
-use super::super::{
-    validate_discovery, DiscoveryContext, ProviderDiscovery, ProviderDiscoverySnapshot,
-    ProviderError, ProviderHealthState, ProviderResult,
-};
 #[cfg(test)]
 use super::super::{DiscoveryMode, ProviderProfile};
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
-use crate::protocol::{CredentialKind, HttpRequest, HttpTransport};
-use async_trait::async_trait;
+
 #[cfg(test)]
-use reqwest::header::ETAG;
-use reqwest::{Method, Url};
-use std::sync::Arc;
-use std::time::Duration;
-
 pub(crate) const OPENAI_PROVIDER_PROFILE_ID: &str = "openai";
-
-const MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 
 #[cfg(test)]
 pub(crate) fn openai_profile() -> ProviderProfile {
@@ -43,103 +31,11 @@ pub(crate) fn openai_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[OPENAI_PROVIDER_PROFILE_ID])
 }
 
-use super::openai_responses_compatible::OpenAiCompatibleModelsTransport as OpenAiModelsTransport;
-
-#[derive(Clone)]
-pub(crate) struct OpenAiDiscovery {
-    transport: Arc<dyn OpenAiModelsTransport>,
-}
-
-impl OpenAiDiscovery {
-    pub(crate) fn new(transport: HttpTransport) -> Self {
-        Self {
-            transport: Arc::new(transport),
-        }
-    }
-
-    #[cfg(test)]
-    fn with_transport(transport: Arc<dyn OpenAiModelsTransport>) -> Self {
-        Self { transport }
-    }
-}
-
-#[async_trait]
-impl ProviderDiscovery for OpenAiDiscovery {
-    async fn discover(
-        &self,
-        context: &DiscoveryContext<'_>,
-    ) -> ProviderResult<ProviderDiscoverySnapshot> {
-        validate_openai_context(context)?;
-        let mut request =
-            HttpRequest::new(Method::GET, models_endpoint(&context.instance.base_url)?);
-        context
-            .credential
-            .apply(&mut request.headers)
-            .map_err(|error| ProviderError::Credential(error.to_string()))?;
-        request.timeout = Some(Duration::from_secs(30));
-        request.max_response_bytes = Some(MODELS_RESPONSE_LIMIT);
-
-        let (models, revision) = super::openai_responses_compatible::discover_model_ids(
-            self.transport.as_ref(),
-            request,
-            OPENAI_PROVIDER_PROFILE_ID,
-            true,
-        )
-        .await?;
-        let snapshot = ProviderDiscoverySnapshot {
-            revision,
-            discovered_at_ms: super::super::now_ms()?,
-            health: ProviderHealthState::Healthy,
-            models,
-        };
-        validate_discovery(&snapshot)?;
-        Ok(snapshot)
-    }
-}
-
-fn validate_openai_context(context: &DiscoveryContext<'_>) -> ProviderResult<()> {
-    if context.profile.provider_profile_id != OPENAI_PROVIDER_PROFILE_ID
-        || context.instance.provider_profile_id != OPENAI_PROVIDER_PROFILE_ID
-        || context.instance.protocol_adapter_id != context.profile.default_protocol_adapter_id
-    {
-        return Err(ProviderError::InvalidConfiguration(
-            "OpenAI discovery requires the OpenAI profile and Responses adapter".to_owned(),
-        ));
-    }
-    if context.credential.audit().kind != CredentialKind::Bearer {
-        return Err(ProviderError::Credential(
-            "OpenAI discovery requires a Bearer credential".to_owned(),
-        ));
-    }
-    Url::parse(&context.instance.base_url).map_err(|_| {
-        ProviderError::InvalidConfiguration("OpenAI base_url is invalid".to_owned())
-    })?;
-    Ok(())
-}
-
-fn models_endpoint(base_url: &str) -> ProviderResult<String> {
-    let mut url = Url::parse(base_url).map_err(|_| {
-        ProviderError::InvalidConfiguration("OpenAI base_url is invalid".to_owned())
-    })?;
-    if !matches!(url.scheme(), "http" | "https") || url.cannot_be_a_base() {
-        return Err(ProviderError::InvalidConfiguration(
-            "OpenAI base_url must be an absolute HTTP URL".to_owned(),
-        ));
-    }
-    let base_path = url.path().trim_end_matches('/');
-    let prefix = if base_path.is_empty() {
-        "/v1"
-    } else {
-        base_path
-    };
-    url.set_path(&format!("{prefix}/models"));
-    url.set_query(None);
-    url.set_fragment(None);
-    Ok(url.to_string())
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::openai_responses_compatible::{
+        OpenAiCompatibleModelsDiscovery, OpenAiCompatibleModelsTransport,
+    };
     use super::*;
     use crate::catalog::{CatalogBuildOptions, CatalogSnapshot};
     use crate::protocol::{
@@ -147,15 +43,24 @@ mod tests {
         OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID, OPENAI_EMBEDDINGS_OPERATION_ID,
         OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID, OPENAI_VIDEOS_OPERATION_ID,
     };
+    use crate::protocol::{CredentialKind, HttpRequest, HttpResponse};
     use crate::protocol::{HttpBody, ResolvedCredential};
     use crate::provider::{CredentialReference, InventoryBuilder, ProviderInstanceConfig};
+    use crate::provider::{
+        DiscoveryContext, ProviderDiscovery, ProviderDiscoverySnapshot, ProviderHealthState,
+    };
     use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
+    use async_trait::async_trait;
     use bytes::Bytes;
+    use reqwest::header::ETAG;
     use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+    use reqwest::Method;
     use reqwest::StatusCode;
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
+    use std::sync::Arc;
     use std::sync::Mutex;
+    use std::time::Duration;
 
     struct FakeTransport {
         response: Mutex<Option<Result<HttpResponse, ProtocolError>>>,
@@ -178,7 +83,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl OpenAiModelsTransport for FakeTransport {
+    impl OpenAiCompatibleModelsTransport for FakeTransport {
         async fn send(
             &self,
             request: HttpRequest,
@@ -257,7 +162,7 @@ mod tests {
             known.ui_hints["instance_fields"]["region"]["mode"],
             "unsupported"
         );
-        assert_eq!(rules.revision_seq, 7);
+        assert_eq!(rules.revision_seq, 9);
         assert_eq!(
             rules.patterns[0].operations["image.txt2img"],
             OPENAI_RESPONSES_OPERATION_ID
@@ -277,19 +182,19 @@ mod tests {
             .unwrap();
         assert_eq!(
             general.operations["video.generate"],
-            OPENAI_VIDEOS_OPERATION_ID
+            format!("openai-videos/{}", OPENAI_VIDEOS_OPERATION_ID)
         );
         assert_eq!(
             general.operations["embedding.text"],
-            OPENAI_EMBEDDINGS_OPERATION_ID
+            format!("openai-embeddings/{}", OPENAI_EMBEDDINGS_OPERATION_ID)
         );
         assert_eq!(
             general.operations["audio.tts"],
-            OPENAI_AUDIO_SPEECH_OPERATION_ID
+            format!("openai-audio/{}", OPENAI_AUDIO_SPEECH_OPERATION_ID)
         );
         assert_eq!(
             general.operations["audio.asr"],
-            OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID
+            format!("openai-audio/{}", OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID)
         );
         assert_eq!(models.model_driver_id, "openai");
         let sol = models
@@ -312,8 +217,8 @@ mod tests {
             catalog.known_provider("openai").unwrap().display_name,
             "OpenAI"
         );
-        assert_eq!(catalog.provider_rules("openai").unwrap().revision_seq, 7);
-        assert_eq!(catalog.model_driver("openai").unwrap().revision_seq, 9);
+        assert_eq!(catalog.provider_rules("openai").unwrap().revision_seq, 9);
+        assert_eq!(catalog.model_driver("openai").unwrap().revision_seq, 10);
     }
 
     #[tokio::test]
@@ -331,7 +236,7 @@ mod tests {
                 ]
             }),
         );
-        let discovery = OpenAiDiscovery::with_transport(transport.clone());
+        let discovery = OpenAiCompatibleModelsDiscovery::with_transport(false, transport.clone());
         let profile = openai_profile();
         let instance = instance();
         let credential = ResolvedCredential::bearer("secret://openai/main", "secret").unwrap();
@@ -350,7 +255,7 @@ mod tests {
         assert_eq!(request.method, Method::GET);
         assert_eq!(request.url, "https://api.openai.com/v1/models");
         assert!(matches!(request.body, HttpBody::Empty));
-        assert_eq!(request.max_response_bytes, Some(MODELS_RESPONSE_LIMIT));
+        assert_eq!(request.max_response_bytes, Some(8 * 1024 * 1024));
         assert_eq!(request.headers[AUTHORIZATION], "Bearer secret");
         assert!(!format!("{request:?}").contains("secret"));
     }
@@ -362,7 +267,7 @@ mod tests {
             HeaderMap::new(),
             json!({"error": {"message": "invalid API key"}}),
         );
-        let discovery = OpenAiDiscovery::with_transport(transport);
+        let discovery = OpenAiCompatibleModelsDiscovery::with_transport(false, transport);
         let profile = openai_profile();
         let instance = instance();
         let credential = ResolvedCredential::bearer("secret://openai/main", "secret").unwrap();
@@ -426,7 +331,7 @@ mod tests {
             .iter()
             .find(|model| model.provider_model_id == "gpt-6.1-sol")
             .unwrap();
-        let operations = &model.operations;
+        let operations = &model.operation_ids();
         assert_eq!(operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
         assert_eq!(operations["image.txt2img"], OPENAI_RESPONSES_OPERATION_ID);
         assert_eq!(operations["image.img2img"], OPENAI_RESPONSES_OPERATION_ID);
@@ -465,7 +370,5 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-use crate::protocol::HttpResponse;
 #[cfg(test)]
 use crate::provider::{DiscoveredModel, ModelAvailability};

@@ -39,7 +39,6 @@ pub(crate) fn typesafe_adapter() -> (AdapterDescriptor, CodecRegistration) {
             protocol_adapter_id: "typesafe-systemone".into(),
             interface_generation: "v1".into(),
             base_adapter_id: None,
-            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 100,
             probe_path: None,
@@ -311,6 +310,7 @@ mod tests {
 
     fn context() -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: "https://api.typesafe.ai/v1".into(),
             state_coordinate: ProviderStateCoordinate {
                 provider_profile_id: "typesafe".into(),

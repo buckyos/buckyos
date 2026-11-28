@@ -4,12 +4,12 @@ import { Check, Code2, Copy, List, Pencil } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { usePickFiles } from '../../../../sysdlg/select/pickFiles'
 import { useAICCStore } from '../../hooks/use-aicc-store'
-import type { KnownProviderProfile, ProviderView } from '../../../../api/aicc_mgr'
+import type { KnownProviderProfile, ProviderSetupCatalog, ProviderView } from '../../../../api/aicc_mgr'
 import { LongField } from '../shared/LongField'
 import { ModelRuleEditor } from './ModelRuleEditor'
 import {
-  applyModelRuleEdits, createCustomRulesDraft, disabledRuleModels, setRuleModelEnabled, modelRuleDraft, paginateRuleModels,
-  parseProviderRulesFile, providerRulesFile, ruleObject, ruleArray, rulesJson, ruleModelDefinition, validateRuleEditor,
+  applyModelRuleEdits, bindingLabel, createCustomRulesDraft, defaultRuleBinding, disabledRuleModels, setRuleModelEnabled, modelRuleDraft, paginateRuleModels,
+  parseProviderRulesFile, providerProtocolClients, providerRulesFile, ruleClients, ruleObject, ruleArray, rulesJson, ruleModelDefinition, validateRuleEditor,
   type CustomRulesDraft, type ModelRuleDraft, type ProviderRuleOptions,
 } from '../../../../api/custom_provider_rules'
 
@@ -50,6 +50,7 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
   const [importedRules, setImportedRules] = useState<Record<string, Record<string, unknown>>>({})
   const [options, setOptions] = useState<ProviderRuleOptions | null>(null)
   const [presets, setPresets] = useState<KnownProviderProfile[]>([])
+  const [setupCatalog, setSetupCatalog] = useState<ProviderSetupCatalog | null>(null)
   const [selectedPreset, setSelectedPreset] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
@@ -58,13 +59,13 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
   const active = editing ? draft : current
   const resolved = sourceFile ? importedRules : provider.config.resolved_model_rules ?? {}
   const definitions = options ?? EMPTY_OPTIONS
-  const adapter = definitions.adapters.find((adapter) => adapter.id === provider.config.protocol_adapter_id)
+  const clients = providerProtocolClients(provider.config, setupCatalog)
 
   useEffect(() => {
     if (!visible || options) return
     let cancelled = false
     void Promise.all([store.fetchProviderRuleOptions(), store.fetchProviderSetupCatalog()]).then(([value, catalog]) => {
-      if (!cancelled) { setOptions(value); setPresets(catalog.providers.filter((preset) => preset.provider_rules_id)); setLoading(false) }
+      if (!cancelled) { setOptions(value); setSetupCatalog(catalog); setPresets(catalog.providers.filter((preset) => preset.provider_rules_id)); setLoading(false) }
     }).catch((cause: unknown) => {
       if (!cancelled) { setLoadError(cause instanceof Error ? cause.message : String(cause)); setLoading(false) }
     })
@@ -94,7 +95,7 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
     try {
       if (!options) throw new Error(t('aiCenter.rules.optionsRequired', 'Load model and adapter definitions before applying changes.'))
       const file = materialize()
-      validateRuleEditor(file, edits, resolved, options, provider.config.protocol_adapter_id)
+      validateRuleEditor(file, edits, resolved, options, clients)
       await store.updateProviderRules(provider, { rules_config_json: rulesJson(providerRulesFile(file)), rules_settings_revision: editRevision })
       setEditing(false); setEdits({}); setSourceFile(''); setSelected(null)
       setFeedback(t('aiCenter.rules.applied', 'Rules applied.'))
@@ -215,9 +216,12 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
             const metadata = ruleModelDefinition(id, row, resolved[id] ?? {}, definitions)
             const mapping = parseObject(row.operations)
             const disabledApiTypes = (() => { try { return JSON.parse(row.disabled_api_types) as string[] } catch { return [] } })()
-            const apiTypes = [...new Set([...(metadata?.apiTypes ?? Object.keys(ruleObject(resolved[id]?.operations))).filter((type) => adapter?.operations.some((operation) => operation.apiTypes.includes(type))), ...Object.keys(mapping)])]
+            const primary = row.protocol_adapter_id || provider.config.protocol_adapter_id
+            const rowClients = ruleClients(definitions, clients, primary)
+            const apiTypes = [...new Set([...(metadata?.apiTypes ?? Object.keys(ruleObject(resolved[id]?.operations))).filter((type) => rowClients.some((client) => client.operations.some((operation) => operation.apiTypes.includes(type)))), ...Object.keys(mapping)])]
             const protocol = apiTypes.map((type) => disabledApiTypes.includes(type) ? `${type} · ${t('aiCenter.rules.capabilityDisabled', 'disabled')}`
-              : `${type} → ${mapping[type] ?? `${t('aiCenter.rules.default', 'default')} · ${adapter?.defaults[type] ?? '—'}`}`)
+              : `${type} → ${typeof mapping[type] === 'string' ? bindingLabel(mapping[type] as string)
+                : `${t('aiCenter.rules.default', 'default')} · ${bindingLabel(defaultRuleBinding(row, resolved[id] ?? {}, rowClients, primary, type) ?? '—')}`}`)
             const price = parseObject(row.pricing)
             const prices = price.currency ? [
               ...(price.input_token !== undefined ? [`${price.currency} · ${t('aiCenter.rules.inputRate', 'input')}: ${price.input_token}`] : []),
@@ -249,7 +253,7 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
       </div>
     </>}
     {visible && selected && selectedRow && <ModelRuleEditor id={selected} row={selectedRow} options={definitions} resolved={resolved[selected] ?? {}}
-      adapterId={provider.config.protocol_adapter_id} editing={editing} saving={busy} loading={loading} loadError={loadError} onRetry={retry}
+      clients={clients} editing={editing} saving={busy} loading={loading} loadError={loadError} onRetry={retry}
       onChange={(key, value) => updateModel(selected, key, value)} onClose={() => setSelected(null)} />}
   </section>
 }

@@ -1,15 +1,12 @@
 use super::{
-    AdapterDescriptor, AdapterStatus, ClaudeMessagesCodec, CodecCall, CodecInput,
-    CodecRegistration, ExecutionMode, HttpBody, HttpRequest, HttpResponse, OperationCodec,
-    OperationDescriptor, ProtocolError, ProtocolErrorKind, ProtocolEvent, ProtocolExecution,
-    ProtocolOutput, ProtocolResultValue, ProtocolStream, StreamingHttpResponse,
-    CLAUDE_MESSAGES_ADAPTER_ID,
+    AdapterDescriptor, CodecCall, CodecRegistration, ExecutionMode, HttpRequest, HttpResponse,
+    OperationCodec, OperationDescriptor, ProtocolError, ProtocolErrorKind, ProtocolExecution,
+    ProtocolResultValue, ProtocolStream, StreamingHttpResponse,
 };
 use async_trait::async_trait;
-use buckyos_api::{AiccCall, ApiType};
-use futures_util::StreamExt;
+use buckyos_api::ApiType;
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 pub(crate) const MINIMAX_MESSAGES_ADAPTER_ID: &str = "minimax-messages";
@@ -26,74 +23,33 @@ pub(crate) struct MiniMaxMessagesDialectContract {
 #[cfg(test)]
 pub(crate) fn minimax_messages_dialect_contract() -> MiniMaxMessagesDialectContract {
     MiniMaxMessagesDialectContract {
-        base_adapter_id: CLAUDE_MESSAGES_ADAPTER_ID,
-        override_points: BTreeSet::from([
-            "request_parameter_validation",
-            "max_tokens_optionality",
-            "base_resp_error",
-            "provider_state_namespace",
-        ]),
+        base_adapter_id: super::LEGACY_CLAUDE_MESSAGES_ADAPTER_ID,
+        override_points: BTreeSet::from(["base_resp_error", "inline_resources"]),
         unsupported_parameters: BTreeSet::new(),
-        unsupported_capabilities: BTreeSet::from([buckyos_api::features::WEB_SEARCH]),
+        unsupported_capabilities: BTreeSet::new(),
     }
 }
 
+/// The ecosystem Messages client plus MiniMax's own error envelope: a
+/// successful HTTP status can carry a failed `base_resp`.
 pub(crate) fn minimax_messages_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    let base = ClaudeMessagesCodec::new().with_max_tokens_required(false);
-    let mut operation = base.descriptor().clone();
-    operation.bindings.retain(|binding| {
-        matches!(
-            binding.api_type,
-            ApiType::Llm | ApiType::VisionOcr | ApiType::VisionCaption
-        )
-    });
-    for binding in &mut operation.bindings {
-        binding.default_max_output_tokens = None;
-        binding
-            .supported_features
-            .remove(buckyos_api::features::WEB_SEARCH);
-    }
-    let (media_operations, media_registration) = super::minimax_media_registration();
-    let mut operations = BTreeMap::from([(operation.operation_id.clone(), operation.clone())]);
-    operations.extend(
-        media_operations
-            .into_iter()
-            .map(|operation| (operation.operation_id.clone(), operation)),
-    );
-    let descriptor = AdapterDescriptor {
-        protocol_family_id: "minimax".to_owned(),
-        protocol_adapter_id: MINIMAX_MESSAGES_ADAPTER_ID.to_owned(),
-        interface_generation: "messages-2023-06-01-minimax".to_owned(),
-        base_adapter_id: Some(CLAUDE_MESSAGES_ADAPTER_ID.to_owned()),
-        component_adapter_ids: vec![
-            CLAUDE_MESSAGES_ADAPTER_ID.to_owned(),
-            super::MINIMAX_MEDIA_ADAPTER_ID.to_owned(),
-        ],
-        status: AdapterStatus::Stable,
-        probe_priority: 200,
-        probe_path: None,
-        credential: super::AdapterCredentialContract::named_header("x-api-key"),
-        operations,
-    };
+    let (mut descriptor, registration) = super::legacy_claude_messages_adapter();
+    descriptor.protocol_adapter_id = MINIMAX_MESSAGES_ADAPTER_ID.to_owned();
+    descriptor.base_adapter_id = Some(super::LEGACY_CLAUDE_MESSAGES_ADAPTER_ID.to_owned());
     (
         descriptor,
         CodecRegistration {
-            operation_codecs: [
-                ClaudeMessagesCodec::new().with_max_tokens_required(false),
-                ClaudeMessagesCodec::new_for(ApiType::VisionOcr).with_max_tokens_required(false),
-                ClaudeMessagesCodec::new_for(ApiType::VisionCaption)
-                    .with_max_tokens_required(false),
-            ]
-            .into_iter()
-            .map(|base| {
-                Arc::new(MiniMaxMessagesCodec {
-                    descriptor: operation.clone(),
-                    base: Arc::new(base),
-                }) as Arc<dyn OperationCodec>
-            })
-            .chain(media_registration.operation_codecs)
-            .collect(),
-            native_task_codecs: media_registration.native_task_codecs,
+            operation_codecs: registration
+                .operation_codecs
+                .into_iter()
+                .map(|base| {
+                    Arc::new(MiniMaxMessagesCodec {
+                        descriptor: base.descriptor().clone(),
+                        base,
+                    }) as Arc<dyn OperationCodec>
+                })
+                .collect(),
+            native_task_codecs: Vec::new(),
         },
     )
 }
@@ -117,53 +73,15 @@ impl OperationCodec for MiniMaxMessagesCodec {
         self.base.execution_modes()
     }
 
+    // MiniMax takes image inputs inlined, so resources keep the default
+    // bytes-only form instead of the base client's URL form.
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
-        validate_minimax_request(call)?;
-        if !matches!(
-            call.input.canonical_request,
-            AiccCall::ChatCompletionsCreate(_)
-        ) {
-            return self.base.encode(call);
-        }
-        let AiccCall::ChatCompletionsCreate(request) = &call.input.canonical_request else {
-            unreachable!("MiniMax request validation checked the canonical method")
-        };
-        let Some(temperature) = request.temperature.or_else(|| {
-            call.input
-                .resolved_parameters
-                .get("temperature")
-                .and_then(Value::as_f64)
-        }) else {
-            return self.base.encode(call);
-        };
-        let mut canonical_request = call.input.canonical_request.clone();
-        let AiccCall::ChatCompletionsCreate(request) = &mut canonical_request else {
-            unreachable!("MiniMax request validation checked the canonical method")
-        };
-        request.temperature = None;
-        let mut input = CodecInput {
-            canonical_request,
-            resolved_parameters: call.input.resolved_parameters.clone(),
-        };
-        input.resolved_parameters.remove("temperature");
-        let mut encoded = self.base.encode(&CodecCall {
-            api_type: call.api_type,
-            input: &input,
-            context: call.context,
-        })?;
-        let HttpBody::Json(Value::Object(body)) = &mut encoded.body else {
-            return Err(ProtocolError::invalid_configuration(
-                "Claude Messages base codec did not produce a JSON object",
-            ));
-        };
-        body.insert("temperature".to_owned(), Value::from(temperature));
-        Ok(encoded)
+        self.base.encode(call)
     }
 
     async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
         validate_minimax_response(&response)?;
-        let execution = self.base.decode(response).await?;
-        Ok(rewrite_execution_namespace(execution))
+        self.base.decode(response).await
     }
 
     async fn decode_stream(
@@ -176,51 +94,8 @@ impl OperationCodec for MiniMaxMessagesCodec {
                 .await?;
             return Err(minimax_http_error(&response));
         }
-        let stream = self.base.decode_stream(response).await?;
-        Ok(ProtocolStream {
-            events: Box::pin(
-                stream
-                    .events
-                    .map(|event| event.map(rewrite_event_namespace)),
-            ),
-        })
+        self.base.decode_stream(response).await
     }
-}
-
-fn validate_minimax_request(call: &CodecCall<'_>) -> ProtocolResultValue<()> {
-    if call
-        .input
-        .resolved_parameters
-        .get("temperature")
-        .is_some_and(|value| {
-            value
-                .as_f64()
-                .is_none_or(|value| !value.is_finite() || !(0.0..=2.0).contains(&value))
-        })
-    {
-        return Err(ProtocolError::invalid_request(
-            "MiniMax Messages temperature must be between 0 and 2",
-        ));
-    }
-
-    let AiccCall::ChatCompletionsCreate(request) = &call.input.canonical_request else {
-        return match (&call.input.canonical_request, call.api_type) {
-            (AiccCall::VisionOcr(_), ApiType::VisionOcr)
-            | (AiccCall::VisionCaption(_), ApiType::VisionCaption) => Ok(()),
-            _ => Err(ProtocolError::invalid_request(
-                "MiniMax Messages received a canonical request that does not match its API type",
-            )),
-        };
-    };
-    if request
-        .temperature
-        .is_some_and(|value| !value.is_finite() || !(0.0..=2.0).contains(&value))
-    {
-        return Err(ProtocolError::invalid_request(
-            "MiniMax Messages temperature must be between 0 and 2",
-        ));
-    }
-    Ok(())
 }
 
 pub(super) fn validate_minimax_response(response: &HttpResponse) -> ProtocolResultValue<()> {
@@ -288,67 +163,20 @@ fn minimax_http_error(response: &HttpResponse) -> ProtocolError {
     .with_retry_after(response.retry_after)
 }
 
-fn rewrite_execution_namespace(execution: ProtocolExecution) -> ProtocolExecution {
-    match execution {
-        ProtocolExecution::Immediate(mut output) => {
-            rewrite_output_namespace(&mut output);
-            ProtocolExecution::Immediate(output)
-        }
-        ProtocolExecution::Stream(stream) => ProtocolExecution::Stream(stream),
-    }
-}
-
-fn rewrite_event_namespace(event: ProtocolEvent) -> ProtocolEvent {
-    match event {
-        ProtocolEvent::Delta(mut value) => {
-            rewrite_value_namespace(&mut value);
-            ProtocolEvent::Delta(value)
-        }
-        ProtocolEvent::Progress(mut value) => {
-            rewrite_value_namespace(&mut value);
-            ProtocolEvent::Progress(value)
-        }
-        ProtocolEvent::Final(mut output) => {
-            rewrite_output_namespace(&mut output);
-            ProtocolEvent::Final(output)
-        }
-    }
-}
-
-fn rewrite_output_namespace(output: &mut ProtocolOutput) {
-    rewrite_value_namespace(&mut output.value);
-}
-
-fn rewrite_value_namespace(value: &mut Value) {
-    match value {
-        Value::Array(values) => {
-            for value in values {
-                rewrite_value_namespace(value);
-            }
-        }
-        Value::Object(values) => {
-            if values.get("provider").and_then(Value::as_str) == Some("claude") {
-                values.insert("provider".to_owned(), Value::String("minimax".to_owned()));
-            }
-            for value in values.values_mut() {
-                rewrite_value_namespace(value);
-            }
-        }
-        _ => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::protocol::{
         CodecContext, CodecInput, CodecLimits, ResolvedCredential, CLAUDE_MESSAGES_OPERATION_ID,
     };
+    use crate::protocol::{HttpBody, CLAUDE_MESSAGES_ADAPTER_ID};
+    use buckyos_api::AiccCall;
     use buckyos_api::{AiContent, AiMessage, AiRole, LlmChatInvokeRequest};
     use bytes::Bytes;
     use reqwest::header::HeaderMap;
     use reqwest::StatusCode;
     use serde_json::json;
+    use std::collections::BTreeMap;
     use std::time::Duration;
 
     fn input(stop: Vec<String>, temperature: Option<f64>) -> CodecInput {
@@ -380,6 +208,7 @@ mod tests {
 
     fn context() -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: "https://api.minimax.io/anthropic".to_owned(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
                 provider_profile_id: "minimax".into(),
@@ -403,25 +232,26 @@ mod tests {
     #[test]
     fn declares_a_real_derived_adapter_and_delegates_request_encoding() {
         let contract = minimax_messages_dialect_contract();
-        assert_eq!(contract.base_adapter_id, CLAUDE_MESSAGES_ADAPTER_ID);
+        assert_eq!(
+            contract.base_adapter_id,
+            crate::protocol::LEGACY_CLAUDE_MESSAGES_ADAPTER_ID
+        );
         assert!(contract.override_points.contains("base_resp_error"));
-        assert!(contract.override_points.contains("max_tokens_optionality"));
         assert!(contract.unsupported_parameters.is_empty());
 
         let (descriptor, registration) = minimax_messages_adapter();
         assert_eq!(
             descriptor.base_adapter_id.as_deref(),
-            Some(CLAUDE_MESSAGES_ADAPTER_ID)
+            Some(crate::protocol::LEGACY_CLAUDE_MESSAGES_ADAPTER_ID)
         );
-        assert_eq!(descriptor.operations.len(), 7);
-        assert!(contract
-            .unsupported_capabilities
-            .contains(buckyos_api::features::WEB_SEARCH));
-        for codec in &registration.operation_codecs {
-            assert!(codec.descriptor().bindings.iter().all(|binding| !binding
-                .supported_features
-                .contains(buckyos_api::features::WEB_SEARCH)));
-        }
+        assert_eq!(descriptor.protocol_family_id, "claude");
+        assert_eq!(descriptor.operations.len(), 1);
+        assert!(registration.operation_codecs.iter().all(|codec| codec
+            .descriptor()
+            .bindings
+            .iter()
+            .all(|binding| binding.default_max_output_tokens.is_none())));
+        let _ = CLAUDE_MESSAGES_ADAPTER_ID;
         let request = registration.operation_codecs[0]
             .encode(&CodecCall {
                 api_type: ApiType::Llm,

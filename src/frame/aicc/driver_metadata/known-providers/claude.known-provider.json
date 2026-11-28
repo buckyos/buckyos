@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 1,
+  "revision_seq": 2,
   "catalog_id": "claude",
   "providers": [
     {
@@ -10,7 +10,7 @@
       "display_name": "Anthropic Claude",
       "base_url": "https://api.anthropic.com/v1",
       "protocol_adapter_id": "claude-messages",
-      "discovery_behavior_id": "anthropic-models",
+      "discovery_behavior_id": "standard-models",
       "provider_rules_id": "claude",
       "credential": { "kind": "named_header", "header_name": "x-api-key" },
       "connection": {

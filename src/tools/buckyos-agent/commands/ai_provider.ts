@@ -126,7 +126,7 @@ export function formatProviderListSummary(response: JsonValue): string {
     const name = formatScalar(provider.provider_instance_name);
     const profile = formatScalar(provider.provider_profile_id);
     const type = formatScalar(provider.provider_type);
-    const adapter = formatScalar(provider.protocol_adapter_id);
+    const client = formatScalar(provider.protocol_adapter_id);
     const enabled = formatScalar(provider.enabled);
     const auth = isRecord(provider.auth) ? provider.auth : {};
     const inventory = isRecord(provider.inventory) ? provider.inventory : {};
@@ -137,7 +137,7 @@ export function formatProviderListSummary(response: JsonValue): string {
     const modelCount = formatScalar(inventory.model_count);
     const healthState = formatScalar(health.state);
     lines.push(
-      `- ${name}: profile=${profile}, type=${type}, adapter=${adapter}, enabled=${enabled}, auth=${authMode}/${authConfigured}, inventory=${inventoryState}/${modelCount} models, health=${healthState}`,
+      `- ${name}: profile=${profile}, type=${type}, default_client=${client}, enabled=${enabled}, auth=${authMode}/${authConfigured}, inventory=${inventoryState}/${modelCount} models, health=${healthState}`,
     );
   }
 
@@ -153,7 +153,8 @@ export function formatProviderListSummary(response: JsonValue): string {
 }
 
 // One line per model: exact model, the media api_types it serves, the
-// logical names that select it (`--model <name>`), and its list price.
+// protocol client operation serving each, the logical names that select it
+// (`--model <name>`), and its list price.
 export function filterModels(
   response: JsonValue,
   apiType: string | undefined,
@@ -175,12 +176,19 @@ export function filterModels(
         served.some((t) => m === t || m.startsWith(`${t}.`))
       )
       : [];
+    const operations = isRecord(model.operations) ? model.operations : {};
     const attributes = isRecord(model.attributes) ? model.attributes : {};
     const pricing = isRecord(attributes.pricing) ? attributes.pricing : {};
     const price = isRecord(pricing.value) ? pricing.value : null;
     return [{
       exact_model: formatScalar(model.exact_model),
       api_types: served,
+      bindings: Object.fromEntries(
+        served.filter((t) => typeof operations[t] === "string").map((t) => [
+          t,
+          operations[t] as string,
+        ]),
+      ),
       logical_names: mounts,
       price: price && typeof price.amount === "number"
         ? `${price.amount} ${formatScalar(price.currency)}/${
@@ -202,6 +210,10 @@ export function formatModelsSummary(response: JsonValue): string {
     lines.push(
       `- ${formatScalar(model.exact_model)}: ${
         (model.api_types as string[]).join(",")
+      }; via=${
+        Object.values(
+          isRecord(model.bindings) ? model.bindings : {},
+        ).join(",") || "unknown"
       }; price=${formatScalar(model.price)}; names=${
         (model.logical_names as string[]).join(",")
       }`,

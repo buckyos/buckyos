@@ -55,6 +55,15 @@ impl RuntimeProvider {
         self.executable.resolve_credential().await
     }
 
+    pub(crate) async fn resolve_client_credential(
+        &self,
+        protocol_adapter_id: &str,
+    ) -> ProviderResult<ResolvedCredential> {
+        self.executable
+            .resolve_client_credential(protocol_adapter_id)
+            .await
+    }
+
     pub(crate) async fn quota_observation(&self) -> ProviderQuotaObservation {
         self.executable.quota_observation().await
     }
@@ -66,9 +75,12 @@ impl RuntimeProvider {
     pub(crate) async fn open_artifact_url_reader(
         &self,
         codecs: &crate::protocol::CodecRegistry,
+        protocol_adapter_id: &str,
         url: &str,
     ) -> crate::protocol::ProtocolResultValue<crate::protocol::ArtifactUrlReader> {
-        self.executable.open_artifact_url_reader(codecs, url).await
+        self.executable
+            .open_artifact_url_reader(codecs, protocol_adapter_id, url)
+            .await
     }
 }
 
@@ -790,7 +802,7 @@ mod tests {
                         provider_type: buckyos_api::ProviderInstanceType::CloudApi,
                         provider_profile_id: "openai".into(),
                         protocol_family_id: Some("openai".into()),
-                        protocol_adapter_id: "openai-responses".into(),
+                        protocol_adapter_id: None,
                         base_url: "https://api.example/v1".into(),
                         operation_base_urls: BTreeMap::new(),
                         credentials: serde_json::from_value(

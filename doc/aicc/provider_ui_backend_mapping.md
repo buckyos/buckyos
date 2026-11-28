@@ -11,22 +11,23 @@ SN 的默认 `base_url` 为 `https://sn.buckyos.ai/api/v1/ai`；各媒体操作�
 | UI DataModel | Backend field | Durable owner | Notes |
 | --- | --- | --- | --- |
 | `KnownProviderProfile.provider_profile_id` | `provider_profile_id` | Provider catalog | 渠道规则与展示身份 |
-| `KnownProviderProfile.protocol_adapter_id` | `protocol_adapter_id` | catalog + runtime registry | backend 校验 adapter 已注册 |
+| `KnownProviderProfile.protocol_adapter_id` | `protocol_adapter_id` | catalog + runtime registry | 默认客户端；backend 校验已注册 |
+| `KnownProviderProfile.extra_protocol_adapters` | `extra_protocol_adapters` | catalog + runtime registry | 有序的其余客户端 ID；与默认客户端一起构成该 Provider 的客户端集合，规则编辑器的客户端下拉只列这些 |
 | `ProtocolAdapter.protocol_family_id` | `protocol_family_id` | runtime registry | OpenAI、Claude、Gemini 协议族；不是可执行 Adapter |
-| `ProtocolAdapter.custom_provider_selectable` | custom family visibility | Provider Rules catalog + runtime registry | 由 `*.provider.json` 的 `custom_provider_adapters` 推导；只有值为 `true` 的 Adapter 才参与自定义 Provider family 列表 |
-| custom Provider draft family | `protocol_family_id` | `provider.validate/add/update` request | 用户可理解的协议大类；仅用于接入解析 |
-| `ProtocolAdapter.base_adapter_id` | `base_adapter_id` | runtime registry | 只读展示语义子类关系；SN 为 `sn-openai -> openai-responses` |
+| `ProtocolAdapter.custom_provider_selectable` | custom client visibility | Provider Rules catalog + runtime registry | 由 `*.provider.json` 的 `custom_provider_adapters` 推导；只有值为 `true` 的客户端才出现在自定义 Provider 的客户端列表里，也只有它们会进入自定义实例的客户端集合 |
+| custom Provider draft family | `protocol_family_id` | `provider.validate/add/update` request | 所选客户端所属的协议族；与 `protocol_adapter_id` 不一致时拒绝 |
+| `ProtocolAdapter.base_adapter_id` | `base_adapter_id` | runtime registry | 只读展示语义子类关系，例如 `legacy-openai-chat-completions -> openai-chat-completions` |
 | `KnownProviderProfile.base_url` | `base_url` | Provider catalog default | 仅作表单初值，用户可修正 |
 | `ProviderConfig.id` | `provider_instance_name` | system-config | Zone 内唯一实例 ID |
 | `ProviderConfig.base_url` | `base_url` | system-config | UI、管理 RPC 和 settings 使用同一字段名 |
 | `ProviderConfig.provider_profile_id` | `provider_profile_id` | system-config | 不读取旧 `provider_driver` |
-| `ProviderConfig.protocol_adapter_id` | `protocol_adapter_id` | system-config | 后端接入测试解析并固化；自定义 Provider 用户不填写 |
+| `ProviderConfig.protocol_adapter_id` | `protocol_adapter_id` | system-config | 自定义 Provider 的默认客户端，用户必须显式选择，后端不探测；Known Provider 可省略，提交了也不读取，客户端集合只来自 catalog |
 | `ProviderConfig.auth` | `auth` | system-config typed credential source | SN 显式选择 `api_key` 或 `dynamic_login`；凭据来源使用 `inline_secret|secret_ref|runtime_ref` |
 | `ProviderInventory.provider_profile_id` | `provider_profile_id` | inventory / LKGS | discovery 使用的 profile |
-| `ProviderInventory.protocol_adapter_id` | `protocol_adapter_id` | inventory / LKGS | 实际 wire adapter |
+| `ProviderInventory.protocol_adapter_id` | `protocol_adapter_id` | inventory / LKGS | 实例默认客户端；每个模型另有自己的默认客户端，`operations` 存 `<客户端>/<operation>` |
 | `ModelItem.model_driver` | `model_driver` | Model Driver catalog | 未知值显示 `unknown`，不回退为 profile |
 | origin trace | `selected_origin_model_id`, `selected_model_driver` | route trace RDB | 原厂身份 |
-| channel trace | `selected_provider_profile_id`, `selected_protocol_adapter_id`, `selected_operation` | route trace RDB | 实际渠道与 operation |
+| channel trace | `selected_provider_profile_id`, `selected_protocol_adapter_id`, `selected_operation` | route trace RDB | 实际渠道、本次选中的客户端与 operation |
 
 ## Loading and errors
 
@@ -35,7 +36,7 @@ SN 的默认 `base_url` 为 `https://sn.buckyos.ai/api/v1/ai`；各媒体操作�
 - 请求失败显示可重试错误；空 catalog 与请求失败分开呈现。
 - 保存、连接测试和模型 refresh 失败后保留用户输入。
 - SN 表单根据 `auth.mode` 显示 API Key 或动态登录字段，不同时提交两套凭据；动态 token 永不返回 UI。
-- 官方 Profile 默认新接口。添加自定义 Provider 时，UI 只汇总 `custom_provider_selectable=true` 的 Adapter 所属协议族，当前为 OpenAI、Claude、Gemini；GLM、MiniMax 等内置复合 family 不显示。UI 不显示 API 代际选择；后端接入测试先测官方新接口，再测已注册历史接口，并只读展示最终识别结果，同时拒绝绕过 UI 提交内部 Adapter。该流程只发生在创建/更新阶段，推理运行时不重新探测或降级。
+- 官方 Profile 默认新接口。添加自定义 Provider 时，UI 列出 `custom_provider_selectable=true` 的客户端（当前属于 OpenAI、Claude、Gemini 三个协议族），用户必须显式选一个作为默认客户端，连同所属 `protocol_family_id` 提交；未选时前后端都拒绝。后端只验证所选客户端，不发探测请求、不自动识别协议，也拒绝绕过 UI 提交未开放的内部客户端。实例随后带上同一协议族里其余开放的客户端。推理运行时不重新探测或降级。
 
 ## Performance boundary
 
@@ -52,22 +53,23 @@ beta 2.2 的 settings 将 `provider_driver` 拆为 `provider_profile_id` 和 `pr
 
 ## 自定义 Provider 的默认操作
 
-协议族探测只选择适配器，不证明端点支持该适配器声明的全部能力。库存构建先按发现结果限制操作候选，再按 binding 的 `default_priority` 选择最高优先级；显式渠道规则的操作映射优先。调用 lowering 使用同一优先级约定，库存中已选定的操作仍由路由携带，不在推理时重新探测端点。
+所选客户端只决定协议，不证明端点支持它声明的全部能力。库存构建在实例的客户端集合里先按发现结果限制操作候选，再按 binding 的 `default_priority` 选择：跨客户端比较，取最高的正分，同分时优先默认客户端；0 分绑定只有在所有候选都是 0 分时才会落到默认客户端上唯一的那个。显式渠道规则的操作映射优先。调用 lowering 使用同一个解析函数，库存中已选定的客户端和操作仍由路由携带，不在推理时重新探测端点。规则细节见 [Provider schema §5.2](provider_profile_schema.md#52-operation)。
 
-通用 `openai-responses` 的图片默认操作为文生图 `images.generate`、图生图及局部编辑 `images.edit`；`responses.create` 保留图片能力，供发现结果或显式规则选择。最高优先级仍有多个候选时拒绝歧义，不按名称或注册顺序猜测。所有对 custom 开放的适配器都必须对每项能力提供唯一默认操作，单测覆盖该约束。
+自定义 OpenAI 实例的图片默认操作为 `openai-images` 的文生图 `images.generate`、图生图及局部编辑 `images.edit`；`openai-responses` 的 `responses.create` 保留图片能力，供发现结果或显式规则选择。最高优先级在默认客户端之外仍有多个候选时拒绝歧义，不按名称或注册顺序猜测。每个对 custom 开放的客户端单独使用时都必须对每项能力提供唯一默认操作，单测覆盖该约束。
 
-当前对 custom 开放的适配器中，多 operation 的 API 类型如下（优先级仅在同一适配器、同一 API 类型内比较）：
+当前对 custom 开放的客户端中，同一 API 类型在自定义实例里有多个候选的情况如下：
 
-| 适配器 | API 类型 | 候选操作及优先级 | 默认操作 |
+| 协议族 | API 类型 | 候选（客户端/操作 优先级） | 默认操作 |
 | --- | --- | --- | --- |
-| `gemini-interactions` | `llm`、`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment`、`audio.asr` | `interactions.background` 30，`interactions.create` 10 | `interactions.background` |
-| `gemini-interactions` | `video.generate`、`video.extend` | `models.predictLongRunning` 20，`interactions.create` 10 | `models.predictLongRunning` |
-| `openai-responses` | `image.txt2img` | `images.generate` 100，`responses.create` 0 | `images.generate` |
-| `openai-responses` | `image.img2img` | `images.edit` 100，`responses.create` 0 | `images.edit` |
+| OpenAI | `llm`、`vision.ocr`、`vision.caption` | `openai-responses/responses.create`、`openai-chat-completions/chat.completions.create`、`legacy-openai-chat-completions/chat.completions.create` 均为 1；`vision.ocr` 另有 `openai-responses/responses.background` 0 | 默认客户端提供的那个；默认客户端不提供时三者并列，报歧义 |
+| OpenAI | `image.txt2img` | `openai-images/images.generate` 100，`openai-responses/responses.create` 1，`openai-responses/responses.background` 0 | `images.generate` |
+| OpenAI | `image.img2img` | `openai-images/images.edit` 100，`openai-responses/responses.create` 1，`openai-responses/responses.background` 0 | `images.edit` |
+| OpenAI | `audio.asr` | `openai-audio/audio.transcriptions` 1，`openai-chat-completions/chat.completions.create` 0 | `audio.transcriptions` |
+| Claude | `llm`、`vision.ocr`、`vision.caption` | `claude-messages/messages.create`、`legacy-claude-messages/messages.create` 均为 1 | 默认客户端提供的那个 |
 
-`claude-messages`、`openai-chat-completions`、`typesafe-systemone` 当前每项 API 类型只有一个 operation，无需增加优先级。单测逐项固定上述默认选择，并覆盖全部发现候选子集、显式映射以及调用 lowering，避免仅检查默认操作是否唯一而漏掉选择错误。
+Gemini 族只开放 `gemini-generate-content`，每项 API 类型只有一个 operation。`openai-videos` 的 `video.extend` 是 0 分，只有默认客户端就是 `openai-videos` 或规则显式映射时才可用。`gemini-interactions`、`typesafe-systemone` 不再对 custom 开放。单测覆盖单个客户端内的全部发现候选子集和显式映射、自定义 OpenAI 实例的图片默认，以及跨客户端的选择规则（`protocol/binding.rs`），避免仅检查默认操作是否唯一而漏掉选择错误。
 
-这些默认值不等于渠道能力认证。OpenRouter 等已有专用 profile 的渠道应使用其内置入口，以获得专用协议、发现和操作映射；不能仅凭 OpenAI 兼容探测成功推断其全部媒体接口可用。接入校验中的 `Inventory` 错误表示模型清单构建失败，应核对模型、适配器及操作映射，不能据此判断网络或 API Key 失败。
+这些默认值不等于渠道能力认证。OpenRouter 等已有专用 profile 的渠道应使用其内置入口，以获得专用协议、发现和操作映射；不能仅凭 OpenAI 兼容端点能连通推断其全部媒体接口可用。接入校验中的 `Inventory` 错误表示模型清单构建失败，应核对模型、适配器及操作映射，不能据此判断网络或 API Key 失败。
 
 
 ## 不支持的能力项

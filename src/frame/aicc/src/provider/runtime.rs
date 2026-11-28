@@ -31,6 +31,20 @@ impl ProviderRuntime {
             .await
     }
 
+    pub(super) async fn resolve_client_credential(
+        &self,
+        protocol_adapter_id: &str,
+    ) -> ProviderResult<ResolvedCredential> {
+        let descriptor = self.profile.credential_for_client(
+            protocol_adapter_id,
+            self.config.credential_kind,
+            &self.codecs,
+        )?;
+        self.credential_resolver
+            .resolve(&descriptor, &self.config.credential)
+            .await
+    }
+
     pub(super) async fn quota_observation(&self) -> ProviderQuotaObservation {
         ProviderQuotaObservation {
             state: ProviderQuotaObservationState::Unsupported,
@@ -375,19 +389,11 @@ impl ProviderRuntimeManager {
                     &ProviderError::UnknownProfile(draft.provider_profile_id.clone()),
                 )
             })?;
-        if profile.default_protocol_adapter_id != draft.protocol_adapter_id
-            && !profile.accepts_any_adapter
-        {
-            return Err(ProviderDraftValidationError::from_provider_error(
-                ProviderDraftValidationStage::Protocol,
-                &ProviderError::InvalidConfiguration(format!(
-                    "provider profile `{}` requires adapter `{}`, got `{}`",
-                    profile.provider_profile_id,
-                    profile.default_protocol_adapter_id,
-                    draft.protocol_adapter_id
-                )),
-            ));
+        let mut draft = draft.clone();
+        if !profile.accepts_any_adapter {
+            draft.protocol_adapter_id = profile.default_protocol_adapter_id.clone();
         }
+        let draft = &draft;
         if self.codecs.adapter(&draft.protocol_adapter_id).is_none() {
             return Err(ProviderDraftValidationError::from_provider_error(
                 ProviderDraftValidationStage::Protocol,
@@ -426,6 +432,7 @@ impl ProviderRuntimeManager {
                     profile.as_ref(),
                     adapter,
                     draft.auth.credential_kind(),
+                    &self.codecs,
                 )
             } else {
                 profile.with_credential(draft.auth.credential_kind())
@@ -584,7 +591,7 @@ impl ProviderRuntimeManager {
 
     async fn start_unpublished(
         &self,
-        config: ProviderInstanceConfig,
+        mut config: ProviderInstanceConfig,
         discovery: Arc<dyn ProviderDiscovery>,
     ) -> ProviderResult<Arc<ExecutableProviderInstance>> {
         config.validate()?;
@@ -593,6 +600,9 @@ impl ProviderRuntimeManager {
             .get(&config.provider_profile_id)
             .cloned()
             .ok_or_else(|| ProviderError::UnknownProfile(config.provider_profile_id.clone()))?;
+        if !profile.accepts_any_adapter {
+            config.protocol_adapter_id = profile.default_protocol_adapter_id.clone();
+        }
         let profile = if profile.accepts_any_adapter {
             let adapter = self
                 .codecs
@@ -602,18 +612,12 @@ impl ProviderRuntimeManager {
                 profile.as_ref(),
                 adapter,
                 config.credential_kind,
+                &self.codecs,
             )?
         } else {
             profile.with_credential(config.credential_kind)?
         };
         let profile = Arc::new(profile);
-        if profile.default_protocol_adapter_id != config.protocol_adapter_id
-            && !profile.accepts_any_adapter
-        {
-            return Err(ProviderError::InvalidConfiguration(
-                "dedicated provider must use its profile adapter".into(),
-            ));
-        }
         if self.codecs.adapter(&config.protocol_adapter_id).is_none() {
             return Err(ProviderError::UnknownAdapter(config.protocol_adapter_id));
         }
@@ -875,9 +879,19 @@ async fn load_lkgs(
             let operation = model.operations.get(&name).ok_or_else(|| {
                 ProviderError::Inventory("LKGS model is missing an operation binding".into())
             })?;
+            let binding = crate::protocol::BindingRef::parse(operation, &model.protocol_adapter_id);
+            if !runtime
+                .profile
+                .protocol_clients()
+                .contains(&binding.protocol_adapter_id)
+            {
+                return Err(ProviderError::Inventory(
+                    "LKGS model binds a protocol adapter the instance no longer uses".into(),
+                ));
+            }
             runtime
                 .codecs
-                .operation_descriptor(&inventory.protocol_adapter_id, operation, *api_type)
+                .operation_descriptor(&binding.protocol_adapter_id, &binding.operation_id, *api_type)
                 .map_err(|error| ProviderError::Inventory(error.to_string()))?;
         }
     }

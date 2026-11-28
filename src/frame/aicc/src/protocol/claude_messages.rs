@@ -27,6 +27,7 @@ pub(crate) const CLAUDE_PROTOCOL_FAMILY_ID: &str = "claude";
 pub(crate) const CLAUDE_MESSAGES_ADAPTER_ID: &str = "claude-messages";
 pub(crate) const CLAUDE_MESSAGES_OPERATION_ID: &str = "messages.create";
 pub(crate) const CLAUDE_MESSAGES_VERSION: &str = "2023-06-01";
+pub(crate) const LEGACY_CLAUDE_MESSAGES_ADAPTER_ID: &str = "legacy-claude-messages";
 
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
@@ -51,20 +52,39 @@ pub(crate) fn claude_messages_adapter() -> (AdapterDescriptor, super::CodecRegis
     )
 }
 
+/// Messages as compatible vendors implement it rather than as Anthropic
+/// documents it: `max_tokens` may be omitted and temperature goes up to 2.
+pub(crate) fn legacy_claude_messages_adapter() -> (AdapterDescriptor, super::CodecRegistration) {
+    let codecs = [ApiType::Llm, ApiType::VisionOcr, ApiType::VisionCaption]
+        .map(ClaudeMessagesCodec::legacy_for);
+    let mut descriptor = codecs[0].adapter_descriptor();
+    descriptor.protocol_adapter_id = LEGACY_CLAUDE_MESSAGES_ADAPTER_ID.to_string();
+    descriptor.base_adapter_id = Some(CLAUDE_MESSAGES_ADAPTER_ID.to_string());
+    descriptor.probe_priority = 200;
+    descriptor.probe_path = None;
+    (
+        descriptor,
+        super::CodecRegistration {
+            operation_codecs: codecs
+                .into_iter()
+                .map(|codec| Arc::new(codec) as Arc<dyn OperationCodec>)
+                .collect(),
+            native_task_codecs: Vec::new(),
+        },
+    )
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ClaudeMessagesCodec {
     descriptor: OperationDescriptor,
     api_type: ApiType,
     max_tokens_required: bool,
+    max_temperature: f64,
 }
 
 impl ClaudeMessagesCodec {
     pub(crate) fn new() -> Self {
-        Self {
-            descriptor: claude_messages_operation_descriptor(),
-            api_type: ApiType::Llm,
-            max_tokens_required: true,
-        }
+        Self::new_for(ApiType::Llm)
     }
 
     pub(crate) fn new_for(api_type: ApiType) -> Self {
@@ -72,12 +92,21 @@ impl ClaudeMessagesCodec {
             descriptor: claude_messages_operation_descriptor(),
             api_type,
             max_tokens_required: true,
+            max_temperature: 1.0,
         }
     }
 
-    pub(crate) fn with_max_tokens_required(mut self, required: bool) -> Self {
-        self.max_tokens_required = required;
-        self
+    pub(crate) fn legacy_for(api_type: ApiType) -> Self {
+        let mut descriptor = claude_messages_operation_descriptor();
+        for binding in &mut descriptor.bindings {
+            binding.default_max_output_tokens = None;
+        }
+        Self {
+            descriptor,
+            api_type,
+            max_tokens_required: false,
+            max_temperature: 2.0,
+        }
     }
 
     pub(crate) fn adapter_descriptor(&self) -> AdapterDescriptor {
@@ -86,7 +115,6 @@ impl ClaudeMessagesCodec {
             protocol_adapter_id: CLAUDE_MESSAGES_ADAPTER_ID.to_string(),
             interface_generation: CLAUDE_MESSAGES_VERSION.to_string(),
             base_adapter_id: None,
-            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 0,
             probe_path: Some("messages".to_owned()),
@@ -151,10 +179,20 @@ impl ClaudeMessagesCodec {
         // `claude.provider.json` and `openrouter.provider.json` remove `/temperature`, `/top_p`
         // and `/top_k` for those models, so the values never reach this codec.
         if let Some(temperature) = request.temperature {
-            body.insert(
-                "temperature".to_string(),
-                finite_number("temperature", temperature)?,
-            );
+            let temperature = if self.max_temperature > 1.0 {
+                if !(0.0..=self.max_temperature).contains(&temperature) {
+                    return Err(ProtocolError::invalid_request(format!(
+                        "Messages temperature must be between 0 and {}",
+                        self.max_temperature
+                    )));
+                }
+                serde_json::Number::from_f64(temperature)
+                    .map(Value::Number)
+                    .ok_or_else(|| ProtocolError::invalid_request("temperature must be finite"))?
+            } else {
+                finite_number("temperature", temperature)?
+            };
+            body.insert("temperature".to_string(), temperature);
         }
         if let Some(top_p) = request.top_p {
             body.insert("top_p".to_string(), finite_number("top_p", top_p)?);
@@ -173,7 +211,11 @@ impl ClaudeMessagesCodec {
         if request.execution_mode == AiccExecutionMode::Stream {
             body.insert("stream".to_string(), Value::Bool(true));
         }
-        apply_resolved_parameters(&mut body, &call.input.resolved_parameters)?;
+        apply_resolved_parameters(
+            &mut body,
+            &call.input.resolved_parameters,
+            self.max_temperature,
+        )?;
         apply_response_format(&mut body, request.response_format.as_ref())?;
 
         let mut headers = HeaderMap::new();
@@ -301,6 +343,7 @@ pub(crate) fn claude_messages_operation_descriptor() -> OperationDescriptor {
         features::TOOL_CALL.to_string(),
         features::JSON_SCHEMA.to_string(),
         features::VISION.to_string(),
+        features::DOCUMENT.to_string(),
         features::PLAN.to_string(),
         features::WEB_SEARCH.to_string(),
     ]);
@@ -827,6 +870,7 @@ fn encode_tools(request: &LlmChatInvokeRequest) -> ProtocolResultValue<Value> {
 fn apply_resolved_parameters(
     body: &mut Map<String, Value>,
     parameters: &BTreeMap<String, Value>,
+    max_temperature: f64,
 ) -> ProtocolResultValue<()> {
     const ALLOWED: &[&str] = &[
         "max_tokens",
@@ -865,7 +909,10 @@ fn apply_resolved_parameters(
         }
         let valid = match name.as_str() {
             "max_tokens" | "top_k" => value.as_u64().is_some(),
-            "temperature" | "top_p" => value
+            "temperature" => value
+                .as_f64()
+                .is_some_and(|value| value.is_finite() && (0.0..=max_temperature).contains(&value)),
+            "top_p" => value
                 .as_f64()
                 .is_some_and(|value| value.is_finite() && (0.0..=1.0).contains(&value)),
             "metadata" | "output_config" | "thinking" | "tool_choice" => value.is_object(),
@@ -1582,6 +1629,7 @@ mod tests {
 
     fn context() -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: "https://api.anthropic.com/v1".to_string(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
                 provider_profile_id: "claude".into(),
@@ -2405,6 +2453,7 @@ mod review_parameter_tests {
                 ("top_p".into(), json!(0.8)),
                 ("stop_sequences".into(), json!(["STOP"])),
             ]),
+            1.0,
         )
         .unwrap();
         assert_eq!(body, canonical);
@@ -2416,6 +2465,7 @@ mod review_parameter_tests {
             assert!(apply_resolved_parameters(
                 &mut Map::new(),
                 &BTreeMap::from([(field.into(), value)]),
+                1.0,
             )
             .is_err());
         }

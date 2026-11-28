@@ -1,5 +1,60 @@
 use serde_json::Value;
 
+/// Post-processes a decoded value before it leaves the protocol layer: a
+/// Provider that declares its own state namespace gets it in place of the
+/// client's (the client's protocol family), then every provider state and
+/// thinking block is bound to the call's source coordinate.
+pub(crate) fn finish_provider_state(
+    value: &mut Value,
+    namespace: Option<&StateNamespaceRename>,
+    source: &buckyos_api::ProviderStateCoordinate,
+) {
+    if let Some(rename) = namespace {
+        rename_state_namespace(value, &rename.from, &rename.to);
+    }
+    bind_provider_state_source(value, source);
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StateNamespaceRename {
+    pub from: String,
+    pub to: String,
+}
+
+impl StateNamespaceRename {
+    pub(crate) fn for_call(
+        codecs: &super::CodecRegistry,
+        protocol_adapter_id: &str,
+        context: &super::CodecContext,
+    ) -> Option<Self> {
+        let to = context.state_namespace.as_ref()?;
+        let from = &codecs.adapter(protocol_adapter_id)?.protocol_family_id;
+        (from != to).then(|| Self {
+            from: from.clone(),
+            to: to.clone(),
+        })
+    }
+}
+
+fn rename_state_namespace(value: &mut Value, from: &str, to: &str) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                rename_state_namespace(value, from, to);
+            }
+        }
+        Value::Object(values) => {
+            if values.get("provider").and_then(Value::as_str) == Some(from) {
+                values.insert("provider".to_owned(), Value::String(to.to_owned()));
+            }
+            for value in values.values_mut() {
+                rename_state_namespace(value, from, to);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn bind_provider_state_source(
     value: &mut Value,
     source: &buckyos_api::ProviderStateCoordinate,
@@ -110,6 +165,46 @@ fn push_text(parts: &mut Vec<String>, text: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn declared_state_namespace_replaces_the_client_namespace_everywhere() {
+        let mut value = serde_json::json!({
+            "message": {"content": [{"type": "provider_state", "provider": "openai", "value": {"type": "vendor_tool"}}]},
+            "provider_states": [{"provider": "openai", "value": {"type": "vendor_tool"}}],
+            "delta": {"provider_state": {"provider": "openai", "value": {}}},
+            "other": {"provider": "claude"}
+        });
+        let source = buckyos_api::ProviderStateCoordinate {
+            provider_profile_id: "doubao".into(),
+            adapter_type: "openai-responses".into(),
+            origin_provider: "doubao".into(),
+            origin_model: "model".into(),
+        };
+        super::finish_provider_state(
+            &mut value,
+            Some(&super::StateNamespaceRename {
+                from: "openai".into(),
+                to: "doubao".into(),
+            }),
+            &source,
+        );
+        for pointer in [
+            "/message/content/0/provider",
+            "/provider_states/0/provider",
+            "/delta/provider_state/provider",
+        ] {
+            assert_eq!(
+                value.pointer(pointer),
+                Some(&serde_json::json!("doubao")),
+                "{pointer}"
+            );
+        }
+        assert_eq!(value["other"]["provider"], "claude");
+        assert_eq!(
+            value.pointer("/message/content/0/source/adapter_type"),
+            Some(&serde_json::json!("openai-responses"))
+        );
+    }
+
     use super::{
         bind_provider_state_source, foreign_provider_state_text, provider_state_is_native,
     };

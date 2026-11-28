@@ -79,7 +79,6 @@ pub(crate) fn qwen_media_adapter() -> (AdapterDescriptor, CodecRegistration) {
             protocol_adapter_id: QWEN_MEDIA_ADAPTER_ID.to_owned(),
             interface_generation: "dashscope-v1".to_owned(),
             base_adapter_id: None,
-            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 200,
             probe_path: None,
@@ -882,6 +881,7 @@ mod tests {
 
     fn context() -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: "https://ws.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_owned(),
             state_coordinate: ProviderStateCoordinate {
                 provider_profile_id: "qwen".to_owned(),

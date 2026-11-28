@@ -1,15 +1,22 @@
 {
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
-  "schema_revision": 1,
-  "revision_seq": 3,
+  "schema_revision": 2,
+  "revision_seq": 4,
   "catalog_id": "sn",
   "providers": [
     {
       "provider_profile_id": "sn",
       "display_name": "BuckyOS SN",
       "base_url": "https://sn.buckyos.ai/api/v1/ai",
-      "protocol_adapter_id": "sn-openai",
+      "protocol_adapter_id": "openai-responses",
+      "extra_protocol_adapters": [
+        {"id": "openai-chat-completions"},
+        {"id": "openai-embeddings"},
+        {"id": "openai-images"},
+        {"id": "openai-audio"},
+        {"id": "openai-videos"}
+      ],
       "discovery_behavior_id": "sn-models",
       "dynamic_login_behavior_id": "sn",
       "connection_behavior_id": "sn",

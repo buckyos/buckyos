@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "claude",
-  "revision_seq": 6,
+  "revision_seq": 7,
   "required_features": [],
   "models": [
     {
@@ -17,7 +17,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -40,7 +40,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -63,7 +63,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -86,7 +86,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -109,7 +109,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -132,7 +132,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -155,7 +155,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -178,7 +178,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -201,7 +201,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -224,7 +224,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -247,7 +247,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -270,7 +270,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -293,7 +293,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -316,7 +316,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -339,7 +339,7 @@
         "tool_call": true,
         "web_search": true,
         "json_schema": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {

@@ -71,6 +71,7 @@ const messages: Record<string, [string, string]> = {
   "aiCenter.providers.filteredCapabilities": ["Unsupported capabilities filtered out", "已滤除的不支持能力"],
   "aiCenter.providers.unregisteredBinding": ["No protocol binding for this capability and operation", "此能力与操作缺少协议绑定"],
   "aiCenter.providers.unsupportedApiType": ["The selected protocol or discovery does not support this capability", "所选协议或发现结果不支持此能力"],
+  "aiCenter.providers.protocolClients": ["Protocol clients", "协议客户端"],
   "aiCenter.wizard.listEditor": ["List", "列表"],
   "aiCenter.wizard.emptyRules": ["No entries configured.", "未配置条目。"],
   "aiCenter.wizard.endpointModel": ["Endpoint model", "端点模型"],

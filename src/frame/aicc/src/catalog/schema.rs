@@ -578,6 +578,11 @@ pub(crate) struct ProviderRulesCatalog {
     pub static_inventory_models: Vec<String>,
     #[serde(default)]
     pub model_driver_overrides: BTreeMap<String, String>,
+    /// When present, model IDs written `<vendor>/<model>` are matched in the
+    /// Model Driver this map names for the vendor, or in the Model Driver
+    /// whose ID is the vendor itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_driver_vendor_prefixes: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub server_default_routes: BTreeMap<String, BTreeSet<String>>,
     #[serde(default)]
@@ -624,6 +629,12 @@ macro_rules! define_provider_rule {
             $($identity)*
         #[serde(default)]
         pub exclude: bool,
+        /// The protocol client this model's bare `operations` and unmapped
+        /// API types resolve against; the instance default when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub protocol_adapter_id: Option<String>,
+        /// API type or method to operation; `<protocol_adapter_id>/<operation_id>`
+        /// names another client of the instance.
         #[serde(default)]
         pub operations: BTreeMap<String, String>,
         #[serde(default)]
@@ -664,6 +675,8 @@ define_provider_rule!(
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct ProviderRuleAction {
     pub exclude: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_adapter_id: Option<String>,
     pub operations: BTreeMap<String, String>,
     pub provider_options: BTreeMap<String, Value>,
     pub canonical_fields: BTreeMap<String, CanonicalFieldMapping>,
@@ -683,6 +696,7 @@ macro_rules! provider_rule_action {
     ($rule:expr) => {
         ProviderRuleAction {
             exclude: $rule.exclude,
+            protocol_adapter_id: $rule.protocol_adapter_id.clone(),
             operations: $rule.operations.clone(),
             provider_options: $rule.provider_options.clone(),
             canonical_fields: $rule.canonical_fields.clone(),
@@ -792,7 +806,15 @@ pub(crate) struct KnownProvider {
     pub provider_profile_id: String,
     pub display_name: String,
     pub base_url: String,
+    /// The default protocol client.
     pub protocol_adapter_id: String,
+    /// Further protocol clients this Provider's rules may bind, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_protocol_adapters: Vec<KnownProviderProtocolAdapter>,
+    /// The provider state namespace every client of this Provider writes;
+    /// each client's own namespace when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_namespace: Option<String>,
     pub discovery_behavior_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dynamic_login_behavior_id: Option<String>,
@@ -806,6 +828,16 @@ pub(crate) struct KnownProvider {
     pub connection: ProviderConnectionSchema,
     #[serde(default)]
     pub ui_hints: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct KnownProviderProtocolAdapter {
+    pub id: String,
+    /// How the instance secret is presented to this client; the client's
+    /// own credential contract when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<ProviderCredentialDescriptor>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -866,6 +898,8 @@ pub(crate) struct ResolvedProviderConfiguration {
     pub credential_variants: Vec<ProviderCredentialDescriptor>,
     pub connection: ProviderConnectionSchema,
     pub protocol_adapter_id: String,
+    pub extra_protocol_adapters: Vec<KnownProviderProtocolAdapter>,
+    pub state_namespace: Option<String>,
     pub discovery_behavior_id: String,
     pub dynamic_login_behavior_id: Option<String>,
     pub connection_behavior_id: Option<String>,

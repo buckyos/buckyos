@@ -1,8 +1,8 @@
 {
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
-  "schema_revision": 1,
-  "revision_seq": 4,
+  "schema_revision": 2,
+  "revision_seq": 6,
   "catalog_id": "qwen",
   "providers": [
     {
@@ -10,7 +10,12 @@
       "display_name": "Qwen（阿里云百炼）",
       "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "protocol_adapter_id": "qwen-responses",
-      "discovery_behavior_id": "openai-compatible-models",
+      "extra_protocol_adapters": [
+        {"id": "legacy-openai-chat-completions"},
+        {"id": "qwen-media"}
+      ],
+      "state_namespace": "qwen",
+      "discovery_behavior_id": "standard-models",
       "provider_rules_id": "qwen",
       "credential": { "kind": "bearer" },
       "connection": {

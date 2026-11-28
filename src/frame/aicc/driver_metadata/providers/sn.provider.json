@@ -1,8 +1,8 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
-  "revision_seq": 16,
+  "schema_revision": 2,
+  "revision_seq": 18,
   "provider_profile_id": "sn",
   "model_driver_overrides": {
     "gpt-6-astra": "openai/gpt-6-astra",
@@ -70,7 +70,7 @@
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background",
         "agent.computer_use": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "remove": [
@@ -91,7 +91,7 @@
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background",
         "agent.computer_use": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "when": {
@@ -117,7 +117,7 @@
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background",
         "agent.computer_use": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "when": {
@@ -141,7 +141,7 @@
         "vision.ocr": "responses.background",
         "vision.caption": "responses.create",
         "image.txt2img": "responses.background"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "when": {
@@ -164,7 +164,7 @@
         "vision.caption": "responses.create",
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "when": {
@@ -187,7 +187,7 @@
         "vision.caption": "responses.create",
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "when": {
@@ -209,7 +209,7 @@
         "vision.ocr": "responses.background",
         "vision.caption": "responses.create",
         "image.txt2img": "responses.background"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "when": {
@@ -232,7 +232,7 @@
         "vision.caption": "responses.create",
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "when": {
@@ -255,7 +255,7 @@
         "vision.caption": "responses.create",
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "when": {
@@ -276,7 +276,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.background",
         "vision.caption": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "when": {
@@ -294,40 +294,40 @@
     {
       "id": "gpt-image-2",
       "operations": {
-        "image.txt2img": "images.generate",
-        "image.img2img": "images.edit",
-        "image.inpaint": "images.edit"
-      }
+        "image.txt2img": "openai-images/images.generate",
+        "image.img2img": "openai-images/images.edit",
+        "image.inpaint": "openai-images/images.edit"
+      }, "remove_features": ["document"]
     },
     {
       "id": "text-embedding-3-large",
       "operations": {
-        "embedding.text": "embeddings.create"
-      }
+        "embedding.text": "openai-embeddings/embeddings.create"
+      }, "remove_features": ["document"]
     },
     {
       "id": "text-embedding-3-small",
       "operations": {
-        "embedding.text": "embeddings.create"
-      }
+        "embedding.text": "openai-embeddings/embeddings.create"
+      }, "remove_features": ["document"]
     },
     {
       "id": "gpt-4o-mini-transcribe",
       "operations": {
-        "audio.asr": "audio.transcriptions"
-      }
+        "audio.asr": "openai-audio/audio.transcriptions"
+      }, "remove_features": ["document"]
     },
     {
       "id": "gpt-4o-transcribe-diarize",
       "operations": {
-        "audio.asr": "audio.transcriptions"
-      }
+        "audio.asr": "openai-audio/audio.transcriptions"
+      }, "remove_features": ["document"]
     },
     {
       "id": "gpt-4o-mini-tts",
       "operations": {
-        "audio.tts": "audio.speech"
-      }
+        "audio.tts": "openai-audio/audio.speech"
+      }, "remove_features": ["document"]
     },
     {
       "id": "gpt-5.6-sol",
@@ -338,7 +338,7 @@
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background",
         "agent.computer_use": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "when": {
@@ -362,7 +362,7 @@
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background",
         "agent.computer_use": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "when": {
@@ -386,7 +386,7 @@
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background",
         "agent.computer_use": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "when": {
@@ -414,7 +414,7 @@
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background",
         "agent.computer_use": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "remove": [
@@ -429,18 +429,18 @@
     {
       "id": "gpt-image-2.5-flare",
       "operations": {
-        "image.txt2img": "images.generate",
-        "image.img2img": "images.edit",
-        "image.inpaint": "images.edit"
-      }
+        "image.txt2img": "openai-images/images.generate",
+        "image.img2img": "openai-images/images.edit",
+        "image.inpaint": "openai-images/images.edit"
+      }, "remove_features": ["document"]
     },
     {
       "id": "gpt-image-2.5-sunburst",
       "operations": {
-        "image.txt2img": "images.generate",
-        "image.img2img": "images.edit",
-        "image.inpaint": "images.edit"
-      }
+        "image.txt2img": "openai-images/images.generate",
+        "image.img2img": "openai-images/images.edit",
+        "image.inpaint": "openai-images/images.edit"
+      }, "remove_features": ["document"]
     },
     {
       "id": "gpt-realtime-2.1-mini",
@@ -452,7 +452,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "capability_limits": {
         "max_output_tokens": 943718
       }
@@ -461,20 +461,20 @@
       "id": "glm-5",
       "operations": {
         "llm": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "glm-5.3",
       "operations": {
         "llm": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "qwen3.6-plus",
       "operations": {
         "llm": "responses.create",
         "vision.caption": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "qwen3.7-plus",
@@ -482,27 +482,27 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "qwen3.8-max-0902",
       "operations": {
         "llm": "responses.create",
         "vision.caption": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "qwen3-embedding-8b",
       "operations": {
-        "embedding.text": "embeddings.create"
-      }
+        "embedding.text": "openai-embeddings/embeddings.create"
+      }, "remove_features": ["document"]
     },
     {
       "id": "qwen-image-3-pro",
       "operations": {
-        "image.txt2img": "images.generate",
-        "image.img2img": "images.edit"
-      },
+        "image.txt2img": "openai-images/images.generate",
+        "image.img2img": "openai-images/images.edit"
+      }, "remove_features": ["document"],
       "exclude": true
     },
     {
@@ -511,7 +511,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "remove_api_types": [
         "agent.computer_use"
       ],
@@ -528,7 +528,7 @@
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background",
         "agent.computer_use": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "remove": [
@@ -549,7 +549,7 @@
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background",
         "agent.computer_use": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "remove": [
@@ -575,7 +575,7 @@
         "image.txt2img": "responses.background",
         "image.img2img": "responses.background",
         "agent.computer_use": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "remove": [
@@ -598,7 +598,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "remove": [
@@ -615,7 +615,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "remove": [
@@ -632,7 +632,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "request_rules": [
         {
           "remove": [
@@ -649,8 +649,8 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create",
-        "audio.asr": "chat.completions.create"
-      },
+        "audio.asr": "openai-chat-completions/chat.completions.create"
+      }, "remove_features": ["document"],
       "capability_limits": {
         "max_output_tokens": 943718
       }
@@ -661,8 +661,8 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create",
-        "audio.asr": "chat.completions.create"
-      }
+        "audio.asr": "openai-chat-completions/chat.completions.create"
+      }, "remove_features": ["document"]
     },
     {
       "id": "grok-4.7",
@@ -670,7 +670,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "capability_limits": {
         "max_output_tokens": 450000
       }
@@ -681,27 +681,27 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "qwen3.8-omni-flash",
       "operations": {
         "llm": "responses.create",
         "vision.caption": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "qwen3.8-max-prime",
       "operations": {
         "llm": "responses.create",
         "vision.caption": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "qwen3.8-27b",
       "operations": {
         "llm": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "capability_limits": {
         "max_context_tokens": 262144
       }
@@ -710,7 +710,7 @@
       "id": "qwen3.8-2.4t-a95b",
       "operations": {
         "llm": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "kimi-k3.1-pro",
@@ -718,7 +718,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "capability_limits": {
         "max_output_tokens": 943718
       },
@@ -741,7 +741,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "glm-5.3-flashx",
@@ -749,13 +749,13 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "glm-5.3-prime",
       "operations": {
         "llm": "responses.create"
-      },
+      }, "remove_features": ["document"],
       "capability_limits": {
         "max_context_tokens": 1000000
       }
@@ -766,7 +766,7 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "deepseek-v4.1-flash-1017",
@@ -774,20 +774,20 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "deepseek-v4-pro-0813",
       "operations": {
         "llm": "responses.create"
-      }
+      }, "remove_features": ["document"]
     },
     {
       "id": "voxtral-small-24b-2507",
       "operations": {
         "llm": "responses.create",
-        "audio.asr": "chat.completions.create"
-      },
+        "audio.asr": "openai-chat-completions/chat.completions.create"
+      }, "remove_features": ["document"],
       "capability_limits": {
         "max_output_tokens": 26214
       }
@@ -795,10 +795,10 @@
     {
       "id": "wan-3.0",
       "operations": {
-        "video.generate": "videos.create",
-        "video.edit": "videos.create",
-        "video.extend": "videos.create"
-      },
+        "video.generate": "openai-videos/videos.create",
+        "video.edit": "openai-videos/videos.create",
+        "video.extend": "openai-videos/videos.create"
+      }, "remove_features": ["document"],
       "exclude": true
     }
   ],

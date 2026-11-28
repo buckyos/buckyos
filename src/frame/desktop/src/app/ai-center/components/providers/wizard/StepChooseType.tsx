@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleAlert, CircleDashed, Cloud, Loader2, RefreshCw, Server } from 'lucide-react'
+import { CheckCircle2, CircleAlert, CircleDashed, Cloud, Loader2, RefreshCw } from 'lucide-react'
 import { useI18n } from '../../../../../i18n/provider'
 import type { KnownProviderProfile, ProviderSetupCatalog, ProviderType, ProviderView } from '../../../../../api/aicc_mgr'
 
@@ -92,6 +92,5 @@ export function StepChooseType({ selected, onSelect, providers, catalog, loading
         <div className="mt-auto flex items-center gap-3 text-[11px] font-medium"><span className="inline-flex items-center gap-1" aria-label={t('aiCenter.wizard.providerEnabledCount', 'Enabled: {{count}}', { count: counts.enabled })} style={{ color: 'var(--cp-success)' }}><span className="size-2 rounded-full" style={{ background: 'var(--cp-success)' }} />{counts.enabled}</span><span className="inline-flex items-center gap-1" aria-label={t('aiCenter.wizard.providerDisabledCount', 'Disabled: {{count}}', { count: counts.disabled })} style={{ color: 'var(--cp-warning)' }}><span className="size-2 rounded-full" style={{ background: 'var(--cp-warning)' }} />{counts.disabled}</span></div>
       </div>
     })}
-    <button type="button" onClick={() => { void onSelect('custom') }} className="flex min-h-32 flex-col gap-3 rounded-xl p-4 text-left transition-all" style={{ background: selected === 'custom' ? 'color-mix(in oklch, var(--cp-accent), transparent 90%)' : 'var(--cp-surface)', border: selected === 'custom' ? '2px solid var(--cp-accent)' : '1px solid var(--cp-border)' }}><div className="flex items-center gap-2"><Server size={19} style={{ color: selected === 'custom' ? 'var(--cp-accent)' : 'var(--cp-muted)' }} /><span className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.wizard.customProvider', 'Custom Provider')}</span></div><span className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.wizard.customProviderHint', 'Connect an OpenAI- or Anthropic-compatible endpoint.')}</span></button>
   </div>
 }

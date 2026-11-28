@@ -99,6 +99,12 @@ pub(crate) trait OpenAiChatCompletionsDialect: std::fmt::Debug + Send + Sync {
     ) -> ProtocolResultValue<ChatCompletionsStreamExtensions> {
         Ok(ChatCompletionsStreamExtensions::default())
     }
+
+    /// Whether a resolved `stream_options: false` means "send no
+    /// `stream_options`" instead of requesting stream usage.
+    fn allows_stream_options_opt_out(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Default)]
@@ -106,23 +112,42 @@ struct StandardChatCompletionsDialect;
 
 impl OpenAiChatCompletionsDialect for StandardChatCompletionsDialect {}
 
+/// Chat Completions as OpenAI documents it. Besides chat, it can transcribe
+/// through an `input_audio` message part; that binding is only selected
+/// explicitly.
 pub(crate) fn openai_chat_completions_adapter() -> (AdapterDescriptor, CodecRegistration) {
     let dialect: Arc<dyn OpenAiChatCompletionsDialect> = Arc::new(StandardChatCompletionsDialect);
-    let llm_codec =
-        OpenAiChatCompletionsCodec::with_dialect_and_api_type(Arc::clone(&dialect), ApiType::Llm);
-    let vision_ocr_codec = OpenAiChatCompletionsCodec::with_dialect_and_api_type(
-        Arc::clone(&dialect),
-        ApiType::VisionOcr,
+    let mut descriptor = openai_chat_completions_operation_descriptor();
+    descriptor.bindings.push(
+        OperationBinding::new(ApiType::AudioSpeechRecognition, [ExecutionMode::Immediate])
+            .explicit_only(),
     );
-    let vision_caption_codec =
-        OpenAiChatCompletionsCodec::with_dialect_and_api_type(dialect, ApiType::VisionCaption);
+    let codec = |api_type| {
+        OpenAiChatCompletionsCodec::with_dialect_api_type_and_descriptor(
+            Arc::clone(&dialect),
+            api_type,
+            descriptor.clone(),
+        )
+    };
+    let llm_codec = codec(ApiType::Llm);
+    let (_, audio_codecs) = super::openai_audio_adapter();
+    let error_codec = audio_codecs
+        .operation_codecs
+        .into_iter()
+        .find(|codec| codec.api_type() == ApiType::AudioSpeechRecognition)
+        .expect("OpenAI transcription codec must exist");
     (
         llm_codec.adapter_descriptor(),
         CodecRegistration {
             operation_codecs: vec![
+                Arc::new(ChatAudioTranscriptionCodec {
+                    inner: Arc::new(llm_codec.clone()),
+                    error_codec,
+                    descriptor: descriptor.clone(),
+                }),
                 Arc::new(llm_codec),
-                Arc::new(vision_ocr_codec),
-                Arc::new(vision_caption_codec),
+                Arc::new(codec(ApiType::VisionOcr)),
+                Arc::new(codec(ApiType::VisionCaption)),
             ],
             native_task_codecs: Vec::new(),
         },
@@ -174,7 +199,6 @@ impl OpenAiChatCompletionsCodec {
             protocol_adapter_id: OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_string(),
             interface_generation: OPENAI_CHAT_COMPLETIONS_GENERATION.to_string(),
             base_adapter_id: None,
-            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 100,
             probe_path: Some("chat/completions".to_owned()),
@@ -391,7 +415,7 @@ pub(crate) fn openai_chat_completions_operation_descriptor() -> OperationDescrip
     }
 }
 
-fn vision_ocr_as_chat(request: &VisionOcrRequest) -> LlmChatInvokeRequest {
+pub(super) fn vision_ocr_as_chat(request: &VisionOcrRequest) -> LlmChatInvokeRequest {
     LlmChatInvokeRequest::new(
         request.exact_model.clone(),
         vec![AiMessage::new(
@@ -404,7 +428,7 @@ fn vision_ocr_as_chat(request: &VisionOcrRequest) -> LlmChatInvokeRequest {
     )
 }
 
-fn vision_caption_as_chat(request: &VisionCaptionRequest) -> LlmChatInvokeRequest {
+pub(super) fn vision_caption_as_chat(request: &VisionCaptionRequest) -> LlmChatInvokeRequest {
     LlmChatInvokeRequest::new(
         request.exact_model.clone(),
         vec![AiMessage::new(
@@ -743,8 +767,12 @@ fn apply_resolved_parameters(
     parameters: &BTreeMap<String, Value>,
     dialect: &dyn OpenAiChatCompletionsDialect,
 ) -> ProtocolResultValue<()> {
+    let stream_options_opt_out = dialect.allows_stream_options_opt_out()
+        && parameters.get("stream_options") == Some(&Value::Bool(false));
     for (name, value) in parameters {
-        if matches!(name.as_str(), "provider_model_id" | "stream") {
+        if matches!(name.as_str(), "provider_model_id" | "stream")
+            || (stream_options_opt_out && name == "stream_options")
+        {
             continue;
         }
         let (mapped, from_dialect) = match transform_base_resolved_parameter(name, value, dialect)?
@@ -786,7 +814,8 @@ fn apply_resolved_parameters(
         }
         body.insert(wire_name, wire_value);
     }
-    if body.get("stream").and_then(Value::as_bool) == Some(true)
+    if !stream_options_opt_out
+        && body.get("stream").and_then(Value::as_bool) == Some(true)
         && !body.contains_key("stream_options")
     {
         body.insert("stream_options".to_string(), json!({"include_usage": true}));
@@ -1136,7 +1165,7 @@ fn normalized_output(
     })
 }
 
-fn normalize_vision_output(output: &mut ProtocolOutput, api_type: ApiType) {
+pub(super) fn normalize_vision_output(output: &mut ProtocolOutput, api_type: ApiType) {
     if !matches!(api_type, ApiType::VisionOcr | ApiType::VisionCaption) {
         return;
     }
@@ -1624,6 +1653,153 @@ fn required_u64(value: &Map<String, Value>, key: &str) -> ProtocolResultValue<u6
     })
 }
 
+struct ChatAudioTranscriptionCodec {
+    inner: Arc<dyn OperationCodec>,
+    error_codec: Arc<dyn OperationCodec>,
+    descriptor: OperationDescriptor,
+}
+
+#[async_trait]
+impl OperationCodec for ChatAudioTranscriptionCodec {
+    fn descriptor(&self) -> &OperationDescriptor {
+        &self.descriptor
+    }
+    fn api_type(&self) -> ApiType {
+        ApiType::AudioSpeechRecognition
+    }
+    fn execution_modes(&self) -> BTreeSet<ExecutionMode> {
+        BTreeSet::from([ExecutionMode::Immediate])
+    }
+
+    fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
+        let AiccCall::AudioSpeechRecognition(request) = &call.input.canonical_request else {
+            return Err(ProtocolError::invalid_request(
+                "Chat Completions transcription requires a transcription request",
+            ));
+        };
+        if request
+            .timestamps
+            .as_deref()
+            .is_some_and(|timestamps| timestamps != "none")
+            || request.diarization == Some(true)
+            || request
+                .output_formats
+                .as_ref()
+                .is_some_and(|formats| formats.iter().any(|format| format != "json"))
+        {
+            return Err(ProtocolError::invalid_request(
+                "Chat Completions transcription returns plain transcripts without timestamp or speaker annotations",
+            ));
+        }
+        if call
+            .input
+            .resolved_parameters
+            .keys()
+            .any(|key| !matches!(key.as_str(), "provider_model_id" | "reasoning"))
+        {
+            return Err(ProtocolError::invalid_request(
+                "Chat Completions transcription has unsupported provider parameters",
+            ));
+        }
+        let model = call
+            .input
+            .resolved_parameters
+            .get("provider_model_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                ProtocolError::invalid_request(
+                    "Chat Completions transcription requires a provider model ID",
+                )
+            })?;
+        let audio = call.context.materialized_resource(&request.audio)?;
+        let format = match audio.mime.as_str() {
+            "audio/wav" | "audio/x-wav" => "wav",
+            "audio/mpeg" | "audio/mp3" => "mp3",
+            "audio/flac" => "flac",
+            "audio/ogg" => "ogg",
+            "audio/aac" => "aac",
+            "audio/mp4" | "audio/x-m4a" => "m4a",
+            "audio/webm" => "webm",
+            _ => {
+                return Err(ProtocolError::invalid_request(
+                    "Chat Completions transcription does not support this audio format",
+                ))
+            }
+        };
+        let prompt = format!(
+            "Transcribe the speech verbatim. Return only the transcript, without commentary.{}",
+            request
+                .language
+                .as_ref()
+                .map(|language| format!(" Language hint: {language}."))
+                .unwrap_or_default()
+        );
+        let mut wire = HttpRequest::new(
+            reqwest::Method::POST,
+            format!(
+                "{}/chat/completions",
+                call.context.base_url.trim_end_matches('/')
+            ),
+        );
+        wire.body = HttpBody::Json(
+            serde_json::json!({"model": model, "messages": [{"role": "user", "content": [
+                {"type": "input_audio", "input_audio": {"data": STANDARD.encode(&audio.bytes), "format": format}},
+                {"type": "text", "text": prompt}
+            ]}]}),
+        );
+        if let Some(reasoning) = call.input.resolved_parameters.get("reasoning") {
+            if !reasoning.is_object() {
+                return Err(ProtocolError::invalid_request(
+                    "Chat Completions transcription reasoning must be an object",
+                ));
+            }
+            if let HttpBody::Json(body) = &mut wire.body {
+                body["reasoning"] = reasoning.clone();
+            }
+        }
+        call.context.finalize_request(
+            &mut wire,
+            super::CredentialKind::Bearer,
+            "Chat Completions transcription requires credentials",
+            "Chat Completions transcription requires bearer credentials",
+        )
+    }
+
+    async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
+        if !response.status.is_success() {
+            return self.error_codec.decode(response).await;
+        }
+        let mut execution = self.inner.decode(response).await?;
+        let ProtocolExecution::Immediate(output) = &mut execution else {
+            return Err(ProtocolError::invalid_response(
+                "Chat Completions transcription returned an unexpected stream",
+            ));
+        };
+        let text = output
+            .value
+            .pointer("/message/content")
+            .and_then(serde_json::Value::as_array)
+            .map(|content| {
+                content
+                    .iter()
+                    .filter(|part| {
+                        part.get("type").and_then(serde_json::Value::as_str) == Some("text")
+                    })
+                    .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| {
+                ProtocolError::invalid_response(
+                    "Chat Completions transcription returned no transcript",
+                )
+            })?;
+        output.value = serde_json::json!({"text": text, "segments": [], "artifacts": {}});
+        Ok(execution)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1777,15 +1953,20 @@ mod tests {
     }
 
     fn fake_derived_registration() -> (AdapterDescriptor, CodecRegistration) {
-        let operation = openai_chat_completions_operation_descriptor();
-        let codec = OpenAiChatCompletionsCodec::with_dialect(Arc::new(FakeDerivedDialect));
+        let operation = openai_chat_completions_adapter().0.operations
+            [OPENAI_CHAT_COMPLETIONS_OPERATION_ID]
+            .clone();
+        let codec = OpenAiChatCompletionsCodec::with_dialect_api_type_and_descriptor(
+            Arc::new(FakeDerivedDialect),
+            ApiType::Llm,
+            operation.clone(),
+        );
         (
             AdapterDescriptor {
                 protocol_family_id: OPENAI_PROTOCOL_FAMILY_ID.to_string(),
                 protocol_adapter_id: FAKE_DERIVED_ADAPTER_ID.to_string(),
                 interface_generation: "fake-v1".to_string(),
                 base_adapter_id: Some(OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_string()),
-                component_adapter_ids: Vec::new(),
                 status: AdapterStatus::Stable,
                 probe_priority: 200,
                 probe_path: Some("chat/completions".to_owned()),
@@ -1805,6 +1986,7 @@ mod tests {
 
     fn context(base_url: &str) -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: base_url.to_string(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
                 provider_profile_id: "openai".into(),
@@ -1870,7 +2052,12 @@ mod tests {
         assert_eq!(descriptor.base_adapter_id, None);
         assert_eq!(descriptor.operations.len(), 1);
         let operation = &descriptor.operations[OPENAI_CHAT_COMPLETIONS_OPERATION_ID];
-        assert_eq!(operation.bindings.len(), 3);
+        assert_eq!(operation.bindings.len(), 4);
+        assert_eq!(
+            operation.bindings[3].api_type,
+            ApiType::AudioSpeechRecognition
+        );
+        assert_eq!(operation.bindings[3].default_priority, 0);
         assert_eq!(operation.bindings[0].api_type, ApiType::Llm);
         assert_eq!(
             operation.bindings[0].execution_modes,
@@ -2574,5 +2761,145 @@ mod review_cost_tests {
         ] {
             assert!(decode_reported_cost(&value).unwrap().is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn audio_chat_transcribes_bytes_and_preserves_usage() {
+        let registry = crate::protocol::builtin_codecs_for_test();
+        let codec = registry
+            .codec(
+                OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                ApiType::AudioSpeechRecognition,
+            )
+            .unwrap();
+        let mut context = crate::protocol::CodecContext {
+            state_namespace: None,
+            base_url: "https://sn.example/api/v1/ai".into(),
+            state_coordinate: buckyos_api::ProviderStateCoordinate {
+                provider_profile_id: "sn".into(),
+                adapter_type: OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.into(),
+                origin_provider: "mistral".into(),
+                origin_model: "voxtral-small-24b-2507".into(),
+            },
+            credential: Some(
+                crate::protocol::ResolvedCredential::bearer("secret://sn", "secret").unwrap(),
+            ),
+            resources: BTreeMap::new(),
+            limits: crate::protocol::CodecLimits {
+                request_timeout: std::time::Duration::from_secs(30),
+                max_request_bytes: 1024 * 1024,
+                max_response_bytes: 1024 * 1024,
+            },
+        };
+        let audio = buckyos_api::ResourceRef::base64("audio/wav".into(), "UklGRm1vY2s=".into());
+        context.resources.insert(
+            crate::resource::ResourceKey::from_ref(&audio).into_string(),
+            crate::protocol::MaterializedResource::new(
+                bytes::Bytes::from_static(b"RIFFmock"),
+                "audio/wav",
+                None,
+            )
+            .unwrap(),
+        );
+        let mut request =
+            buckyos_api::AudioSpeechRecognitionRequest::new("voxtral-small-24b-2507@sn", audio);
+        request.timestamps = Some("none".into());
+        let input = crate::protocol::CodecInput {
+            canonical_request: AiccCall::AudioSpeechRecognition(request),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".into(),
+                serde_json::json!("voxtral-small-24b-2507"),
+            )]),
+        };
+        let wire = codec
+            .encode(&CodecCall {
+                api_type: ApiType::AudioSpeechRecognition,
+                input: &input,
+                context: &context,
+            })
+            .unwrap();
+        assert_eq!(wire.url, "https://sn.example/api/v1/ai/chat/completions");
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON audio chat")
+        };
+        assert_eq!(
+            body["messages"][0]["content"][0],
+            serde_json::json!({"type":"input_audio","input_audio":{"data":"UklGRm1vY2s=","format":"wav"}})
+        );
+        let mut reasoning_input = crate::protocol::CodecInput {
+            canonical_request: input.canonical_request.clone(),
+            resolved_parameters: input.resolved_parameters.clone(),
+        };
+        reasoning_input.resolved_parameters.insert(
+            "provider_model_id".into(),
+            serde_json::json!("gemini-4-argon"),
+        );
+        reasoning_input
+            .resolved_parameters
+            .insert("reasoning".into(), serde_json::json!({"effort":"high"}));
+        let wire = codec
+            .encode(&CodecCall {
+                api_type: ApiType::AudioSpeechRecognition,
+                input: &reasoning_input,
+                context: &context,
+            })
+            .unwrap();
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON audio chat")
+        };
+        assert_eq!(body["model"], "gemini-4-argon");
+        assert_eq!(body["reasoning"], serde_json::json!({"effort":"high"}));
+        reasoning_input
+            .resolved_parameters
+            .insert("reasoning".into(), serde_json::json!("high"));
+        assert!(codec
+            .encode(&CodecCall {
+                api_type: ApiType::AudioSpeechRecognition,
+                input: &reasoning_input,
+                context: &context,
+            })
+            .is_err());
+        reasoning_input.resolved_parameters.remove("reasoning");
+        reasoning_input
+            .resolved_parameters
+            .insert("messages".into(), serde_json::json!([]));
+        assert!(codec
+            .encode(&CodecCall {
+                api_type: ApiType::AudioSpeechRecognition,
+                input: &reasoning_input,
+                context: &context,
+            })
+            .is_err());
+        let response = HttpResponse {status: reqwest::StatusCode::OK, headers: reqwest::header::HeaderMap::new(),
+            body: bytes::Bytes::from_static(br#"{"id":"chat_1","object":"chat.completion","model":"voxtral-small-24b-2507","choices":[{"index":0,"message":{"role":"assistant","content":"A spoken sentence."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}"#),
+            request_id:"audio-chat-test".into(), retry_after:None};
+        let mut failure = response.clone();
+        failure.status = reqwest::StatusCode::UNAUTHORIZED;
+        failure.body = bytes::Bytes::from_static(
+            br#"{"code":"unauthorized","message":"invalid or missing credentials"}"#,
+        );
+        assert_eq!(
+            codec
+                .decode(failure)
+                .await
+                .unwrap_err()
+                .provider_code
+                .as_deref(),
+            Some("unauthorized")
+        );
+        let ProtocolExecution::Immediate(output) = codec.decode(response).await.unwrap() else {
+            panic!("expected transcript")
+        };
+        assert_eq!(output.value["text"], "A spoken sentence.");
+        assert_eq!(output.usage.unwrap().total_tokens, Some(7));
+        context.credential = None;
+        assert!(codec
+            .encode(&CodecCall {
+                api_type: ApiType::AudioSpeechRecognition,
+                input: &input,
+                context: &context
+            })
+            .is_err());
     }
 }

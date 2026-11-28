@@ -37,6 +37,7 @@ Model Driver 价格、variant 参数表及旧版本挂点已移除，Provider/Ad
 - `driver_metadata_update_protocol.md`：NDN 目标序列、Provider 已应用序列与 AICC 全局库存收敛契约。
 - `driver_metadata_update_storage.md`：当前 metadata 文件、目标/已应用序列和 Provider inventory 的持久边界。
 - `provider_profile_schema.md`：Provider Profile、Protocol Adapter、Provider Rules、Model Driver 和 Pricing 的目标边界与 schema。
+- `protocol_clients.md`：协议客户端清单（层、协议族、基础客户端、operation、方言的残余差异），由测试与注册表校验；改它需要发版本。
 - `match_rule.md`：Model Driver、Provider Rules、请求/价格条件及发布 track 共用的统一匹配语义，采用字符串优先、多维对象按需展开的配置形式。
 - `driver_metadata_schema.md`：当前 Model Driver v2 字段、厂商规格、模型家族、固定预设与匹配/版本规则。
 - `internal_module_architecture.md`：AICC 重构后的内部模块职责、依赖方向、协议代际复用、运行时快照和生命周期边界。

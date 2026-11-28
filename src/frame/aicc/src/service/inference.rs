@@ -324,9 +324,12 @@ impl RuntimeInferencePort {
                     "selected Provider is unavailable",
                 )
             })?;
-        let credential = provider.resolve_credential().await.map_err(|error| {
-            inference_error(AiccErrorCode::NoProviderAvailable, error.to_string())
-        })?;
+        let credential = provider
+            .resolve_client_credential(&selected.protocol_adapter_id)
+            .await
+            .map_err(|error| {
+                inference_error(AiccErrorCode::NoProviderAvailable, error.to_string())
+            })?;
         let provider_rules_id = provider.config.provider_rules_id.clone();
         let transport = HttpTransportConfig {
             request_timeout: provider.config.request_timeout,
@@ -376,6 +379,8 @@ impl RuntimeInferencePort {
                 call,
                 ProviderCallTarget {
                     provider_rules_id,
+                    protocol_clients: provider.profile.protocol_clients(),
+                    state_namespace: provider.profile.state_namespace.clone(),
                     use_server_defaults: crate::model::ExactModelName::parse(
                         &decision.selected.exact_model,
                     )
@@ -385,7 +390,15 @@ impl RuntimeInferencePort {
                     operation_base_urls: provider.config.operation_base_urls.clone(),
                     credential,
                     credential_reference: provider.config.credential.reference.clone(),
-                    credential_header_name: provider.profile.credential.header_name.clone(),
+                    credential_header_name: provider
+                        .profile
+                        .credential_for_client(
+                            &selected.protocol_adapter_id,
+                            provider.config.credential_kind,
+                            self.codecs.as_ref(),
+                        )
+                        .ok()
+                        .and_then(|credential| credential.header_name),
                     limits: CodecLimits {
                         request_timeout: transport.request_timeout,
                         max_request_bytes: transport.max_request_bytes,

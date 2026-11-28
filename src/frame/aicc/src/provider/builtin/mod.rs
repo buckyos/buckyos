@@ -10,7 +10,6 @@ mod openai_responses_compatible;
 mod openrouter;
 mod registry;
 mod sn;
-mod typesafe;
 
 #[cfg(test)]
 fn builtin_catalog_document<T: serde::de::DeserializeOwned>(
@@ -76,6 +75,15 @@ fn builtin_profile(
         refresh: crate::provider::RefreshPolicy::default(),
         default_inventory: None,
         accepts_any_adapter: false,
+        extra_protocol_adapters: known
+            .extra_protocol_adapters
+            .iter()
+            .map(|client| crate::provider::ProtocolClientProfile {
+                protocol_adapter_id: client.id.clone(),
+                credential: client.credential.as_ref().map(credential_from_catalog),
+            })
+            .collect(),
+        state_namespace: known.state_namespace,
     }
 }
 
@@ -142,33 +150,22 @@ fn builtin_catalog_files(catalog_ids: &[&str]) -> Vec<crate::catalog::CurrentCat
 }
 
 #[cfg(test)]
-pub(crate) use crate::protocol::SN_OPENAI_ADAPTER_ID;
-use claude::CLAUDE_SPEC;
-pub(crate) use claude::claude_discovery;
-#[cfg(test)]
 pub(crate) use fal::FAL_PROVIDER_PROFILE_ID;
 pub(crate) use gemini::GeminiDiscovery;
 #[cfg(test)]
 use glm::{
     glm_catalog_files, glm_known_provider, glm_model_driver, glm_profile, glm_provider_rules,
 };
-pub(crate) use glm::glm_models_discovery;
 #[cfg(test)]
 pub(crate) use glm::GLM_PROVIDER_PROFILE_ID;
 #[cfg(test)]
 use kimi::{
     kimi_catalog_files, kimi_known_provider, kimi_model_driver, kimi_profile, kimi_provider_rules,
 };
-pub(crate) use kimi::KimiDiscovery;
-pub(crate) use minimax::minimax_discovery;
 #[cfg(test)]
 pub(crate) use minimax::MINIMAX_PROVIDER_PROFILE_ID;
-pub(crate) use openai::OpenAiDiscovery;
 #[cfg(test)]
 pub(crate) use openai::OPENAI_PROVIDER_PROFILE_ID;
-pub(crate) use openai_responses_compatible::{
-    openai_compatible_models_discovery, DEEPSEEK_PROFILE_ID,
-};
 #[cfg(test)]
 pub(crate) use openai_responses_compatible::{
     DOUBAO_AGENT_PLAN_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID,
@@ -198,8 +195,7 @@ mod wp08d_tests {
         ModelDriverCatalog,
     };
     use crate::protocol::{
-        glm_chat_adapter, kimi_chat_adapter, openai_chat_completions_adapter,
-        openrouter_responses_adapter, CodecRegistry, GLM_CHAT_ADAPTER_ID, KIMI_CHAT_ADAPTER_ID,
+        GLM_CHAT_ADAPTER_ID, LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
         OPENAI_CHAT_COMPLETIONS_OPERATION_ID, OPENAI_RESPONSES_OPERATION_ID,
         OPENROUTER_RESPONSES_ADAPTER_ID,
     };
@@ -329,7 +325,7 @@ mod wp08d_tests {
                     exchange_rates: None,
                     format: "buckyos.aicc.known-provider-catalog".to_owned(),
                     schema_version: 1,
-                    schema_revision: 1,
+                    schema_revision: 2,
                     revision_seq: 1,
                     catalog_id: "wp08d-builtins".to_owned(),
                     providers: vec![
@@ -342,20 +338,7 @@ mod wp08d_tests {
             &CatalogBuildOptions::default(),
         )
         .unwrap();
-        let mut codecs = CodecRegistry::default();
-        let (base, registration) = openai_chat_completions_adapter();
-        codecs.register_codecs(base, registration).unwrap();
-        let (base, registration) = crate::protocol::openai_responses_adapter();
-        codecs.register_codecs(base, registration).unwrap();
-        let (media, registration) = crate::protocol::glm_media_adapter();
-        codecs.register_codecs(media, registration).unwrap();
-        for (descriptor, registration) in [
-            openrouter_responses_adapter(),
-            kimi_chat_adapter(),
-            glm_chat_adapter(),
-        ] {
-            codecs.register_derived(descriptor, registration).unwrap();
-        }
+        let codecs = crate::protocol::builtin_codecs_for_test();
 
         let cases = [
             (
@@ -367,7 +350,7 @@ mod wp08d_tests {
             ),
             (
                 kimi_profile(),
-                instance("kimi", KIMI_CHAT_ADAPTER_ID),
+                instance("kimi", LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID),
                 discovery("kimi-k2.6", None),
                 "kimi",
                 OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
@@ -400,7 +383,7 @@ mod wp08d_tests {
             let discovered = inventory
                 .models
                 .iter()
-                .find(|model| model.operations.get("llm") == Some(&expected_operation.to_owned()))
+                .find(|model| model.operation_ids().get("llm") == Some(&expected_operation.to_owned()))
                 .unwrap();
             assert_eq!(discovered.model_driver_id, expected_driver);
         }
@@ -458,3 +441,7 @@ mod wp08d_tests {
 
 #[cfg(test)]
 mod upgrade_tests;
+#[cfg(test)]
+mod wire_snapshot_tests;
+#[cfg(test)]
+mod inventory_snapshot_tests;

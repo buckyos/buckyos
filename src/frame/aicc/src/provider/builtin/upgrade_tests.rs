@@ -148,15 +148,16 @@ fn overrides_provider_failures_and_aliases_are_terminal_and_isolated() {
         ..Default::default()
     });
     assert!(build(&config, None).unmatched_models.is_empty());
-    let router =
-        openrouter::OpenRouterDiscovery::new(HttpTransport::new(Default::default()).unwrap());
     assert_eq!(
-        router.match_model_driver("anthropic/claude-sonnet-5", &catalog),
-        ProviderModelMatch::Matched(ModelIdentity {
+        catalog.provider_vendor_prefixed_identity("openrouter", "anthropic/claude-sonnet-5"),
+        Some(Ok(ModelIdentity {
             model_driver_id: "claude".into(),
             model_id: "claude-sonnet-5".into()
-        })
+        }))
     );
+    assert!(catalog
+        .provider_vendor_prefixed_identity("deepseek", "anthropic/claude-sonnet-5")
+        .is_none());
     assert_eq!(
         catalog
             .provider_model_identity_override("deepseek", "deepseek-v4-flash")
@@ -707,6 +708,8 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             };
             let target = ProviderCallTarget {
                 provider_rules_id: Some(provider.into()),
+                protocol_clients: profile.protocol_clients(),
+                state_namespace: profile.state_namespace.clone(),
                 use_server_defaults: false,
                 base_url: config.base_url.clone(),
                 operation_base_urls: BTreeMap::new(),
@@ -744,7 +747,7 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                 "{provider}/{id}/{effort}: {body}"
             );
             if provider == "sn" {
-                assert_eq!(lowered.protocol_adapter_id, "sn-openai");
+                assert_eq!(lowered.protocol_adapter_id, "openai-responses");
                 assert_eq!(lowered.operation, OPENAI_RESPONSES_OPERATION_ID);
                 assert_eq!(body["model"], id);
                 assert_eq!(
@@ -1028,17 +1031,17 @@ impl openai_responses_compatible::OpenAiCompatibleModelsTransport for ModelsHttp
 }
 
 #[tokio::test]
-async fn shared_discovery_preserves_unknowns_and_explicit_channel_restrictions() {
+async fn shared_discovery_reads_model_ids_and_leaves_model_facts_to_the_catalog() {
     let request = || HttpRequest::new(reqwest::Method::GET, "https://example.test/v1/models");
     let body = json!({"object":"list","data":[{"object":"model","id":"kimi-k2.6","supports_reasoning":false,"supports_image_in":false,"supports_video_in":false},{"object":"model","id":"unknown"}]});
     let (models, _) =
-        openai_responses_compatible::discover_model_ids(&ModelsHttp(body), request(), "kimi", true)
+        openai_responses_compatible::discover_model_ids(&ModelsHttp(body), request(), "kimi", false)
             .await
             .unwrap();
-    assert!(models[0].unsupported_features.contains("reasoning"));
-    assert_eq!(models[0].api_types, Some(vec![ApiType::Llm]));
-    assert!(models[1].api_types.is_none());
-    assert!(models[1].unsupported_features.is_empty());
+    for model in &models {
+        assert!(model.api_types.is_none());
+        assert!(model.unsupported_features.is_empty());
+    }
     let catalog = catalog();
     let providers = builtin_provider_registry(&catalog).unwrap();
     let profile = providers
@@ -1056,21 +1059,20 @@ async fn shared_discovery_preserves_unknowns_and_explicit_channel_restrictions()
     )
     .unwrap();
     assert_eq!(inv.unmatched_models.len(), 1);
-    assert!(inv.models[0]
-        .variants
-        .iter()
-        .all(|v| v.name == "reasoning-none"));
+    assert!(inv.models[0].api_types.contains(&ApiType::VisionOcr));
     for body in [
         json!({"object":"list"}),
         json!({"object":"list","data":[{"object":"model","id":"same"},{"object":"model","id":"same"}]}),
         json!({"object":"list","data":[{"object":"model","id":"bad@id"}]}),
+        json!({"object":"model","data":[]}),
+        json!({"object":"list","data":[{"object":"file","id":"x"}]}),
     ] {
         assert!(matches!(
             openai_responses_compatible::discover_model_ids(
                 &ModelsHttp(body),
                 request(),
                 "kimi",
-                true
+                false
             )
             .await,
             Err(ProviderError::DiscoveryResponse(_))
@@ -1079,18 +1081,19 @@ async fn shared_discovery_preserves_unknowns_and_explicit_channel_restrictions()
 }
 
 #[tokio::test]
-async fn volcengine_ark_discovery_uses_catalog_lifecycle_and_task_types() {
+async fn volcengine_ark_discovery_reads_only_the_channel_status() {
     let body = json!({"object":"list","data":[
-        {"object":"model","id":"active-vlm","task_type":["text_generation","visual_question_answering","speech_to_text"]},
-        {"object":"model","id":"doubao-seedream-5-0-flash-260915","task_type":["text_to_image","image_to_image"]},
-        {"object":"model","id":"active-video","task_type":["multimodal_to_video","video_editing","video_extension"]},
+        {"object":"model","id":"active-vlm","task_type":["text_generation","visual_question_answering"]},
         {"object":"model","id":"retiring","status":"Retiring","task_type":["text_generation"]},
-        {"object":"model","id":"unsupported-3d","task_type":["image_to_3D"]}
+        {"object":"model","id":"shutdown","status":"Shutdown"}
     ]});
-    let (models, _) = openai_responses_compatible::discover_volcengine_ark_models(
-        &ModelsHttp(body),
-        HttpRequest::new(reqwest::Method::GET, "https://example.test/api/v3/models"),
+    let request =
+        || HttpRequest::new(reqwest::Method::GET, "https://example.test/api/v3/models");
+    let (models, _) = openai_responses_compatible::discover_model_ids(
+        &ModelsHttp(body.clone()),
+        request(),
         "doubao",
+        true,
     )
     .await
     .unwrap();
@@ -1100,111 +1103,19 @@ async fn volcengine_ark_discovery_uses_catalog_lifecycle_and_task_types() {
             .find(|model| model.provider_model_id == id)
             .unwrap()
     };
-    assert_eq!(
-        model("active-vlm").api_types.clone(),
-        Some(vec![
-            ApiType::Llm,
-            ApiType::VisionOcr,
-            ApiType::VisionCaption
-        ])
-    );
-    assert_eq!(
-        model("active-video").api_types.clone(),
-        Some(vec![
-            ApiType::VideoGenerate,
-            ApiType::VideoEdit,
-            ApiType::VideoExtend,
-        ])
-    );
-    assert_eq!(model("doubao-seedream-5-0-flash-260915").api_types.clone(), Some(vec![ApiType::ImageTextToImage, ApiType::ImageImageToImage]));
-    assert_eq!(
-        model("retiring").availability,
-        ModelAvailability::Unavailable
-    );
-    assert!(model("retiring").deprecated);
-    assert_eq!(model("unsupported-3d").api_types.clone(), Some(vec![]));
-}
-
-#[tokio::test]
-async fn volcengine_ark_discovery_accepts_both_documented_task_spellings() {
-    for (snake, pascal, expected) in [
-        ("text_generation", "TextGeneration", vec![ApiType::Llm]),
-        (
-            "visual_question_answering",
-            "VisualQuestionAnswering",
-            vec![ApiType::VisionOcr, ApiType::VisionCaption],
-        ),
-        (
-            "text_embedding",
-            "TextEmbedding",
-            vec![ApiType::EmbeddingText],
-        ),
-        (
-            "image_embedding",
-            "ImageEmbedding",
-            vec![ApiType::EmbeddingMultimodal],
-        ),
-        (
-            "text_to_image",
-            "TextToImage",
-            vec![ApiType::ImageTextToImage],
-        ),
-        (
-            "image_to_image",
-            "ImageToImage",
-            vec![ApiType::ImageImageToImage],
-        ),
-        ("text_to_video", "TextToVideo", vec![ApiType::VideoGenerate]),
-        (
-            "image_to_video",
-            "ImageToVideo",
-            vec![ApiType::VideoGenerate],
-        ),
-        (
-            "multimodal_to_video",
-            "MultimodalToVideo",
-            vec![ApiType::VideoGenerate],
-        ),
-        ("video_editing", "VideoEditing", vec![ApiType::VideoEdit]),
-        (
-            "video_extension",
-            "VideoExtension",
-            vec![ApiType::VideoExtend],
-        ),
-    ] {
-        let body = json!({"object":"list","data":[
-            {"id":"snake","task_type":[snake]},
-            {"id":"pascal","task_type":[pascal]},
-            {"id":"mixed","task_type":[snake,pascal,"future_task"]},
-            {"id":"unknown","task_type":["future_task"]}
-        ]});
-        let (models, _) = openai_responses_compatible::discover_volcengine_ark_models(
-            &ModelsHttp(body),
-            HttpRequest::new(reqwest::Method::GET, "https://example.test/api/v3/models"),
-            "doubao",
-        )
-        .await
-        .unwrap();
-        for id in ["snake", "pascal", "mixed"] {
-            assert_eq!(
-                models
-                    .iter()
-                    .find(|m| m.provider_model_id == id)
-                    .unwrap()
-                    .api_types
-                    .as_ref(),
-                Some(&expected)
-            );
-        }
-        assert_eq!(
-            models
-                .iter()
-                .find(|m| m.provider_model_id == "unknown")
-                .unwrap()
-                .api_types,
-            Some(vec![])
-        );
+    assert!(models.iter().all(|model| model.api_types.is_none()));
+    assert_eq!(model("active-vlm").availability, ModelAvailability::Available);
+    for id in ["retiring", "shutdown"] {
+        assert_eq!(model(id).availability, ModelAvailability::Unavailable);
+        assert!(model(id).deprecated);
     }
+    let (models, _) =
+        openai_responses_compatible::discover_model_ids(&ModelsHttp(body), request(), "doubao", false)
+            .await
+            .unwrap();
+    assert!(models
+        .iter()
+        .all(|model| model.availability == ModelAvailability::Available));
 }
 
 #[test]
@@ -2009,7 +1920,7 @@ fn builtin_media_models_mount_their_default_families() {
         assert_eq!(model.origin_model_id, expected_origin_id);
         assert!(model.logical_mounts.contains(&mount.to_owned()));
         assert_eq!(
-            model.operations.get(api_type).map(String::as_str),
+            model.operation_ids().get(api_type).map(String::as_str),
             Some(operation)
         );
         if provider_id == "doubao-agent-plan" {
@@ -2776,7 +2687,7 @@ fn qwen_media_protocol_fixtures_resolve_to_routable_inventory() {
             .iter()
             .find(|item| item.provider_model_id == "qwen3.8-flash")
             .unwrap()
-            .operations["llm"],
+            .operation_ids()["llm"],
         "responses.create"
     );
     assert_eq!(
@@ -2785,7 +2696,7 @@ fn qwen_media_protocol_fixtures_resolve_to_routable_inventory() {
             .iter()
             .find(|item| item.provider_model_id == "deepseek-v4-flash")
             .unwrap()
-            .operations["llm"],
+            .operation_ids()["llm"],
         "chat.completions.create"
     );
     for model in ["deepseek-v4-flash"] {
@@ -2815,7 +2726,7 @@ fn qwen_media_protocol_fixtures_resolve_to_routable_inventory() {
                 .iter()
                 .find(|item| item.provider_model_id == model)
                 .unwrap()
-                .operations["vision.caption"],
+                .operation_ids()["vision.caption"],
             "chat.completions.create"
         );
     }
@@ -2908,7 +2819,7 @@ fn doubao_november_inventory_resolves_official_models_and_operations() {
             .unwrap();
         assert_eq!(model.origin_model_id, origin_id);
         assert_eq!(
-            model.operations.get(api_type).map(String::as_str),
+            model.operation_ids().get(api_type).map(String::as_str),
             Some(operation)
         );
         if channel_id == "doubao-seedance-2-5-flash-261115" {

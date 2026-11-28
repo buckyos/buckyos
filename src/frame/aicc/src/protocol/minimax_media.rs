@@ -4,11 +4,11 @@ use super::video::{
     video_output, whole_seconds,
 };
 use super::{
-    AdapterDescriptor, AdapterStatus, CodecCall, CodecContext, CodecRegistration, CredentialKind,
-    ExecutionMode, HttpBody, HttpRequest, HttpResponse, MaterializedResource, MultipartBody,
-    MultipartPart, NativeTaskCodec, NativeTaskHandle, NativeTaskInput, NativeTaskOperation,
-    NativeTaskOutput, NativeTaskState, OperationBinding, OperationCodec, OperationDescriptor,
-    ProtocolError, ProtocolErrorKind, ProtocolExecution, ProtocolOutput, ProtocolResultValue,
+    AdapterDescriptor, AdapterStatus, CodecCall, CodecContext, CodecRegistration, ExecutionMode,
+    HttpBody, HttpRequest, HttpResponse, MaterializedResource, MultipartBody, MultipartPart,
+    NativeTaskCodec, NativeTaskHandle, NativeTaskInput, NativeTaskOperation, NativeTaskOutput,
+    NativeTaskState, OperationBinding, OperationCodec, OperationDescriptor, ProtocolError,
+    ProtocolErrorKind, ProtocolExecution, ProtocolOutput, ProtocolResultValue,
 };
 use crate::video::VideoScenario;
 use async_trait::async_trait;
@@ -17,7 +17,7 @@ use buckyos_api::{
     AiArtifact, AiUsage, AiccCall, ApiType, KeyframePosition, ResourceRef,
     TextToImageInvokeRequest, VideoConditionKind, VideoMetadata,
 };
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::{Method, Url};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -105,11 +105,10 @@ pub(crate) fn minimax_media_adapter() -> (AdapterDescriptor, CodecRegistration) 
             protocol_adapter_id: MINIMAX_MEDIA_ADAPTER_ID.to_owned(),
             interface_generation: "v1".to_owned(),
             base_adapter_id: None,
-            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 200,
             probe_path: None,
-            credential: super::AdapterCredentialContract::named_header("x-api-key"),
+            credential: super::AdapterCredentialContract::bearer(),
             operations: operations
                 .into_iter()
                 .map(|operation| (operation.operation_id.clone(), operation))
@@ -972,46 +971,16 @@ fn apply_media_credential(
     headers: &mut HeaderMap,
     context: &CodecContext,
 ) -> ProtocolResultValue<()> {
-    let credential = context.credential.as_ref().ok_or_else(|| {
-        ProtocolError::new(
-            ProtocolErrorKind::Authentication,
-            "MiniMax media operation requires a resolved credential",
-        )
-    })?;
-    if credential.audit().kind != CredentialKind::NamedHeader {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::Authentication,
-            "MiniMax media operation requires the provider API key credential",
-        ));
-    }
-    let mut source = HeaderMap::new();
-    credential.apply(&mut source)?;
-    let secret = source.values().next().ok_or_else(|| {
-        ProtocolError::new(
-            ProtocolErrorKind::Authentication,
-            "MiniMax credential is empty",
-        )
-    })?;
-    let value = HeaderValue::from_bytes(
-        format!(
-            "Bearer {}",
-            secret.to_str().map_err(|_| {
-                ProtocolError::new(
-                    ProtocolErrorKind::Authentication,
-                    "MiniMax credential is invalid",
-                )
-            })?
-        )
-        .as_bytes(),
-    )
-    .map_err(|_| {
-        ProtocolError::new(
-            ProtocolErrorKind::Authentication,
-            "MiniMax credential is invalid",
-        )
-    })?;
-    headers.insert(AUTHORIZATION, value);
-    Ok(())
+    context
+        .credential
+        .as_ref()
+        .ok_or_else(|| {
+            ProtocolError::new(
+                ProtocolErrorKind::Authentication,
+                "MiniMax media operation requires a resolved credential",
+            )
+        })?
+        .apply(headers)
 }
 
 fn provider_model_id(parameters: &BTreeMap<String, Value>) -> ProtocolResultValue<String> {
@@ -1134,6 +1103,7 @@ mod tests {
 
     fn context() -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: "https://api.minimax.io".to_owned(),
             state_coordinate: ProviderStateCoordinate {
                 provider_profile_id: "minimax".to_owned(),

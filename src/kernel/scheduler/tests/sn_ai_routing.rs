@@ -28,7 +28,6 @@ fn managed_provider(enabled: bool, base_url: &str) -> Value {
         "provider_instance_name": "sn-ai-provider-default",
         "provider_type": "cloud_api",
         "provider_profile_id": "sn",
-        "protocol_adapter_id": "sn-openai",
         "provider_rules_id": "sn",
         "base_url": base_url,
         "credentials": {

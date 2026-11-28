@@ -1,8 +1,8 @@
 {
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
-  "schema_revision": 1,
-  "revision_seq": 4,
+  "schema_revision": 2,
+  "revision_seq": 6,
   "catalog_id": "minimax",
   "providers": [
     {
@@ -10,7 +10,9 @@
       "display_name": "MiniMax",
       "base_url": "https://api.minimax.io/anthropic",
       "protocol_adapter_id": "minimax-messages",
-      "discovery_behavior_id": "minimax-models",
+      "extra_protocol_adapters": [{"id": "minimax-media", "credential": {"kind": "bearer"}}],
+      "state_namespace": "minimax",
+      "discovery_behavior_id": "standard-models",
       "provider_rules_id": "minimax",
       "credential": { "kind": "named_header", "header_name": "x-api-key" },
       "connection": {

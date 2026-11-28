@@ -567,10 +567,14 @@ impl RuntimeProviderExecutionPort {
                     "artifact ProviderInstance is unavailable",
                 )
             })?;
-        if provider.config.protocol_adapter_id != source.protocol_adapter_id {
+        if !provider
+            .profile
+            .protocol_clients()
+            .contains(&source.protocol_adapter_id)
+        {
             return Err(AiccError::new(
                 AiccErrorCode::ProviderError,
-                "artifact ProviderInstance Adapter has changed",
+                "artifact ProviderInstance no longer uses the Adapter that produced it",
             ));
         }
         let artifact_origin = reqwest::Url::parse(url)
@@ -584,7 +588,7 @@ impl RuntimeProviderExecutionPort {
             })
             .unwrap_or_else(|| "<invalid>".to_owned());
         let mut reader = provider
-            .open_artifact_url_reader(self.codecs.as_ref(), url)
+            .open_artifact_url_reader(self.codecs.as_ref(), &source.protocol_adapter_id, url)
             .await
             .map_err(|error| {
                 log::warn!(
@@ -1129,6 +1133,7 @@ impl RuntimeProviderExecutionPort {
             .ok_or(NativeTaskResumeError::CredentialUnavailable)?;
         Ok((
             CodecContext {
+                state_namespace: provider.profile.state_namespace.clone(),
                 base_url: resume.base_url.clone(),
                 state_coordinate: buckyos_api::ProviderStateCoordinate {
                     provider_profile_id: provider.profile.provider_profile_id.clone(),
@@ -1196,8 +1201,14 @@ impl RuntimeProviderExecutionPort {
             .await
             .map_err(NativeTaskResumeError::Protocol)?;
         if let NativeTaskOutput::Result(result) = &mut output {
-            crate::protocol::bind_provider_state_source(
+            crate::protocol::finish_provider_state(
                 &mut result.value,
+                crate::protocol::StateNamespaceRename::for_call(
+                    &self.codecs,
+                    &binding.protocol_adapter_id,
+                    &context,
+                )
+                .as_ref(),
                 &context.state_coordinate,
             );
         }
@@ -1387,8 +1398,14 @@ impl RuntimeProviderExecutionPort {
                             .map_err(ProviderStartFailure::after_accept)?;
                             return Ok(ProviderExecution::Immediate(output));
                         }
-                        crate::protocol::bind_provider_state_source(
+                        crate::protocol::finish_provider_state(
                             &mut output.value,
+                            crate::protocol::StateNamespaceRename::for_call(
+                                &self.codecs,
+                                &call.protocol_adapter_id,
+                                &call.context,
+                            )
+                            .as_ref(),
                             &call.context.state_coordinate,
                         );
                         if is_video_api(call.api_type) {
@@ -1452,12 +1469,18 @@ impl RuntimeProviderExecutionPort {
                     .await
                     .map_err(ProviderStartFailure::after_accept)?;
                 let source = call.context.state_coordinate.clone();
+                let rename = crate::protocol::StateNamespaceRename::for_call(
+                    &self.codecs,
+                    &call.protocol_adapter_id,
+                    &call.context,
+                );
                 let storage = self.storage.clone();
                 let provider_instance_name = call.provider_instance_name.clone();
                 let protocol_adapter_id = call.protocol_adapter_id.clone();
                 let resource_context = call.resource_access_context.clone();
                 let events = stream.events.then(move |event| {
                     let source = source.clone();
+                    let rename = rename.clone();
                     let storage = storage.clone();
                     let provider_instance_name = provider_instance_name.clone();
                     let protocol_adapter_id = protocol_adapter_id.clone();
@@ -1466,11 +1489,16 @@ impl RuntimeProviderExecutionPort {
                         let mut event = event?;
                         match &mut event {
                             ProtocolEvent::Delta(value) | ProtocolEvent::Progress(value) => {
-                                crate::protocol::bind_provider_state_source(value, &source);
+                                crate::protocol::finish_provider_state(
+                                    value,
+                                    rename.as_ref(),
+                                    &source,
+                                );
                             }
                             ProtocolEvent::Final(output) => {
-                                crate::protocol::bind_provider_state_source(
+                                crate::protocol::finish_provider_state(
                                     &mut output.value,
+                                    rename.as_ref(),
                                     &source,
                                 );
                             }

@@ -448,7 +448,7 @@ fn sn_provider(name: &str, auth: Value) -> ProviderSettings {
         provider_type: ProviderInstanceType::CloudApi,
         provider_profile_id: "sn".to_string(),
         protocol_family_id: Some("openai".to_string()),
-        protocol_adapter_id: "sn-openai".to_string(),
+        protocol_adapter_id: None,
         base_url: "https://sn.buckyos.ai/api/v1/ai".to_string(),
         operation_base_urls: BTreeMap::new(),
         credentials: serde_json::from_value(credentials).unwrap(),
@@ -476,7 +476,7 @@ fn provider_public_view(provider: &ProviderSettings) -> ProviderInstanceView {
         provider_instance_name: provider.provider_instance_name.clone(),
         provider_type: provider.provider_type.clone(),
         provider_profile_id: provider.provider_profile_id.clone(),
-        protocol_adapter_id: provider.protocol_adapter_id.clone(),
+        protocol_adapter_id: provider.protocol_adapter_id.clone().unwrap_or_default(),
         base_url: provider.base_url.clone(),
         operation_base_urls: provider.operation_base_urls.clone(),
         enabled: provider.enabled,
@@ -886,7 +886,7 @@ async fn provider_list_returns_disabled_instances_revision_and_no_credentials() 
         provider_type: ProviderInstanceType::CloudApi,
         provider_profile_id: "openai".to_string(),
         protocol_family_id: Some("openai".to_string()),
-        protocol_adapter_id: "openai-responses".to_string(),
+        protocol_adapter_id: None,
         base_url: "https://api.example/v1".to_string(),
         operation_base_urls: BTreeMap::new(),
         credentials: serde_json::from_value(
@@ -2224,7 +2224,7 @@ async fn management_reads_and_krpc_dispatch_use_one_runtime_view() {
             provider_type: ProviderInstanceType::CloudApi,
             provider_profile_id: "openai".to_string(),
             protocol_family_id: Some("openai".to_string()),
-            protocol_adapter_id: "openai-responses".to_string(),
+            protocol_adapter_id: None,
             base_url: "https://api.example/v1".to_string(),
             operation_base_urls: BTreeMap::new(),
             credentials: serde_json::from_value(
@@ -2255,7 +2255,9 @@ async fn management_reads_and_krpc_dispatch_use_one_runtime_view() {
                 region_base_urls: BTreeMap::new(),
                 operation_base_urls: BTreeMap::new(),
                 protocol_adapter_id: "openai-responses".to_string(),
-                discovery_behavior_id: "openai-models".to_string(),
+                extra_protocol_adapters: Vec::new(),
+                state_namespace: None,
+                discovery_behavior_id: "standard-models".to_string(),
                 dynamic_login_behavior_id: None,
                 connection_behavior_id: None,
                 provider_rules_id: Some("openai".to_string()),
@@ -2869,8 +2871,10 @@ fn protocol_adapter_views_export_the_runtime_default_operations() {
     let codecs = builtin_provider_registry(&catalog).unwrap().codecs();
     let view = protocol_adapter_response(&codecs, &catalog.custom_provider_adapter_ids());
     let openai = view.adapters.iter().find(|adapter| adapter.protocol_adapter_id == "openai-responses").unwrap();
-    assert_eq!(openai.default_operations["image.txt2img"], "images.generate");
+    assert_eq!(openai.default_operations["image.txt2img"], "responses.create");
     assert_eq!(openai.default_operations["llm"], "responses.create");
+    let images = view.adapters.iter().find(|adapter| adapter.protocol_adapter_id == "openai-images").unwrap();
+    assert_eq!(images.default_operations["image.txt2img"], "images.generate");
     for adapter in view.adapters {
         for (api_type, operation) in adapter.default_operations {
             assert!(adapter.operations.iter().any(|item| item.operation_id == operation

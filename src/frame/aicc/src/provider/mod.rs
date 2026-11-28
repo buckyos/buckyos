@@ -2,8 +2,6 @@ mod builtin;
 mod inventory;
 mod runtime;
 
-#[cfg(test)]
-pub(crate) use crate::protocol::{claude_messages_adapter, register_sn_openai_adapter};
 pub(crate) use builtin::{
     builtin_provider_codecs, builtin_provider_registry, resolve_sn_provider_instance_with_config,
     BuiltinProviderRequest, SnCredentialBroker, SnProviderInstanceInput,
@@ -45,7 +43,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
-const INVENTORY_SCHEMA_VERSION: u32 = 2;
+const INVENTORY_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DiscoveryMode {
@@ -101,6 +99,15 @@ pub(crate) struct ProviderProfile {
     pub refresh: RefreshPolicy,
     pub default_inventory: Option<ProviderDiscoverySnapshot>,
     pub accepts_any_adapter: bool,
+    /// Further protocol clients of this Provider, after the default one.
+    pub extra_protocol_adapters: Vec<ProtocolClientProfile>,
+    pub state_namespace: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProtocolClientProfile {
+    pub protocol_adapter_id: String,
+    pub credential: Option<CredentialDescriptor>,
 }
 
 impl ProviderProfile {
@@ -150,6 +157,51 @@ impl ProviderProfile {
                     requested.as_str()
                 ))
             })
+    }
+
+    pub(crate) fn protocol_clients(&self) -> crate::protocol::ProtocolClientSet {
+        crate::protocol::ProtocolClientSet {
+            default: self.default_protocol_adapter_id.clone(),
+            extras: self
+                .extra_protocol_adapters
+                .iter()
+                .map(|client| client.protocol_adapter_id.clone())
+                .collect(),
+        }
+    }
+
+    /// How the instance secret is presented to one of its clients: the kind the
+    /// instance chose, else what this Provider declares for that client, else
+    /// the client's own credential contract.
+    pub(crate) fn credential_for_client(
+        &self,
+        protocol_adapter_id: &str,
+        requested: Option<CredentialKind>,
+        codecs: &CodecRegistry,
+    ) -> ProviderResult<CredentialDescriptor> {
+        if requested.is_some() || protocol_adapter_id == self.default_protocol_adapter_id {
+            return self.credential_for(requested).cloned();
+        }
+        let client = self
+            .extra_protocol_adapters
+            .iter()
+            .find(|client| client.protocol_adapter_id == protocol_adapter_id)
+            .ok_or_else(|| {
+                ProviderError::InvalidConfiguration(format!(
+                    "provider profile `{}` does not use protocol adapter `{protocol_adapter_id}`",
+                    self.provider_profile_id
+                ))
+            })?;
+        if let Some(credential) = &client.credential {
+            return Ok(credential.clone());
+        }
+        let adapter = codecs
+            .adapter(protocol_adapter_id)
+            .ok_or_else(|| ProviderError::UnknownAdapter(protocol_adapter_id.to_owned()))?;
+        Ok(CredentialDescriptor {
+            kind: adapter.credential.kind,
+            header_name: adapter.credential.header_name.clone(),
+        })
     }
 
     fn with_credential(&self, requested: Option<CredentialKind>) -> ProviderResult<Self> {
@@ -514,6 +566,16 @@ impl ExecutableProviderInstance {
         self.runtime.resolve_credential().await
     }
 
+    /// The instance credential as the given client of this instance presents it.
+    pub(crate) async fn resolve_client_credential(
+        &self,
+        protocol_adapter_id: &str,
+    ) -> ProviderResult<ResolvedCredential> {
+        self.runtime
+            .resolve_client_credential(protocol_adapter_id)
+            .await
+    }
+
     pub(crate) async fn health(&self) -> ProviderHealth {
         self.runtime.health.read().await.clone()
     }
@@ -529,9 +591,13 @@ impl ExecutableProviderInstance {
     pub(crate) async fn open_artifact_url_reader(
         &self,
         codecs: &CodecRegistry,
+        protocol_adapter_id: &str,
         url: &str,
     ) -> ProtocolResultValue<ArtifactUrlReader> {
-        let credential = self.resolve_credential().await.map_err(|_| {
+        let credential = self
+            .resolve_client_credential(protocol_adapter_id)
+            .await
+            .map_err(|_| {
             ProtocolError::new(
                 ProtocolErrorKind::Authentication,
                 "Provider artifact credential is unavailable",
@@ -544,10 +610,11 @@ impl ExecutableProviderInstance {
             max_response_bytes,
         };
         let context = CodecContext {
+            state_namespace: None,
             base_url: self.config.base_url.clone(),
             state_coordinate: ProviderStateCoordinate {
                 provider_profile_id: self.profile.provider_profile_id.clone(),
-                adapter_type: self.config.protocol_adapter_id.clone(),
+                adapter_type: protocol_adapter_id.to_owned(),
                 origin_provider: self.profile.provider_profile_id.clone(),
                 origin_model: "artifact".to_owned(),
             },
@@ -563,7 +630,7 @@ impl ExecutableProviderInstance {
             ..HttpTransportConfig::default()
         })?;
         codecs
-            .open_artifact_url_reader(&self.config.protocol_adapter_id, url, &context, &transport)
+            .open_artifact_url_reader(protocol_adapter_id, url, &context, &transport)
             .await
     }
 }
@@ -608,108 +675,6 @@ fn validate_discovery(discovery: &ProviderDiscoverySnapshot) -> ProviderResult<(
         }
     }
     Ok(())
-}
-
-pub(crate) fn resolve_operation(
-    adapter: &crate::protocol::AdapterDescriptor,
-    overrides: &BTreeMap<String, String>,
-    remote_methods: Option<&BTreeSet<String>>,
-    api_type: ApiType,
-    api_type_name: &str,
-    default_operation: Option<&str>,
-) -> ProviderResult<Option<String>> {
-    if let Some(operation) = overrides
-        .get(api_type.typed_method())
-        .or_else(|| overrides.get(api_type_name))
-    {
-        return Ok(Some(operation.clone()));
-    }
-    if let Some(default) = default_operation {
-        if !adapter.operations.get(default).is_some_and(|operation| {
-            operation
-                .bindings
-                .iter()
-                .any(|binding| binding.api_type == api_type)
-        }) {
-            return Err(ProviderError::Inventory(format!(
-                "adapter {:?} default operation {default:?} does not support api_type {api_type_name}",
-                adapter.protocol_adapter_id
-            )));
-        }
-    }
-    let matching = adapter
-        .operations
-        .values()
-        .filter(|operation| {
-            operation
-                .bindings
-                .iter()
-                .any(|binding| binding.api_type == api_type)
-        })
-        .map(|operation| {
-            let priority = operation
-                .bindings
-                .iter()
-                .filter(|binding| binding.api_type == api_type)
-                .map(|binding| binding.default_priority)
-                .max()
-                .unwrap_or_default();
-            (operation.operation_id.clone(), priority)
-        })
-        .collect::<Vec<_>>();
-    let matching = match remote_methods {
-        Some(methods) => {
-            let exact = matching
-                .iter()
-                .filter(|(operation, _)| methods.contains(operation))
-                .cloned()
-                .collect::<Vec<_>>();
-            if !exact.is_empty() {
-                exact
-            } else if methods.contains(api_type.typed_method()) || methods.contains(api_type_name) {
-                matching
-            } else {
-                Vec::new()
-            }
-        }
-        None => matching,
-    };
-    // One adapter may bind the same API type through several operations. The
-    // descriptor declares which of them an instance without an `operations`
-    // override defaults to, so a custom channel can refresh its catalog without
-    // hand-written provider rules.
-    let highest_priority = matching
-        .iter()
-        .map(|(_, priority)| *priority)
-        .max()
-        .unwrap_or_default();
-    let matching = if highest_priority == 0 {
-        matching
-    } else {
-        matching
-            .into_iter()
-            .filter(|(_, priority)| *priority == highest_priority)
-            .collect::<Vec<_>>()
-    };
-    if matching.len() > 1 {
-        if let Some(operation) = default_operation
-            .filter(|default| matching.iter().any(|(operation, _)| operation == default))
-        {
-            return Ok(Some(operation.to_owned()));
-        }
-    }
-    match matching.as_slice() {
-        [] => Ok(None),
-        [(operation, _)] => Ok(Some(operation.clone())),
-        _ => Err(ProviderError::Inventory(format!(
-            "adapter {:?} has multiple default operations {:?} for api_type `{api_type_name}`",
-            adapter.protocol_adapter_id,
-            matching
-                .iter()
-                .map(|(operation, _)| operation.clone())
-                .collect::<Vec<_>>()
-        ))),
-    }
 }
 
 fn retain_supported_features(

@@ -254,6 +254,7 @@ mod tests {
     }
     fn context(base: &str) -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: base.into(),
             state_coordinate: ProviderStateCoordinate {
                 provider_profile_id: "openrouter".into(),
@@ -279,12 +280,7 @@ mod tests {
         }
     }
     fn registry() -> CodecRegistry {
-        let mut r = CodecRegistry::default();
-        let (d, c) = super::super::openai_responses_adapter();
-        r.register_codecs(d, c).unwrap();
-        let (d, c) = super::super::openrouter_responses_adapter();
-        r.register_derived(d, c).unwrap();
-        r
+        crate::protocol::builtin_codecs_for_test()
     }
     async fn decode(value: Value) -> ProtocolResultValue<ProtocolOutput> {
         let response = ProtocolContractHarness::default()
@@ -298,7 +294,7 @@ mod tests {
             .unwrap();
         let ProtocolExecution::Immediate(output) = registry()
             .decode(
-                "openrouter-responses",
+                "openrouter-native",
                 OPENROUTER_DECISIONS_OPERATION_ID,
                 ApiType::Decision,
                 response,
@@ -331,7 +327,7 @@ mod tests {
         ] {
             let wire = registry()
                 .encode(
-                    "openrouter-responses",
+                    "openrouter-native",
                     OPENROUTER_DECISIONS_OPERATION_ID,
                     ApiType::Decision,
                     &input(JEV_CHANNEL_ID),
@@ -357,7 +353,7 @@ mod tests {
         for model in [JEV_CHANNEL_ID, JEV_ALIAS_ID] {
             assert!(registry()
                 .encode(
-                    "openrouter-responses",
+                    "openrouter-native",
                     OPENROUTER_DECISIONS_OPERATION_ID,
                     ApiType::Decision,
                     &input(model),
@@ -368,7 +364,7 @@ mod tests {
         for model in ["typesafe/jev-1.14", JEV_BUILD_ID, "typesafe/jev-router"] {
             assert!(registry()
                 .encode(
-                    "openrouter-responses",
+                    "openrouter-native",
                     OPENROUTER_DECISIONS_OPERATION_ID,
                     ApiType::Decision,
                     &input(model),
@@ -476,7 +472,7 @@ mod tests {
                 .unwrap();
             let error = registry()
                 .decode(
-                    "openrouter-responses",
+                    "openrouter-native",
                     OPENROUTER_DECISIONS_OPERATION_ID,
                     ApiType::Decision,
                     response,

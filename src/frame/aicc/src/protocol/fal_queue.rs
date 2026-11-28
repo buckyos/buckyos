@@ -49,7 +49,6 @@ pub(crate) fn fal_queue_adapter() -> (AdapterDescriptor, CodecRegistration) {
         protocol_adapter_id: FAL_QUEUE_ADAPTER_ID.to_string(),
         interface_generation: "queue-v1".to_string(),
         base_adapter_id: None,
-        component_adapter_ids: Vec::new(),
         status: AdapterStatus::Stable,
         probe_priority: 0,
         probe_path: None,
@@ -745,6 +744,7 @@ mod tests {
 
     fn context() -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: "https://queue.fal.run".to_string(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
                 provider_profile_id: "fal".into(),
@@ -1024,6 +1024,7 @@ mod tests {
             fal_resource(
                 &inline,
                 &CodecContext {
+                    state_namespace: None,
                     resources: BTreeMap::new(),
                     ..context()
                 }

@@ -19,7 +19,7 @@ test('AI Center exposes the complete catalog and expands multi-currency totals',
   for (const provider of ['OpenAI', 'Anthropic Claude', 'Google Gemini', 'fal', 'OpenRouter', 'MiniMax', 'Moonshot Kimi', 'Z.ai GLM', 'DeepSeek', 'Doubao (Volcengine Ark)', 'Qwen（阿里云百炼）']) {
     await expect(page.getByRole('button').filter({ has: page.getByText(provider, { exact: true }) })).toBeVisible()
   }
-  await expect(page.getByRole('button', { name: /Custom Provider/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /Custom Provider/ })).toHaveCount(0)
 
   await page.getByRole('button', { name: /Doubao/i }).click()
   await page.getByRole('button', { name: 'Next' }).click()
@@ -52,7 +52,8 @@ test('AI Center exposes the complete catalog and expands multi-currency totals',
   await expect(page.getByRole('combobox', { name: /^Base URL\s*\*?$/ })).toHaveValue('https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1')
 })
 
-test('custom provider advanced setup only selects channel preset rules', async ({ page }) => {
+// Adding a custom Provider is closed in this version; see notepads/aicc-custom-provider-auto-probe-todo.md.
+test.skip('custom provider advanced setup only selects channel preset rules', async ({ page }) => {
   await page.goto('/?scenario=normal&aiccScenario=populated')
   await page.getByTestId('desktop-app-ai-center').click()
   await page.getByRole('button', { name: 'Providers', exact: true }).click()
@@ -78,7 +79,8 @@ test('custom provider advanced setup only selects channel preset rules', async (
   await expect(page.getByRole('combobox', { name: 'Channel preset rules', exact: true })).toHaveValue('deepseek')
 })
 
-test('provider validation shows filtered capabilities without blocking setup', async ({ page }) => {
+// Adding a custom Provider is closed in this version; see notepads/aicc-custom-provider-auto-probe-todo.md.
+test.skip('provider validation shows filtered capabilities without blocking setup', async ({ page }) => {
   await page.goto('/?scenario=normal&aiccScenario=populated')
   await page.evaluate(async () => {
     const modulePath = '/src/api/aicc_mgr.ts'
@@ -116,7 +118,8 @@ test('provider validation shows filtered capabilities without blocking setup', a
   await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeEnabled()
 })
 
-test('custom provider rules use structured model editing and whole-file JSON preview', async ({ page }, testInfo) => {
+// Adding a custom Provider is closed in this version; see notepads/aicc-custom-provider-auto-probe-todo.md.
+test.skip('custom provider rules use structured model editing and whole-file JSON preview', async ({ page }, testInfo) => {
   await page.addInitScript(() => localStorage.setItem('buckyos.prototype.locale.v1', 'en'))
   await page.goto('/?scenario=normal&aiccScenario=populated')
   await page.getByTestId('desktop-app-ai-center').click()
@@ -251,7 +254,8 @@ test('custom provider rules use structured model editing and whole-file JSON pre
   await expect(page.getByRole('region', { name: 'Provider rules', exact: true })).toHaveCount(0)
 })
 
-test('custom provider rules: the full JSON file is chosen in the Zone through the system picker', async ({ page }) => {
+// Adding a custom Provider is closed in this version; see notepads/aicc-custom-provider-auto-probe-todo.md.
+test.skip('custom provider rules: the full JSON file is chosen in the Zone through the system picker', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('buckyos.prototype.locale.v1', 'en'))
   await page.goto('/?scenario=normal&aiccScenario=populated')
   await page.getByTestId('desktop-app-ai-center').click()

@@ -12,7 +12,7 @@ OpenAI / Claude / Gemini / fal / OpenRouter / MiniMax
 Kimi / GLM / DeepSeek / 豆包（火山方舟）/ Qwen（阿里云百炼）
 ```
 
-既有 `sn-openai -> openai-responses` 设计继续作为扩展 Provider 保留，但不计入本次 11 个首版内置 Provider；其动态登录仍只属于 SN dialect/credential runtime，不能进入 OpenAI 基础模块。
+SN 作为扩展 Provider 保留，但不计入本次 11 个首版内置 Provider；它直接使用 OpenAI 族的标准客户端，动态登录只属于 SN 的 Provider 行为（credential runtime），不能进入 OpenAI 基础模块。
 
 相关设计以以下文档为准：
 
@@ -72,7 +72,7 @@ HTTP/SSE/JSON/异步轮询基础设施
 
 这一约束适用于整个实现，不只适用于基础 codec：不得把模型名、模型名前缀或 Provider 厂商名作为特征硬编码到条件分支、路由表或默认参数选择逻辑中。模型和厂商差异应优先由 Model Driver metadata、Provider Profile 和 Provider Rules 配置表达；运行时只根据解析后的能力、规则、`protocol_adapter_id` 和 operation 执行。只有配置 schema 无法表达的真实协议差异才允许进入独立 Adapter 或 dialect 代码，其注册和选择也必须基于显式配置身份，不能重新通过模型名或厂商名猜测。
 
-未被官方 catalog 收录的 `custom` Provider 使用空 Provider Rules `{}`。用户选择的协议族只确定 Adapter；模型归属使用 discovery 返回的原始模型名，在全部 Model Driver 的 exact/pattern 规则中要求唯一命中。只有命中后才使用该 Driver defaults；不做渠道前后缀、alias 或其它隐式改名。Known Provider 的 origin mapping 不得泄漏给 `custom` Provider。
+未被官方 catalog 收录的 `custom` Provider 使用空 Provider Rules `{}`。用户显式选择的默认客户端只确定协议，实例同时带上同族对自定义开放的其余客户端；模型归属使用 discovery 返回的原始模型名，在全部 Model Driver 的 exact/pattern 规则中要求唯一命中。只有命中后才使用该 Driver defaults；不做渠道前后缀、alias 或其它隐式改名。Known Provider 的 origin mapping 不得泄漏给 `custom` Provider。
 
 Catalog loader 对 `builtin`、`cloud`、`local`、`system-config` 四个来源按 `(catalog_kind, catalog_id)` 做整文件选择，优先级为 `system-config > local > cloud > builtin`。同一身份不做字段或规则 merge；某个高优先级来源未提供的其它身份仍从低优先级来源进入有效 snapshot。
 
@@ -97,9 +97,9 @@ openai.responses.computer
 
 ### 2.3 历史接口按真实需求加入一次
 
-首版已经存在真实需求：Kimi 和 GLM 的官方主入口为 Chat Completions，因此实现一份协议族级 `openai-chat-completions`。OpenRouter 改为复用 `openai-responses` codec，仅实现渠道差异。
+首版已经存在真实需求：Kimi 和 GLM 的官方主入口为 Chat Completions，因此实现一份协议族级 `openai-chat-completions`。兼容厂商和本地推理的通行写法与 OpenAI 官方不同，单独实现为生态口径客户端 `legacy-openai-chat-completions`（Kimi、GLM、Qwen 聚合模型使用）和 `legacy-claude-messages`（MiniMax 使用），官方口径客户端保持按官方文档严格实现。OpenRouter 改为复用 `openai-responses` codec，仅实现渠道差异。
 
-Gemini `generateContent` 等其它历史接口不能为了“兼容完整”预先加入。第一个实际 Provider/operation 确认需要时，新增一份共享历史 Adapter；后续使用同一接口的 Provider 复用它。新旧 Adapter 平级且互不 fallback，只共享更低层基础设施和 canonical IR。
+其它历史接口不能为了“兼容完整”预先加入。第一个实际 Provider/operation 确认需要时，新增一份共享历史 Adapter；后续使用同一接口的 Provider 复用它。Gemini `models.*` 方法族即按此加入为 `gemini-generate-content`：兼容网关实现的是它，Gemini 官方 Provider 的向量和长任务也走它。新旧 Adapter 平级且互不 fallback，只共享更低层基础设施和 canonical IR。
 
 ### 2.4 厂商差异优先声明，必要时才写代码
 
@@ -162,35 +162,38 @@ protocol/
 ├── openai
 │   ├── responses
 │   ├── chat_completions
+│   ├── legacy_chat_completions  生态口径
 │   ├── embeddings
 │   ├── images
 │   ├── audio
 │   └── videos
 ├── claude
-│   └── messages
+│   ├── messages
+│   └── legacy_messages          生态口径
 ├── gemini
 │   ├── interactions
-│   ├── embeddings
+│   ├── generate_content         models.* 方法族
 │   ├── files
 │   └── gen_media
+├── rerank
 ├── fal
 │   └── queue
 ├── native
 │   ├── minimax_media
-│   ├── glm_async
+│   ├── glm_video
 │   ├── doubao_media
-│   └── qwen_media
+│   ├── doubao_speech
+│   ├── qwen_media
+│   └── openrouter_native
 └── dialect
     ├── openrouter_responses
-    ├── minimax_messages
-    ├── kimi_chat
-    ├── glm_chat
-    ├── deepseek_responses
-    ├── doubao_responses
-    └── qwen_responses
+    ├── qwen_responses
+    ├── deepseek_responses       待 endpoint 推算后删除
+    ├── glm_chat                 残余待定
+    └── minimax_messages         残余待定
 ```
 
-目录表示职责，不要求每个叶子都立即拆成文件。首版只实现已经映射到 AICC ApiType 且通过合同测试的 operation。
+目录表示职责，不要求每个叶子都立即拆成文件。首版只实现已经映射到 AICC ApiType 且通过合同测试的 operation。每个叶子是一个独立注册的协议客户端，只注册自己实现的 operation；当前清单以 [`protocol_clients.md`](protocol_clients.md) 为准。
 
 ### 4.2 基础 codec 与 dialect
 
@@ -207,13 +210,15 @@ ResolvedProviderCall
 
 | Dialect | Base | 只负责 |
 | --- | --- | --- |
-| `openrouter-responses` | `openai-responses` | OpenRouter routing 参数、ProviderState namespace，以及 `usage.cost` 的 USD 合同 |
-| `minimax-messages` | `claude-messages` | 兼容差异、`base_resp`、MiniMax content 扩展 |
-| `kimi-chat` | `openai-chat-completions` | partial/cache/reasoning 与多模态扩展 |
-| `glm-chat` | `openai-chat-completions` | thinking、tool stream、reasoning 与错误扩展 |
-| `deepseek-responses` | `openai-responses` | DeepSeek thinking/tool 约束和扩展事件 |
-| `doubao-responses` | `openai-responses` | 方舟内置工具、事件与参数差异 |
-| `qwen-responses` | `openai-responses` | 支持参数子集、session cache、视频输入差异和 ProviderState namespace；输出媒体归一化与回放沿用基础 codec |
+| `legacy-openai-chat-completions` | `openai-chat-completions` | 生态口径：发 `max_tokens`，`reasoning_content` 的解析与回放，响应缺 `object` 不报错，`thinking`、`enable_thinking`、`preserve_thinking`、`tool_stream`、`prompt_cache_key` 的类型校验；哪家带哪些参数由规则决定 |
+| `legacy-claude-messages` | `claude-messages` | 生态口径：`max_tokens` 可省，temperature 上限 2 |
+| `openrouter-responses` | `openai-responses` | OpenRouter routing 参数、`web_search` 工具改名，以及 `usage.cost` 的 USD 合同 |
+| `qwen-responses` | `openai-responses` | `enable_thinking`、session cache 头、视频输入差异；输出媒体归一化与回放沿用基础 codec |
+| `deepseek-responses` | `openai-responses` | 只差 base 没有路径时的 endpoint；endpoint 改由 base 推算后删除 |
+| `glm-chat` | `legacy-openai-chat-completions` | 流式 `tool_stream` 增量参数的归一化；是否保留待定 |
+| `minimax-messages` | `legacy-claude-messages` | `base_resp` 错误信封、图片按内联字节发送；是否保留待定 |
+
+ProviderState 命名空间不再由 dialect 改写，统一由 Known Provider 的 `state_namespace` 给出。Kimi、豆包不再有 dialect：Kimi 直接用 `legacy-openai-chat-completions`，豆包直接用 `openai-responses`，各家差异写在 Provider Rules 里。
 
 每个 dialect 必须声明 `base_adapter_id`、覆盖点和不支持能力，且不能复制基础 request schema、SSE parser 和 contract tests。实现前必须先用 `.provider.json` 表达参数、header、operation、能力限制等可声明差异；统一 schema 能表达时应删除 dialect 并直接绑定 base。现有 schema 不足不自动构成写代码的理由，应先评审是否值得增加一个有界、可复用、可校验的声明字段。
 
@@ -223,7 +228,7 @@ ResolvedProviderCall
 
 `protocol::task` 只提供生命周期算法，不假设字段名。每个原生 operation 显式映射厂商状态到 `Submitted | Queued | Running | Succeeded | Failed | Cancelled`。
 
-fal Queue、MiniMax video、GLM async、豆包媒体和 Qwen/DashScope 媒体共享该生命周期机制，各自保留 submit/status/result wire codec；仅在厂商 operation 明确声明时才开放 cancel。任务开始后绑定原 Provider runtime 和 Adapter，不跨 Provider 重试。
+fal Queue、MiniMax video、GLM video、豆包媒体和 Qwen/DashScope 媒体共享该生命周期机制，各自保留 submit/status/result wire codec；仅在厂商 operation 明确声明时才开放 cancel。任务开始后绑定原 Provider runtime 和 Adapter，不跨 Provider 重试。
 
 ## 5. `provider` 模块
 
@@ -248,19 +253,21 @@ Protocol Adapter 通过 `ProtocolAdapterPlugin` 注册。构建脚本自动扫�
 
 ### 5.2 首版装配矩阵
 
-| Provider | 默认 Adapter 组合 | Discovery/价格策略 |
+| Provider | 客户端（默认 + extra） | Discovery/价格策略 |
 | --- | --- | --- |
-| OpenAI | Responses + embeddings/images/audio/videos | `/v1/models`；价格由 Provider Rules，动态事实优先 |
-| Claude | Messages | Claude Models API；价格由 Provider Rules |
-| Gemini | Interactions + embeddings/files/gen-media | Gemini Models API；价格由 Provider Rules |
-| fal | Queue | 四个暂未接入原厂 Provider 的 endpoint 临时归属 fal；其它配置随 fal 官方事实调整 |
-| OpenRouter | OpenRouter Responses dialect | Models API；使用动态模型、能力和实时价格 |
-| MiniMax | MiniMax Messages dialect + native media | Anthropic-compatible Models API；媒体由 catalog/rules 补充 |
-| Kimi | Kimi Chat dialect | Kimi Models API；价格由 Provider Rules |
-| GLM | GLM Chat dialect + native async | 有官方机器接口时 discovery，否则 catalog；不得爬取文档页 |
-| DeepSeek | DeepSeek Responses dialect | 有官方机器接口时 discovery，否则 catalog；动态价格优先、静态规则 fallback |
-| 豆包 | Doubao Responses dialect + native media | 可调用模型/接入点由方舟官方 API 或实例配置获得；不限定 `doubao` Model Driver，但只接纳方舟实际返回且在已安装 Model Driver 中可唯一解析的模型；`ep-*` 仍须实例显式给出原厂模型映射 |
-| Qwen | Qwen Responses dialect + native media | region/workspace 参与 endpoint；DashScope 图片和视频任务使用原生 `/api/v1`；其余事实由官方 API 或 catalog/rules 给出 |
+| OpenAI | `openai-responses` + `openai-embeddings`、`openai-images`、`openai-audio`、`openai-videos` | `standard-models`（`/v1/models`）；价格由 Provider Rules，动态事实优先 |
+| Claude | `claude-messages` | `standard-models`（Claude Models API）；价格由 Provider Rules |
+| Gemini | `gemini-interactions` + `gemini-generate-content`（向量、长任务） | `standard-models`（Gemini Models API）；价格由 Provider Rules |
+| fal | `fal-queue` | `catalog-only`；四个暂未接入原厂 Provider 的 endpoint 临时归属 fal；其它配置随 fal 官方事实调整 |
+| OpenRouter | `openrouter-responses` + `openai-chat-completions`、`openai-embeddings`、`openai-audio`、`rerank`、`openrouter-native` | `openrouter-models`；使用动态模型、能力和实时价格 |
+| MiniMax | `minimax-messages` + `minimax-media` | `standard-models`（Anthropic-compatible Models API，不发版本头）；媒体由 catalog/rules 补充 |
+| Kimi | `legacy-openai-chat-completions` | `standard-models`；价格由 Provider Rules |
+| GLM | `glm-chat` + `openai-embeddings`、`openai-images`、`openai-audio`、`glm-video` | 有官方机器接口时 discovery，否则 catalog；不得爬取文档页 |
+| DeepSeek | `deepseek-responses` | 有官方机器接口时 discovery，否则 catalog；动态价格优先、静态规则 fallback |
+| 豆包 | `openai-responses` + `doubao-media`、`doubao-speech` | `volcengine-ark-models`；可调用模型/接入点由方舟官方 API 或实例配置获得；不限定 `doubao` Model Driver，但只接纳方舟实际返回且在已安装 Model Driver 中可唯一解析的模型；`ep-*` 仍须实例显式给出原厂模型映射 |
+| Qwen | `qwen-responses` + `legacy-openai-chat-completions`（聚合模型）、`qwen-media` | region/workspace 参与 endpoint；DashScope 图片和视频任务使用原生 `/api/v1`；其余事实由官方 API 或 catalog/rules 给出 |
+
+客户端集合由 Known Provider 的 `protocol_adapter_id` 和 `extra_protocol_adapters` 声明，属于可在线更新的 metadata；只有新增或修改客户端本身需要发版本。
 
 Discovery 只采信官方机器接口，不能抓网页或读取 SDK 内置列表构造库存。动态 discovery 返回 availability、remote methods、deprecated、health 和实时价格；Model Driver 仍是稳定语义真相源。
 

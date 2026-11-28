@@ -1,8 +1,8 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 1,
-  "revision_seq": 14,
+  "schema_revision": 2,
+  "revision_seq": 15,
   "provider_profile_id": "doubao-agent-plan",
   "static_inventory_models": [
     "doubao-seed-2.0-mini",
@@ -29,70 +29,70 @@
   ],
   "supplemental_inventory_api_types": ["audio.tts", "embedding.multimodal", "image.txt2img", "image.img2img", "video.generate", "video.edit", "video.extend"],
   "models": [
-    {"id": "doubao-seedream-5.0-flash", "operations": {"image.txt2img": "ark.images.generate", "image.img2img": "ark.images.generate"}},
-    {"id": "doubao-seedream-5.0-lite", "operations": {"image.txt2img": "ark.images.generate", "image.img2img": "ark.images.generate"}},
-    {"id": "doubao-seedream-5-0-pro", "operations": {"image.txt2img": "ark.images.generate", "image.img2img": "ark.images.generate"}},
-    {"id": "doubao-seedance-2.0", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2.0-fast", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2.0-mini", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2.5", "operations": {"video.generate": "ark.contents.generate", "video.edit": "ark.contents.generate", "video.extend": "ark.contents.generate"}, "request_rules": [
+    {"id": "doubao-seedream-5.0-flash", "operations": {"image.txt2img": "doubao-media/ark.images.generate", "image.img2img": "doubao-media/ark.images.generate"}},
+    {"id": "doubao-seedream-5.0-lite", "operations": {"image.txt2img": "doubao-media/ark.images.generate", "image.img2img": "doubao-media/ark.images.generate"}},
+    {"id": "doubao-seedream-5-0-pro", "operations": {"image.txt2img": "doubao-media/ark.images.generate", "image.img2img": "doubao-media/ark.images.generate"}},
+    {"id": "doubao-seedance-2.0", "operations": {"video.generate": "doubao-media/ark.contents.generate", "video.extend": "doubao-media/ark.contents.generate"}},
+    {"id": "doubao-seedance-2.0-fast", "operations": {"video.generate": "doubao-media/ark.contents.generate", "video.extend": "doubao-media/ark.contents.generate"}},
+    {"id": "doubao-seedance-2.0-mini", "operations": {"video.generate": "doubao-media/ark.contents.generate", "video.extend": "doubao-media/ark.contents.generate"}},
+    {"id": "doubao-seedance-2.5", "operations": {"video.generate": "doubao-media/ark.contents.generate", "video.edit": "doubao-media/ark.contents.generate", "video.extend": "doubao-media/ark.contents.generate"}, "request_rules": [
       {"when": {"api_type": "video.edit", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "edit"}},
       {"when": {"api_type": "video.extend", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "extend"}}
     ]},
-    {"id": "doubao-embedding-vision", "operations": {"embedding.multimodal": "ark.embeddings.multimodal"}},
-    {"id": "doubao-seed-tts-2.0", "operations": {"audio.tts": "tts.unidirectional"}, "provider_options": {"doubao_tts_wire_profile": "agent_plan", "doubao_tts_resource_id": "seed-tts-2.0"}, "canonical_fields": {"/voice": {"converter": "doubao_tts_voice_v1", "fallback": {"action": "default", "value": {}}}}}
+    {"id": "doubao-embedding-vision", "operations": {"embedding.multimodal": "doubao-media/ark.embeddings.multimodal"}},
+    {"id": "doubao-seed-tts-2.0", "operations": {"audio.tts": "doubao-speech/tts.unidirectional"}, "provider_options": {"doubao_tts_wire_profile": "agent_plan", "doubao_tts_resource_id": "seed-tts-2.0"}, "canonical_fields": {"/voice": {"converter": "doubao_tts_voice_v1", "fallback": {"action": "default", "value": {}}}}}
   ],
   "patterns": [
     {
       "match": "doubao-seedream-*",
-      "operations": { "image.txt2img": "ark.images.generate", "image.img2img": "ark.images.generate" }
+      "operations": { "image.txt2img": "doubao-media/ark.images.generate", "image.img2img": "doubao-media/ark.images.generate" }
     },
     {
       "match": "doubao-seedance-*",
-      "operations": { "video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate" }
+      "operations": { "video.generate": "doubao-media/ark.contents.generate", "video.extend": "doubao-media/ark.contents.generate" }
     },
     {
       "match": "doubao-seed-*",
-      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" },
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }, "remove_features": ["web_search"],
       "request_rules": [
         {"when": {"api_type": ["vision.ocr", "vision.caption"]}, "defaults": {"max_output_tokens": 2048, "reasoning": {"effort": "minimal"}}}
       ]
     },
     {
       "match": "deepseek-v4.1-*",
-      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }, "remove_features": ["web_search"]
     },
     {
       "match": "deepseek-v4-*",
-      "operations": { "llm": "responses.create" }
+      "operations": { "llm": "responses.create" }, "remove_features": ["web_search"]
     },
     {
       "match": "glm-5.3-flash",
-      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }, "remove_features": ["web_search"]
     },
     {
       "match": "glm-5.3",
-      "operations": { "llm": "responses.create" }
+      "operations": { "llm": "responses.create" }, "remove_features": ["web_search"]
     },
     {
       "match": "kimi-k3.1-pro",
-      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }, "remove_features": ["web_search"]
     },
     {
       "match": "kimi-k2.7-code",
-      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }, "remove_features": ["web_search"]
     },
     {
       "match": "kimi-k3",
-      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }, "remove_features": ["web_search"]
     },
     {
       "match": "kimi-k2.8-preview",
-      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }, "remove_features": ["web_search"]
     },
     {
       "match": "minimax-m3",
-      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }, "remove_features": ["web_search"]
     },
     {
       "match": "*",

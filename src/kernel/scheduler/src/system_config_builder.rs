@@ -119,9 +119,7 @@ pub(crate) fn reconcile_managed_sn_ai_provider(
         if provider.get("enabled").and_then(Value::as_bool) == Some(false) {
             return Ok(None);
         }
-        if provider.get("provider_profile_id").and_then(Value::as_str) != Some("sn")
-            || provider.get("protocol_adapter_id").and_then(Value::as_str) != Some("sn-openai")
-        {
+        if provider.get("provider_profile_id").and_then(Value::as_str) != Some("sn") {
             return Ok(None);
         }
         if provider.get("base_url").and_then(Value::as_str)
@@ -172,7 +170,6 @@ fn managed_sn_ai_provider_instance(endpoints: &SnAiProviderEndpoints, user_name:
         "provider_instance_name": MANAGED_SN_PROVIDER_INSTANCE_NAME,
         "provider_type": "cloud_api",
         "provider_profile_id": "sn",
-        "protocol_adapter_id": "sn-openai",
         "provider_rules_id": "sn",
         "base_url": endpoints.responses_url,
         "credentials": {
@@ -981,7 +978,10 @@ mod beta22_tests {
         for provider in root["providers"].as_array().unwrap() {
             assert!(provider["provider_instance_name"].is_string());
             assert!(provider["provider_profile_id"].is_string());
-            assert!(provider["protocol_adapter_id"].is_string());
+            assert!(
+                provider.get("protocol_adapter_id").is_none_or(Value::is_string),
+                "a Known Provider takes its protocol clients from the catalog"
+            );
             assert!(provider["base_url"].is_string());
             let credentials: buckyos_api::ProviderCredentials =
                 serde_json::from_value(provider["credentials"].clone())
@@ -1233,7 +1233,7 @@ mod beta22_tests {
         let provider = &settings["providers"][0];
 
         assert_eq!(provider["provider_profile_id"], "sn");
-        assert_eq!(provider["protocol_adapter_id"], "sn-openai");
+        assert!(provider.get("protocol_adapter_id").is_none());
         assert_eq!(provider["auth"]["mode"], "dynamic_login");
         assert_eq!(provider["auth"]["login_profile"], "device_jwt");
         assert_eq!(provider["account"], "alice");
@@ -1269,7 +1269,6 @@ mod beta22_tests {
                     "provider_instance_name": "custom-sn",
                     "provider_type": "cloud_api",
                     "provider_profile_id": "sn",
-                    "protocol_adapter_id": "sn-openai",
                     "provider_rules_id": "sn",
                     "base_url": "https://custom.example/v1",
                     "credentials": {"api_token": {"inline_secret": "secret"}},

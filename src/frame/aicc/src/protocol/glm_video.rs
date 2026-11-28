@@ -3,12 +3,10 @@ use super::video::{
     video_output, whole_seconds,
 };
 use super::{
-    openai_responses_adapter, AdapterDescriptor, AdapterStatus, CodecRegistration, HttpBody,
-    HttpRequest, HttpResponse, NativeTaskCodec, NativeTaskHandle, NativeTaskInput,
-    NativeTaskOperation, NativeTaskOutput, NativeTaskState, OperationBinding, OperationDescriptor,
-    ProtocolError, ProtocolErrorKind, ProtocolResultValue, OPENAI_AUDIO_SPEECH_OPERATION_ID,
-    OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID, OPENAI_EMBEDDINGS_OPERATION_ID,
-    OPENAI_IMAGES_GENERATE_OPERATION_ID,
+    AdapterDescriptor, AdapterStatus, CodecRegistration, HttpBody, HttpRequest, HttpResponse,
+    NativeTaskCodec, NativeTaskHandle, NativeTaskInput, NativeTaskOperation, NativeTaskOutput,
+    NativeTaskState, OperationBinding, OperationDescriptor, ProtocolError, ProtocolErrorKind,
+    ProtocolResultValue,
 };
 use crate::video::VideoScenario;
 use async_trait::async_trait;
@@ -19,37 +17,16 @@ use buckyos_api::{
 use reqwest::header::CONTENT_TYPE;
 use reqwest::{Method, Url};
 use serde_json::{json, Map, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 const GLM_VIDEOS_OPERATION_ID: &str = "videos.generate";
-pub(crate) const GLM_MEDIA_ADAPTER_ID: &str = "glm-media";
+pub(crate) const GLM_VIDEO_ADAPTER_ID: &str = "glm-video";
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
-pub(super) fn glm_media_registration() -> (Vec<OperationDescriptor>, CodecRegistration) {
-    let compatible_ids = BTreeSet::from([
-        OPENAI_EMBEDDINGS_OPERATION_ID,
-        OPENAI_IMAGES_GENERATE_OPERATION_ID,
-        OPENAI_AUDIO_SPEECH_OPERATION_ID,
-        OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
-    ]);
-    let (openai, openai_codecs) = openai_responses_adapter();
-    let mut operations = openai
-        .operations
-        .into_values()
-        .filter(|operation| compatible_ids.contains(operation.operation_id.as_str()))
-        .collect::<Vec<_>>();
-    let mut registration = CodecRegistration {
-        operation_codecs: openai_codecs
-            .operation_codecs
-            .into_iter()
-            .filter(|codec| compatible_ids.contains(codec.descriptor().operation_id.as_str()))
-            .collect(),
-        native_task_codecs: Vec::new(),
-    };
-
+pub(crate) fn glm_video_adapter() -> (AdapterDescriptor, CodecRegistration) {
     let video = OperationDescriptor {
         operation_id: GLM_VIDEOS_OPERATION_ID.to_owned(),
         bindings: vec![OperationBinding::new(
@@ -61,37 +38,22 @@ pub(super) fn glm_media_registration() -> (Vec<OperationDescriptor>, CodecRegist
         max_request_bytes: MAX_REQUEST_BYTES,
         max_response_bytes: MAX_RESPONSE_BYTES,
     };
-    registration
-        .native_task_codecs
-        .push(Arc::new(GlmVideoCodec {
-            descriptor: video.clone(),
-        }) as Arc<dyn NativeTaskCodec>);
-    operations.push(video);
-    (operations, registration)
-}
-
-pub(crate) fn glm_media_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    let (operations, registration) = glm_media_registration();
     (
         AdapterDescriptor {
             protocol_family_id: "glm".to_owned(),
-            protocol_adapter_id: GLM_MEDIA_ADAPTER_ID.to_owned(),
+            protocol_adapter_id: GLM_VIDEO_ADAPTER_ID.to_owned(),
             interface_generation: "v4".to_owned(),
             base_adapter_id: None,
-            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 200,
             probe_path: None,
-            credential: super::AdapterCredentialContract {
-                kind: super::CredentialKind::GlmJwt,
-                header_name: None,
-            },
-            operations: operations
-                .into_iter()
-                .map(|operation| (operation.operation_id.clone(), operation))
-                .collect(),
+            credential: super::AdapterCredentialContract::bearer(),
+            operations: BTreeMap::from([(video.operation_id.clone(), video.clone())]),
         },
-        registration,
+        CodecRegistration {
+            operation_codecs: Vec::new(),
+            native_task_codecs: vec![Arc::new(GlmVideoCodec { descriptor: video })],
+        },
     )
 }
 

@@ -1370,6 +1370,8 @@ pub mod features {
     pub const JSON_SCHEMA: &str = "json_schema";
     pub const WEB_SEARCH: &str = "web_search";
     pub const VISION: &str = "vision";
+    /// The model reads document parts (PDF and other files) sent directly.
+    pub const DOCUMENT: &str = "document";
     pub const IMAGE_GENERATION: &str = "image_generation";
     pub const ASR: &str = "asr";
     pub const VIDEO_UNDERSTAND: &str = "video_understand";
@@ -4415,7 +4417,13 @@ pub struct ProviderCatalogEntry {
     pub region_base_urls: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub operation_base_urls: BTreeMap<String, String>,
+    /// The default protocol client.
     pub protocol_adapter_id: String,
+    /// The other protocol clients the Provider's rules bind, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_protocol_adapters: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_namespace: Option<String>,
     pub discovery_behavior_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dynamic_login_behavior_id: Option<String>,
@@ -4513,8 +4521,6 @@ pub struct ProtocolAdapterView {
     pub probe_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_adapter_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub component_adapter_ids: Vec<String>,
     #[serde(default)]
     pub operations: Vec<ProtocolAdapterOperation>,
 }

@@ -1,8 +1,8 @@
 {
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
-  "schema_revision": 1,
-  "revision_seq": 2,
+  "schema_revision": 2,
+  "revision_seq": 3,
   "catalog_id": "openrouter",
   "providers": [
     {
@@ -10,6 +10,14 @@
       "display_name": "OpenRouter",
       "base_url": "https://openrouter.ai/api/v1",
       "protocol_adapter_id": "openrouter-responses",
+      "extra_protocol_adapters": [
+        {"id": "openai-chat-completions"},
+        {"id": "openai-embeddings"},
+        {"id": "openai-audio"},
+        {"id": "rerank"},
+        {"id": "openrouter-native"}
+      ],
+      "state_namespace": "openrouter",
       "discovery_behavior_id": "openrouter-models",
       "provider_rules_id": "openrouter",
       "credential": { "kind": "bearer" },

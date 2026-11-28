@@ -611,6 +611,9 @@ pub(crate) struct ProviderInventoryModel {
     pub server_default_routes: BTreeSet<String>,
     pub inventory_source: String,
     pub provider_model_id: String,
+    /// The model's default protocol client: its rule's client, else the
+    /// instance default. Each entry of `operations` names its own client.
+    pub protocol_adapter_id: String,
     pub model_uid: String,
     pub identity_source: ModelIdentitySource,
     pub model_driver_id: String,
@@ -637,6 +640,22 @@ pub(crate) struct ProviderInventoryModel {
     pub model_catalog_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_rules_revision: Option<u64>,
+}
+
+#[cfg(test)]
+impl ProviderInventoryModel {
+    /// `operations` without the protocol client part of each binding.
+    pub(crate) fn operation_ids(&self) -> BTreeMap<String, String> {
+        self.operations
+            .iter()
+            .map(|(api_type, binding)| {
+                (
+                    api_type.clone(),
+                    binding.rsplit('/').next().unwrap_or(binding).to_owned(),
+                )
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -682,6 +701,7 @@ impl ProviderInventorySnapshot {
                 })
                 .map(|model| InventoryModel {
                     provider_model_id: model.provider_model_id.clone(),
+                    protocol_adapter_id: model.protocol_adapter_id.clone(),
                     model_driver_id: model.model_driver_id.clone(),
                     origin_model_id: model.origin_model_id.clone(),
                     api_types: model.api_types.clone(),
@@ -758,9 +778,10 @@ impl InventoryBuilder {
         matcher: Option<&dyn ProviderDiscovery>,
     ) -> ProviderResult<ProviderInventorySnapshot> {
         validate_discovery(&discovery)?;
+        let clients = profile.protocol_clients();
         let adapter = codecs
-            .adapter(&instance.protocol_adapter_id)
-            .ok_or_else(|| ProviderError::UnknownAdapter(instance.protocol_adapter_id.clone()))?;
+            .adapter(&clients.default)
+            .ok_or_else(|| ProviderError::UnknownAdapter(clients.default.clone()))?;
         let rules_id = instance
             .provider_rules_id
             .as_deref()
@@ -813,9 +834,16 @@ impl InventoryBuilder {
                     .map(|matcher| matcher.match_model_driver(id, catalog))
                     .unwrap_or(ProviderModelMatch::NotHandled)
                 {
-                    ProviderModelMatch::NotHandled => catalog
-                        .match_model(id)
-                        .map(|id| (id, ModelIdentitySource::Catalog)),
+                    ProviderModelMatch::NotHandled => {
+                        match catalog.provider_vendor_prefixed_identity(rules_id, id) {
+                            Some(identity) => {
+                                identity.map(|identity| (identity, ModelIdentitySource::Provider))
+                            }
+                            None => catalog
+                                .match_model(id)
+                                .map(|id| (id, ModelIdentitySource::Catalog)),
+                        }
+                    }
                     ProviderModelMatch::Failed(reason) => Err(reason),
                     ProviderModelMatch::Matched(id) => {
                         if catalog
@@ -995,6 +1023,9 @@ impl InventoryBuilder {
             let mut canonical_fields = resolved.semantics.canonical_fields.unwrap_or_default();
             let mut pricing = None;
             let mut provider_rules_revision = None;
+            let rule_adapter_id = provider_rule
+                .as_ref()
+                .and_then(|rule| rule.action.protocol_adapter_id.clone());
             let operation_overrides = if let Some(rule) = &provider_rule {
                 let narrowed = rule.action.narrow(&static_api_types, &capabilities);
                 static_api_types = narrowed.api_types;
@@ -1056,18 +1087,24 @@ impl InventoryBuilder {
             let mut operations = BTreeMap::new();
             let mut adapter_features = BTreeSet::new();
             let filtered_start = filtered_capabilities.len();
+            let model_adapter_id = rule_adapter_id
+                .clone()
+                .unwrap_or_else(|| clients.default.clone());
             for api_type_name in static_api_types {
                 let api_type = parse_api_type(&api_type_name)?;
-                let operation_id = resolve_operation(
-                    adapter,
-                    operation_overrides,
-                    discovered.remote_methods.as_ref(),
-                    api_type,
-                    &api_type_name,
-                    default_operations
-                        .get(api_type.typed_method())
-                        .or_else(|| default_operations.get(&api_type_name))
-                        .map(String::as_str),
+                let resolved = crate::protocol::resolve_binding(
+                    codecs,
+                    &crate::protocol::BindingQuery {
+                        clients: &clients,
+                        rule_adapter_id: rule_adapter_id.as_deref(),
+                        overrides: operation_overrides,
+                        remote_methods: discovered.remote_methods.as_ref(),
+                        api_type,
+                        default_operation: default_operations
+                            .get(api_type.typed_method())
+                            .or_else(|| default_operations.get(&api_type_name))
+                            .map(String::as_str),
+                    },
                 )
                 .map_err(|error| {
                     ProviderError::Inventory(format!(
@@ -1075,35 +1112,51 @@ impl InventoryBuilder {
                         instance.provider_instance_name, discovered.provider_model_id
                     ))
                 })?;
-                let Some(operation_id) = operation_id else {
+                let Some(resolved) = resolved else {
                     filtered_capabilities.push(buckyos_api::FilteredProviderCapability {
                         provider_model_id: discovered.provider_model_id.clone(),
-                        protocol_adapter_id: instance.protocol_adapter_id.clone(),
+                        protocol_adapter_id: model_adapter_id.clone(),
                         api_type: api_type_name,
                         operation_id: None,
                         reason: "unsupported_api_type".into(),
                     });
                     continue;
                 };
+                if !clients.contains(&resolved.protocol_adapter_id) {
+                    filtered_capabilities.push(buckyos_api::FilteredProviderCapability {
+                        provider_model_id: discovered.provider_model_id.clone(),
+                        protocol_adapter_id: resolved.protocol_adapter_id.clone(),
+                        api_type: api_type_name,
+                        operation_id: Some(resolved.operation_id.clone()),
+                        reason: "unregistered_binding".into(),
+                    });
+                    continue;
+                }
                 if discovered.remote_methods.as_ref().is_some_and(|methods| {
-                    !methods.contains(&operation_id)
+                    !methods.contains(&resolved.operation_id)
                         && !methods.contains(api_type.typed_method())
                         && !methods.contains(&api_type_name)
                 }) {
                     continue;
                 }
                 let descriptor = match codecs.operation_descriptor(
-                    &instance.protocol_adapter_id,
-                    &operation_id,
+                    &resolved.protocol_adapter_id,
+                    &resolved.operation_id,
                     api_type,
                 ) {
                     Ok(descriptor) => descriptor,
-                    Err(error) if error.kind == ProtocolErrorKind::UnsupportedOperation => {
+                    Err(error)
+                        if matches!(
+                            error.kind,
+                            ProtocolErrorKind::UnsupportedOperation
+                                | ProtocolErrorKind::UnknownAdapter
+                        ) =>
+                    {
                         filtered_capabilities.push(buckyos_api::FilteredProviderCapability {
                             provider_model_id: discovered.provider_model_id.clone(),
-                            protocol_adapter_id: instance.protocol_adapter_id.clone(),
+                            protocol_adapter_id: resolved.protocol_adapter_id.clone(),
                             api_type: api_type_name,
-                            operation_id: Some(operation_id),
+                            operation_id: Some(resolved.operation_id.clone()),
                             reason: "unregistered_binding".into(),
                         });
                         continue;
@@ -1115,7 +1168,7 @@ impl InventoryBuilder {
                     .map_err(|error| ProviderError::Inventory(error.to_string()))?;
                 adapter_features.extend(binding.supported_features.iter().cloned());
                 api_types.push(api_type);
-                operations.insert(api_type_name, operation_id);
+                operations.insert(api_type_name, resolved.qualified());
             }
             if let Some(facts) = &discovered.video {
                 crate::video::apply_discovered_video_facts(&mut capabilities, facts);
@@ -1144,7 +1197,7 @@ impl InventoryBuilder {
             let model_uid = ModelUid::new(
                 &model_driver_id,
                 &origin_model_id,
-                &instance.protocol_adapter_id,
+                &model_adapter_id,
                 None,
             )
             .map_err(|error| ProviderError::Inventory(error.to_string()))?
@@ -1229,6 +1282,7 @@ impl InventoryBuilder {
                 server_default_routes,
                 inventory_source,
                 provider_model_id: discovered.provider_model_id,
+                protocol_adapter_id: model_adapter_id,
                 model_uid,
                 identity_source,
                 model_driver_id,
@@ -1254,7 +1308,7 @@ impl InventoryBuilder {
             schema_version: INVENTORY_SCHEMA_VERSION,
             provider_instance_name: instance.provider_instance_name.clone(),
             provider_profile_id: profile.provider_profile_id.clone(),
-            protocol_adapter_id: instance.protocol_adapter_id.clone(),
+            protocol_adapter_id: clients.default.clone(),
             provider_model_list_fingerprint: fingerprint,
             metadata_applied_seq: catalog.target_revision_seq(),
             inventory_revision: discovery.revision,

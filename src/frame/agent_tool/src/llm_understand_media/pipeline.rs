@@ -323,15 +323,6 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
-/// Protocol adapters whose message schema carries `Document` parts
-/// (src/frame/aicc/src/protocol: claude_messages, gemini, openai_responses).
-pub fn protocol_accepts_documents(protocol_adapter_id: &str) -> bool {
-    matches!(
-        protocol_adapter_id,
-        "claude-messages" | "gemini-interactions" | "openai-responses"
-    )
-}
-
 /// Office formats `media.document` converts; the key is the lower-case file
 /// extension, the value the pipeline `format` param.
 pub fn document_format_from_name(name: &str) -> Option<&'static str> {
@@ -2040,7 +2031,5 @@ mod tests {
         assert_eq!(document_format_from_name("Report.DOCX"), Some("docx"));
         assert_eq!(document_format_from_name("x.pdf"), None);
         assert_eq!(document_format_from_mime("application/vnd.openxmlformats-officedocument.presentationml.presentation"), Some("pptx"));
-        assert!(protocol_accepts_documents("claude-messages"));
-        assert!(!protocol_accepts_documents("openai-chat-completions"));
     }
 }

@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 1,
+  "revision_seq": 2,
   "catalog_id": "typesafe",
   "providers": [
     {
@@ -10,7 +10,7 @@
       "display_name": "TypeSafe",
       "base_url": "https://api.typesafe.ai/v1",
       "protocol_adapter_id": "typesafe-systemone",
-      "discovery_behavior_id": "typesafe-catalog",
+      "discovery_behavior_id": "catalog-only",
       "provider_rules_id": "typesafe",
       "credential": {
         "kind": "bearer"

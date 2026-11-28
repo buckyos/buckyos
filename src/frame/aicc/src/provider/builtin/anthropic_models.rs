@@ -2,7 +2,7 @@ use super::super::{
     validate_discovery, DiscoveredModel, DiscoveryContext, ModelAvailability, ProviderDiscovery,
     ProviderDiscoverySnapshot, ProviderError, ProviderHealthState, ProviderResult,
 };
-use crate::protocol::{CredentialKind, HttpRequest, HttpResponse, HttpTransport};
+use crate::protocol::{HttpRequest, HttpResponse, HttpTransport};
 use async_trait::async_trait;
 use reqwest::{Method, Url};
 use serde::Deserialize;
@@ -14,13 +14,6 @@ use std::time::Duration;
 const MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 const DISCOVERY_PAGE_SIZE: usize = 1000;
 const MAX_DISCOVERY_PAGES: usize = 100;
-
-#[derive(Clone, Copy)]
-pub(super) struct AnthropicModelsSpec {
-    pub provider_profile_id: &'static str,
-    pub version_header: bool,
-    pub label: &'static str,
-}
 
 #[async_trait]
 trait AnthropicModelsTransport: Send + Sync {
@@ -40,47 +33,26 @@ impl AnthropicModelsTransport for HttpTransport {
     }
 }
 
+/// The Claude family's `/v1/models` list. The official client sends the
+/// version header; ecosystem-style clients do not.
 #[derive(Clone)]
 pub(crate) struct AnthropicModelsDiscovery {
-    spec: AnthropicModelsSpec,
-    provider_profile_id: String,
-    protocol_adapter_id: Option<String>,
+    version_header: bool,
     transport: Arc<dyn AnthropicModelsTransport>,
 }
 
 impl AnthropicModelsDiscovery {
-    pub(super) fn new(spec: AnthropicModelsSpec, transport: HttpTransport) -> Self {
+    pub(super) fn new(version_header: bool, transport: HttpTransport) -> Self {
         Self {
-            spec,
-            provider_profile_id: spec.provider_profile_id.to_owned(),
-            protocol_adapter_id: None,
-            transport: Arc::new(transport),
-        }
-    }
-
-    pub(super) fn for_profile(
-        spec: AnthropicModelsSpec,
-        provider_profile_id: impl Into<String>,
-        protocol_adapter_id: impl Into<String>,
-        transport: HttpTransport,
-    ) -> Self {
-        Self {
-            spec,
-            provider_profile_id: provider_profile_id.into(),
-            protocol_adapter_id: Some(protocol_adapter_id.into()),
+            version_header,
             transport: Arc::new(transport),
         }
     }
 
     #[cfg(test)]
-    fn with_transport(
-        spec: AnthropicModelsSpec,
-        transport: Arc<dyn AnthropicModelsTransport>,
-    ) -> Self {
+    fn with_transport(version_header: bool, transport: Arc<dyn AnthropicModelsTransport>) -> Self {
         Self {
-            spec,
-            provider_profile_id: spec.provider_profile_id.to_owned(),
-            protocol_adapter_id: None,
+            version_header,
             transport,
         }
     }
@@ -92,12 +64,7 @@ impl ProviderDiscovery for AnthropicModelsDiscovery {
         &self,
         context: &DiscoveryContext<'_>,
     ) -> ProviderResult<ProviderDiscoverySnapshot> {
-        validate_context(
-            self.spec,
-            &self.provider_profile_id,
-            self.protocol_adapter_id.as_deref(),
-            context,
-        )?;
+        let label = context.profile.provider_profile_id.as_str();
         let mut models = BTreeMap::<String, DiscoveredModel>::new();
         let mut after_id = None;
         let mut seen_cursors = BTreeSet::new();
@@ -111,7 +78,7 @@ impl ProviderDiscovery for AnthropicModelsDiscovery {
                 .credential
                 .apply(&mut request.headers)
                 .map_err(|error| ProviderError::Credential(error.to_string()))?;
-            if self.spec.version_header {
+            if self.version_header {
                 request.headers.insert(
                     "anthropic-version",
                     reqwest::header::HeaderValue::from_static("2023-06-01"),
@@ -125,18 +92,18 @@ impl ProviderDiscovery for AnthropicModelsDiscovery {
                 .send(request)
                 .await
                 .map_err(|error| ProviderError::Discovery(error.to_string()))?;
-            ensure_success(self.spec.label, &response)?;
+            ensure_success(label, &response)?;
             let page: ModelsResponse = serde_json::from_slice(&response.body).map_err(|error| {
                 ProviderError::DiscoveryResponse(format!(
                     "{} models response is invalid: {error}",
-                    self.spec.label
+                    label
                 ))
             })?;
             for model in page.data {
                 if model.object != "model" || model.id.trim().is_empty() || model.id.contains('@') {
                     return Err(ProviderError::DiscoveryResponse(format!(
                         "{} Models API returned an invalid model object",
-                        self.spec.label
+                        label
                     )));
                 }
                 models.entry(model.id.clone()).or_insert(DiscoveredModel {
@@ -169,51 +136,22 @@ impl ProviderDiscovery for AnthropicModelsDiscovery {
                 .ok_or_else(|| {
                     ProviderError::DiscoveryResponse(format!(
                         "{} Models API omitted last_id while has_more is true",
-                        self.spec.label
+                        label
                     ))
                 })?;
             if !seen_cursors.insert(cursor.clone()) {
                 return Err(ProviderError::DiscoveryResponse(format!(
                     "{} Models API repeated a pagination cursor",
-                    self.spec.label
+                    label
                 )));
             }
             after_id = Some(cursor);
         }
         Err(ProviderError::DiscoveryResponse(format!(
             "{} Models API exceeded the pagination limit",
-            self.spec.label
+            label
         )))
     }
-}
-
-fn validate_context(
-    spec: AnthropicModelsSpec,
-    provider_profile_id: &str,
-    protocol_adapter_id: Option<&str>,
-    context: &DiscoveryContext<'_>,
-) -> ProviderResult<()> {
-    if context.profile.provider_profile_id != provider_profile_id
-        || context.instance.provider_profile_id != provider_profile_id
-        || context.instance.protocol_adapter_id != context.profile.default_protocol_adapter_id
-        || protocol_adapter_id
-            .is_some_and(|adapter| context.instance.protocol_adapter_id != adapter)
-    {
-        return Err(ProviderError::InvalidConfiguration(format!(
-            "{} discovery requires its builtin profile and adapter",
-            spec.label
-        )));
-    }
-    if context.credential.audit().kind != CredentialKind::NamedHeader {
-        return Err(ProviderError::Credential(format!(
-            "{} discovery requires its configured named-header credential",
-            spec.label
-        )));
-    }
-    Url::parse(&context.instance.base_url).map_err(|_| {
-        ProviderError::InvalidConfiguration(format!("{} base_url is invalid", spec.label))
-    })?;
-    Ok(())
 }
 
 fn models_endpoint(base_url: &str, after_id: Option<&str>) -> ProviderResult<String> {
@@ -311,12 +249,8 @@ struct ErrorObject {
 mod tests {
     use super::*;
     use crate::protocol::{HttpBody, ProtocolError, ResolvedCredential};
-    use crate::provider::builtin::claude::{
-        claude_connection_contract, claude_profile, CLAUDE_SPEC,
-    };
-    use crate::provider::builtin::minimax::{
-        minimax_connection_contract, minimax_profile, MINIMAX_SPEC,
-    };
+    use crate::provider::builtin::claude::{claude_connection_contract, claude_profile};
+    use crate::provider::builtin::minimax::{minimax_connection_contract, minimax_profile};
     use crate::provider::{CredentialReference, ProviderInstanceConfig};
     use bytes::Bytes;
     use reqwest::header::HeaderMap;
@@ -397,7 +331,7 @@ mod tests {
                 "has_more": false
             }),
         ]);
-        let discovery = AnthropicModelsDiscovery::with_transport(CLAUDE_SPEC, transport.clone());
+        let discovery = AnthropicModelsDiscovery::with_transport(true, transport.clone());
         let profile = claude_profile();
         let instance = instance();
         let credential =
@@ -440,7 +374,7 @@ mod tests {
             "data": [{"id": "MiniMax-M2.7", "type": "model"}],
             "has_more": false
         })]);
-        let discovery = AnthropicModelsDiscovery::with_transport(MINIMAX_SPEC, transport.clone());
+        let discovery = AnthropicModelsDiscovery::with_transport(false, transport.clone());
         let profile = minimax_profile();
         let mut instance = instance();
         instance.provider_instance_name = "minimax-main".to_owned();

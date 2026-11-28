@@ -24,9 +24,9 @@ Known Provider / Provider Profile
 
 | 部分 | 拥有的事实 | 不拥有的事实 |
 | --- | --- | --- |
-| Provider Profile / Known Provider | 展示、默认 adapter、连接字段、凭据 contract、discovery behavior | 模型固有能力、wire codec |
-| Provider Rules | 渠道 model -> origin model、operation、request lowering、渠道限制/价格 | 原厂模型固有能力、凭据明文 |
-| Protocol Adapter | 官方 wire、认证形态、错误、stream/native task 状态机、URL artifact 下载协议，以及复合 Adapter 的显式组件关系 | Provider Instance 配置、逻辑模型目录 |
+| Provider Profile / Known Provider | 展示、客户端集合（默认 adapter 与 `extra_protocol_adapters`）、各客户端的凭据呈现、provider state 命名空间、连接字段、凭据 contract、discovery behavior | 模型固有能力、wire codec |
+| Provider Rules | 渠道 model -> origin model、模型到客户端与 operation 的绑定、request lowering、渠道限制/价格 | 原厂模型固有能力、凭据明文 |
+| Protocol Adapter | 一种 API 类型的官方 wire、认证形态、错误、stream/native task 状态机、URL artifact 下载协议；只注册自己实现的 operation | Provider Instance 配置、逻辑模型目录、其它客户端的 operation |
 | Model Driver | 原厂模型 API type、能力、variant、逻辑挂点、版本语义 | 渠道 endpoint/operation |
 | Discovery | 某实例当前实际模型、可用性、动态能力/价格 | 静态语义真相 |
 | Provider Instance | base URL、credential refs、region/workspace/account、enabled、实例规则 | 共享 adapter/driver 定义 |
@@ -39,9 +39,9 @@ Provider URL artifact 的下载同样遵守组合边界：AICC 登记 URL 来源
 
 1. metadata source manager 解析四层来源并构建完整 `CatalogSnapshot`。
 2. `BuiltinProviderRegistry` 从 catalog 的 Known Provider 构造 Profile、连接 contract 与 discovery behavior。
-3. `CodecRegistry` 通过 `src/protocol/plugins/*.rs` 自动发现并注册 adapter plugin；复合 Adapter 的 `component_adapter_ids` 必须全部已注册。
-4. settings 中每个 `ProviderSettings` 选择 profile、adapter、认证和实例参数。
-5. registry 校验 profile 是否允许该 adapter、credential contract 是否一致、连接字段是否合法。
+3. `CodecRegistry` 通过 `src/protocol/plugins/*.rs` 自动发现并注册 adapter plugin；派生 adapter 的 `base_adapter_id` 必须已注册且同属一个协议族。registry 装配时校验 Known Provider 声明的客户端都已注册、规则引用的客户端在该 Provider 的集合内、限定绑定存在。
+4. settings 中每个 `ProviderSettings` 选择 profile、认证和实例参数；只有 `custom` 读取并要求显式的 `protocol_adapter_id`，Known Provider 的客户端集合只来自 catalog。
+5. registry 校验自定义实例所选客户端对自定义开放、credential contract 是否一致、连接字段是否合法。
 6. discovery 首选机器接口；失败时按配置使用 catalog-only/static inventory fallback。
 7. `InventoryBuilder` 将 discovery、Provider Rules、Model Driver 和 codec bindings 求交，产出可路由 inventory。
 8. inventory 与 `metadata_applied_seq` 原子提交 LKGS；runtime 捕获不可变 Provider/Model snapshot 后再发布。
@@ -75,26 +75,28 @@ Beta 2.2 内置 Provider Profile 基线：
 
 | Profile | 默认 adapter | Discovery |
 | --- | --- | --- |
-| `openai` | `openai-responses` | OpenAI models |
-| `claude` | `claude-messages` | Anthropic models |
-| `gemini` | `gemini-interactions` | Gemini models |
-| `fal` | `fal-queue` | catalog/static fallback |
-| `openrouter` | `openrouter-responses` | OpenRouter models |
-| `minimax` | `minimax-messages` | MiniMax models |
-| `kimi` | `kimi-chat` | Kimi models |
-| `glm` | `glm-chat` | GLM models |
-| `deepseek` | `deepseek-responses` | DeepSeek models |
-| `doubao` | `doubao-responses` | standard/OpenAI-compatible models |
-| `qwen` | `qwen-responses` | standard/OpenAI-compatible models |
-| `sn` | `sn-openai` | SN models；支持 API key 与动态登录 |
-| `typesafe` | `typesafe-systemone` | 显式静态库存；已核验 alias 身份匹配 |
-| `custom` | 用户选择已注册 adapter | standard 或 configured/static fallback |
+| `openai` | `openai-responses` | `standard-models` |
+| `claude` | `claude-messages` | `standard-models` |
+| `gemini` | `gemini-interactions` | `standard-models` |
+| `fal` | `fal-queue` | `catalog-only` |
+| `openrouter` | `openrouter-responses` | `openrouter-models` |
+| `minimax` | `minimax-messages` | `standard-models` |
+| `kimi` | `legacy-openai-chat-completions` | `standard-models` |
+| `glm` | `glm-chat` | `standard-models` |
+| `deepseek` | `deepseek-responses` | `standard-models` |
+| `doubao` | `openai-responses` | `volcengine-ark-models` |
+| `qwen` | `qwen-responses` | `standard-models` |
+| `sn` | `openai-responses` | `sn-models`；支持 API key 与动态登录 |
+| `typesafe` | `typesafe-systemone` | `catalog-only`；别名由 Provider Rules `model_driver_overrides` 映射 |
+| `custom` | 用户显式选择的、对自定义开放的客户端 | `standard-models` 或 configured/static fallback |
+
+默认 adapter 之外的客户端由各 Known Provider 的 `extra_protocol_adapters` 声明，完整客户端清单见 [protocol_clients.md](protocol_clients.md)，各 Provider 的绑定见 [provider_operation_bindings.md](provider_operation_bindings.md)。`standard-models` 按默认客户端的协议族选择 OpenAI、Claude 或 Gemini 的模型列表。
 
 “内置”表示行为实现和验收基线，不表示把 Provider Rules 硬编码进 Rust。每个渠道 vendor 必须有独立 `.provider.json`；每个原厂模型 vendor 必须有独立 `.model.json`。
 
 ## 4. Protocol 复用
 
-基础协议族当前包括 OpenAI Responses、OpenAI Chat Completions、Claude Messages、Gemini Interactions 、fal Queue 与 TypeSafe System One。派生 adapter 只保留真实差异：
+基础协议族当前包括 OpenAI（Responses、Chat Completions、embeddings、images、audio、videos）、Claude Messages、Gemini（Interactions、`models.*`）、rerank、fal Queue 与 TypeSafe System One；OpenAI Chat Completions 和 Claude Messages 另有生态口径客户端。派生 adapter 只保留真实差异，且必须与基础 adapter 同属一个协议族：
 
 - descriptor 完全一致时继承基础 codec；
 - 普通 endpoint、模型映射、参数默认值、字段删除/改名优先写 Provider Rules；
@@ -105,7 +107,7 @@ Beta 2.2 内置 Provider Profile 基线：
 
 operation 是否可执行必须同时满足：typed `ApiType` 存在、codec 已注册、Model Driver 声明能力、Provider Rules 绑定 operation、实例 discovery 确认可用、合同测试通过。
 
-OpenRouter 在 `openrouter-responses` 中组合 `decisions.create`，首版仅 Immediate。
+OpenRouter 的 `decisions.create` 属于 `openrouter-native` 客户端，首版仅 Immediate。
 以 `/api/v1` 为 base 的实例通过 operation 专属路径访问同 origin 的
 `/api/alpha/decisions`；代理前缀保留。其它 v1 operation 不改变。
 题型转换和严格答案形态复用已核验的 TypeSafe 部分，顶层响应 envelope 独立解析。
@@ -148,8 +150,10 @@ Provider 停止、禁用、删除、reload 替换或服务退出时，必须先�
 1. 添加/修改 `driver_metadata/known-providers/<id>.known-provider.json`；
 2. 添加 `driver_metadata/providers/<id>.provider.json`；
 3. 仅在引入新原厂模型语义时修改对应 `models/<vendor>.model.json`；
-4. 复用已注册 adapter 与标准 discovery behavior；
+4. 复用已注册 adapter 与标准 discovery behavior；要多用一个已注册的客户端，在 Known Provider 的 `extra_protocol_adapters` 里加上它，规则写 `<客户端>/<operation>`；
 5. 更新 binding golden、catalog validation 和 Provider 装配测试。
+
+这一类变更只改 metadata，可以在线下发，不需要发版本；只有 API 类型升级和协议客户端升级需要发版本（[provider_profile_schema.md](provider_profile_schema.md) §2.1）。
 
 不得为了注册一个品牌创建空 Rust provider 模块。
 
@@ -160,7 +164,8 @@ Provider 停止、禁用、删除、reload 替换或服务退出时，必须先�
 3. 为每个 `(operation, api_type)` 精确声明 execution modes 和 limits；
 4. 如需机器 discovery，实现独立 `ProviderDiscovery` 并在行为 registry 注册稳定 behavior id；
 5. Provider builtin 模块只负责无法由 catalog 表达的连接或登录行为；
-6. 增加 request/response/error/SSE/native task golden tests 和装配测试。
+6. 增加 request/response/error/SSE/native task golden tests 和装配测试；
+7. 同步更新由测试校验的客户端清单 [protocol_clients.md](protocol_clients.md)，方言写明残余差异。
 
 ### 7.3 修改已有 Provider
 
@@ -170,13 +175,13 @@ Provider 停止、禁用、删除、reload 替换或服务退出时，必须先�
 
 ## 8. Custom Provider
 
-`custom` 允许用户选择任一已注册 adapter，并使用 `{}` Provider Rules 接入兼容 endpoint。其边界冻结为：
+`custom` 要求用户显式选择一个对自定义开放的客户端（Provider Rules 的 `custom_provider_adapters`）作为默认客户端，实例同时带上同一协议族里其余开放的客户端，并使用 `{}` Provider Rules 接入兼容 endpoint；后端不探测协议。其边界冻结为：
 
 - 原始模型名直接参与所有 Model Driver 匹配；
 - AICC 不自动去除厂商前缀、生成别名或猜 origin；
 - 用户不能上传任意可执行 codec；
 - 动态登录目前只属于明确注册的 SN 行为；
-- “OpenAI-compatible”不等于所有 operation/stream/error 都兼容，必须以 probe 与 contract 为准。
+- “OpenAI-compatible”不等于所有 operation/stream/error 都兼容，必须以接入验证与 contract 为准。
 
 ## 9. 验收门槛
 
@@ -200,4 +205,4 @@ Profile/adapter/operation/behavior ID、credential contract、来源优先级、
 
 ## TypeSafe System One（2026-09-25）
 
-Model Driver 只注册 `jev-1.13.0`；`typesafe-catalog` discovery 对已核验 `jev-latest` / `jev-preview` 映射该原厂身份，别名仍须显式配置库存，响应版本漂移失败。默认静态库存只有精确版本。Provider Rules 绑定 `systemone.evaluate` 并声明渠道输入费率及已核验零输出费率；保留真实 output_tokens。Adapter 使用 Bearer、`POST /v1/systemone`，转换 choice/score/noul，错误不回显上游正文。同协议自托管可选择同一 adapter；profile/driver ID 无品牌白名单。限制、来源和价格见 [Decision API](decision_api.md)。
+Model Driver 只注册 `jev-1.13.0`；`typesafe.provider.json` 的 `model_driver_overrides` 把已核验的 `jev-latest` / `jev-preview` 映射到该原厂身份（discovery 为 `catalog-only`），别名仍须显式配置库存，响应版本漂移失败。默认静态库存只有精确版本。Provider Rules 绑定 `systemone.evaluate` 并声明渠道输入费率及已核验零输出费率；保留真实 output_tokens。Adapter 使用 Bearer、`POST /v1/systemone`，转换 choice/score/noul，错误不回显上游正文。`typesafe-systemone` 不对自定义 Provider 开放；profile/driver ID 无品牌白名单。限制、来源和价格见 [Decision API](decision_api.md)。

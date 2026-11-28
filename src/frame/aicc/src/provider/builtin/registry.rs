@@ -1,4 +1,5 @@
 use super::anthropic_models::AnthropicModelsDiscovery;
+use super::openai_responses_compatible::OpenAiCompatibleModelsDiscovery;
 use super::*;
 use crate::catalog::{
     CatalogSnapshot, ProviderCredentialKind, ProviderFieldMode as CatalogProviderFieldMode,
@@ -9,7 +10,8 @@ use crate::provider::{
     catalog_only_inventory, validate_discovery, CatalogOnlyDiscovery, CredentialDescriptor,
     DiscoveryMode, DynamicLoginCredentialResolver, FallbackDiscovery, ProviderAuthMode,
     ProviderConnectionContract, ProviderDiscovery, ProviderDiscoverySnapshot, ProviderError,
-    ProviderFieldMode, ProviderFieldSchema, ProviderProfile, ProviderResult, RefreshPolicy,
+    ProviderFieldMode, ProviderFieldSchema, ProviderProfile, ProviderResult, ProtocolClientProfile,
+    RefreshPolicy,
 };
 #[cfg(test)]
 use crate::provider::ProviderInstanceConfig;
@@ -19,15 +21,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BuiltinDiscoveryFactory {
     CatalogOnly,
-    TypeSafeCatalog,
-    OpenAi,
-    Claude,
-    MiniMax,
-    Gemini,
     OpenRouter,
-    Kimi,
-    Glm,
-    DeepSeek,
     VolcengineArk,
     Sn,
     Standard,
@@ -36,24 +30,12 @@ enum BuiltinDiscoveryFactory {
 fn discovery_behaviors() -> BTreeMap<&'static str, BuiltinDiscoveryFactory> {
     BTreeMap::from([
         ("catalog-only", BuiltinDiscoveryFactory::CatalogOnly),
-        ("typesafe-catalog", BuiltinDiscoveryFactory::TypeSafeCatalog),
-        ("openai-models", BuiltinDiscoveryFactory::OpenAi),
-        ("anthropic-models", BuiltinDiscoveryFactory::Claude),
-        ("minimax-models", BuiltinDiscoveryFactory::MiniMax),
-        ("gemini-models", BuiltinDiscoveryFactory::Gemini),
         ("openrouter-models", BuiltinDiscoveryFactory::OpenRouter),
-        ("kimi-models", BuiltinDiscoveryFactory::Kimi),
-        ("glm-models", BuiltinDiscoveryFactory::Glm),
-        ("deepseek-models", BuiltinDiscoveryFactory::DeepSeek),
         (
             "volcengine-ark-models",
             BuiltinDiscoveryFactory::VolcengineArk,
         ),
         ("sn-models", BuiltinDiscoveryFactory::Sn),
-        (
-            "openai-compatible-models",
-            BuiltinDiscoveryFactory::Standard,
-        ),
         ("standard-models", BuiltinDiscoveryFactory::Standard),
     ])
 }
@@ -156,6 +138,17 @@ impl BuiltinProviderRegistry {
         let codecs = Arc::new(builtin_codec_registry()?);
         let custom_provider_adapter_ids =
             configured_custom_provider_adapters(catalog, codecs.as_ref())?;
+        validate_catalog_bindings(catalog, codecs.as_ref())?;
+        let mut providers: BTreeMap<String, BuiltinProviderRegistration> = providers;
+        if let Some(custom) = providers.get_mut(CUSTOM_PROVIDER_PROFILE_ID) {
+            custom.profile.extra_protocol_adapters = custom_provider_adapter_ids
+                .iter()
+                .map(|id| ProtocolClientProfile {
+                    protocol_adapter_id: id.clone(),
+                    credential: None,
+                })
+                .collect();
+        }
         let dynamic_login_resolvers: BTreeMap<_, Arc<dyn DynamicLoginCredentialResolver>> =
             BTreeMap::from([(
                 "sn".to_owned(),
@@ -201,26 +194,20 @@ impl BuiltinProviderRegistry {
             .providers
             .get(request.provider_profile_id)
             .ok_or_else(|| ProviderError::UnknownProfile(request.provider_profile_id.to_owned()))?;
+        let protocol_adapter_id = if registration.supports_any_adapter {
+            request.protocol_adapter_id
+        } else {
+            registration.profile.default_protocol_adapter_id.as_str()
+        };
         let adapter = self
             .codecs
-            .adapter(request.protocol_adapter_id)
-            .ok_or_else(|| ProviderError::UnknownAdapter(request.protocol_adapter_id.to_owned()))?;
+            .adapter(protocol_adapter_id)
+            .ok_or_else(|| ProviderError::UnknownAdapter(protocol_adapter_id.to_owned()))?;
         if registration.supports_any_adapter
-            && !self
-                .custom_provider_adapter_ids
-                .contains(request.protocol_adapter_id)
+            && !self.custom_provider_adapter_ids.contains(protocol_adapter_id)
         {
             return Err(ProviderError::InvalidConfiguration(format!(
-                "protocol adapter `{}` is reserved for a built-in provider",
-                request.protocol_adapter_id
-            )));
-        }
-        if !registration.supports_any_adapter
-            && registration.profile.default_protocol_adapter_id != request.protocol_adapter_id
-        {
-            return Err(ProviderError::InvalidConfiguration(format!(
-                "provider profile `{}` requires protocol adapter `{}`",
-                request.provider_profile_id, registration.profile.default_protocol_adapter_id
+                "protocol adapter `{protocol_adapter_id}` is reserved for a built-in provider"
             )));
         }
         let dynamic_login_resolver = if request.auth_mode == ProviderAuthMode::DynamicLogin {
@@ -247,7 +234,12 @@ impl BuiltinProviderRegistry {
             None
         };
         let profile = if registration.supports_any_adapter {
-            custom_profile_for_adapter(&registration.profile, adapter, request.credential_kind)?
+            custom_profile_for_adapter(
+                &registration.profile,
+                adapter,
+                request.credential_kind,
+                &self.codecs,
+            )?
         } else {
             registration
                 .profile
@@ -256,7 +248,7 @@ impl BuiltinProviderRegistry {
         let discovery = self.discovery(
             &registration.discovery_behavior_id,
             request.provider_profile_id,
-            request.protocol_adapter_id,
+            protocol_adapter_id,
             request.configured_inventory,
             registration.profile.default_inventory.clone(),
         )?;
@@ -305,10 +297,7 @@ impl BuiltinProviderRegistry {
                     "unknown provider discovery behavior `{behavior_id}`"
                 ))
             })?;
-        if matches!(
-            factory,
-            BuiltinDiscoveryFactory::CatalogOnly | BuiltinDiscoveryFactory::TypeSafeCatalog
-        ) {
+        if factory == BuiltinDiscoveryFactory::CatalogOnly {
             let configured = configured_inventory.is_some();
             let inventory = configured_inventory.or(default_inventory).ok_or_else(|| {
                 ProviderError::InvalidConfiguration(format!(
@@ -321,11 +310,6 @@ impl BuiltinProviderRegistry {
             } else {
                 Arc::new(CatalogOnlyDiscovery::catalog_managed(inventory))
             };
-            if factory == BuiltinDiscoveryFactory::TypeSafeCatalog {
-                return Ok(Arc::new(super::typesafe::TypeSafeCatalogDiscovery(
-                    inventory,
-                )));
-            }
             if provider_profile_id == "fal" && !configured {
                 return Ok(Arc::new(super::fal::FalPricingDiscovery {
                     inventory,
@@ -335,51 +319,30 @@ impl BuiltinProviderRegistry {
             return Ok(inventory);
         }
         let primary: Arc<dyn ProviderDiscovery> = match factory {
-            BuiltinDiscoveryFactory::CatalogOnly | BuiltinDiscoveryFactory::TypeSafeCatalog => {
-                unreachable!()
-            }
-            BuiltinDiscoveryFactory::OpenAi => Arc::new(OpenAiDiscovery::new(transport()?)),
-            BuiltinDiscoveryFactory::Claude => Arc::new(claude_discovery(transport()?)),
-            BuiltinDiscoveryFactory::MiniMax => Arc::new(minimax_discovery(transport()?)),
-            BuiltinDiscoveryFactory::Gemini => Arc::new(GeminiDiscovery::new(transport()?)),
+            BuiltinDiscoveryFactory::CatalogOnly => unreachable!(),
             BuiltinDiscoveryFactory::OpenRouter => Arc::new(OpenRouterDiscovery::new(transport()?)),
-            BuiltinDiscoveryFactory::Kimi => Arc::new(KimiDiscovery::new(transport()?)),
-            BuiltinDiscoveryFactory::Glm => Arc::new(glm_models_discovery(transport()?)),
-            BuiltinDiscoveryFactory::DeepSeek => Arc::new(openai_compatible_models_discovery(
-                DEEPSEEK_PROFILE_ID,
-                crate::protocol::DEEPSEEK_RESPONSES_ADAPTER_ID,
-                transport()?,
-            )),
-            BuiltinDiscoveryFactory::VolcengineArk => Arc::new(
-                openai_responses_compatible::VolcengineArkModelsDiscovery::new(
-                    provider_profile_id,
-                    protocol_adapter_id,
-                    transport()?,
-                ),
-            ),
+            BuiltinDiscoveryFactory::VolcengineArk => {
+                Arc::new(OpenAiCompatibleModelsDiscovery::new(true, transport()?))
+            }
             BuiltinDiscoveryFactory::Sn => Arc::new(SnDiscovery::new(transport()?)),
-            BuiltinDiscoveryFactory::Standard => match self
-                .codecs
-                .adapter(protocol_adapter_id)
-                .map(|adapter| adapter.protocol_family_id.as_str())
-            {
-                Some("claude") => Arc::new(AnthropicModelsDiscovery::for_profile(
-                    CLAUDE_SPEC,
-                    provider_profile_id,
-                    protocol_adapter_id,
-                    transport()?,
-                )),
-                Some("gemini") => Arc::new(GeminiDiscovery::for_profile(
-                    provider_profile_id,
-                    protocol_adapter_id,
-                    transport()?,
-                )),
-                _ => Arc::new(openai_compatible_models_discovery(
-                    provider_profile_id,
-                    protocol_adapter_id,
-                    transport()?,
-                )),
-            },
+            BuiltinDiscoveryFactory::Standard => {
+                let adapter = self.codecs.adapter(protocol_adapter_id).ok_or_else(|| {
+                    ProviderError::InvalidConfiguration(format!(
+                        "protocol adapter `{protocol_adapter_id}` is not registered"
+                    ))
+                })?;
+                match adapter.protocol_family_id.as_str() {
+                    "claude" => Arc::new(AnthropicModelsDiscovery::new(
+                        !self.codecs.derives_from(
+                            protocol_adapter_id,
+                            crate::protocol::LEGACY_CLAUDE_MESSAGES_ADAPTER_ID,
+                        ),
+                        transport()?,
+                    )),
+                    "gemini" => Arc::new(GeminiDiscovery::new(transport()?)),
+                    _ => Arc::new(OpenAiCompatibleModelsDiscovery::new(false, transport()?)),
+                }
+            }
         };
         let configured_fallback = configured_inventory.is_some();
         let fallback_inventory = configured_inventory.or(default_inventory);
@@ -437,10 +400,13 @@ fn configured_custom_provider_adapters(
     Ok(configured)
 }
 
+/// A custom instance uses every custom-selectable client of its default
+/// client's protocol family; `profile` lists them all.
 pub(crate) fn custom_profile_for_adapter(
     profile: &ProviderProfile,
     adapter: &crate::protocol::AdapterDescriptor,
     requested: Option<CredentialKind>,
+    codecs: &CodecRegistry,
 ) -> ProviderResult<ProviderProfile> {
     let credential = CredentialDescriptor {
         kind: adapter.credential.kind,
@@ -457,7 +423,78 @@ pub(crate) fn custom_profile_for_adapter(
     selected.default_protocol_adapter_id = adapter.protocol_adapter_id.clone();
     selected.credential = credential;
     selected.credential_variants.clear();
+    selected.extra_protocol_adapters.retain(|client| {
+        client.protocol_adapter_id != adapter.protocol_adapter_id
+            && codecs
+                .adapter(&client.protocol_adapter_id)
+                .is_some_and(|candidate| candidate.protocol_family_id == adapter.protocol_family_id)
+    });
     Ok(selected)
+}
+
+/// Every client a Known Provider declares and every client a rule names
+/// must be registered, and every qualified binding must exist.
+fn validate_catalog_bindings(catalog: &CatalogSnapshot, codecs: &CodecRegistry) -> ProviderResult<()> {
+    for provider in catalog.known_providers() {
+        let clients = std::iter::once(provider.protocol_adapter_id.as_str())
+            .chain(provider.extra_protocol_adapters.iter().map(|client| client.id.as_str()))
+            .collect::<Vec<_>>();
+        for client in &clients {
+            if codecs.adapter(client).is_none() {
+                return Err(ProviderError::InvalidConfiguration(format!(
+                    "known provider `{}` references unknown protocol adapter `{client}`",
+                    provider.provider_profile_id
+                )));
+            }
+        }
+        let Some(rules) = provider
+            .provider_rules_id
+            .as_deref()
+            .and_then(|id| catalog.provider_rules(id))
+        else {
+            continue;
+        };
+        let rule_bindings = rules
+            .models
+            .iter()
+            .map(|rule| (rule.protocol_adapter_id.as_deref(), &rule.operations))
+            .chain(
+                rules
+                    .patterns
+                    .iter()
+                    .map(|rule| (rule.protocol_adapter_id.as_deref(), &rule.operations)),
+            );
+        for (rule_adapter, operations) in rule_bindings {
+            if let Some(adapter) = rule_adapter.filter(|adapter| !clients.contains(adapter)) {
+                return Err(ProviderError::InvalidConfiguration(format!(
+                    "provider rules `{}` use protocol adapter `{adapter}` outside the provider's clients",
+                    rules.provider_profile_id
+                )));
+            }
+            for (key, value) in operations {
+                let Some(binding) = crate::protocol::BindingRef::parse_qualified(value) else {
+                    continue;
+                };
+                if !clients.contains(&binding.protocol_adapter_id.as_str()) {
+                    return Err(ProviderError::InvalidConfiguration(format!(
+                        "provider rules `{}` bind `{key}` to `{value}` outside the provider's clients",
+                        rules.provider_profile_id
+                    )));
+                }
+                let registered = codecs
+                    .adapter(&binding.protocol_adapter_id)
+                    .and_then(|adapter| adapter.operations.get(&binding.operation_id))
+                    .is_some();
+                if !registered {
+                    return Err(ProviderError::InvalidConfiguration(format!(
+                        "provider rules `{}` bind `{key}` to unregistered `{value}`",
+                        rules.provider_profile_id
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn builtin_provider_registrations(
@@ -524,10 +561,7 @@ fn profile_from_catalog(configuration: &ResolvedProviderConfiguration) -> Provid
             .iter()
             .map(credential_from_catalog)
             .collect(),
-        discovery_mode: if matches!(
-            configuration.discovery_behavior_id.as_str(),
-            "catalog-only" | "typesafe-catalog"
-        ) {
+        discovery_mode: if configuration.discovery_behavior_id == "catalog-only" {
             DiscoveryMode::CatalogOnly
         } else {
             DiscoveryMode::MachineApi
@@ -535,6 +569,15 @@ fn profile_from_catalog(configuration: &ResolvedProviderConfiguration) -> Provid
         refresh: RefreshPolicy::default(),
         default_inventory: None,
         accepts_any_adapter: false,
+        extra_protocol_adapters: configuration
+            .extra_protocol_adapters
+            .iter()
+            .map(|client| ProtocolClientProfile {
+                protocol_adapter_id: client.id.clone(),
+                credential: client.credential.as_ref().map(credential_from_catalog),
+            })
+            .collect(),
+        state_namespace: configuration.state_namespace.clone(),
     }
 }
 
@@ -599,6 +642,8 @@ fn custom_registration() -> BuiltinProviderRegistration {
             refresh: RefreshPolicy::default(),
             default_inventory: None,
             accepts_any_adapter: true,
+            extra_protocol_adapters: Vec::new(),
+            state_namespace: None,
         },
         connection: BuiltinConnectionFactory::Configured(ProviderConnectionContract {
             default_base_url: String::new(),
@@ -629,7 +674,8 @@ mod tests {
     use crate::catalog::CatalogKind;
     use crate::protocol::{
         CLAUDE_MESSAGES_ADAPTER_ID, FAL_QUEUE_ADAPTER_ID, FAL_QUEUE_OPERATION_ID,
-        GEMINI_ADAPTER_ID, GLM_CHAT_ADAPTER_ID, KIMI_CHAT_ADAPTER_ID, MINIMAX_MESSAGES_ADAPTER_ID,
+        GEMINI_ADAPTER_ID, GLM_CHAT_ADAPTER_ID, LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+        MINIMAX_MESSAGES_ADAPTER_ID,
         OPENAI_CHAT_COMPLETIONS_ADAPTER_ID, OPENAI_RESPONSES_ADAPTER_ID,
         OPENROUTER_RESPONSES_ADAPTER_ID,
     };
@@ -698,20 +744,18 @@ mod tests {
             vec!["jev-1.13.0"]
         );
         for alias in ["jev-latest", "jev-preview"] {
-            let crate::catalog::ProviderModelMatch::Matched(identity) =
-                binding.discovery.match_model_driver(alias, &catalog)
-            else {
-                panic!("confirmed alias must match")
-            };
+            let identity = catalog
+                .provider_model_identity_override("typesafe", alias)
+                .unwrap()
+                .unwrap();
             assert_eq!(identity.model_driver_id, "typesafe");
             assert_eq!(identity.model_id, "jev-1.13.0");
         }
-        assert!(matches!(
-            binding.discovery.match_model_driver("jev-99.0.0", &catalog),
-            crate::catalog::ProviderModelMatch::NotHandled
-        ));
+        assert!(catalog
+            .provider_model_identity_override("typesafe", "jev-99.0.0")
+            .is_none());
         assert!(catalog.match_model("jev-99.0.0").is_err());
-        let custom = registry
+        assert!(registry
             .resolve(BuiltinProviderRequest {
                 provider_profile_id: "custom",
                 protocol_adapter_id: "typesafe-systemone",
@@ -719,11 +763,7 @@ mod tests {
                 credential_kind: None,
                 configured_inventory: Some(configured_inventory()),
             })
-            .unwrap();
-        assert_eq!(
-            custom.profile.default_protocol_adapter_id,
-            "typesafe-systemone"
-        );
+            .is_err());
     }
 
     #[test]
@@ -781,7 +821,7 @@ mod tests {
             .map(|adapter| adapter.protocol_adapter_id.as_str())
             .collect::<BTreeSet<_>>();
         assert_eq!(codecs.adapters().len(), adapter_ids.len());
-        assert_eq!(adapter_ids.len(), 19);
+        assert_eq!(adapter_ids.len(), 25);
         for profile in registry.profiles() {
             assert!(adapter_ids.contains(profile.default_protocol_adapter_id.as_str()));
         }
@@ -793,16 +833,21 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(
             custom_provider_families,
-            BTreeSet::from(["claude", "gemini", "openai", "typesafe-systemone"])
+            BTreeSet::from(["claude", "gemini", "openai"])
         );
         assert_eq!(
             registry.custom_provider_adapter_ids(),
             &BTreeSet::from([
                 CLAUDE_MESSAGES_ADAPTER_ID.to_owned(),
-                GEMINI_ADAPTER_ID.to_owned(),
+                "gemini-generate-content".to_owned(),
+                "legacy-claude-messages".to_owned(),
+                "legacy-openai-chat-completions".to_owned(),
+                "openai-audio".to_owned(),
                 OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_owned(),
+                "openai-embeddings".to_owned(),
+                "openai-images".to_owned(),
                 OPENAI_RESPONSES_ADAPTER_ID.to_owned(),
-                "typesafe-systemone".to_owned(),
+                "openai-videos".to_owned(),
             ])
         );
         for adapter_id in [
@@ -810,10 +855,9 @@ mod tests {
             OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
             MINIMAX_MESSAGES_ADAPTER_ID,
             OPENROUTER_RESPONSES_ADAPTER_ID,
-            KIMI_CHAT_ADAPTER_ID,
+            LEGACY_OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
             GLM_CHAT_ADAPTER_ID,
             FAL_QUEUE_ADAPTER_ID,
-            SN_OPENAI_ADAPTER_ID,
         ] {
             assert!(adapter_ids.contains(adapter_id));
         }
@@ -955,7 +999,7 @@ mod tests {
                         "display_name": "Vendor",
                         "base_url": "https://vendor.example/v1",
                         "protocol_adapter_id": "openai-responses",
-                        "discovery_behavior_id": "openai-compatible-models",
+                        "discovery_behavior_id": "standard-models",
                         "provider_rules_id": "vendor",
                         "credential": {"kind": "bearer"},
                         "connection": {
@@ -1169,15 +1213,19 @@ mod tests {
         };
         // `llm` codecs write the URL string into the request body verbatim, so
         // the payload must never be downloaded. The derived adapters
-        // (`doubao-responses`, `glm-chat`, `kimi-chat`) must forward the base
-        // declaration.
+        // (`legacy-openai-chat-completions`, `glm-chat`) must
+        // forward the base declaration.
         for (adapter, operation, api_type) in [
             ("openai-responses", "responses.create", ApiType::Llm),
-            ("doubao-responses", "responses.create", ApiType::Llm),
+            ("legacy-openai-chat-completions", "chat.completions.create", ApiType::Llm),
             ("claude-messages", "messages.create", ApiType::Llm),
             ("glm-chat", "chat.completions.create", ApiType::Llm),
-            ("kimi-chat", "chat.completions.create", ApiType::Llm),
             ("gemini-interactions", "interactions.create", ApiType::Llm),
+            (
+                "gemini-generate-content",
+                "models.generateContent",
+                ApiType::Llm,
+            ),
             (
                 "qwen-media",
                 "dashscope.image_edit",
@@ -1196,7 +1244,7 @@ mod tests {
         // `BytesOnly` default.
         assert_eq!(
             form(
-                "openai-responses",
+                "openai-audio",
                 "audio.transcriptions",
                 ApiType::AudioSpeechRecognition
             ),
@@ -1206,7 +1254,7 @@ mod tests {
         // not declare URL support and therefore keeps the `BytesOnly` default.
         assert_eq!(
             form(
-                "openai-responses",
+                "openai-images",
                 "images.generate",
                 ApiType::ImageTextToImage
             ),
@@ -1224,7 +1272,7 @@ mod tests {
         };
         for (adapter, operation, api_type) in [
             ("fal-queue", "queue.submit", ApiType::VideoUpscale),
-            ("glm-media", "videos.generate", ApiType::VideoGenerate),
+            ("glm-video", "videos.generate", ApiType::VideoGenerate),
             (
                 "qwen-media",
                 "dashscope.video_synthesis",
@@ -1236,7 +1284,7 @@ mod tests {
                 ApiType::VideoGenerate,
             ),
             (
-                "gemini-interactions",
+                "gemini-generate-content",
                 "models.predictLongRunning",
                 ApiType::VideoGenerate,
             ),
@@ -1246,7 +1294,7 @@ mod tests {
                 ApiType::VideoGenerate,
             ),
             (
-                "openrouter-responses",
+                "openrouter-native",
                 "videos.create",
                 ApiType::VideoGenerate,
             ),
@@ -1261,7 +1309,7 @@ mod tests {
         // as a multipart file, so the bytes are required even when the caller
         // supplied a URL.
         assert_eq!(
-            native_form("openai-responses", "videos.create", ApiType::VideoEdit),
+            native_form("openai-videos", "videos.create", ApiType::VideoEdit),
             crate::resource::ResourceInputForm::BytesOnly
         );
         // The immediate MiniMax codec serves several wire grammars from one
@@ -1292,7 +1340,7 @@ mod tests {
         // the resulting object URL instead of downloading or rejecting them.
         assert_eq!(
             form(
-                "doubao-responses",
+                "doubao-speech",
                 "asr.recognize.flash",
                 ApiType::AudioSpeechRecognition
             ),
@@ -1300,7 +1348,7 @@ mod tests {
         );
         assert_eq!(
             native_form(
-                "doubao-responses",
+                "doubao-speech",
                 "asr.recognize.submit",
                 ApiType::AudioSpeechRecognition
             ),
@@ -1368,7 +1416,7 @@ mod tests {
         let binding = registry
             .resolve(BuiltinProviderRequest {
                 provider_profile_id: SN_PROVIDER_PROFILE_ID,
-                protocol_adapter_id: SN_OPENAI_ADAPTER_ID,
+                protocol_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
                 auth_mode: ProviderAuthMode::DynamicLogin,
                 credential_kind: None,
                 configured_inventory: None,
@@ -1517,7 +1565,7 @@ mod tests {
         let sn = registry
             .resolve(BuiltinProviderRequest {
                 provider_profile_id: SN_PROVIDER_PROFILE_ID,
-                protocol_adapter_id: SN_OPENAI_ADAPTER_ID,
+                protocol_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
                 auth_mode: ProviderAuthMode::DynamicLogin,
                 credential_kind: None,
                 configured_inventory: None,
@@ -1597,7 +1645,7 @@ mod tests {
                 Some("x-api-key"),
             ),
             (
-                crate::protocol::GEMINI_ADAPTER_ID,
+                crate::protocol::GEMINI_GENERATE_CONTENT_ADAPTER_ID,
                 CredentialKind::NamedHeader,
                 Some("x-goog-api-key"),
             ),
@@ -1618,6 +1666,7 @@ mod tests {
         for adapter in [
             GLM_CHAT_ADAPTER_ID,
             MINIMAX_MESSAGES_ADAPTER_ID,
+            GEMINI_ADAPTER_ID,
             FAL_QUEUE_ADAPTER_ID,
             OPENROUTER_RESPONSES_ADAPTER_ID,
         ] {
@@ -1654,7 +1703,7 @@ mod tests {
         ));
 
         let unknown_adapter = registry.resolve(BuiltinProviderRequest {
-            provider_profile_id: OPENAI_PROVIDER_PROFILE_ID,
+            provider_profile_id: CUSTOM_PROVIDER_PROFILE_ID,
             protocol_adapter_id: "missing-adapter",
             auth_mode: ProviderAuthMode::ApiKey,
             credential_kind: None,

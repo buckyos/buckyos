@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "gemini",
-  "revision_seq": 7,
+  "revision_seq": 8,
   "required_features": [],
   "models": [
     {
@@ -16,7 +16,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -38,7 +38,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -60,7 +60,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -82,7 +82,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -102,7 +102,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true,
         "max_context_tokens": 1048576,
         "max_output_tokens": 65536
@@ -126,7 +126,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -148,7 +148,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -168,7 +168,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true,
         "max_context_tokens": 1048576,
         "max_output_tokens": 65536
@@ -192,7 +192,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -214,7 +214,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -241,7 +241,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true,
         "max_context_tokens": 1048576,
         "max_output_tokens": 65536
@@ -265,7 +265,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -287,7 +287,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -309,7 +309,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -331,7 +331,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true
       },
       "llm": {
@@ -351,7 +351,7 @@
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
-        "vision": true,
+        "document": true, "vision": true,
         "reasoning": true,
         "max_context_tokens": 131072,
         "max_output_tokens": 65536

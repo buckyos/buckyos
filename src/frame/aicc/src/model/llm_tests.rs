@@ -214,6 +214,7 @@ pub(crate) fn inventory(
         protocol_adapter_id: "synthetic".into(),
         inventory_revision: "1".into(),
         models: vec![InventoryModel {
+            protocol_adapter_id: "synthetic".into(),
             provider_model_id: channel.into(),
             model_driver_id: driver.into(),
             origin_model_id: origin.into(),

@@ -17,6 +17,7 @@ use crate::protocol::CredentialKind;
 use crate::protocol::ResponsesDialectKind;
 use crate::protocol::{HttpRequest, HttpResponse, HttpTransport};
 use async_trait::async_trait;
+#[cfg(test)]
 use buckyos_api::ApiType;
 use reqwest::header::ETAG;
 use reqwest::Method;
@@ -26,6 +27,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(test)]
 pub(crate) const DEEPSEEK_PROFILE_ID: &str = "deepseek";
 #[cfg(test)]
 pub(crate) const DOUBAO_PROFILE_ID: &str = "doubao";
@@ -49,7 +51,7 @@ pub(crate) struct BuiltinProviderDescriptor {
     pub profile: ProviderProfile,
     pub connection: ProviderConnectionContract,
     pub discovery: BuiltinDiscoveryKind,
-    pub dialect: ResponsesDialectKind,
+    pub dialect: Option<ResponsesDialectKind>,
     known_provider: KnownProvider,
     provider_rules: ProviderRulesCatalog,
 }
@@ -126,22 +128,22 @@ pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProv
         (
             DEEPSEEK_PROFILE_ID,
             BuiltinDiscoveryKind::OpenAiModelsApi,
-            ResponsesDialectKind::DeepSeek,
+            Some(ResponsesDialectKind::DeepSeek),
         ),
         (
             DOUBAO_PROFILE_ID,
             BuiltinDiscoveryKind::OpenAiModelsApi,
-            ResponsesDialectKind::Doubao,
+            None,
         ),
         (
             DOUBAO_AGENT_PLAN_PROFILE_ID,
             BuiltinDiscoveryKind::CatalogOnly,
-            ResponsesDialectKind::Doubao,
+            None,
         ),
         (
             QWEN_PROFILE_ID,
             BuiltinDiscoveryKind::CatalogOnly,
-            ResponsesDialectKind::Qwen,
+            Some(ResponsesDialectKind::Qwen),
         ),
     ]
     .into_iter()
@@ -176,14 +178,6 @@ pub(crate) fn openai_responses_compatible_catalog_files() -> Vec<CurrentCatalogF
     ])
 }
 
-pub(crate) fn openai_compatible_models_discovery(
-    provider_profile_id: impl Into<String>,
-    protocol_adapter_id: impl Into<String>,
-    transport: HttpTransport,
-) -> OpenAiCompatibleModelsDiscovery {
-    OpenAiCompatibleModelsDiscovery::new(provider_profile_id, protocol_adapter_id, transport)
-}
-
 #[cfg(test)]
 fn deepseek() -> BuiltinProviderDescriptor {
     configured_provider(DEEPSEEK_PROFILE_ID)
@@ -209,7 +203,7 @@ fn descriptor(
     known_provider: KnownProvider,
     provider_rules: ProviderRulesCatalog,
     discovery: BuiltinDiscoveryKind,
-    dialect: ResponsesDialectKind,
+    dialect: Option<ResponsesDialectKind>,
 ) -> BuiltinProviderDescriptor {
     let connection = known_provider
         .ui_hints
@@ -240,10 +234,12 @@ fn descriptor(
         known_provider.provider_rules_id.as_deref(),
         Some(provider_rules.provider_profile_id.as_str())
     );
-    assert_eq!(
-        known_provider.protocol_adapter_id,
-        dialect.contract().protocol_adapter_id
-    );
+    if let Some(dialect) = dialect {
+        assert_eq!(
+            known_provider.protocol_adapter_id,
+            dialect.contract().protocol_adapter_id
+        );
+    }
     BuiltinProviderDescriptor {
         profile: ProviderProfile {
             provider_profile_id: known_provider.provider_profile_id.clone(),
@@ -258,6 +254,18 @@ fn descriptor(
             refresh: RefreshPolicy::default(),
             default_inventory: None,
             accepts_any_adapter: false,
+            extra_protocol_adapters: known_provider
+                .extra_protocol_adapters
+                .iter()
+                .map(|client| crate::provider::ProtocolClientProfile {
+                    protocol_adapter_id: client.id.clone(),
+                    credential: client
+                        .credential
+                        .as_ref()
+                        .map(super::registry::credential_from_catalog),
+                })
+                .collect(),
+            state_namespace: known_provider.state_namespace.clone(),
         },
         connection,
         discovery,
@@ -324,39 +332,29 @@ impl OpenAiCompatibleModelsTransport for HttpTransport {
 }
 
 #[derive(Clone)]
+/// The OpenAI family's `{base}/models` list. `with_status` also reads the
+/// channel's per-model `status`, which Volcengine Ark reports.
 pub(crate) struct OpenAiCompatibleModelsDiscovery {
-    provider_profile_id: String,
-    protocol_adapter_id: String,
+    with_status: bool,
     transport: Arc<dyn OpenAiCompatibleModelsTransport>,
 }
 
-#[derive(Clone)]
-pub(crate) struct VolcengineArkModelsDiscovery(OpenAiCompatibleModelsDiscovery);
-
-impl VolcengineArkModelsDiscovery {
-    pub(crate) fn new(
-        provider_profile_id: impl Into<String>,
-        protocol_adapter_id: impl Into<String>,
-        transport: HttpTransport,
-    ) -> Self {
-        Self(OpenAiCompatibleModelsDiscovery::new(
-            provider_profile_id,
-            protocol_adapter_id,
-            transport,
-        ))
-    }
-}
-
 impl OpenAiCompatibleModelsDiscovery {
-    pub(crate) fn new(
-        provider_profile_id: impl Into<String>,
-        protocol_adapter_id: impl Into<String>,
-        transport: HttpTransport,
+    pub(crate) fn new(with_status: bool, transport: HttpTransport) -> Self {
+        Self {
+            with_status,
+            transport: Arc::new(transport),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_transport(
+        with_status: bool,
+        transport: Arc<dyn OpenAiCompatibleModelsTransport>,
     ) -> Self {
         Self {
-            provider_profile_id: provider_profile_id.into(),
-            protocol_adapter_id: protocol_adapter_id.into(),
-            transport: Arc::new(transport),
+            with_status,
+            transport,
         }
     }
 }
@@ -387,19 +385,11 @@ impl ProviderDiscovery for OpenAiCompatibleModelsDiscovery {
         &self,
         context: &DiscoveryContext<'_>,
     ) -> ProviderResult<ProviderDiscoverySnapshot> {
-        validate_openai_compatible_models_context(
-            context,
-            &self.provider_profile_id,
-            &self.protocol_adapter_id,
-        )?;
-        let request = openai_compatible_models_request(context, &self.provider_profile_id)?;
-        let (models, revision) = discover_model_ids(
-            self.transport.as_ref(),
-            request,
-            &self.provider_profile_id,
-            false,
-        )
-        .await?;
+        let provider = context.profile.provider_profile_id.as_str();
+        let request = openai_compatible_models_request(context, provider)?;
+        let (models, revision) =
+            discover_model_ids(self.transport.as_ref(), request, provider, self.with_status)
+                .await?;
         let snapshot = ProviderDiscoverySnapshot {
             revision,
             discovered_at_ms: super::super::now_ms()?,
@@ -409,162 +399,13 @@ impl ProviderDiscovery for OpenAiCompatibleModelsDiscovery {
         validate_discovery(&snapshot)?;
         Ok(snapshot)
     }
-}
-
-#[async_trait]
-impl ProviderDiscovery for VolcengineArkModelsDiscovery {
-    async fn discover(
-        &self,
-        context: &DiscoveryContext<'_>,
-    ) -> ProviderResult<ProviderDiscoverySnapshot> {
-        validate_openai_compatible_models_context(
-            context,
-            &self.0.provider_profile_id,
-            &self.0.protocol_adapter_id,
-        )?;
-        let request = openai_compatible_models_request(context, &self.0.provider_profile_id)?;
-        let (models, revision) = discover_volcengine_ark_models(
-            self.0.transport.as_ref(),
-            request,
-            &self.0.provider_profile_id,
-        )
-        .await?;
-        let snapshot = ProviderDiscoverySnapshot {
-            revision,
-            discovered_at_ms: super::super::now_ms()?,
-            health: ProviderHealthState::Healthy,
-            models,
-        };
-        validate_discovery(&snapshot)?;
-        Ok(snapshot)
-    }
-}
-
-pub(super) async fn discover_volcengine_ark_models(
-    transport: &dyn OpenAiCompatibleModelsTransport,
-    request: HttpRequest,
-    provider: &str,
-) -> ProviderResult<(Vec<DiscoveredModel>, Option<String>)> {
-    let limit = request.max_response_bytes.unwrap_or(1024 * 1024);
-    let response = transport
-        .send(request)
-        .await
-        .map_err(|error| ProviderError::Discovery(error.to_string()))?;
-    ensure_openai_compatible_models_success(&response, provider)?;
-    let revision = response
-        .headers
-        .get(ETAG)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    let value: serde_json::Value = response
-        .json(limit)
-        .map_err(|error| ProviderError::DiscoveryResponse(error.to_string()))?;
-    if value
-        .get("object")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|kind| kind != "list")
-    {
-        return Err(ProviderError::DiscoveryResponse(format!(
-            "{provider} models response must be a list"
-        )));
-    }
-    let data = value
-        .get("data")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| {
-            ProviderError::DiscoveryResponse(format!("{provider} models response requires data"))
-        })?;
-    let mut models = std::collections::BTreeMap::new();
-    for item in data {
-        let id = item
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .filter(|id| !id.trim().is_empty() && !id.contains('@'))
-            .ok_or_else(|| {
-                ProviderError::DiscoveryResponse(format!("{provider} invalid model id"))
-            })?;
-        if item
-            .get("object")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|kind| kind != "model")
-        {
-            return Err(ProviderError::DiscoveryResponse(format!(
-                "{provider} invalid model object"
-            )));
-        }
-        let mut model = catalog_model(id.into());
-        if matches!(
-            item.get("status").and_then(serde_json::Value::as_str),
-            Some("Retiring" | "Shutdown")
-        ) {
-            model.availability = ModelAvailability::Unavailable;
-            model.deprecated = true;
-        }
-        if let Some(task_types) = item.get("task_type").and_then(serde_json::Value::as_array) {
-            let mut api_types = Vec::new();
-            let mut add_api_type = |api_type| {
-                if !api_types.contains(&api_type) {
-                    api_types.push(api_type);
-                }
-            };
-            for task_type in task_types.iter().filter_map(serde_json::Value::as_str) {
-                match task_type {
-                    "text_generation" | "TextGeneration" => {
-                        add_api_type(ApiType::Llm);
-                    }
-                    "visual_question_answering" | "VisualQuestionAnswering" => {
-                        add_api_type(ApiType::VisionOcr);
-                        add_api_type(ApiType::VisionCaption);
-                    }
-                    "text_embedding" | "TextEmbedding" => {
-                        add_api_type(ApiType::EmbeddingText);
-                    }
-                    "image_embedding" | "ImageEmbedding" => {
-                        add_api_type(ApiType::EmbeddingMultimodal);
-                    }
-                    "text_to_image" | "TextToImage" => {
-                        add_api_type(ApiType::ImageTextToImage);
-                    }
-                    "image_to_image" | "ImageToImage" => {
-                        add_api_type(ApiType::ImageImageToImage);
-                    }
-                    "text_to_video"
-                    | "TextToVideo"
-                    | "image_to_video"
-                    | "ImageToVideo"
-                    | "multimodal_to_video"
-                    | "MultimodalToVideo" => {
-                        add_api_type(ApiType::VideoGenerate);
-                    }
-                    "video_editing" | "VideoEditing" => {
-                        add_api_type(ApiType::VideoEdit);
-                    }
-                    "video_extension" | "VideoExtension" => {
-                        add_api_type(ApiType::VideoExtend);
-                    }
-                    unknown => {
-                        log::warn!("{provider} model {id} has unsupported task_type {unknown}")
-                    }
-                }
-            }
-            if !task_types.is_empty() {
-                model.api_types = Some(api_types);
-            }
-        }
-        if models.insert(id.to_owned(), model).is_some() {
-            return Err(ProviderError::DiscoveryResponse(format!(
-                "{provider} duplicate model id {id}"
-            )));
-        }
-    }
-    Ok((models.into_values().collect(), revision))
 }
 
 pub(super) async fn discover_model_ids(
     transport: &dyn OpenAiCompatibleModelsTransport,
     request: HttpRequest,
     provider: &str,
-    strict: bool,
+    with_status: bool,
 ) -> ProviderResult<(Vec<DiscoveredModel>, Option<String>)> {
     let limit = request.max_response_bytes.unwrap_or(1024 * 1024);
     let response = transport
@@ -584,7 +425,6 @@ pub(super) async fn discover_model_ids(
         .get("object")
         .and_then(serde_json::Value::as_str)
         .is_some_and(|kind| kind != "list")
-        || (strict && value.get("object").and_then(serde_json::Value::as_str) != Some("list"))
     {
         return Err(ProviderError::DiscoveryResponse(format!(
             "{provider} models response must be a list"
@@ -609,31 +449,20 @@ pub(super) async fn discover_model_ids(
             .get("object")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|kind| kind != "model")
-            || (strict && item.get("object").and_then(serde_json::Value::as_str) != Some("model"))
         {
             return Err(ProviderError::DiscoveryResponse(format!(
                 "{provider} invalid model object"
             )));
         }
         let mut model = catalog_model(id.into());
-        if provider == "kimi" {
-            for (field, feature) in [("supports_reasoning", "reasoning")] {
-                if item.get(field).and_then(serde_json::Value::as_bool) == Some(false) {
-                    model.unsupported_features.insert(feature.into());
-                }
-            }
-            if item
-                .get("supports_image_in")
-                .and_then(serde_json::Value::as_bool)
-                == Some(false)
-                && item
-                    .get("supports_video_in")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(false)
-            {
-                model.unsupported_features.insert("vision".into());
-                model.api_types = Some(vec![ApiType::Llm]);
-            }
+        if with_status
+            && matches!(
+                item.get("status").and_then(serde_json::Value::as_str),
+                Some("Retiring" | "Shutdown")
+            )
+        {
+            model.availability = ModelAvailability::Unavailable;
+            model.deprecated = true;
         }
         if models.insert(id.to_owned(), model).is_some() {
             return Err(ProviderError::DiscoveryResponse(format!(
@@ -642,28 +471,6 @@ pub(super) async fn discover_model_ids(
         }
     }
     Ok((models.into_values().collect(), revision))
-}
-
-fn validate_openai_compatible_models_context(
-    context: &DiscoveryContext<'_>,
-    provider_profile_id: &str,
-    protocol_adapter_id: &str,
-) -> ProviderResult<()> {
-    if context.profile.provider_profile_id != provider_profile_id
-        || context.profile.default_protocol_adapter_id != protocol_adapter_id
-        || context.instance.provider_profile_id != provider_profile_id
-        || context.instance.protocol_adapter_id != protocol_adapter_id
-    {
-        return Err(ProviderError::InvalidConfiguration(format!(
-            "{provider_profile_id} discovery requires its Responses dialect"
-        )));
-    }
-    if context.instance.account.is_some() {
-        return Err(ProviderError::InvalidConfiguration(format!(
-            "{provider_profile_id} profile does not accept account fields"
-        )));
-    }
-    Ok(())
 }
 
 fn openai_compatible_models_request(
@@ -686,7 +493,7 @@ fn openai_compatible_models_request(
         .apply(&mut request.headers)
         .map_err(|error| ProviderError::Credential(error.to_string()))?;
     request.timeout = Some(Duration::from_secs(30));
-    request.max_response_bytes = Some(1024 * 1024);
+    request.max_response_bytes = Some(8 * 1024 * 1024);
     Ok(request)
 }
 
@@ -759,15 +566,6 @@ fn parse_openai_compatible_models(
     };
     validate_discovery(&snapshot)?;
     Ok(snapshot)
-}
-
-#[cfg(test)]
-fn validate_deepseek_context(context: &DiscoveryContext<'_>) -> ProviderResult<()> {
-    validate_openai_compatible_models_context(
-        context,
-        DEEPSEEK_PROFILE_ID,
-        DEEPSEEK_RESPONSES_ADAPTER_ID,
-    )
 }
 
 #[cfg(test)]
@@ -870,14 +668,18 @@ mod tests {
         );
         for provider in &providers {
             assert_eq!(provider.profile.credential.kind, CredentialKind::Bearer);
-            assert_eq!(
-                provider.profile.default_protocol_adapter_id,
-                provider.dialect.contract().protocol_adapter_id
-            );
-            assert_eq!(
-                provider.dialect.contract().base_adapter_id,
-                "openai-responses"
-            );
+            if let Some(dialect) = provider.dialect {
+                assert_eq!(
+                    provider.profile.default_protocol_adapter_id,
+                    dialect.contract().protocol_adapter_id
+                );
+                assert_eq!(dialect.contract().base_adapter_id, "openai-responses");
+            } else {
+                assert_eq!(
+                    provider.profile.default_protocol_adapter_id,
+                    "openai-responses"
+                );
+            }
         }
         assert_eq!(
             providers[3].connection.workspace.mode,
@@ -975,10 +777,10 @@ mod tests {
             assert_eq!(
                 rules.revision_seq,
                 match provider.profile.provider_profile_id.as_str() {
-                    DOUBAO_PROFILE_ID => 17,
-                    DOUBAO_AGENT_PLAN_PROFILE_ID => 14,
-                    DEEPSEEK_PROFILE_ID => 6,
-                    QWEN_PROFILE_ID => 15,
+                    DOUBAO_PROFILE_ID => 18,
+                    DOUBAO_AGENT_PLAN_PROFILE_ID => 15,
+                    DEEPSEEK_PROFILE_ID => 7,
+                    QWEN_PROFILE_ID => 16,
                     "openai" => 4,
                     _ => 3,
                 }
@@ -1129,7 +931,6 @@ mod tests {
             instance: &instance,
             credential: &credential,
         };
-        validate_deepseek_context(&context).unwrap();
         let request = deepseek_models_request(&context).unwrap();
         assert_eq!(request.method, Method::GET);
         assert_eq!(request.url, "https://api.deepseek.com/models");
@@ -1217,7 +1018,7 @@ mod tests {
                 .find(|model| model.provider_model_id == model_id)
                 .unwrap();
             assert!(model.api_types.contains(&ApiType::Llm));
-            assert_eq!(model.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
+            assert_eq!(model.operation_ids()["llm"], OPENAI_RESPONSES_OPERATION_ID);
             if profile_id == DEEPSEEK_PROFILE_ID {
                 assert_eq!(
                     model
@@ -1298,33 +1099,18 @@ mod tests {
             vec!["audio.asr", "audio.tts"]
         );
 
-        let provider = descriptor(
-            known,
-            rules,
-            BuiltinDiscoveryKind::CatalogOnly,
-            ResponsesDialectKind::Doubao,
-        );
+        let provider = descriptor(known, rules, BuiltinDiscoveryKind::CatalogOnly, None);
         assert_eq!(
             provider.profile.provider_profile_id,
             DOUBAO_SPEECH_PROFILE_ID
         );
         assert_eq!(provider.profile.discovery_mode, DiscoveryMode::CatalogOnly);
+        assert_eq!(
+            provider.profile.default_protocol_adapter_id,
+            "doubao-speech"
+        );
 
-        let mut codecs = CodecRegistry::default();
-        let (base_descriptor, base_registration) = openai_responses_adapter();
-        codecs
-            .register_codecs(base_descriptor, base_registration)
-            .unwrap();
-        for (descriptor, registration) in [
-            crate::protocol::doubao_media_adapter(),
-            crate::protocol::doubao_speech_adapter(),
-            crate::protocol::qwen_media_adapter(),
-        ] {
-            codecs.register_codecs(descriptor, registration).unwrap();
-        }
-        for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
-            codecs.register_derived(descriptor, registration).unwrap();
-        }
+        let codecs = crate::protocol::builtin_codecs_for_test();
 
         let instance = |enabled: Option<BTreeSet<String>>| ProviderInstanceConfig {
             provider_instance_name: "doubao-speech-main".to_owned(),
@@ -1383,7 +1169,7 @@ mod tests {
             match model.provider_model_id.as_str() {
                 "doubao-seed-tts-2.0" => {
                     assert!(model.api_types.contains(&ApiType::AudioTextToSpeech));
-                    assert_eq!(model.operations["audio.tts"], "tts.unidirectional");
+                    assert_eq!(model.operation_ids()["audio.tts"], "tts.unidirectional");
                     assert!(model
                         .logical_mounts
                         .iter()
@@ -1391,7 +1177,7 @@ mod tests {
                 }
                 "doubao-seed-asr-2.0" => {
                     assert!(model.api_types.contains(&ApiType::AudioSpeechRecognition));
-                    assert_eq!(model.operations["audio.asr"], "asr.recognize.submit");
+                    assert_eq!(model.operation_ids()["audio.asr"], "asr.recognize.submit");
                     assert!(model
                         .logical_mounts
                         .iter()
@@ -1399,7 +1185,7 @@ mod tests {
                 }
                 "doubao-seed-asr-2.0-fast" => {
                     assert!(model.api_types.contains(&ApiType::AudioSpeechRecognition));
-                    assert_eq!(model.operations["audio.asr"], "asr.recognize.flash");
+                    assert_eq!(model.operation_ids()["audio.asr"], "asr.recognize.flash");
                     assert!(model
                         .logical_mounts
                         .iter()
@@ -1407,7 +1193,10 @@ mod tests {
                 }
                 "doubao-seed-asr-2.0-idle" => {
                     assert!(model.api_types.contains(&ApiType::AudioSpeechRecognition));
-                    assert_eq!(model.operations["audio.asr"], "asr.recognize.idle.submit");
+                    assert_eq!(
+                        model.operation_ids()["audio.asr"],
+                        "asr.recognize.idle.submit"
+                    );
                 }
                 other => panic!("unexpected doubao-speech static model `{other}`"),
             }

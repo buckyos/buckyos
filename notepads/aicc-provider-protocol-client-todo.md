@@ -549,4 +549,67 @@ owner 2026-11-27 的答复，引号里是原话。
 
 ## 9. 实施记录
 
-（实施时在这里记：每个任务的落点、与本文的偏差、基线失败清单、残余差异的核对结论、没有验证的部分。）
+2026-11-27 实施，未提交。除 P1-11 外的第一步任务都已落地；P1-11 按本文“可延后，单独合入”留到下一步。
+
+### 9.1 落点
+
+- **P1-0 快照**：`provider/builtin/wire_snapshot_tests.rs`（每个内置 Provider 每个模型的请求、流式、多轮、variant 和按 URL 选的解码夹具，存摘要到 `wire_snapshots.golden`）；`provider/builtin/inventory_snapshot_tests.rs`（库存：API 类型、能力、operation、variant、挂载、价格，724 条，`inventory_snapshots.golden`；另有发现请求快照 `discovery_snapshots.json`，记 URL 和头的名字）。环境变量：`AICC_WIRE_SNAPSHOT_DUMP/UPDATE/DEBUG`、`AICC_INVENTORY_SNAPSHOT_DUMP/UPDATE`、`AICC_DISCOVERY_SNAPSHOT_UPDATE`。基线取自原提交 `37e48f4d9`。
+- **绑定与解析**：新文件 `protocol/binding.rs`（`BindingRef` 即 `客户端/operation`、`ProtocolClientSet`、统一解析 `resolve_binding`）。库存、模型表、路由里存的都是带客户端的写法；`SelectedRoute` 拆出 `protocol_adapter_id` 和 `operation`。
+- **Catalog**：Known Provider 的 `extra_protocol_adapters: [{id, credential?}]`、`state_namespace`；规则级 `protocol_adapter_id`；Provider Rules 的 `model_driver_vendor_prefixes`。用到这些字段的文件要求 `schema_revision` 2（`catalog/validation.rs`）。`INVENTORY_SCHEMA_VERSION` 升到 3。
+- **凭据**（§4.4）：`ProviderProfile::credential_for_client`。顺序：实例显式的 `credential_kind`，默认客户端用 Known Provider 顶层凭据，额外客户端用它声明的 `credential`，最后是客户端自己的描述。
+- **命名空间**（§4.5）：`CodecContext.state_namespace`；执行层 `finish_provider_state` 把客户端族的命名空间改成声明的那个，覆盖立即、流式、原生任务三处。
+- **settings**：`ProviderSettings.protocol_adapter_id` 改为可选，只有 `custom` 读；托管 SN 不再写它（`kernel/scheduler/src/system_config_builder.rs`）。
+- **客户端拆分与迁移**：OpenAI 平台拆成 `openai-embeddings`、`openai-images`、`openai-audio`、`openai-videos`；新增 `legacy-openai-chat-completions`、`legacy-claude-messages`、`rerank`、`openrouter-native`、`gemini-generate-content`；删除 `sn-openai`、`kimi-chat`、`doubao-responses`、`qwen-aggregated-chat`；`glm-media` 改名 `glm-video` 只留视频。各家 metadata 按 §4.6 改写。客户端清单见 `doc/aicc/protocol_clients.md`（由 `protocol/client_catalog_tests.rs` 校验）。
+- **P1-12**：`protocol/gemini_generate_content.rs`；review 记录在 `notepads/gemini-generate-content-review.md`。Gemini 官方 profile 的 LLM 仍走 Interactions，向量和 Veo 改引用新客户端，URL 不变；自定义开放的 Gemini 客户端从 `gemini-interactions` 换成 `gemini-generate-content`。
+- **P1-13**：`discovery_behavior_id` 只剩 `standard-models`、`catalog-only`、`openrouter-models`、`volcengine-ark-models`、`sn-models`。OpenAI 族一份实现（`OpenAiCompatibleModelsDiscovery`，方舟只多读 `status`），Claude 族按默认客户端是否派生自 `legacy-claude-messages` 决定发不发版本头，Gemini 族一份。TypeSafe 别名进 `typesafe.provider.json` 的 `model_driver_overrides`，`typesafe.rs` 删除。OpenRouter 厂商前缀进 `model_driver_vendor_prefixes`，通用匹配链在 `provider/inventory.rs` 的身份解析里。
+- **文档能力**（P1-7 里 agent_tool 一项）：新增特性 `document`（`buckyos_api::features::DOCUMENT`）。`claude-messages`、`openai-responses`、`gemini-interactions`（两个 LLM 绑定）、`gemini-generate-content` 的 LLM 绑定声明它；OpenAI、Claude、Gemini 三个 Model Driver 里带 vision 的 LLM 模型标 `document: true`（Gemma 不标）；OpenRouter、SN 的规则 `remove_features: ["document"]`。`agent_tool` 改读 `route_resolve` 的 `enabled_capabilities`，删除按 Adapter ID 的白名单。
+- **P1-8**：`component_adapter_ids` 和跨族分支删除；`typesafe-systemone`、`gemini-interactions` 不再对自定义开放；`legacy-openai-chat-completions`、`legacy-claude-messages` 对自定义开放（分别挂在 openai、claude 规则的 `custom_provider_adapters`）。
+- **P1-9**：`buckyos-api`（去掉 `component_adapter_ids`，catalog 视图加 `extra_protocol_adapters`、`state_namespace`）；websdk `src/aicc_client.ts`（dist 已重建）；Desktop AI Center（客户端集合、“客户端 · operation”、规则编辑器读写带客户端的写法和规则级客户端，导出时自动升 `schema_revision` 2；Known Provider 不再发 `protocol_adapter_id`；新文案键 `aiCenter.providers.protocolClients` 的 8 种语言翻译是实施时写的）；`tools/buckyos-agent/commands/ai_provider.ts`；`buckyos_admin` 手册 `references/providers.md`。
+- **P1-10**：见 `doc/aicc/` 下各文档的改动。
+
+### 9.2 快照验收
+
+- wire 快照：每个任务后都与基线一致。接受的变化只有两条，都是 §4.7 预期的：`kimi|kimi-k2.6|llm|decode:chat_without_object`、`qwen|MiniMax/MiniMax-M2.1|llm|decode:chat_without_object`，从报错变成正常解码（生态口径补 `object`）。
+- 发现请求快照：P1-13 前后一致，包括 Claude 发 `anthropic-version`、MiniMax 不发。
+- 库存快照：迁移全程与基线一致。接受的变化只有一项：OpenAI、Claude、Gemini 官方 Provider 上 47 个模型多了 `document` 能力；OpenRouter、SN 不变。
+- 测试：`cargo test -p aicc -- --test-threads=1` 822 过；`agent_tool` 372 过（grep 工具的用例要 `rg` 在 PATH 里）；`buckyos-api` 全过；`scheduler` 串行 92 + 21 过（并行时 `system_config_agent` 有 1 到 3 个用例互相干扰，原提交上同样会失败）；websdk `aicc_client` 18 过；Desktop `pnpm check` 通过、相关 Deno 用例 38 过；`ai_provider_test.ts` 2 过。Desktop `ai-center.spec.ts` 5 个里 2 个失败，原因是首页 `/Est\. Cost/` 选择器与现在的文案 “Est. cost” 大小写不一致，以及豆包 TTS 的 mock 缺字段，与本次改动无关。
+- 测试数从原来的 806 个用例名变成 822 个。删掉的 15 个都是测已删除代码的（`sn-openai` 视频、Kimi 和千问聚合方言、方言内的命名空间改写、OpenAI 七个 operation 的注册、方舟 `task_type`）。实施中一度误删的 4 个 SN 用例（发现、错误、动态登录、凭据代理）已恢复。
+
+### 9.3 与本文的偏差
+
+- **解析顺序**（§4.3）：没有采用“先在主客户端里选”。实际是在实例全部客户端里取 `default_priority` 最高的正值，同分时主客户端优先；0 只能显式选。理由：OpenAI 拆分后，自定义 `openai-responses` 实例的图片默认要落到 `openai-images`，而主客户端里的 `responses.background` 之类不能抢走 `vision.ocr`。因此普通绑定的默认优先级改为 1，`responses.background`、Chat 做的 ASR、`video.extend` 等用 `explicit_only()` 设 0。
+- **`doubao-speech` 的凭据**改为 `named_header`（`x-api-key`），原来是代码里写死。
+- **发现**：响应校验统一用宽松口径（不再强制 `object: list/model`）；列表响应上限统一为 8 MiB（原来 OpenAI、Kimi 是 8 MiB，其余 OpenAI 族是 1 MiB）。Known Provider 改了 base 且 base 没有路径时，OpenAI 和 Kimi 的发现地址从 `/v1/models` 变为 `/models`（内置 base 不受影响，快照不变），P1-11 统一 endpoint 时一起定。
+- **Kimi 的 thinking 校验放宽**：原来只接受 `keep: "all"`，现在走生态口径，只校验 `type`。
+- **`rerank` 未能对自定义开放**（§3.4 写的是“是”）：`custom_provider_adapters` 要求与挂靠的 Known Provider 默认客户端同族，现在没有默认客户端是 rerank 族的 Known Provider。
+- **方言比 §3.4 多 3 个**：`glm-chat`、`minimax-messages`、`deepseek-responses` 仍在，见下节。
+
+### 9.4 残余差异（待 owner 定）
+
+- `glm-chat`：只剩流式 `tool_stream` 增量的归一化。内置规则不开 `tool_stream`，内置 Provider 上不会触发。
+- `minimax-messages`：`base_resp` 错误信封（HTTP 200 也可能是错误）；图片按内联字节发送。都表达不成配置。
+- `deepseek-responses`：只差 base 无路径时用 `/responses`，等 P1-11。
+- Kimi：`partial` 前缀续写丢弃。
+- OpenRouter Chat：原 `openrouter-chat` 的纯文本模态声明丢弃；内置规则没有用 OpenRouter Chat 做 LLM。
+- `qwen-responses`、`openrouter-responses` 的残余写在 `doc/aicc/protocol_clients.md`。另外 Responses 方言里还保留着给上游请求的命名空间写法（`state_coordinate`），与 §4.5 的 `state_namespace` 有重叠，没有动。
+- Kimi、GLM、千问、MiniMax、DeepSeek、OpenRouter、豆包（含 Agent Plan）声明了 `state_namespace`。拒答之类的 provider state 现在也落在这些命名空间下。
+
+### 9.5 核对结论与报告项
+
+- **自定义实例选媒体客户端做默认时，LLM 报歧义**：默认客户端是 `openai-audio`、`openai-embeddings`、`openai-images`、`openai-videos` 时，它没有 LLM 和 vision 绑定，集合里 `openai-responses`、`openai-chat-completions`、`legacy-openai-chat-completions` 同为 1，按 §4.3 第 3 条报歧义。歧义在库存构建里是错误，网关列表里只要有一个 LLM 模型，整个实例的库存就建不起来。默认客户端是 `openai-responses` 或 `openai-chat-completions` 时没有这个问题。要 owner 定：歧义改成只过滤该模型的这个 API 类型；或在协议族默认规则里写 LLM 的默认绑定；或向导里不让媒体客户端做默认；或维持现状，要求用户写映射。
+  - owner 11-27 的处理：常见 Provider 也可能像官方一样由多个协议客户端组合而成，只选一个，其余就要靠猜。以后自定义 Provider 改成只填 endpoint 和 token，客户端经标准探测流程得出；本版本先关闭添加入口（Desktop 向导去掉 Custom Provider 卡片，`buckyos_admin` 手册同步，4 个经向导新建 custom 的 e2e 用例改为 skip；后端和已有实例不变）。另立 TODO：`notepads/aicc-custom-provider-auto-probe-todo.md`，§6 的第二步思路并入那里。
+
+- **SN 视频**：OpenAI 文档写的 Videos API 下线日期是 2026-09-24。官方 `POST /videos/extensions`、`/videos/edits` 用 JSON `video: {id}`，不带 `model`；没有取消接口，`DELETE` 是删除已完成或失败的视频，而 `openai-videos` 把 `DELETE` 当取消用。SN（LiteLLM）的 extend 和 edit 要带 `model`。SN 的 wan-3.0 在规则里是排除的，所以这几条都不可达，没有进 `openai-videos`。
+- **Gemini**（P1-12 review，详见 review 文件 §0）：LiteLLM 实现了 Interactions，与 Q6 和 §3.3 “只有官方” 的判断不一致，`gemini-interactions` 是否对自定义开放请 owner 重新确认；Google 已把 `generateContent` 称为 legacy（仍完全支持）；v1 已是稳定版、SDK 默认 v1，新客户端在 base 无路径时仍补 `/v1beta`。
+- **直接发文档**：方舟、DeepSeek、SN、OpenRouter 的 Responses 是否接受 `input_file` 都没有核对。现在的结果与迁移前一致：OpenRouter、SN 用规则关掉；方舟、DeepSeek、千问因为 Model Driver 没有 `document` 能力，自然不发。另一个变化：三家官方 Provider 上没有 vision 的 LLM 模型不再直接发文档，改走转换。
+- **列表里的模型事实**（N2 第 1 条）：本次没有 Kimi、方舟的 key，没能用真实列表对比前后的库存。目录里 7 个 Kimi 模型都已声明 vision 和 reasoning；方舟 `task_type` 的作用是收窄 API 类型，去掉后由 Model Driver 决定。上线前建议用真实列表各对比一次。
+- **SN `/models`**（N2 第 2 条）：没有核对真实 SN 的 `{base}/models`，`sn-models` 保留。
+- **Jev 常量**（`openrouter.rs`、`openrouter_decisions.rs`）：渠道 ID 到 `typesafe/jev-1.13.0` 的身份可以写成 `model_driver_overrides`；但 build ID（`canonical_slug`）、上下文 32000、输入输出模态这几项校验是“列表里的字段必须等于某值，否则不可用”，现有规则表达不了，没有改。
+- **Moonshot 列表**：官方文档列出 `supports_image_in`、`supports_video_in`、`supports_reasoning`、`context_length` 字段，没有示例值。
+
+### 9.6 没做、没验证
+
+- P1-11 没做：`operation_base_urls`、MiniMax 媒体和千问媒体的路径改写、豆包语音逐 operation 地址、rerank 的 `/api/v1`、fal 价格地址、`deepseek-responses` 都还在。
+- 真实环境没有验证：本机 Zone 上的托管 SN（LLM、图片、ASR、视频）和各家真实调用都没跑；`test/aicc_test/acceptance` 的 T1 没跑（要部署新 AICC 并重启，重启 AICC 要 root）。`cargo build -p aicc --release --target x86_64-unknown-linux-musl` 通过，产物在 `src/target/x86_64-unknown-linux-musl/release/aicc`，没有替换到 `/opt/buckyos/bin/aicc/`。
+- 云端目录按新格式发布（Q10）没有做，需要发布时按新格式直接发。
+- websdk 重建 dist 时，两个 `aiws_write-*` 的 source map 跟着变了，与本次无关。

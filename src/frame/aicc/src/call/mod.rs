@@ -42,6 +42,9 @@ pub(crate) struct ResolvedPricing {
 #[derive(Clone)]
 pub(crate) struct ProviderCallTarget {
     pub provider_rules_id: Option<String>,
+    /// The instance's protocol clients; rules may bind any of them.
+    pub protocol_clients: crate::protocol::ProtocolClientSet,
+    pub state_namespace: Option<String>,
     pub use_server_defaults: bool,
     pub base_url: String,
     pub operation_base_urls: BTreeMap<String, String>,
@@ -341,9 +344,9 @@ impl<'a> CallResolver<'a> {
             .flatten();
         let operation = self.resolve_operation(
             &decision.selected,
+            &target.protocol_clients,
             provider_rule.as_ref(),
             api_type,
-            &method,
         )?;
         let mut canonical_json = serialize_call(canonical_request)?;
         let option_keys = canonical_option_keys(canonical_request)?;
@@ -356,6 +359,7 @@ impl<'a> CallResolver<'a> {
         }
         let variant_options = self.resolve_variant(
             target.provider_rules_id.as_deref(),
+            &target.protocol_clients.default,
             &decision.selected,
             parsed_exact.variant(),
             &identity_context,
@@ -641,6 +645,7 @@ impl<'a> CallResolver<'a> {
             pricing.estimated_cost = None;
         }
         let context = CodecContext {
+            state_namespace: target.state_namespace,
             base_url,
             state_coordinate: buckyos_api::ProviderStateCoordinate {
                 provider_profile_id: decision.selected.provider_profile_id.clone(),
@@ -696,30 +701,34 @@ impl<'a> CallResolver<'a> {
     fn resolve_operation(
         &self,
         selected: &SelectedRoute,
+        clients: &crate::protocol::ProtocolClientSet,
         rule: Option<&ResolvedProviderRule>,
         api_type: ApiType,
-        method: &str,
     ) -> Result<String, CallLoweringError> {
         let empty = BTreeMap::new();
         let mappings = rule.map_or(&empty, |rule| &rule.action.operations);
-        let operation = if mappings.is_empty() {
+        let routed = crate::protocol::BindingRef::new(
+            selected.protocol_adapter_id.clone(),
+            selected.operation.clone(),
+        );
+        let lowered = if mappings.is_empty() {
             self.codecs
-                .operation_descriptor(&selected.protocol_adapter_id, &selected.operation, api_type)
+                .operation_descriptor(&routed.protocol_adapter_id, &routed.operation_id, api_type)
                 .map_err(|error| CallLoweringError::UnsupportedOperation(error.to_string()))?;
-            selected.operation.clone()
+            routed.clone()
         } else {
             select_operation(
                 self.codecs,
-                &selected.protocol_adapter_id,
+                clients,
+                rule.and_then(|rule| rule.action.protocol_adapter_id.as_deref()),
                 mappings,
                 api_type,
-                method,
             )?
         };
-        if selected.operation != operation {
+        if routed != lowered {
             return Err(CallLoweringError::RouteOperationMismatch {
-                routed: selected.operation.clone(),
-                lowered: operation,
+                routed: routed.qualified(),
+                lowered: lowered.qualified(),
             });
         }
         Ok(selected.operation.clone())
@@ -728,6 +737,7 @@ impl<'a> CallResolver<'a> {
     fn resolve_variant(
         &self,
         rules_id: Option<&str>,
+        default_adapter_id: &str,
         selected: &SelectedRoute,
         variant: Option<&str>,
         context: &MatchContext,
@@ -742,7 +752,7 @@ impl<'a> CallResolver<'a> {
                 }
                 self.catalog
                     .llm_model(&selected.model_driver_id, &selected.origin_model_id)?;
-                let adapter = self.codecs.adapter(&selected.protocol_adapter_id)?;
+                let adapter = self.codecs.adapter(default_adapter_id)?;
                 self.catalog.protocol_default_rules_id(
                     &adapter.protocol_family_id,
                     &adapter.protocol_adapter_id,
@@ -782,68 +792,41 @@ impl<'a> CallResolver<'a> {
 
 fn select_operation(
     codecs: &CodecRegistry,
-    adapter_id: &str,
+    clients: &crate::protocol::ProtocolClientSet,
+    rule_adapter_id: Option<&str>,
     mappings: &BTreeMap<String, String>,
     api_type: ApiType,
-    method: &str,
-) -> Result<String, CallLoweringError> {
-    let api_name = api_type_name(api_type);
-    let configured = mappings
-        .get(method)
-        .or_else(|| mappings.get(api_name))
-        .cloned();
-    let operation = match configured {
-        Some(operation) => operation,
-        None => {
-            let adapter = codecs
-                .adapter(adapter_id)
-                .ok_or_else(|| CallLoweringError::UnknownAdapter(adapter_id.into()))?;
-            let matching = adapter
-                .operations
-                .values()
-                .filter(|operation| {
-                    operation
-                        .bindings
-                        .iter()
-                        .any(|binding| binding.api_type == api_type)
-                })
-                .map(|operation| {
-                    let priority = operation
-                        .bindings
-                        .iter()
-                        .filter(|binding| binding.api_type == api_type)
-                        .map(|binding| binding.default_priority)
-                        .max()
-                        .unwrap_or_default();
-                    (operation.operation_id.clone(), priority)
-                })
-                .collect::<Vec<_>>();
-            let highest_priority = matching.iter().map(|(_, priority)| *priority).max();
-            let matching = matching
-                .into_iter()
-                .filter(|(_, priority)| Some(*priority) == highest_priority)
-                .collect::<Vec<_>>();
-            match matching.as_slice() {
-                [] => {
-                    return Err(CallLoweringError::MissingDefaultOperation {
-                        adapter_id: adapter_id.into(),
-                        api_type: api_name.into(),
-                    });
-                }
-                [(operation, _)] => operation.clone(),
-                _ => {
-                    return Err(CallLoweringError::AmbiguousDefaultOperation {
-                        adapter_id: adapter_id.into(),
-                        api_type: api_name.into(),
-                    });
+) -> Result<crate::protocol::BindingRef, CallLoweringError> {
+    let query = crate::protocol::BindingQuery {
+        clients,
+        rule_adapter_id,
+        overrides: mappings,
+        remote_methods: None,
+        api_type,
+        default_operation: None,
+    };
+    let adapter_id = query.primary_adapter_id().to_owned();
+    let binding = crate::protocol::resolve_binding(codecs, &query)
+        .map_err(|error| match error {
+            crate::protocol::BindingResolveError::UnknownAdapter(adapter) => {
+                CallLoweringError::UnknownAdapter(adapter)
+            }
+            crate::protocol::BindingResolveError::Ambiguous { .. } => {
+                CallLoweringError::AmbiguousDefaultOperation {
+                    adapter_id: adapter_id.clone(),
+                    api_type: api_type_name(api_type).into(),
                 }
             }
-        }
-    };
+            error => CallLoweringError::UnsupportedOperation(error.to_string()),
+        })?
+        .ok_or_else(|| CallLoweringError::MissingDefaultOperation {
+            adapter_id: adapter_id.clone(),
+            api_type: api_type_name(api_type).into(),
+        })?;
     codecs
-        .operation_descriptor(adapter_id, &operation, api_type)
+        .operation_descriptor(&binding.protocol_adapter_id, &binding.operation_id, api_type)
         .map_err(|error| CallLoweringError::UnsupportedOperation(error.to_string()))?;
-    Ok(operation)
+    Ok(binding)
 }
 
 fn validate_route(
@@ -1436,14 +1419,57 @@ fn resolve_pricing(
 
 #[cfg(test)]
 mod tests {
+    fn openai_clients() -> crate::protocol::ProtocolClientSet {
+        crate::protocol::ProtocolClientSet {
+            default: "openai-responses".into(),
+            extras: vec![
+                "openai-embeddings".into(),
+                "openai-images".into(),
+                "openai-audio".into(),
+                "openai-videos".into(),
+            ],
+        }
+    }
+
+    fn select_in(
+        codecs: &CodecRegistry,
+        clients: &crate::protocol::ProtocolClientSet,
+        mappings: &BTreeMap<String, String>,
+        api_type: ApiType,
+    ) -> String {
+        select_operation(codecs, clients, None, mappings, api_type)
+            .unwrap()
+            .qualified()
+    }
+
+    fn select_operation_in(
+        codecs: &CodecRegistry,
+        adapter_id: &str,
+        mappings: &BTreeMap<String, String>,
+        api_type: ApiType,
+        _method: &str,
+    ) -> Result<String, CallLoweringError> {
+        let clients = if adapter_id == "openai-responses" {
+            openai_clients()
+        } else {
+            crate::protocol::ProtocolClientSet::single(adapter_id)
+        };
+        select_operation(codecs, &clients, None, mappings, api_type).map(|binding| {
+            if binding.protocol_adapter_id == adapter_id {
+                binding.operation_id
+            } else {
+                binding.qualified()
+            }
+        })
+    }
+
     use super::*;
     use crate::canonical::{CanonicalFallback, CanonicalFieldConverter};
     use crate::catalog::{
         CatalogBuildOptions, CatalogDocuments, CatalogKind, CurrentCatalogFile, ModelDriverCatalog,
         ProviderRulesCatalog, ResolvedProviderConfiguration,
     };
-    use crate::protocol::{openai_responses_adapter, CodecRegistry};
-    use crate::provider::claude_messages_adapter;
+    use crate::protocol::CodecRegistry;
     use crate::routing::{RouteModelKind, RoutingTrace, ScoreBreakdown, UserFacingRouteSummary};
     use buckyos_api::{
         AiMessage, AiRole, EmbeddingTextRequest, LlmChatInvokeRequest, VideoGenerateRequest,
@@ -1473,7 +1499,7 @@ mod tests {
         let mut rules_json = json!({
             "format": "buckyos.aicc.provider-rules-catalog",
             "schema_version": 1,
-            "schema_revision": 0,
+            "schema_revision": 2,
             "revision_seq": 9,
             "provider_profile_id": "openai",
             "models": [{
@@ -1481,7 +1507,7 @@ mod tests {
                 "operations": {
                     "llm": "responses.create",
                     "chat.completions.create": "responses.create",
-                    "embedding.text": "embeddings.create"
+                    "embedding.text": "openai-embeddings/embeddings.create"
                 },
                 "provider_options": {
                     "reasoning": {"effort": "minimal"},
@@ -1532,59 +1558,11 @@ mod tests {
     }
 
     fn codecs() -> CodecRegistry {
-        let mut registry = CodecRegistry::default();
-        let (descriptor, codecs) = openai_responses_adapter();
-        registry.register_codecs(descriptor, codecs).unwrap();
-        registry
+        crate::protocol::builtin_codecs_for_test()
     }
 
     fn all_codecs() -> CodecRegistry {
-        use crate::protocol::{
-            doubao_media_adapter, doubao_speech_adapter, fal_queue_adapter,
-            gemini_interactions_adapter, glm_chat_adapter, glm_media_adapter, kimi_chat_adapter,
-            minimax_media_adapter, minimax_messages_adapter, openai_chat_completions_adapter,
-            openai_responses_compatible_adapters, openrouter_responses_adapter, qwen_media_adapter,
-        };
-        use crate::provider::register_sn_openai_adapter;
-
-        let mut registry = CodecRegistry::default();
-        let (responses, registration) = openai_responses_adapter();
-        registry.register_codecs(responses, registration).unwrap();
-        for (descriptor, registration) in [doubao_media_adapter(), qwen_media_adapter()] {
-            registry.register_codecs(descriptor, registration).unwrap();
-        }
-        let (speech, registration) = doubao_speech_adapter();
-        registry.register_codecs(speech, registration).unwrap();
-        for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
-            registry.register_derived(descriptor, registration).unwrap();
-        }
-        register_sn_openai_adapter(&mut registry).unwrap();
-
-        let (claude, registration) = claude_messages_adapter();
-        registry.register_codecs(claude, registration).unwrap();
-        let (media, registration) = minimax_media_adapter();
-        registry.register_codecs(media, registration).unwrap();
-        let (minimax, registration) = minimax_messages_adapter();
-        registry.register_derived(minimax, registration).unwrap();
-
-        let (gemini, registration) = gemini_interactions_adapter();
-        registry.register_codecs(gemini, registration).unwrap();
-        let (chat, registration) = openai_chat_completions_adapter();
-        registry.register_codecs(chat, registration).unwrap();
-        let (media, registration) = glm_media_adapter();
-        registry.register_codecs(media, registration).unwrap();
-        for (descriptor, registration) in [
-            openrouter_responses_adapter(),
-            kimi_chat_adapter(),
-            glm_chat_adapter(),
-        ] {
-            registry.register_derived(descriptor, registration).unwrap();
-        }
-        let (typesafe, registration) = crate::protocol::typesafe::typesafe_adapter();
-        registry.register_codecs(typesafe, registration).unwrap();
-        let (fal, registration) = fal_queue_adapter();
-        registry.register_codecs(fal, registration).unwrap();
-        registry
+        crate::protocol::builtin_codecs_for_test()
     }
 
     fn metadata_snapshot() -> CatalogSnapshot {
@@ -1795,6 +1773,7 @@ mod tests {
         route.selected.provider_instance_name = "openai-main".into();
         route.selected.provider_model_id = "sora-2-pro".into();
         route.selected.origin_model_id = "sora-2-pro".into();
+        route.selected.protocol_adapter_id = "openai-videos".into();
         route.selected.operation = "videos.create".into();
         route.selected.enabled_capabilities = Vec::new();
         route.trace.api_type = "video.generate".into();
@@ -1808,6 +1787,8 @@ mod tests {
     fn target(secret: &str) -> ProviderCallTarget {
         ProviderCallTarget {
             provider_rules_id: Some("openai".into()),
+            protocol_clients: openai_clients(),
+            state_namespace: None,
             use_server_defaults: false,
             base_url: "https://api.openai.test/v1".into(),
             operation_base_urls: BTreeMap::new(),
@@ -1993,8 +1974,10 @@ mod tests {
             route.selected.provider_model_id = model_id.into();
             route.selected.origin_model_id = origin.into();
             let mut target = target("test-secret");
+            target.protocol_clients =
+                crate::protocol::ProtocolClientSet::single(route.selected.protocol_adapter_id.clone());
             assert!(matches!(
-                resolver.resolve_variant(None, &route.selected, Some(&format!("reasoning-{effort}")), &MatchContext::new()),
+                resolver.resolve_variant(None, &route.selected.protocol_adapter_id, &route.selected, Some(&format!("reasoning-{effort}")), &MatchContext::new()),
                 Err(CallLoweringError::MissingProviderVariant { .. })
             ));
             target.provider_rules_id = Some("openai".into());
@@ -2155,7 +2138,7 @@ mod tests {
         route.selected.model_uid = format!("minimax:{origin}:openrouter-responses");
         route.selected.provider_instance_name = "openrouter-main".into();
         route.selected.provider_profile_id = "openrouter".into();
-        route.selected.protocol_adapter_id = "openrouter-responses".into();
+        route.selected.protocol_adapter_id = "openrouter-native".into();
         route.selected.model_driver_id = "minimax".into();
         route.selected.origin_model_id = origin.into();
         route.selected.provider_model_id = model.into();
@@ -2164,6 +2147,8 @@ mod tests {
         route.trace.api_type = "video.generate".into();
         route.trace.selected_provider_instance_name = "openrouter-main".into();
         let mut target = target("sk-or");
+        target.protocol_clients =
+            crate::protocol::ProtocolClientSet::single(route.selected.protocol_adapter_id.clone());
         target.provider_rules_id = Some("openrouter".into());
         target.base_url = "https://openrouter.ai/api/v1".into();
         target.video_contract = Some(crate::video::test_support::openrouter_contract(model));
@@ -2423,10 +2408,11 @@ mod tests {
         request.execution_mode = AiccExecutionMode::Stream;
         let call = AiccCall::EmbeddingText(request);
         let mut route = decision(call_exact_model(&call).unwrap());
+        route.selected.protocol_adapter_id = "openai-embeddings".into();
         route.selected.operation = "embeddings.create".into();
 
         let error = resolver.lower(&route, &call, target("secret")).unwrap_err();
-        assert_eq!(error.code(), AiccErrorCode::UnsupportedExecutionMode);
+        assert_eq!(error.code(), AiccErrorCode::UnsupportedExecutionMode, "{error:?}");
         assert!(matches!(
             error,
             CallLoweringError::UnsupportedExecutionMode {
@@ -2434,7 +2420,7 @@ mod tests {
                 ref operation,
                 ref api_type,
                 ref execution_mode,
-            } if adapter_id == "openai-responses"
+            } if adapter_id == "openai-embeddings"
                 && operation == "embeddings.create"
                 && api_type == "embedding.text"
                 && execution_mode == "stream"
@@ -2562,64 +2548,34 @@ mod tests {
     #[test]
     fn operation_precedence_is_method_then_api_type_then_preferred_adapter_default() {
         let codecs = codecs();
+        let clients = openai_clients();
         let mappings = BTreeMap::from([
-            ("images.generate".into(), "images.generate".into()),
+            ("images.generate".into(), "openai-images/images.generate".into()),
             ("image.txt2img".into(), "responses.create".into()),
         ]);
         assert_eq!(
-            select_operation(
-                &codecs,
-                "openai-responses",
-                &mappings,
-                ApiType::ImageTextToImage,
-                "images.generate",
-            )
-            .unwrap(),
-            "images.generate"
+            select_in(&codecs, &clients, &mappings, ApiType::ImageTextToImage),
+            "openai-images/images.generate"
         );
         let api_only = BTreeMap::from([("image.txt2img".into(), "responses.create".into())]);
         assert_eq!(
-            select_operation(
-                &codecs,
-                "openai-responses",
-                &api_only,
-                ApiType::ImageTextToImage,
-                "images.generate",
-            )
-            .unwrap(),
-            "responses.create"
+            select_in(&codecs, &clients, &api_only, ApiType::ImageTextToImage),
+            "openai-responses/responses.create"
         );
-        for (api_type, method, expected) in [
-            (
-                ApiType::ImageTextToImage,
-                "images.generate",
-                "images.generate",
-            ),
-            (ApiType::ImageImageToImage, "images.edit", "images.edit"),
+        for (api_type, expected) in [
+            (ApiType::ImageTextToImage, "openai-images/images.generate"),
+            (ApiType::ImageImageToImage, "openai-images/images.edit"),
+            (ApiType::Llm, "openai-responses/responses.create"),
+            (ApiType::EmbeddingText, "openai-embeddings/embeddings.create"),
+            (ApiType::AudioTextToSpeech, "openai-audio/audio.speech"),
+            (ApiType::AudioSpeechRecognition, "openai-audio/audio.transcriptions"),
+            (ApiType::VideoGenerate, "openai-videos/videos.create"),
         ] {
             assert_eq!(
-                select_operation(
-                    &codecs,
-                    "openai-responses",
-                    &BTreeMap::new(),
-                    api_type,
-                    method
-                )
-                .unwrap(),
+                select_in(&codecs, &clients, &BTreeMap::new(), api_type),
                 expected
             );
         }
-        assert_eq!(
-            select_operation(
-                &codecs,
-                "openai-responses",
-                &BTreeMap::new(),
-                ApiType::Llm,
-                "chat.completions.create",
-            )
-            .unwrap(),
-            "responses.create"
-        );
     }
 
     #[test]
@@ -2634,7 +2590,7 @@ mod tests {
                 .values()
                 .flat_map(|operation| &operation.bindings)
             {
-                select_operation(
+                select_operation_in(
                     &codecs,
                     adapter_id,
                     &BTreeMap::new(),
@@ -2687,38 +2643,26 @@ mod tests {
                 "interactions.create",
             ),
             (
-                "gemini-interactions",
-                ApiType::VideoGenerate,
-                "models.predictLongRunning",
-                "interactions.create",
-            ),
-            (
-                "gemini-interactions",
-                ApiType::VideoExtend,
-                "models.predictLongRunning",
-                "interactions.create",
-            ),
-            (
                 "openai-responses",
                 ApiType::ImageTextToImage,
-                "images.generate",
+                "openai-images/images.generate",
                 "responses.create",
             ),
             (
                 "openai-responses",
                 ApiType::ImageImageToImage,
-                "images.edit",
+                "openai-images/images.edit",
                 "responses.create",
             ),
         ] {
             let method = api_type.typed_method();
             assert_eq!(
-                select_operation(&codecs, adapter, &BTreeMap::new(), api_type, method).unwrap(),
+                select_operation_in(&codecs, adapter, &BTreeMap::new(), api_type, method).unwrap(),
                 expected
             );
             let mappings = BTreeMap::from([(api_type_name(api_type).into(), alternate.into())]);
             assert_eq!(
-                select_operation(&codecs, adapter, &mappings, api_type, method).unwrap(),
+                select_operation_in(&codecs, adapter, &mappings, api_type, method).unwrap(),
                 alternate
             );
         }
@@ -2739,7 +2683,7 @@ mod tests {
             ),
             (
                 "sn",
-                "sn-openai",
+                "openai-responses",
                 "gpt-5.4",
                 "responses.create",
                 "web_search",
@@ -2814,6 +2758,8 @@ mod tests {
                         output_schema: None,
                     });
                     let mut target = target("test-secret");
+                target.protocol_clients =
+                    crate::protocol::ProtocolClientSet::single(route.selected.protocol_adapter_id.clone());
                     target.provider_rules_id = Some(profile.into());
                     if profile == "gemini" {
                         target.credential =
@@ -2894,6 +2840,8 @@ mod tests {
             route.selected.disabled_capabilities = Vec::new();
             let request = buckyos_api::TextToImageInvokeRequest::new(exact, "上海外滩今天的日出");
             let mut target = target("test-secret");
+            target.protocol_clients =
+                crate::protocol::ProtocolClientSet::single(route.selected.protocol_adapter_id.clone());
             target.provider_rules_id = Some("gemini".into());
             target.credential =
                 crate::protocol::gemini_api_key("secret://gemini", "test-secret").unwrap();
@@ -2970,12 +2918,14 @@ mod tests {
                 route.selected.origin_model_id = origin.into();
                 route.selected.provider_model_id = model.into();
                 route.selected.provider_profile_id = profile.into();
-                route.selected.protocol_adapter_id = "doubao-responses".into();
+                route.selected.protocol_adapter_id = "doubao-media".into();
                 route.selected.operation = "ark.images.generate".into();
                 route.selected.enabled_capabilities = vec!["image_generation".into()];
                 let mut request = buckyos_api::TextToImageInvokeRequest::new(exact, "A blue square");
                 request.n = n;
                 let mut target = target("test-secret");
+                target.protocol_clients =
+                    crate::protocol::ProtocolClientSet::single(route.selected.protocol_adapter_id.clone());
                 target.provider_rules_id = Some(profile.into());
                 let lowered = resolver.lower(&route, &AiccCall::ImagesGenerate(request), target);
                 if n == Some(4) {
@@ -2987,7 +2937,7 @@ mod tests {
                 let lowered = lowered.unwrap();
                 let wire = codecs
                     .encode(
-                        "doubao-responses",
+                        "doubao-media",
                         "ark.images.generate",
                         ApiType::ImageTextToImage,
                         &lowered.input,
@@ -3035,36 +2985,69 @@ mod tests {
 
         let mut golden = Vec::new();
         for (profile, rules) in providers {
+            let clients = crate::protocol::ProtocolClientSet {
+                default: profile.protocol_adapter_id.clone(),
+                extras: profile
+                    .extra_protocol_adapters
+                    .iter()
+                    .map(|client| client.id.clone())
+                    .collect(),
+            };
             let mappings = rules
                 .models
                 .iter()
-                .map(|rule| &rule.operations)
-                .chain(rules.patterns.iter().map(|rule| &rule.operations));
-            for mappings in mappings {
+                .map(|rule| (rule.protocol_adapter_id.as_deref(), &rule.operations))
+                .chain(
+                    rules
+                        .patterns
+                        .iter()
+                        .map(|rule| (rule.protocol_adapter_id.as_deref(), &rule.operations)),
+                );
+            for (rule_adapter, mappings) in mappings {
                 for (key, expected_operation) in mappings {
                     let api_type = api_type_from_mapping_key(key);
-                    let actual = select_operation(
-                        &codecs,
-                        &profile.protocol_adapter_id,
-                        mappings,
-                        api_type,
-                        api_type.typed_method(),
-                    )
-                    .unwrap();
-                    assert_eq!(&actual, expected_operation);
+                    let actual =
+                        select_operation(&codecs, &clients, rule_adapter, mappings, api_type)
+                            .unwrap();
+                    assert_eq!(
+                        actual,
+                        crate::protocol::BindingRef::parse(
+                            expected_operation,
+                            rule_adapter.unwrap_or(&clients.default)
+                        )
+                    );
                     golden.push(format!(
                         "{}|{}|{}|{}",
                         profile.provider_profile_id,
-                        profile.protocol_adapter_id,
+                        actual.protocol_adapter_id,
                         api_type_name(api_type),
-                        actual
+                        actual.operation_id
                     ));
                 }
             }
         }
         golden.sort();
         golden.dedup();
-        let document = include_str!("../../../../../doc/aicc/provider_operation_bindings.md");
+        let document_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../doc/aicc/provider_operation_bindings.md"
+        );
+        let document = std::fs::read_to_string(document_path).unwrap();
+        if std::env::var("AICC_UPDATE_BINDINGS_DOC").is_ok_and(|value| value == "1") {
+            let (head, rest) = document
+                .split_once("<!-- BEGIN GENERATED BINDINGS -->")
+                .unwrap();
+            let (_, tail) = rest.split_once("<!-- END GENERATED BINDINGS -->").unwrap();
+            std::fs::write(
+                document_path,
+                format!(
+                    "{head}<!-- BEGIN GENERATED BINDINGS -->\n{}\n<!-- END GENERATED BINDINGS -->{tail}",
+                    golden.join("\n")
+                ),
+            )
+            .unwrap();
+            return;
+        }
         let documented = document
             .split("<!-- BEGIN GENERATED BINDINGS -->")
             .nth(1)
@@ -3076,41 +3059,6 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         assert_eq!(golden, documented);
-        assert_eq!(golden.len(), 132);
-        assert!(golden.contains(&"typesafe|typesafe-systemone|decision|systemone.evaluate".into()));
-        assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
-        assert!(
-            golden.contains(&"openai|openai-responses|agent.computer_use|responses.create".into())
-        );
-        assert!(golden.contains(&"claude|claude-messages|llm|messages.create".into()));
-        assert!(golden.contains(&"glm|glm-chat|vision.ocr|chat.completions.create".into()));
-        assert!(golden.contains(&"kimi|kimi-chat|vision.caption|chat.completions.create".into()));
-        assert!(golden.contains(&"deepseek|deepseek-responses|vision.ocr|responses.create".into()));
-        assert!(golden.contains(&"doubao|doubao-responses|vision.caption|responses.create".into()));
-        assert!(
-            golden.contains(&"doubao-speech|doubao-responses|audio.tts|tts.unidirectional".into())
-        );
-        assert!(
-            golden.contains(&"doubao-speech|doubao-responses|audio.asr|asr.recognize.flash".into())
-        );
-        assert!(golden
-            .contains(&"doubao-speech|doubao-responses|audio.asr|asr.recognize.submit".into()));
-        assert!(golden.contains(
-            &"doubao-agent-plan|doubao-responses|image.txt2img|ark.images.generate".into()
-        ));
-        assert!(golden
-            .contains(&"gemini|gemini-interactions|video.extend|models.predictLongRunning".into()));
-        assert!(golden.contains(&"fal|fal-queue|image.upscale|queue.submit".into()));
-        assert!(golden.contains(&"openrouter|openrouter-responses|rerank|rerank.create".into()));
-        assert!(golden
-            .contains(&"openrouter|openrouter-responses|embedding.text|embeddings.create".into()));
-        assert!(golden
-            .contains(&"minimax|minimax-messages|video.generate|video_generation.create".into()));
-        assert!(golden.contains(&"qwen|qwen-responses|llm|responses.create".into()));
-        assert!(golden.contains(&"qwen|qwen-responses|llm|chat.completions.create".into()));
-        assert!(golden.contains(&"sn|sn-openai|llm|responses.create".into()));
-        assert!(golden.contains(&"sn|sn-openai|embedding.text|embeddings.create".into()));
-        assert!(golden.contains(&"sn|sn-openai|image.txt2img|images.generate".into()));
     }
     #[test]
     fn request_rewrites_cannot_override_a_selected_effort() {

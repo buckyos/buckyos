@@ -49,7 +49,7 @@ Provider Instance 配置是 Zone 级配置，继续存储在 system-config。AIC
 
 Protocol Adapter 是随程序发布并注册的代码，不属于可云更新 catalog。运行时 registry descriptor 至少包含 `protocol_family_id`、`protocol_adapter_id`、接口代际/状态、支持的 operations，以及可选 `base_adapter_id`。`base_adapter_id` 声明语义复用关系，不规定继承、组合或委托的具体实现。
 
-同一协议族的新旧 API 形态必须使用不同 Adapter ID，例如 `openai-responses` / `openai-chat-completions` 和 `gemini-interactions` / `gemini-generate-content`。官方 Known Provider 默认新接口；历史 Adapter 只在首个实际 Provider 需求出现时按需实现和注册，但注册后是协议族级共享能力，不归触发它的派生 Provider 私有。其它 Provider 使用相同历史 API 代际时直接引用该 Adapter；存在渠道差异时，其派生 Adapter 通过 `base_adapter_id` 复用它。自定义 Provider 创建/更新时由接入测试按“新接口优先、已注册历史接口其次”解析 Adapter，用户不提供版本；resolved Adapter 保存到 Provider Instance，不能由运行时调用失败触发隐式切换。
+同一协议族的新旧 API 形态必须使用不同 Adapter ID，例如 `openai-responses` / `openai-chat-completions` 和 `gemini-interactions` / `gemini-generate-content`。官方 Known Provider 默认新接口；历史 Adapter 只在首个实际 Provider 需求出现时按需实现和注册，但注册后是协议族级共享能力，不归触发它的派生 Provider 私有。其它 Provider 使用相同历史 API 代际时直接引用该 Adapter；存在渠道差异时，其派生 Adapter 通过 `base_adapter_id` 复用它，且与它同属一个协议族。自定义 Provider 创建/更新时由用户显式选择默认客户端，后端不探测、不按新旧接口试选；所选客户端保存到 Provider Instance，不能由运行时调用失败触发隐式切换。客户端清单见 [protocol_clients.md](protocol_clients.md)。
 
 ### 3.2 Metadata 来源、NDN 云来源与目标序列
 
@@ -133,11 +133,11 @@ Content Schema：
 - `variants: ProviderVariantRule[]`
 - `model_pricing: ModelPricingRule[]`，可选；独立的渠道价格表
 
-ProviderModelRule 可包含 `match`、`exclude`、`operations`、`provider_options`、`request_rules`、`remove_api_types`、`remove_features`、`estimated_latency_ms`、`latency_class`、`cost_class`。`match` 通常是匹配 `provider_model_id` 的 wildcard 字符串，需要联合 `origin_model_id`、Model Driver、variant 或 API type 时才使用对象。request/pricing 条件也复用同一 `MatchRule`。静态价格和条件计价规则保存在 Provider Rules 顶层 `model_pricing[].pricing`，与技术规则独立匹配；未确认适用的价格不填写。配置只能收窄 Model Driver 能力。
+ProviderModelRule 可包含 `match`、`exclude`、`protocol_adapter_id`（规则级客户端）、`operations`（值可写成 `<protocol_adapter_id>/<operation_id>` 指定客户端；这两项要求 `schema_revision: 2`）、`provider_options`、`request_rules`、`remove_api_types`、`remove_features`、`estimated_latency_ms`、`latency_class`、`cost_class`。`match` 通常是匹配 `provider_model_id` 的 wildcard 字符串，需要联合 `origin_model_id`、Model Driver、variant 或 API type 时才使用对象。request/pricing 条件也复用同一 `MatchRule`。静态价格和条件计价规则保存在 Provider Rules 顶层 `model_pricing[].pricing`，与技术规则独立匹配；未确认适用的价格不填写。配置只能收窄 Model Driver 能力。
 
 `metadata_drivers` 缺失表示搜索系统当前安装的全部 Model Driver；显式空数组表示不匹配任何 Model Driver。每个官方支持的 Provider 厂商（包括内置专用 Provider）都必须有独立文件。
 
-空对象 `{}` 是未被官方 catalog 收录的 `custom` Provider 的标准运行时规则：协议族由用户明确选择并在接入测试后解析为 Adapter；模型解析保留原始 `provider_model_id`，在全部 Model Driver 中要求唯一匹配，不执行 prefix/suffix stripping、vendor alias 或其它渠道映射。该空规则属于 Provider Instance 的解析结果，不冒充 NDN 发布的官方 Provider Rules catalog。
+空对象 `{}` 是未被官方 catalog 收录的 `custom` Provider 的标准运行时规则：默认客户端由用户显式选择，后端不探测；模型解析保留原始 `provider_model_id`，在全部 Model Driver 中要求唯一匹配，不执行 prefix/suffix stripping、vendor alias 或其它渠道映射。该空规则属于 Provider Instance 的解析结果，不冒充 NDN 发布的官方 Provider Rules catalog。
 
 Provider Rules 是模型映射、operation、请求参数、能力收窄、静态价格及可声明 dialect 差异的唯一持久真相源。Rust builtin 或 dialect 不得构造另一份生产规则；遇到现有 schema 无法表达的差异时，应先评审有界 schema 扩展，只有无法安全声明化的执行逻辑才进入代码。
 
@@ -159,7 +159,9 @@ Content Schema：
 - `providers[]`：
   - `provider_profile_id`、`display_name`；
   - `base_url`：默认 base URL，可包含 `{region}`、`{workspace}`、`{account}` 占位符；
-  - `protocol_adapter_id`；
+  - `protocol_adapter_id`：默认客户端；
+  - 可选 `extra_protocol_adapters[]`：有序的其余客户端 `{id, credential?}`，`id` 不得重复或等于默认客户端；`credential` 是该客户端的凭据呈现，省略时用客户端自己声明的凭据；
+  - 可选 `state_namespace`：这家 Provider 的 provider state 命名空间，省略时用客户端自己的；
   - `discovery_behavior_id`：稳定的 discovery registry ID；新增 Provider 通过 metadata 选择行为，不允许 service/registry 按 `provider_profile_id` 猜测；
   - 可选 `dynamic_login_behavior_id`、`connection_behavior_id`：仅在需要代码行为时声明稳定 ID；未知 ID 必须拒绝装配；
   - `provider_rules_id`：正式 Provider configuration 必须提供，且被引用 Rules 的 `provider_profile_id` 必须与本项一致；
@@ -169,7 +171,7 @@ Content Schema：
   - 可选 `connection.region_base_urls`：从已声明的 `allowed_values` region 到默认 base URL 的 typed 映射；实例显式 `base_url` 优先于该映射；
   - 可选 `ui_hints`：只承载展示提示，不是 Provider Profile、连接合同、认证或 Rules identity 的配置来源。
 
-`credential_variants` 与 `connection.region_base_urls` 从 Known Provider `schema_revision: 1` 起可用；revision 0 文档携带这些字段必须拒绝。
+`credential_variants` 与 `connection.region_base_urls` 从 Known Provider `schema_revision: 1` 起可用；revision 0 文档携带这些字段必须拒绝。`extra_protocol_adapters` 与 `state_namespace` 从 `schema_revision: 2` 起可用。
 
 `CatalogSnapshot::resolve_provider_configuration(provider_profile_id)` 把以上数据解析为 `ResolvedProviderConfiguration`。返回结果包含默认 credential、credential variants、typed connection schema、默认及区域 base URL、Adapter ID、Rules ID 和 behavior IDs。Known Provider 不存在、Rules 引用缺失、Rules 不存在、identity 不一致、behavior 未注册或 typed 字段无效时必须 fail closed，调用方不得回退到 `ui_hints` 或 Rust builtin metadata helper。
 
@@ -177,11 +179,11 @@ Content Schema：
 
 该对象只声明可直接生成 `ProviderProfile` 和 `ProviderConnectionContract` 的静态配置。Provider 行为 registry 按 metadata 中的稳定 behavior ID 注册 discovery、refresh、default inventory、SN dynamic login 等不可声明化行为；registry 中允许按 behavior ID 分派实现，但不得再维护 Provider ID 分支或另一份默认配置。
 
-该 catalog 只提供默认值。保存 Provider Instance 前必须让用户看到并允许修正协议和 `base_url`，并执行连接与协议验证。
+该 catalog 只提供默认值。保存 Provider Instance 前必须让用户看到并允许修正 `base_url`，并执行连接与协议验证。Known Provider 实例的客户端集合只来自 catalog，不由用户修改。
 
-Known Provider 的显示信息、默认 `base_url`、默认 Adapter 和 UI hints 不得由 Rust builtin 维护第二份生产副本；builtin 只注册相应行为实现并消费 catalog。
+Known Provider 的显示信息、默认 `base_url`、客户端集合和 UI hints 不得由 Rust builtin 维护第二份生产副本；builtin 只注册相应行为实现并消费 catalog。
 
-Known Provider 可以为 SN 指定 `protocol_adapter_id: "sn-openai"`，不能直接填 OpenAI 官方 Adapter。registry 中 `sn-openai.protocol_family_id = "openai"`、`sn-openai.base_adapter_id = "openai-responses"`，从而保留独立身份和从 SN 到特定 OpenAI API 代际的单向依赖。
+SN 的 Known Provider 直接使用 OpenAI 族的标准客户端：`protocol_adapter_id: "openai-responses"`，`extra_protocol_adapters` 为 `openai-chat-completions`、`openai-embeddings`、`openai-images`、`openai-audio`、`openai-videos`。SN 的差异（动态登录、模型发现）由 `dynamic_login_behavior_id`、`discovery_behavior_id` 选择的 Provider 行为实现，不另设协议客户端。
 
 ### 4.5 External Object: Provider Instance Config
 
@@ -191,7 +193,7 @@ Content Schema：
 
 - `provider_instance_name: string`，Zone 内唯一且不可由 catalog 更新修改。
 - `provider_profile_id: string`，专用 Provider 或 `custom`。
-- `protocol_adapter_id: string`，必须来自运行时注册表。
+- `protocol_adapter_id: string`，可选；`custom` 必须提供，是用户显式选择的默认客户端，必须来自运行时注册表且对自定义开放。Known Provider 不读取该字段。
 - `base_url: string`，Protocol Adapter 在此基础上构造具体 operation URL。
 - `credentials: map<string, ProviderCredential>`，枚举值为 `inline_secret|secret_ref|runtime_ref`。
 - `auth`：认证模式及其私有参数。SN 至少允许互斥的 `api_key` 和 `dynamic_login`；动态 token 只保存在运行时凭据缓存。

@@ -84,7 +84,7 @@ fn known_providers() -> Value {
             "display_name": "OpenAI",
             "base_url": "https://api.openai.com",
             "protocol_adapter_id": "openai-responses",
-            "discovery_behavior_id": "openai-models",
+            "discovery_behavior_id": "standard-models",
             "provider_rules_id": "openai",
             "credential": {"kind": "bearer"},
             "connection": {

@@ -215,7 +215,6 @@ pub(crate) fn doubao_media_adapter() -> (AdapterDescriptor, CodecRegistration) {
             protocol_adapter_id: DOUBAO_MEDIA_ADAPTER_ID.to_owned(),
             interface_generation: "ark-v3".to_owned(),
             base_adapter_id: None,
-            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 200,
             probe_path: None,
@@ -993,6 +992,7 @@ mod tests {
 
     fn context() -> CodecContext {
         CodecContext {
+            state_namespace: None,
             base_url: "https://ark.cn-beijing.volces.com/api/plan/v3".to_owned(),
             state_coordinate: ProviderStateCoordinate {
                 provider_profile_id: "doubao".to_owned(),

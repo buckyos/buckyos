@@ -143,7 +143,7 @@ Description：AICC 对 Provider 输出中 `ResourceRef::Url` 建立的来源和�
 | `url_hash` | TEXT PK | NO | 完整 URL 的 SHA-256，作为定长查询键 |
 | `url` | TEXT | NO | Provider 返回的精确 URL；查询命中后必须再次逐字比较以防 hash 冲突 |
 | `provider_instance_name` | TEXT | NO | 产生 URL 的 ProviderInstance |
-| `protocol_adapter_id` | TEXT | NO | 产生 URL 时使用的 Adapter；读取时必须仍与实例匹配 |
+| `protocol_adapter_id` | TEXT | NO | 产生 URL 时实际选中的客户端；读取时它必须仍在实例的客户端集合内 |
 | `origin_provider` | TEXT | NO | 产出内容的模型原厂 |
 | `artifact_id` | TEXT | YES | Adapter 显式绑定的 Provider artifact id；缺失时为空 |
 | `content_digest` | TEXT | YES | 完整读取 URL 内容后补全的 `sha256:<hex>`；登记时为空 |

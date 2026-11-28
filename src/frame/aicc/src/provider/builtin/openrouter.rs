@@ -94,7 +94,7 @@ impl OpenRouterDiscovery {
 
 #[async_trait]
 impl ProviderDiscovery for OpenRouterDiscovery {
-    fn match_model_driver(&self, id: &str, catalog: &CatalogSnapshot) -> ProviderModelMatch {
+    fn match_model_driver(&self, id: &str, _catalog: &CatalogSnapshot) -> ProviderModelMatch {
         if id == JEV_CHANNEL_ID {
             return ProviderModelMatch::Matched(ModelIdentity {
                 model_driver_id: "typesafe".into(),
@@ -104,40 +104,7 @@ impl ProviderDiscovery for OpenRouterDiscovery {
         if id.starts_with("typesafe/") || id.starts_with("~typesafe/") {
             return ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias);
         }
-        let Some((vendor, model)) = id.split_once('/') else {
-            return ProviderModelMatch::NotHandled;
-        };
-        let vendor = vendor.to_ascii_lowercase();
-        let driver = match vendor.as_str() {
-            "anthropic" => "claude",
-            "google" => "gemini",
-            "moonshotai" => "kimi",
-            "z-ai" => "glm",
-            other => other,
-        };
-        if catalog.resolve_model(driver, model).is_ok() {
-            return ProviderModelMatch::Matched(ModelIdentity {
-                model_driver_id: driver.into(),
-                model_id: model.into(),
-            });
-        }
-        let matches = catalog
-            .model_driver(driver)
-            .into_iter()
-            .flat_map(|driver| &driver.models)
-            .filter(|entry| entry.id.eq_ignore_ascii_case(model))
-            .map(|entry| ModelIdentity {
-                model_driver_id: driver.into(),
-                model_id: entry.id.clone(),
-            })
-            .collect::<Vec<_>>();
-        match matches.as_slice() {
-            [identity] => ProviderModelMatch::Matched(identity.clone()),
-            [] => ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias),
-            _ => ProviderModelMatch::Failed(ModelMatchFailure::Ambiguous {
-                candidates: matches,
-            }),
-        }
+        ProviderModelMatch::NotHandled
     }
 
     async fn discover(
@@ -965,7 +932,7 @@ mod tests {
         assert_eq!(narrowed.capabilities["max_output_tokens"], 8_192);
         assert_eq!(
             rule.action.operations["image.txt2img"],
-            OPENROUTER_IMAGES_OPERATION_ID
+            format!("openrouter-native/{OPENROUTER_IMAGES_OPERATION_ID}")
         );
 
         let vendor = catalog
@@ -989,7 +956,7 @@ mod tests {
         assert_eq!(narrowed.capabilities["max_output_tokens"], 32_768);
         assert_eq!(
             rule.action.operations["image.img2img"],
-            OPENROUTER_IMAGES_OPERATION_ID
+            format!("openrouter-native/{OPENROUTER_IMAGES_OPERATION_ID}")
         );
     }
 
@@ -1339,7 +1306,7 @@ mod tests {
             assert_eq!(model.model_driver_id, "minimax");
             assert_eq!(model.origin_model_id, origin);
             assert_eq!(model.api_types, vec![ApiType::VideoGenerate]);
-            assert_eq!(model.operations["video.generate"], "videos.create");
+            assert_eq!(model.operation_ids()["video.generate"], "videos.create");
             assert!(model
                 .logical_mounts
                 .contains(&"video.generate.minimax_h3".to_owned()));
@@ -1503,7 +1470,7 @@ mod tests {
             assert_eq!(model.origin_model_id, JEV_ORIGIN_ID);
             assert_eq!(model.api_types, vec![ApiType::Decision]);
             assert_eq!(
-                model.operations,
+                model.operation_ids(),
                 BTreeMap::from([("decision".into(), OPENROUTER_DECISIONS_OPERATION_ID.into())])
             );
             assert_eq!(model.capabilities["max_context_tokens"], 32000);
@@ -1681,7 +1648,11 @@ mod tests {
         }
         assert!(matches!(
             discovery.match_model_driver("openai/gpt-5.4-mini", &catalog),
-            ProviderModelMatch::Matched(_)
+            ProviderModelMatch::NotHandled
+        ));
+        assert!(matches!(
+            catalog.provider_vendor_prefixed_identity("openrouter", "openai/gpt-5.4-mini"),
+            Some(Ok(_))
         ));
         for (base, expected) in [
             (

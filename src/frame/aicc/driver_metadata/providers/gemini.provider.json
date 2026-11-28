@@ -1,10 +1,10 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 1,
-  "revision_seq": 7,
+  "schema_revision": 2,
+  "revision_seq": 8,
   "provider_profile_id": "gemini",
-  "custom_provider_adapters": ["gemini-interactions"],
+  "custom_provider_adapters": ["gemini-generate-content"],
   "models": [
     {
       "id": "gemini-4-argon",
@@ -215,10 +215,10 @@
         "image.img2img": "interactions.create",
         "audio.tts": "interactions.create",
         "audio.music": "interactions.create",
-        "embedding.text": "models.embedContent",
-        "embedding.multimodal": "models.embedContent",
-        "video.generate": "models.predictLongRunning",
-        "video.extend": "models.predictLongRunning"
+        "embedding.text": "gemini-generate-content/models.embedContent",
+        "embedding.multimodal": "gemini-generate-content/models.embedContent",
+        "video.generate": "gemini-generate-content/models.predictLongRunning",
+        "video.extend": "gemini-generate-content/models.predictLongRunning"
       },
       "request_rules": [
         {

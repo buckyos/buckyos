@@ -88,14 +88,22 @@ impl RuntimeFactory for ServiceRuntimeFactory {
             .filter(|provider| provider.enabled)
         {
             let started: Result<(), RuntimeError> = async {
-                builtins
-                    .codecs()
-                    .resolve_adapter_id(
-                        provider.protocol_family_id.as_deref(),
-                        Some(&provider.protocol_adapter_id),
-                        None,
-                    )
-                    .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+                let known_default = builtins
+                    .profiles()
+                    .find(|profile| profile.provider_profile_id == provider.provider_profile_id)
+                    .filter(|profile| !profile.accepts_any_adapter)
+                    .map(|profile| profile.default_protocol_adapter_id.clone());
+                let protocol_adapter_id = match known_default {
+                    Some(default) => default,
+                    None => builtins
+                        .codecs()
+                        .resolve_adapter_id(
+                            provider.protocol_family_id.as_deref(),
+                            provider.protocol_adapter_id.as_deref(),
+                            None,
+                        )
+                        .map_err(|error| RuntimeError::Backend(error.to_string()))?,
+                };
                 let provider_auth = auth
                     .get(&provider.provider_instance_name)
                     .ok_or_else(|| {
@@ -114,7 +122,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                 let binding = builtins
                     .resolve(BuiltinProviderRequest {
                         provider_profile_id: &provider.provider_profile_id,
-                        protocol_adapter_id: &provider.protocol_adapter_id,
+                        protocol_adapter_id: &protocol_adapter_id,
                         auth_mode: provider_auth.mode(),
                         credential_kind: provider_auth.credential_kind(),
                         configured_inventory,
@@ -153,7 +161,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                     } => ProviderInstanceConfig {
                         provider_instance_name: provider.provider_instance_name.clone(),
                         provider_profile_id: provider.provider_profile_id.clone(),
-                        protocol_adapter_id: provider.protocol_adapter_id.clone(),
+                        protocol_adapter_id: protocol_adapter_id.clone(),
                         base_url: connection.base_url,
                         operation_base_urls: connection.operation_base_urls,
                         credential: CredentialReference {
@@ -387,14 +395,17 @@ impl ProviderValidator for RuntimeProviderValidator {
                 "custom providers require an explicit protocol adapter".to_owned(),
             ));
         }
-        let adapter = builtins
-            .codecs()
-            .resolve_adapter_id(
-                request.protocol_family_id.as_deref(),
-                request.protocol_adapter_id.as_deref(),
-                profile_default,
-            )
-            .map_err(to_rpc_error)?;
+        let adapter = match profile_default {
+            Some(default) => default.to_owned(),
+            None => builtins
+                .codecs()
+                .resolve_adapter_id(
+                    request.protocol_family_id.as_deref(),
+                    request.protocol_adapter_id.as_deref(),
+                    None,
+                )
+                .map_err(to_rpc_error)?,
+        };
         let auth = request.auth.as_ref().map(provider_auth_config);
         let (auth, credentials) = match auth {
             Some(auth @ ProviderAuthConfig::DynamicLogin { .. }) => (auth, BTreeMap::new()),
@@ -1035,7 +1046,7 @@ mod startup_tests {
             "provider_type":"cloud_api",
             "provider_profile_id":"custom",
             "protocol_family_id":"gemini",
-            "protocol_adapter_id":"gemini-interactions",
+            "protocol_adapter_id":"gemini-generate-content",
             "base_url":format!("http://{address}/v1beta"),
             "credentials":{"api_token":{"inline_secret":"local-test"}},
             "auto_sync_models":false
@@ -1117,9 +1128,9 @@ mod startup_tests {
         let factory = ServiceRuntimeFactory::new(storage, events.clone());
         let mut settings = AiccSettings::default();
         for adapter in [
-            "glm-chat",
-            "kimi-chat",
-            "deepseek-responses",
+            "doubao-media",
+            "fal-queue",
+            "qwen-media",
             "openrouter-responses",
         ] {
             settings.providers.push(serde_json::from_value(json!({
@@ -1159,9 +1170,9 @@ mod startup_tests {
                 Duration::from_secs(expected_timeout_secs)
             );
             for adapter in [
-                "glm-chat",
-                "kimi-chat",
-                "deepseek-responses",
+                "doubao-media",
+                "fal-queue",
+                "qwen-media",
                 "openrouter-responses",
             ] {
                 let state = &prepared.state.provider_metadata[adapter];
@@ -1177,7 +1188,7 @@ mod startup_tests {
                 )
                 .await
                 .unwrap();
-            assert!(converged.provider_metadata["glm-chat"].last_error.is_some());
+            assert!(converged.provider_metadata["doubao-media"].last_error.is_some());
             prepared.backend.shutdown().await;
         }
         assert!(events

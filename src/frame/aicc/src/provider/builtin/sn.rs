@@ -13,13 +13,10 @@ use crate::catalog::KnownProvider;
 #[cfg(test)]
 use crate::catalog::ProviderRulesCatalog;
 #[cfg(test)]
-use crate::protocol::{
-    openai_responses_adapter, register_sn_openai_adapter, CodecRegistry,
-    OPENAI_RESPONSES_ADAPTER_ID,
-};
+use crate::protocol::OPENAI_RESPONSES_ADAPTER_ID;
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, ProtocolResultValue,
-    ResolvedCredential, SN_OPENAI_ADAPTER_ID,
+    ResolvedCredential,
 };
 use async_trait::async_trait;
 use buckyos_api::{generate_sn_user_device_token, login_sn_user_by_device_token};
@@ -180,27 +177,6 @@ fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: 
     .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
-#[cfg(test)]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SnDialectContract {
-    pub base_adapter_id: &'static str,
-    pub override_points: BTreeSet<&'static str>,
-    pub unsupported_api_types: BTreeSet<String>,
-}
-
-#[cfg(test)]
-pub(crate) fn sn_dialect_contract() -> SnDialectContract {
-    SnDialectContract {
-        base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
-        override_points: BTreeSet::from([
-            "credential_resolution",
-            "video_duration",
-            "audio_transcription",
-        ]),
-        unsupported_api_types: BTreeSet::new(),
-    }
-}
-
 #[async_trait]
 trait SnModelsTransport: Send + Sync {
     async fn send(&self, request: HttpRequest) -> ProtocolResultValue<HttpResponse>;
@@ -263,12 +239,10 @@ impl ProviderDiscovery for SnDiscovery {
 
 fn validate_sn_context(context: &DiscoveryContext<'_>) -> ProviderResult<()> {
     if context.profile.provider_profile_id != SN_PROVIDER_PROFILE_ID
-        || context.profile.default_protocol_adapter_id != SN_OPENAI_ADAPTER_ID
         || context.instance.provider_profile_id != SN_PROVIDER_PROFILE_ID
-        || context.instance.protocol_adapter_id != SN_OPENAI_ADAPTER_ID
     {
         return Err(ProviderError::InvalidConfiguration(
-            "SN discovery requires the SN profile and sn-openai adapter".to_owned(),
+            "SN discovery requires the SN profile".to_owned(),
         ));
     }
     if context.credential.audit().kind != CredentialKind::Bearer {
@@ -439,7 +413,6 @@ impl SnCredentialBroker {
             ));
         }
         if instance.runtime.provider_profile_id != SN_PROVIDER_PROFILE_ID
-            || instance.runtime.protocol_adapter_id != SN_OPENAI_ADAPTER_ID
             || instance.runtime.account.is_none()
         {
             return Err(ProviderError::InvalidConfiguration(
@@ -774,7 +747,7 @@ mod tests {
         let known = sn_known_provider();
         let rules = sn_provider_rules(9);
         assert_eq!(profile.provider_profile_id, "sn");
-        assert_eq!(profile.default_protocol_adapter_id, "sn-openai");
+        assert_eq!(profile.default_protocol_adapter_id, "openai-responses");
         assert_eq!(known.display_name, "BuckyOS SN");
         assert_eq!(known.base_url, "https://sn.buckyos.ai/api/v1/ai");
         assert_eq!(
@@ -831,7 +804,7 @@ mod tests {
                 .provider_rules(SN_PROVIDER_PROFILE_ID)
                 .unwrap()
                 .revision_seq,
-            16
+            18
         );
         assert!(catalog.model_driver(SN_PROVIDER_PROFILE_ID).is_none());
         for driver in ["bytedance", "glm", "kimi", "mistral", "openai", "qwen"] {
@@ -860,50 +833,24 @@ mod tests {
     }
 
     #[test]
-    fn derived_adapter_delegates_without_mutating_openai() {
-        let (base_descriptor, base_codecs) = openai_responses_adapter();
-        let original_base = base_descriptor.clone();
-        let mut registry = CodecRegistry::default();
-        registry
-            .register_codecs(base_descriptor, base_codecs)
-            .unwrap();
-        let base_codec = registry
-            .codec(
-                OPENAI_RESPONSES_ADAPTER_ID,
-                OPENAI_RESPONSES_OPERATION_ID,
-                buckyos_api::ApiType::Llm,
-            )
-            .unwrap();
-        register_sn_openai_adapter(&mut registry).unwrap();
-        let sn_descriptor = registry.adapter(SN_OPENAI_ADAPTER_ID).unwrap();
+    fn sn_uses_the_standard_openai_clients() {
+        let known = sn_known_provider();
+        assert_eq!(known.protocol_adapter_id, OPENAI_RESPONSES_ADAPTER_ID);
         assert_eq!(
-            sn_descriptor.base_adapter_id.as_deref(),
-            Some(OPENAI_RESPONSES_ADAPTER_ID)
+            known
+                .extra_protocol_adapters
+                .iter()
+                .map(|client| client.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "openai-chat-completions",
+                "openai-embeddings",
+                "openai-images",
+                "openai-audio",
+                "openai-videos"
+            ]
         );
-        assert_eq!(
-            sn_dialect_contract().override_points,
-            BTreeSet::from(["credential_resolution", "video_duration", "audio_transcription"])
-        );
-        assert!(sn_dialect_contract().unsupported_api_types.is_empty());
-        let derived_codec = registry
-            .codec(
-                SN_OPENAI_ADAPTER_ID,
-                OPENAI_RESPONSES_OPERATION_ID,
-                buckyos_api::ApiType::Llm,
-            )
-            .unwrap();
-        assert!(Arc::ptr_eq(&base_codec, &derived_codec));
-        assert!(registry
-            .codec(
-                SN_OPENAI_ADAPTER_ID,
-                crate::protocol::OPENAI_EMBEDDINGS_OPERATION_ID,
-                buckyos_api::ApiType::EmbeddingText,
-            )
-            .is_ok());
-        assert_eq!(
-            registry.adapter(OPENAI_RESPONSES_ADAPTER_ID),
-            Some(&original_base)
-        );
+        assert!(known.state_namespace.is_none());
     }
 
     #[tokio::test]
@@ -1088,10 +1035,7 @@ mod tests {
             &CatalogBuildOptions::default(),
         )
         .unwrap();
-        let (base, codecs) = openai_responses_adapter();
-        let mut registry = CodecRegistry::default();
-        registry.register_codecs(base, codecs).unwrap();
-        register_sn_openai_adapter(&mut registry).unwrap();
+        let registry = crate::protocol::builtin_codecs_for_test();
         let instance = dynamic_instance().runtime;
         let inventory = InventoryBuilder::build(
             &sn_profile(),
@@ -1179,7 +1123,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(inventory.provider_profile_id, SN_PROVIDER_PROFILE_ID);
-        assert_eq!(inventory.protocol_adapter_id, SN_OPENAI_ADAPTER_ID);
+        assert_eq!(inventory.protocol_adapter_id, crate::protocol::OPENAI_RESPONSES_ADAPTER_ID);
         assert_eq!(inventory.models.len(), 52);
         assert!(inventory.unmatched_models.is_empty());
         assert_eq!(inventory.unavailable_presets.len(), 1);
@@ -1210,14 +1154,14 @@ mod tests {
                 buckyos_api::ApiType::VisionCaption,
             ]
         );
-        assert_eq!(model.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
+        assert_eq!(model.operation_ids()["llm"], OPENAI_RESPONSES_OPERATION_ID);
         let embedding = inventory
             .models
             .iter()
             .find(|model| model.provider_model_id == "qwen3-embedding-8b")
             .unwrap();
         assert_eq!(
-            embedding.operations["embedding.text"],
+            embedding.operation_ids()["embedding.text"],
             crate::protocol::OPENAI_EMBEDDINGS_OPERATION_ID
         );
         for (model, apis) in [
@@ -1241,7 +1185,7 @@ mod tests {
         let qwen_ocr = inventory.models.iter()
             .find(|model| model.provider_model_id == "qwen3.7-plus")
             .unwrap();
-        assert_eq!(qwen_ocr.operations["vision.ocr"], "responses.create");
+        assert_eq!(qwen_ocr.operation_ids()["vision.ocr"], "responses.create");
         let voxtral = inventory
             .models
             .iter()
@@ -1249,7 +1193,7 @@ mod tests {
             .unwrap();
         assert!(voxtral.api_types.contains(&buckyos_api::ApiType::Llm));
         assert!(voxtral.api_types.contains(&buckyos_api::ApiType::AudioSpeechRecognition));
-        assert_eq!(voxtral.operations["audio.asr"], "chat.completions.create");
+        assert_eq!(voxtral.operation_ids()["audio.asr"], "chat.completions.create");
         let qwen_27b = inventory.models.iter().find(|model| model.provider_model_id == "qwen3.8-27b").unwrap();
         assert_eq!(qwen_27b.capabilities["max_context_tokens"], serde_json::json!(262144));
         assert_eq!(catalog.resolve_model("qwen", "qwen3.8-27b").unwrap().semantics.capabilities.unwrap()["max_context_tokens"], serde_json::json!(1000000));
@@ -1265,7 +1209,7 @@ mod tests {
             diarize.api_types,
             vec![buckyos_api::ApiType::AudioSpeechRecognition]
         );
-        assert_eq!(diarize.operations["audio.asr"], "audio.transcriptions");
+        assert_eq!(diarize.operation_ids()["audio.asr"], "audio.transcriptions");
     }
 
     fn issue666_inventory(
@@ -1299,6 +1243,7 @@ mod tests {
                 source,
                 providers.codecs().adapter("openai-responses").unwrap(),
                 None,
+                &providers.codecs(),
             )
             .unwrap()
         } else {
