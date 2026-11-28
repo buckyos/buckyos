@@ -49,7 +49,7 @@ async fn native_failures_preserve_business_errors_and_pending_poll_intervals() {
             3,
         ),
         (
-            "qwen-media",
+            "bailian-media",
             "dashscope.video_synthesis",
             json!({"output":{"task_status":"FAILED","code":"DataInspectionFailed","message":"blocked media"}}),
             json!({"output":{"task_status":"RUNNING"}}),
@@ -132,7 +132,7 @@ async fn video_result_usage_matches_billable_dimensions() {
             10.0,
         ),
         (
-            "qwen-media",
+            "bailian-media",
             "dashscope.video_synthesis",
             json!({"output":{"video_url":"https://example.com/result.mp4"},"usage":{"duration":5,"video_duration":0}}),
             json!({"currency":"CNY","unit":"video_second","amount":0.6}),
@@ -180,7 +180,7 @@ async fn video_result_usage_matches_billable_dimensions() {
 #[tokio::test]
 async fn qwen_partial_images_and_seedream_images_are_billed_per_successful_image() {
     let registry = registry();
-    let NativeTaskOutput::Result(output) = registry.decode_native("qwen-media", "dashscope.image_synthesis", ApiType::ImageTextToImage, NativeTaskOperation::Result, response(json!({"output":{"results":[{"url":"https://example.com/result.png"},{"code":"DataInspectionFailed","message":"blocked"}]}}))).await.unwrap() else { panic!() };
+    let NativeTaskOutput::Result(output) = registry.decode_native("bailian-media", "dashscope.image_synthesis", ApiType::ImageTextToImage, NativeTaskOperation::Result, response(json!({"output":{"results":[{"url":"https://example.com/result.png"},{"code":"DataInspectionFailed","message":"blocked"}]}}))).await.unwrap() else { panic!() };
     assert_eq!(output.artifacts.len(), 1);
     assert_eq!(
         cost(
@@ -332,7 +332,7 @@ fn media_request_lowering_uses_integer_duration_and_provider_sizes() {
             "doubao-seedance-2.0",
         ),
         (
-            "qwen-media",
+            "bailian-media",
             "dashscope.video_synthesis",
             "qwen",
             "wan2.6-t2v",
@@ -343,8 +343,8 @@ fn media_request_lowering_uses_integer_duration_and_provider_sizes() {
         let mut request = buckyos_api::VideoGenerateRequest::new("m@p", Some("cat".into()));
         request.output = Some(buckyos_api::VideoOutputSpec {
             duration_seconds: Some(5.0),
-            aspect_ratio: (adapter == "qwen-media").then(|| "16:9".into()),
-            size: (adapter == "qwen-media").then(|| buckyos_api::VideoSize::short_edge(720)),
+            aspect_ratio: (adapter == "bailian-media").then(|| "16:9".into()),
+            size: (adapter == "bailian-media").then(|| buckyos_api::VideoSize::short_edge(720)),
             ..Default::default()
         });
         let input = CodecInput {
@@ -374,7 +374,7 @@ fn media_request_lowering_uses_integer_duration_and_provider_sizes() {
         else {
             panic!()
         };
-        if adapter == "qwen-media" {
+        if adapter == "bailian-media" {
             assert_eq!(body["parameters"]["duration"].as_u64(), Some(5));
             assert_eq!(body["parameters"]["size"], "1280*720");
             assert!(body["parameters"].get("ratio").is_none());
@@ -418,7 +418,7 @@ fn media_request_lowering_uses_integer_duration_and_provider_sizes() {
     };
     let HttpBody::Json(body) = registry
         .encode_native(
-            "qwen-media",
+            "bailian-media",
             "dashscope.image_synthesis",
             ApiType::ImageTextToImage,
             &NativeTaskInput {
@@ -449,7 +449,7 @@ fn media_request_lowering_uses_integer_duration_and_provider_sizes() {
     qwen_context.base_url = "https://example.com/compatible-mode/v1".into();
     let request = registry
         .encode_native(
-            "qwen-media",
+            "bailian-media",
             "dashscope.image_generation",
             ApiType::ImageTextToImage,
             &NativeTaskInput {

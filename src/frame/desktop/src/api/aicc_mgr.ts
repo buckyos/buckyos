@@ -138,7 +138,7 @@ const BUILTIN_PROVIDER_NAMES: Array<[ProviderType, string, string, string, strin
   ['doubao', 'Doubao (Volcengine Ark Standard Account)', 'https://ark.cn-beijing.volces.com/api/v3', 'openai-responses', ['doubao-media', 'doubao-speech']],
   ['doubao-speech', 'Doubao Speech (Volcengine Doubao Voice)', 'https://openspeech.bytedance.com/api/v3/tts', 'doubao-speech'],
   ['doubao-agent-plan', 'Doubao (Volcengine Ark Agent Plan)', 'https://ark.cn-beijing.volces.com/api/plan/v3', 'openai-responses', ['doubao-media', 'doubao-speech']],
-  ['qwen', 'Qwen（阿里云百炼）', 'https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1', 'qwen-responses', ['legacy-openai-chat-completions', 'qwen-media']],
+  ['bailian', '阿里云百炼', 'https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1', 'bailian-responses', ['legacy-openai-chat-completions', 'bailian-media']],
 ]
 
 const PROVIDER_INFLUENCE_ORDER = new Map<ProviderType, number>(
@@ -227,7 +227,7 @@ const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
         eu: { label: 'European Union', description: 'OpenRouter Business or Enterprise plan required.' },
       }
       : {} as KnownProviderProfile['endpoint_hints'],
-    connection_fields: provider_profile_id === 'qwen'
+    connection_fields: provider_profile_id === 'bailian'
       ? {
         region: { mode: 'optional', default_value: 'cn-beijing', allowed_values: ['cn-beijing', 'ap-southeast-1', 'us-east-1', 'eu-central-1', 'ap-northeast-1'] },
         workspace: { mode: 'required', allowed_values: [] },

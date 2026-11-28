@@ -36,7 +36,7 @@ pub(crate) const DOUBAO_AGENT_PLAN_PROFILE_ID: &str = "doubao-agent-plan";
 #[cfg(test)]
 pub(crate) const DOUBAO_SPEECH_PROFILE_ID: &str = "doubao-speech";
 #[cfg(test)]
-pub(crate) const QWEN_PROFILE_ID: &str = "qwen";
+pub(crate) const BAILIAN_PROFILE_ID: &str = "bailian";
 
 #[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -122,7 +122,7 @@ pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProv
         super::builtin_catalog_document(CatalogKind::ProviderRules, DEEPSEEK_PROFILE_ID),
         super::builtin_catalog_document(CatalogKind::ProviderRules, DOUBAO_PROFILE_ID),
         super::builtin_catalog_document(CatalogKind::ProviderRules, DOUBAO_AGENT_PLAN_PROFILE_ID),
-        super::builtin_catalog_document(CatalogKind::ProviderRules, QWEN_PROFILE_ID),
+        super::builtin_catalog_document(CatalogKind::ProviderRules, BAILIAN_PROFILE_ID),
     ];
     [
         (
@@ -141,9 +141,9 @@ pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProv
             None,
         ),
         (
-            QWEN_PROFILE_ID,
+            BAILIAN_PROFILE_ID,
             BuiltinDiscoveryKind::CatalogOnly,
-            Some(ResponsesDialectKind::Qwen),
+            Some(ResponsesDialectKind::Bailian),
         ),
     ]
     .into_iter()
@@ -171,7 +171,8 @@ pub(crate) fn openai_responses_compatible_catalog_files() -> Vec<CurrentCatalogF
         DOUBAO_PROFILE_ID,
         DOUBAO_AGENT_PLAN_PROFILE_ID,
         DOUBAO_SPEECH_PROFILE_ID,
-        QWEN_PROFILE_ID,
+        BAILIAN_PROFILE_ID,
+        "qwen",
         "glm",
         "kimi",
         "minimax",
@@ -195,7 +196,7 @@ fn doubao_agent_plan() -> BuiltinProviderDescriptor {
 
 #[cfg(test)]
 fn qwen() -> BuiltinProviderDescriptor {
-    configured_provider(QWEN_PROFILE_ID)
+    configured_provider(BAILIAN_PROFILE_ID)
 }
 
 #[cfg(test)]
@@ -607,17 +608,17 @@ mod tests {
             DEEPSEEK_PROFILE_ID,
             DOUBAO_PROFILE_ID,
             DOUBAO_AGENT_PLAN_PROFILE_ID,
-            QWEN_PROFILE_ID,
+            BAILIAN_PROFILE_ID,
         ] {
             assert!(catalog.known_provider(profile_id).is_some());
             let rules = catalog.provider_rules(profile_id).unwrap();
             assert!(rules.patterns.iter().any(|rule| {
                 rule.operations.get("llm") == Some(&OPENAI_RESPONSES_OPERATION_ID.to_owned())
             }));
-            let model_driver_id = if profile_id == DOUBAO_AGENT_PLAN_PROFILE_ID {
-                DOUBAO_PROFILE_ID
-            } else {
-                profile_id
+            let model_driver_id = match profile_id {
+                DOUBAO_AGENT_PLAN_PROFILE_ID => DOUBAO_PROFILE_ID,
+                BAILIAN_PROFILE_ID => "qwen",
+                _ => profile_id,
             };
             assert!(catalog.model_driver(model_driver_id).is_some());
         }
@@ -644,7 +645,7 @@ mod tests {
             .any(|model| model.id == "doubao-seed-2-0-lite-260215"));
         assert!(doubao.specs.iter().any(|spec| spec.id == "doubao-pro"));
 
-        let qwen = catalog.model_driver(QWEN_PROFILE_ID).unwrap();
+        let qwen = catalog.model_driver("qwen").unwrap();
         assert!(qwen.models.iter().any(|model| {
             model.parameter_scale.as_deref() == Some("max")
                 && model.capabilities.as_ref().unwrap()["max_context_tokens"] == 1_000_000
@@ -663,7 +664,7 @@ mod tests {
                 DEEPSEEK_PROFILE_ID,
                 DOUBAO_PROFILE_ID,
                 DOUBAO_AGENT_PLAN_PROFILE_ID,
-                QWEN_PROFILE_ID
+                BAILIAN_PROFILE_ID
             ]
         );
         for provider in &providers {
@@ -708,7 +709,7 @@ mod tests {
 
     #[test]
     fn qwen_uses_public_endpoints_and_requires_workspace_only_for_dedicated_regions() {
-        let connection = super::super::builtin_connection_contract(QWEN_PROFILE_ID);
+        let connection = super::super::builtin_connection_contract(BAILIAN_PROFILE_ID);
         let beijing = connection
             .resolve(ProviderConnectionInput {
                 region: Some("cn-beijing"),
@@ -780,7 +781,7 @@ mod tests {
                     DOUBAO_PROFILE_ID => 18,
                     DOUBAO_AGENT_PLAN_PROFILE_ID => 15,
                     DEEPSEEK_PROFILE_ID => 7,
-                    QWEN_PROFILE_ID => 16,
+                    BAILIAN_PROFILE_ID => 17,
                     "openai" => 4,
                     _ => 3,
                 }
@@ -790,7 +791,7 @@ mod tests {
                 DOUBAO_PROFILE_ID
                     | DOUBAO_AGENT_PLAN_PROFILE_ID
                     | DEEPSEEK_PROFILE_ID
-                    | QWEN_PROFILE_ID
+                    | BAILIAN_PROFILE_ID
                     | "minimax"
             ) {
                 assert!(
@@ -808,7 +809,7 @@ mod tests {
             let expected_patterns = match provider.profile.provider_profile_id.as_str() {
                 DOUBAO_PROFILE_ID => 8,
                 DOUBAO_AGENT_PLAN_PROFILE_ID => 13,
-                QWEN_PROFILE_ID => 10,
+                BAILIAN_PROFILE_ID => 10,
                 _ => 1,
             };
             assert_eq!(rules.patterns.len(), expected_patterns);
@@ -964,14 +965,14 @@ mod tests {
             for (descriptor, registration) in [
                 crate::protocol::doubao_media_adapter(),
                 crate::protocol::doubao_speech_adapter(),
-                crate::protocol::qwen_media_adapter(),
+                crate::protocol::bailian_media_adapter(),
             ] {
                 codecs.register_codecs(descriptor, registration).unwrap();
             }
             for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
                 codecs.register_derived(descriptor, registration).unwrap();
             }
-            let base_url = if profile_id == QWEN_PROFILE_ID {
+            let base_url = if profile_id == BAILIAN_PROFILE_ID {
                 provider.resolve_base_url(None, Some("workspace1")).unwrap()
             } else {
                 provider.resolve_base_url(None, None).unwrap()
@@ -988,7 +989,7 @@ mod tests {
                 credential_kind: None,
                 provider_rules_id: Some(profile_id.clone()),
                 region: None,
-                workspace: (profile_id == QWEN_PROFILE_ID).then(|| "workspace1".to_owned()),
+                workspace: (profile_id == BAILIAN_PROFILE_ID).then(|| "workspace1".to_owned()),
                 account: None,
                 request_timeout: Duration::from_secs(120),
                 auto_sync_models: true,
@@ -1034,7 +1035,7 @@ mod tests {
                     ]
                 );
             }
-            if profile_id == QWEN_PROFILE_ID {
+            if profile_id == BAILIAN_PROFILE_ID {
                 assert!(model.api_types.contains(&ApiType::VisionOcr));
                 assert!(model.api_types.contains(&ApiType::VisionCaption));
                 assert_eq!(

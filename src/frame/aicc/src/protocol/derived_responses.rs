@@ -12,15 +12,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub(crate) const OPENROUTER_RESPONSES_ADAPTER_ID: &str = "openrouter-responses";
-pub(crate) const QWEN_RESPONSES_ADAPTER_ID: &str = "qwen-responses";
+pub(crate) const BAILIAN_RESPONSES_ADAPTER_ID: &str = "bailian-responses";
 
-const QWEN_SESSION_CACHE_PARAMETER: &str = "session_cache";
-const QWEN_SESSION_CACHE_HEADER: &str = "x-dashscope-session-cache";
+const BAILIAN_SESSION_CACHE_PARAMETER: &str = "session_cache";
+const BAILIAN_SESSION_CACHE_HEADER: &str = "x-dashscope-session-cache";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ResponsesDialectKind {
     OpenRouter,
-    Qwen,
+    Bailian,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,8 +43,8 @@ impl ResponsesDialectKind {
                 base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
                 override_points: BTreeSet::new(),
             },
-            Self::Qwen => ResponsesDialectContract {
-                protocol_adapter_id: QWEN_RESPONSES_ADAPTER_ID,
+            Self::Bailian => ResponsesDialectContract {
+                protocol_adapter_id: BAILIAN_RESPONSES_ADAPTER_ID,
                 base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
                 override_points: BTreeSet::from([ResponsesOverridePoint::SessionCacheHeader]),
             },
@@ -55,14 +55,16 @@ impl ResponsesDialectKind {
     fn provider_namespace(self) -> &'static str {
         match self {
             Self::OpenRouter => "openrouter",
-            Self::Qwen => "qwen",
+            Self::Bailian => "qwen",
         }
     }
 }
 
 pub(crate) fn openai_responses_compatible_adapters(
 ) -> ProtocolResultValue<Vec<(AdapterDescriptor, CodecRegistration)>> {
-    Ok(vec![responses_dialect_adapter(ResponsesDialectKind::Qwen)?])
+    Ok(vec![responses_dialect_adapter(
+        ResponsesDialectKind::Bailian,
+    )?])
 }
 
 pub(crate) fn responses_dialect_adapter(
@@ -134,7 +136,6 @@ struct ResponsesDialectCodec {
 struct PreparedDialectRequest {
     body_extensions: BTreeMap<String, Value>,
     session_cache: Option<Value>,
-    enable_thinking: Option<Value>,
 }
 
 trait ResponsesDialectStrategy: Send + Sync {
@@ -165,7 +166,6 @@ impl ResponsesDialectStrategy for OpenRouterDialect {
         Ok(PreparedDialectRequest {
             body_extensions: take_openrouter_parameters(parameters)?,
             session_cache: None,
-            enable_thinking: None,
         })
     }
 
@@ -197,17 +197,16 @@ impl ResponsesDialectStrategy for OpenRouterDialect {
     }
 }
 
-struct QwenDialect;
+struct BailianDialect;
 
-impl ResponsesDialectStrategy for QwenDialect {
+impl ResponsesDialectStrategy for BailianDialect {
     fn prepare_parameters(
         &self,
         parameters: &mut BTreeMap<String, Value>,
     ) -> ProtocolResultValue<PreparedDialectRequest> {
         Ok(PreparedDialectRequest {
             body_extensions: BTreeMap::new(),
-            session_cache: parameters.remove(QWEN_SESSION_CACHE_PARAMETER),
-            enable_thinking: parameters.remove("enable_thinking"),
+            session_cache: parameters.remove(BAILIAN_SESSION_CACHE_PARAMETER),
         })
     }
 
@@ -219,24 +218,16 @@ impl ResponsesDialectStrategy for QwenDialect {
     ) -> ProtocolResultValue<HttpRequest> {
         let super::HttpBody::Json(body) = &mut request.body else {
             return Err(ProtocolError::invalid_configuration(
-                "Qwen request body must be JSON",
+                "Bailian request body must be JSON",
             ));
         };
-        rewrite_qwen_video_inputs(body, call)?;
-        if let Some(value) = prepared.enable_thinking {
-            if !value.is_boolean() {
-                return Err(ProtocolError::invalid_request(
-                    "enable_thinking must be a boolean",
-                ));
-            }
-            body["enable_thinking"] = value;
-        }
+        rewrite_bailian_video_inputs(body, call)?;
         if let Some(enabled) = prepared.session_cache {
             let enabled = enabled.as_bool().ok_or_else(|| {
-                ProtocolError::invalid_request("Qwen session_cache must be a boolean")
+                ProtocolError::invalid_request("Bailian session_cache must be a boolean")
             })?;
             request.headers.insert(
-                HeaderName::from_static(QWEN_SESSION_CACHE_HEADER),
+                HeaderName::from_static(BAILIAN_SESSION_CACHE_HEADER),
                 HeaderValue::from_static(if enabled { "enable" } else { "disable" }),
             );
         }
@@ -244,7 +235,7 @@ impl ResponsesDialectStrategy for QwenDialect {
     }
 }
 
-fn qwen_document_is_video(
+fn bailian_document_is_video(
     source: &buckyos_api::ResourceRef,
     context: &super::CodecContext,
 ) -> ProtocolResultValue<bool> {
@@ -265,21 +256,25 @@ fn qwen_document_is_video(
     Ok(mime.is_some_and(|mime| mime.to_ascii_lowercase().starts_with("video/")))
 }
 
-fn rewrite_qwen_video_inputs(value: &mut Value, call: &CodecCall<'_>) -> ProtocolResultValue<()> {
+fn rewrite_bailian_video_inputs(
+    value: &mut Value,
+    call: &CodecCall<'_>,
+) -> ProtocolResultValue<()> {
     let mut video_documents = Vec::new();
     if let AiccCall::ChatCompletionsCreate(request) = &call.input.canonical_request {
         for message in &request.messages {
             for content in &message.content {
                 match content {
                     AiContent::Document { source, .. } => {
-                        video_documents.push(qwen_document_is_video(source, call.context)?);
+                        video_documents.push(bailian_document_is_video(source, call.context)?);
                     }
                     AiContent::ToolResult { content, .. } => {
                         for result in content {
                             if let buckyos_api::AiToolResultContent::Document { source, .. } =
                                 result
                             {
-                                video_documents.push(qwen_document_is_video(source, call.context)?);
+                                video_documents
+                                    .push(bailian_document_is_video(source, call.context)?);
                             }
                         }
                     }
@@ -335,7 +330,7 @@ fn rewrite_qwen_video_values(value: &mut Value, video_documents: &[bool], index:
 fn dialect_strategy(dialect: ResponsesDialectKind) -> Arc<dyn ResponsesDialectStrategy> {
     match dialect {
         ResponsesDialectKind::OpenRouter => Arc::new(OpenRouterDialect),
-        ResponsesDialectKind::Qwen => Arc::new(QwenDialect),
+        ResponsesDialectKind::Bailian => Arc::new(BailianDialect),
     }
 }
 
@@ -510,7 +505,7 @@ mod tests {
             }
             assert!(registration.native_task_codecs.is_empty());
         }
-        assert!(ResponsesDialectKind::Qwen
+        assert!(ResponsesDialectKind::Bailian
             .contract()
             .override_points
             .contains(&ResponsesOverridePoint::SessionCacheHeader));
@@ -527,13 +522,13 @@ mod tests {
         registry
             .register_codecs(base_descriptor, base_registration)
             .unwrap();
-        for (descriptor, registration) in [super::super::qwen_media_adapter()] {
+        for (descriptor, registration) in [super::super::bailian_media_adapter()] {
             registry.register_codecs(descriptor, registration).unwrap();
         }
         for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
             registry.register_derived(descriptor, registration).unwrap();
         }
-        for adapter_id in [OPENAI_RESPONSES_ADAPTER_ID, QWEN_RESPONSES_ADAPTER_ID] {
+        for adapter_id in [OPENAI_RESPONSES_ADAPTER_ID, BAILIAN_RESPONSES_ADAPTER_ID] {
             assert!(registry
                 .operation_descriptor(adapter_id, OPENAI_RESPONSES_OPERATION_ID, ApiType::Llm,)
                 .is_ok());
@@ -549,7 +544,10 @@ mod tests {
 
     #[test]
     fn all_dialects_delegate_the_base_responses_contract() {
-        for dialect in [ResponsesDialectKind::OpenRouter, ResponsesDialectKind::Qwen] {
+        for dialect in [
+            ResponsesDialectKind::OpenRouter,
+            ResponsesDialectKind::Bailian,
+        ] {
             let (_, registration) = responses_dialect_adapter(dialect).unwrap();
             let request = registration.operation_codecs[0]
                 .encode(&CodecCall {
@@ -590,7 +588,7 @@ mod tests {
 
     #[tokio::test]
     async fn qwen_normalizes_inline_image_state_and_replays_provider_wire() {
-        let (_, registration) = responses_dialect_adapter(ResponsesDialectKind::Qwen).unwrap();
+        let (_, registration) = responses_dialect_adapter(ResponsesDialectKind::Bailian).unwrap();
         let response = HttpResponse {
             status: reqwest::StatusCode::OK,
             headers: reqwest::header::HeaderMap::new(),
@@ -609,7 +607,7 @@ mod tests {
         };
         let mut qwen_context =
             context("https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1");
-        qwen_context.state_coordinate.adapter_type = QWEN_RESPONSES_ADAPTER_ID.to_owned();
+        qwen_context.state_coordinate.adapter_type = BAILIAN_RESPONSES_ADAPTER_ID.to_owned();
         qwen_context.state_coordinate.origin_provider = "qwen".to_owned();
         crate::protocol::finish_provider_state(
             &mut output.value,
@@ -658,7 +656,10 @@ mod tests {
 
     #[test]
     fn derived_provider_state_round_trips_back_to_the_wire_request() {
-        for dialect in [ResponsesDialectKind::OpenRouter, ResponsesDialectKind::Qwen] {
+        for dialect in [
+            ResponsesDialectKind::OpenRouter,
+            ResponsesDialectKind::Bailian,
+        ] {
             let (_, registration) = responses_dialect_adapter(dialect).unwrap();
             let mut context = context("https://provider.example/v1");
             context.state_coordinate.adapter_type =
@@ -698,12 +699,12 @@ mod tests {
 
     #[test]
     fn qwen_maps_session_cache_to_header_without_leaking_it_to_base_body() {
-        let (_, registration) = responses_dialect_adapter(ResponsesDialectKind::Qwen).unwrap();
+        let (_, registration) = responses_dialect_adapter(ResponsesDialectKind::Bailian).unwrap();
         let request = registration.operation_codecs[0]
             .encode(&CodecCall {
                 api_type: ApiType::Llm,
                 input: &input(BTreeMap::from([(
-                    QWEN_SESSION_CACHE_PARAMETER.to_string(),
+                    BAILIAN_SESSION_CACHE_PARAMETER.to_string(),
                     Value::Bool(true),
                 )])),
                 context: &context(
@@ -712,18 +713,18 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            request.headers[QWEN_SESSION_CACHE_HEADER],
+            request.headers[BAILIAN_SESSION_CACHE_HEADER],
             HeaderValue::from_static("enable")
         );
         let crate::protocol::HttpBody::Json(body) = request.body else {
             panic!("expected JSON request")
         };
-        assert!(body.get(QWEN_SESSION_CACHE_PARAMETER).is_none());
+        assert!(body.get(BAILIAN_SESSION_CACHE_PARAMETER).is_none());
     }
 
     #[test]
     fn qwen_maps_video_mime_to_responses_video_input_without_filename_conventions() {
-        let (_, registration) = responses_dialect_adapter(ResponsesDialectKind::Qwen).unwrap();
+        let (_, registration) = responses_dialect_adapter(ResponsesDialectKind::Bailian).unwrap();
         let input = CodecInput {
             canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest::new(
                 "logical.model",
@@ -785,7 +786,7 @@ mod tests {
     fn provider_parameter_policy_is_not_hardcoded_in_dialects() {
         for (dialect, parameter) in [
             (ResponsesDialectKind::OpenRouter, "store"),
-            (ResponsesDialectKind::Qwen, "background"),
+            (ResponsesDialectKind::Bailian, "background"),
         ] {
             let (_, registration) = responses_dialect_adapter(dialect).unwrap();
             let request = registration.operation_codecs[0]

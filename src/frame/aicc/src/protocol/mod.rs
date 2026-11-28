@@ -23,7 +23,7 @@ pub(crate) mod openrouter_decisions;
 mod openrouter_media;
 mod openrouter_videos;
 mod provider_state;
-mod qwen_media;
+mod bailian_media;
 mod result;
 #[cfg(test)]
 mod review_tests;
@@ -108,7 +108,7 @@ pub(crate) use provider_state::{
     foreign_provider_state_text, StateNamespaceRename,
     provider_state_is_native,
 };
-pub(crate) use qwen_media::qwen_media_adapter;
+pub(crate) use bailian_media::bailian_media_adapter;
 #[cfg(test)]
 pub(crate) use self::{
     claude_messages::CLAUDE_MESSAGES_ADAPTER_ID,

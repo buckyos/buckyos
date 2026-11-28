@@ -16,7 +16,7 @@ test('AI Center exposes the complete catalog and expands multi-currency totals',
 
   await page.getByRole('button', { name: 'Providers', exact: true }).click()
   await page.getByRole('button', { name: 'Add Provider' }).click()
-  for (const provider of ['OpenAI', 'Anthropic Claude', 'Google Gemini', 'fal', 'OpenRouter', 'MiniMax', 'Moonshot Kimi', 'Z.ai GLM', 'DeepSeek', 'Doubao (Volcengine Ark)', 'Qwen（阿里云百炼）']) {
+  for (const provider of ['OpenAI', 'Anthropic Claude', 'Google Gemini', 'fal', 'OpenRouter', 'MiniMax', 'Moonshot Kimi', 'Z.ai GLM', 'DeepSeek', 'Doubao (Volcengine Ark)', '阿里云百炼']) {
     await expect(page.getByRole('button').filter({ has: page.getByText(provider, { exact: true }) })).toBeVisible()
   }
   await expect(page.getByRole('button', { name: /Custom Provider/ })).toHaveCount(0)

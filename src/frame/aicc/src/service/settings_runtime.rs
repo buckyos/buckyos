@@ -1130,7 +1130,7 @@ mod startup_tests {
         for adapter in [
             "doubao-media",
             "fal-queue",
-            "qwen-media",
+            "bailian-media",
             "openrouter-responses",
         ] {
             settings.providers.push(serde_json::from_value(json!({
@@ -1172,7 +1172,7 @@ mod startup_tests {
             for adapter in [
                 "doubao-media",
                 "fal-queue",
-                "qwen-media",
+                "bailian-media",
                 "openrouter-responses",
             ] {
                 let state = &prepared.state.provider_metadata[adapter];

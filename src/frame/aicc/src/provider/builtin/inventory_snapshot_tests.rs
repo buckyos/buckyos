@@ -64,6 +64,7 @@ pub(super) fn sample_model_ids(
     }
     let driver_id = match profile_id {
         "doubao" | "doubao-agent-plan" => "doubao",
+        "bailian" => "qwen",
         other => other,
     };
     for driver in catalog.model_drivers() {

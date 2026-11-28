@@ -2,21 +2,21 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 2,
-  "revision_seq": 6,
-  "catalog_id": "qwen",
+  "revision_seq": 7,
+  "catalog_id": "bailian",
   "providers": [
     {
-      "provider_profile_id": "qwen",
-      "display_name": "Qwen（阿里云百炼）",
+      "provider_profile_id": "bailian",
+      "display_name": "阿里云百炼",
       "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "protocol_adapter_id": "qwen-responses",
+      "protocol_adapter_id": "bailian-responses",
       "extra_protocol_adapters": [
         {"id": "legacy-openai-chat-completions"},
-        {"id": "qwen-media"}
+        {"id": "bailian-media"}
       ],
-      "state_namespace": "qwen",
+      "state_namespace": "bailian",
       "discovery_behavior_id": "standard-models",
-      "provider_rules_id": "qwen",
+      "provider_rules_id": "bailian",
       "credential": { "kind": "bearer" },
       "connection": {
         "region": {

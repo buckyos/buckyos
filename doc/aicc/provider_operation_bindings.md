@@ -4,6 +4,17 @@
 内容由 metadata 与 Codec Registry 的同一 golden 测试校验；修改 Adapter 或 Provider Rules 时必须同步更新。
 
 <!-- BEGIN GENERATED BINDINGS -->
+bailian|bailian-media|image.img2img|dashscope.image_edit
+bailian|bailian-media|image.img2img|dashscope.image_generation
+bailian|bailian-media|image.txt2img|dashscope.image_generation
+bailian|bailian-media|image.txt2img|dashscope.image_synthesis
+bailian|bailian-media|video.generate|dashscope.video_synthesis
+bailian|bailian-responses|llm|responses.create
+bailian|bailian-responses|vision.caption|responses.create
+bailian|bailian-responses|vision.ocr|responses.create
+bailian|legacy-openai-chat-completions|llm|chat.completions.create
+bailian|legacy-openai-chat-completions|vision.caption|chat.completions.create
+bailian|legacy-openai-chat-completions|vision.ocr|chat.completions.create
 claude|claude-messages|llm|messages.create
 claude|claude-messages|vision.caption|messages.create
 claude|claude-messages|vision.ocr|messages.create
@@ -107,17 +118,6 @@ openrouter|openrouter-responses|llm|responses.create
 openrouter|openrouter-responses|vision.caption|responses.create
 openrouter|openrouter-responses|vision.ocr|responses.create
 openrouter|rerank|rerank|rerank.create
-qwen|legacy-openai-chat-completions|llm|chat.completions.create
-qwen|legacy-openai-chat-completions|vision.caption|chat.completions.create
-qwen|legacy-openai-chat-completions|vision.ocr|chat.completions.create
-qwen|qwen-media|image.img2img|dashscope.image_edit
-qwen|qwen-media|image.img2img|dashscope.image_generation
-qwen|qwen-media|image.txt2img|dashscope.image_generation
-qwen|qwen-media|image.txt2img|dashscope.image_synthesis
-qwen|qwen-media|video.generate|dashscope.video_synthesis
-qwen|qwen-responses|llm|responses.create
-qwen|qwen-responses|vision.caption|responses.create
-qwen|qwen-responses|vision.ocr|responses.create
 sn|openai-audio|audio.asr|audio.transcriptions
 sn|openai-audio|audio.tts|audio.speech
 sn|openai-chat-completions|audio.asr|chat.completions.create
@@ -138,7 +138,7 @@ sn|openai-videos|video.generate|videos.create
 typesafe|typesafe-systemone|decision|systemone.evaluate
 <!-- END GENERATED BINDINGS -->
 
-Qwen 的 `responses.create` 委托 `openai-responses` 完成输出解码：若 provider 返回 `image_generation_call.result` 内联数据，基础 codec 必须先将其规范化为结构化 `ResourceRef`；ProviderState 的命名空间 `qwen` 由 Known Provider 的 `state_namespace` 声明，执行层统一改写。结果物化后公开 output 与 ProviderState 中不得残留 base64，回放时再恢复 Qwen/OpenAI-compatible wire 字符串。`qwen-image-3*` 的文生图和图生图都绑定 `dashscope.image_generation`，以 `X-DashScope-Async: enable` 提交到 `/api/v1/services/aigc/image-generation/generation`，再通过 `/api/v1/tasks/{task_id}` 查询状态和结果；官方协议未声明取消端点，因此该 operation 不声明 cancel。旧版 Qwen 与 Wan 的 `dashscope.image_synthesis`、`dashscope.image_edit` 绑定保持独立。DashScope 图片和视频的官方结果是 URL，作为 URL artifact 保留，不属于内联数据泄漏。
+百炼的 `responses.create`（`bailian-responses`）委托 `openai-responses` 完成输出解码：若 provider 返回 `image_generation_call.result` 内联数据，基础 codec 必须先将其规范化为结构化 `ResourceRef`；ProviderState 的命名空间 `qwen` 由 Known Provider 的 `state_namespace` 声明，执行层统一改写。结果物化后公开 output 与 ProviderState 中不得残留 base64，回放时再恢复 Qwen/OpenAI-compatible wire 字符串。`qwen-image-3*` 的文生图和图生图都绑定 `dashscope.image_generation`，以 `X-DashScope-Async: enable` 提交到 `/api/v1/services/aigc/image-generation/generation`，再通过 `/api/v1/tasks/{task_id}` 查询状态和结果；官方协议未声明取消端点，因此该 operation 不声明 cancel。旧版 Qwen 与 Wan 的 `dashscope.image_synthesis`、`dashscope.image_edit` 绑定保持独立。DashScope 图片和视频的官方结果是 URL，作为 URL artifact 保留，不属于内联数据泄漏。
 
 运行时的最终选择还取决于具体模型匹配到的 Provider Rules。本文档只描述所有可执行绑定，
 不表示每个模型都支持这里列出的全部 API type。

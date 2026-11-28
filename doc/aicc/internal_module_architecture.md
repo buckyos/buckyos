@@ -9,7 +9,7 @@
 
 ```text
 OpenAI / Claude / Gemini / fal / OpenRouter / MiniMax
-Kimi / GLM / DeepSeek / 豆包（火山方舟）/ Qwen（阿里云百炼）
+Kimi / GLM / DeepSeek / 豆包（火山方舟）/ 阿里云百炼
 ```
 
 SN 作为扩展 Provider 保留，但不计入本次 11 个首版内置 Provider；它直接使用 OpenAI 族的标准客户端，动态登录只属于 SN 的 Provider 行为（credential runtime），不能进入 OpenAI 基础模块。
@@ -213,7 +213,7 @@ ResolvedProviderCall
 | `legacy-openai-chat-completions` | `openai-chat-completions` | 生态口径：发 `max_tokens`，`reasoning_content` 的解析与回放，响应缺 `object` 不报错，`thinking`、`enable_thinking`、`preserve_thinking`、`prompt_cache_key` 的类型校验；哪家带哪些参数由规则决定 |
 | `legacy-claude-messages` | `claude-messages` | 生态口径：`max_tokens` 可省，temperature 上限 2 |
 | `openrouter-responses` | `openai-responses` | OpenRouter routing 参数、`web_search` 工具改名，以及 `usage.cost` 的 USD 合同 |
-| `qwen-responses` | `openai-responses` | `enable_thinking`、session cache 头、视频输入差异；输出媒体归一化与回放沿用基础 codec |
+| `bailian-responses` | `openai-responses` | session cache 头、视频输入差异；输出媒体归一化与回放沿用基础 codec |
 
 ProviderState 命名空间不再由 dialect 改写，统一由 Known Provider 的 `state_namespace` 给出。Kimi、GLM、MiniMax、豆包、DeepSeek 不再有 dialect：Kimi、GLM 直接用 `legacy-openai-chat-completions`，MiniMax 直接用 `legacy-claude-messages`，豆包、DeepSeek 直接用 `openai-responses`，各家差异写在 Provider Rules 里。
 
@@ -262,7 +262,7 @@ Protocol Adapter 通过 `ProtocolAdapterPlugin` 注册。构建脚本自动扫�
 | GLM | `legacy-openai-chat-completions` + `openai-embeddings`、`openai-images`、`openai-audio`、`glm-video` | 有官方机器接口时 discovery，否则 catalog；不得爬取文档页 |
 | DeepSeek | `openai-responses` | 有官方机器接口时 discovery，否则 catalog；动态价格优先、静态规则 fallback |
 | 豆包 | `openai-responses` + `doubao-media`、`doubao-speech` | `volcengine-ark-models`；可调用模型/接入点由方舟官方 API 或实例配置获得；不限定 `doubao` Model Driver，但只接纳方舟实际返回且在已安装 Model Driver 中可唯一解析的模型；`ep-*` 仍须实例显式给出原厂模型映射 |
-| Qwen | `qwen-responses` + `legacy-openai-chat-completions`（聚合模型）、`qwen-media` | region/workspace 参与 endpoint；DashScope 图片和视频任务使用原生 `/api/v1`；其余事实由官方 API 或 catalog/rules 给出 |
+| 阿里云百炼（`bailian`） | `bailian-responses` + `legacy-openai-chat-completions`（聚合模型）、`bailian-media` | region/workspace 参与 endpoint；DashScope 图片和视频任务使用原生 `/api/v1`；其余事实由官方 API 或 catalog/rules 给出 |
 
 客户端集合由 Known Provider 的 `protocol_adapter_id` 和 `extra_protocol_adapters` 声明，属于可在线更新的 metadata；只有新增或修改客户端本身需要发版本。
 

@@ -7,7 +7,7 @@
 
 ```text
 OpenAI / Claude / Gemini / fal / OpenRouter / MiniMax
-Kimi / GLM / DeepSeek / 豆包（火山方舟）/ Qwen（阿里云百炼）
+Kimi / GLM / DeepSeek / 豆包（火山方舟）/ 阿里云百炼
 ```
 
 模块复用和实现入口以 [internal_module_architecture.md](internal_module_architecture.md) 为准。本文只定义首版覆盖范围和验收边界，不重复协议内部结构。
@@ -42,7 +42,7 @@ SN Provider 是扩展 Provider，不计入本次 11 个首版内置 Provider。S
 | `glm` | `legacy-openai-chat-completions` + OpenAI 族标准客户端、`glm-video` | LLM、多模态、embedding | Bearer API key；可选短期 JWT |
 | `deepseek` | `openai-responses` | LLM、推理、工具调用 | Bearer API key |
 | `doubao` | `openai-responses` + `doubao-media`、`doubao-speech` | LLM、多模态、embedding、image/video | Bearer API key |
-| `qwen` | `qwen-responses -> openai-responses` + `legacy-openai-chat-completions`、`qwen-media` | LLM、多模态、embedding、image/video/audio | Bearer API key |
+| `bailian` | `bailian-responses -> openai-responses` + `legacy-openai-chat-completions`、`bailian-media` | LLM、多模态、embedding、image/video/audio | Bearer API key |
 
 Adapter 箭头表示语义上的子类/派生关系，不强制使用语言继承。没有真实 wire 差异时应直接引用基础 Adapter，删除空派生层。`+` 后面是 Known Provider 的 `extra_protocol_adapters`，由模型规则按 API 类型指向，见 [provider_profile_schema.md](provider_profile_schema.md) §2.1。
 

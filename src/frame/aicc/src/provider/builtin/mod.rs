@@ -168,7 +168,7 @@ pub(crate) use minimax::MINIMAX_PROVIDER_PROFILE_ID;
 pub(crate) use openai::OPENAI_PROVIDER_PROFILE_ID;
 #[cfg(test)]
 pub(crate) use openai_responses_compatible::{
-    DOUBAO_AGENT_PLAN_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID,
+    DOUBAO_AGENT_PLAN_PROFILE_ID, DOUBAO_PROFILE_ID, BAILIAN_PROFILE_ID,
 };
 #[cfg(test)]
 use openrouter::{

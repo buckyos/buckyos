@@ -44,6 +44,12 @@ owner 原话：
 7. **已有的 custom 实例。** 按 breaking change 不迁移，还是用新的探测流程重建一次？
 8. **入口重开之前**，库存构建里的歧义要不要先改成“只去掉这个模型的这个 API 类型，并记下原因”，不让整个实例失败？现在入口关了，只有已有实例会遇到。
 
+## 5.1 本地部署的模型（以 Qwen 为例，11-27 补）
+
+- 本地部署（vLLM、SGLang、Ollama、LM Studio、llama.cpp）都属于自定义 Provider。Model Driver 里的模型事实（上下文、视觉、推理档位）照样适用；平台自己的功能不适用：百炼的 `web_search` 内置工具、`x-dashscope-session-cache`、`input_video`。
+- 现在 `web_search` 记在 Model Driver 里（OpenAI、Claude、Gemini、DeepSeek、Qwen 都是这样），渠道只能用 `remove_features` 去掉。自定义实例没有渠道规则，会把这类平台功能也算进去。探测流程要么探出来，要么默认不给，需要定。
+- 模型 ID 匹配：Hugging Face 写法（`Qwen/Qwen3.8-27B`，vLLM、SGLang 默认用它）能匹配到 `qwen/qwen3.8-27b`；Ollama 写法（`qwen3.8:27b`）匹配不上。是否要为本地常见写法补别名，需要定。
+
 ## 6. 任务草案（§5 定了再细化）
 
 - 客户端描述里加探测声明，按协议族组织标准探测流程。

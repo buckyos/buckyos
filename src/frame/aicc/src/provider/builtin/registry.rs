@@ -788,7 +788,7 @@ mod tests {
                 "minimax",
                 "openai",
                 "openrouter",
-                "qwen",
+                "bailian",
                 "sn",
                 "typesafe",
             ])
@@ -1223,7 +1223,7 @@ mod tests {
                 ApiType::Llm,
             ),
             (
-                "qwen-media",
+                "bailian-media",
                 "dashscope.image_edit",
                 ApiType::ImageImageToImage,
             ),
@@ -1270,7 +1270,7 @@ mod tests {
             ("fal-queue", "queue.submit", ApiType::VideoUpscale),
             ("glm-video", "videos.generate", ApiType::VideoGenerate),
             (
-                "qwen-media",
+                "bailian-media",
                 "dashscope.video_synthesis",
                 ApiType::VideoGenerate,
             ),
@@ -1514,7 +1514,7 @@ mod tests {
         assert_eq!(
             registry
                 .providers
-                .get(QWEN_PROFILE_ID)
+                .get(BAILIAN_PROFILE_ID)
                 .unwrap()
                 .profile
                 .discovery_mode,

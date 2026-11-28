@@ -646,3 +646,11 @@ owner 2026-11-27 的答复，引号里是原话。
 - **打开 OpenRouter 的直接发文档**：删掉 OpenRouter 规则里 22 处 `remove_features: ["document"]`。库存变化：OpenRouter 上 58 个 Claude、Gemini、OpenAI 模型有了 `document` 能力，没有别的差异。
 - **验证**：`cargo test -p aicc -- --test-threads=1` 817 过；wire 快照只有上面一条变化，库存快照的变化只有 `web_search` 和 `document` 两项（逐条去掉这两个字段后与原来一致），发现请求快照不变；Desktop `pnpm check` 通过、相关 Deno 用例 38 过。客户端从 23 个减到 22 个，剩下的方言只有 `qwen-responses`、`openrouter-responses`。
 
+### 9.9 百炼（2026-11-27）
+
+- `qwen-responses` 去掉 `enable_thinking`：百炼官方已标为将废弃、推荐 `reasoning.effort`；内置的 Qwen 规则本来就只用 `reasoning.effort`，`enable_thinking` 只出现在百炼经 Chat Completions 提供的 DeepSeek、GLM、Kimi 变体里（走生态口径 Chat，不受影响）。wire 快照不变，817 过。
+- 百炼的区域已覆盖北京、新加坡、弗吉尼亚、法兰克福、东京、香港和 workspace 域名，没有要补的。
+- 本地部署 Qwen 引出的两点（平台功能记在 Model Driver 里、Ollama 写法的模型 ID 匹配不上）记进 `notepads/aicc-custom-provider-auto-probe-todo.md` §5.1。
+- **Provider 改名 `bailian`**（owner 定：Provider 是百炼，模型名还是 `qwen`）：Known Provider、Provider Rules 的 ID 改为 `bailian`，显示名“阿里云百炼”，`state_namespace` 改为 `bailian`；文件改名为 `bailian.known-provider.json`、`bailian.provider.json`。Model Driver `qwen`（模型事实、`origin_provider`）不变。百炼平台的两个客户端一并改名：`qwen-responses` → `bailian-responses`，`qwen-media` → `bailian-media`（协议族 `bailian`，模块 `protocol/bailian_media.rs`）；operation ID（`dashscope.*`）不变。按改名映射比对，wire、库存、发现请求三组快照的内容都不变（wire 里只有 `provider_profile_id`、客户端 ID 和 provider state 的命名空间换成新名字）。817 过；Desktop 检查和 38 个用例过。已有的 `qwen` 实例要重新添加（不迁移）。
+- **没改**：`test/aicc_test/acceptance` 的基线和合同文件从第一轮起就没同步（还写着 `kimi-chat`、`sn-openai`、`doubao-responses` 等），这次的 `bailian` 也没改；`doc/aicc/maintenance/acceptance/` 的 Provider 列表同样。T1、T1.5、T2 本来就要在真实 Zone 上跑，需要单独整理一遍。
+

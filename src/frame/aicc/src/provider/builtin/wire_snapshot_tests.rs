@@ -123,6 +123,7 @@ fn sample_model_ids(catalog: &CatalogSnapshot, profile_id: &str, rules_id: &str)
     }
     let driver_id = match profile_id {
         "doubao" | "doubao-agent-plan" => "doubao",
+        "bailian" => "qwen",
         other => other,
     };
     for driver in catalog.model_drivers() {

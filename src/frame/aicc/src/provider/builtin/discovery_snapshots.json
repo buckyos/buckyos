@@ -1,4 +1,19 @@
 {
+  "bailian|*|discovery": {
+    "outcome": {
+      "models": 0
+    },
+    "requests": [
+      {
+        "headers": {
+          "accept": "*/*",
+          "authorization": "Bearer ***",
+          "x-request-id": "<id>"
+        },
+        "request": "GET /compatible-mode/v1/models HTTP/1.1"
+      }
+    ]
+  },
   "claude|*|discovery": {
     "outcome": {
       "models": 0
@@ -132,21 +147,6 @@
           "x-request-id": "<id>"
         },
         "request": "GET /api/v1/models?output_modalities=all HTTP/1.1"
-      }
-    ]
-  },
-  "qwen|*|discovery": {
-    "outcome": {
-      "models": 0
-    },
-    "requests": [
-      {
-        "headers": {
-          "accept": "*/*",
-          "authorization": "Bearer ***",
-          "x-request-id": "<id>"
-        },
-        "request": "GET /compatible-mode/v1/models HTTP/1.1"
       }
     ]
   },

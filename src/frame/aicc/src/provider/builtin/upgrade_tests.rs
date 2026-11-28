@@ -332,7 +332,7 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             json!("xhigh"),
         ),
         (
-            "qwen",
+            "bailian",
             "qwen3.8-max-0902",
             "none",
             "/reasoning/effort",
@@ -346,29 +346,29 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             json!("xhigh"),
         ),
         (
-            "qwen",
+            "bailian",
             "qwen3.8-flash",
             "low",
             "/reasoning/effort",
             json!("low"),
         ),
         (
-            "qwen",
+            "bailian",
             "qwen3.7-plus",
             "thinking",
             "/reasoning/effort",
             json!("xhigh"),
         ),
         (
-            "qwen",
+            "bailian",
             "kimi/kimi-k2.8-preview",
             "max",
             "/reasoning_effort",
             json!("max"),
         ),
-        ("qwen", "kimi-k3", "low", "/reasoning_effort", json!("low")),
+        ("bailian", "kimi-k3", "low", "/reasoning_effort", json!("low")),
         (
-            "qwen",
+            "bailian",
             "MiniMax/MiniMax-M3",
             "none",
             "/thinking/type",
@@ -948,11 +948,11 @@ fn qwen_kimi_k3_variants_follow_each_serving_channel() {
     let providers = builtin_provider_registry(&catalog).unwrap();
     let profile = providers
         .profiles()
-        .find(|profile| profile.provider_profile_id == "qwen")
+        .find(|profile| profile.provider_profile_id == "bailian")
         .unwrap();
     let inventory = InventoryBuilder::build(
         profile,
-        &instance(profile, "qwen"),
+        &instance(profile, "bailian"),
         discovery(&[
             "kimi-k2.8-preview",
             "kimi-k3",
@@ -1268,7 +1268,7 @@ fn cn_vendor_models_reviewed_on_2026_11_16_close_the_discovery_to_route_loop() {
     let mut inventories = Vec::new();
     for (profile_id, instance_name, ids, presets) in [
         (
-            "qwen",
+            "bailian",
             "q",
             &["qwen4-max"][..],
             &[("qwen4-max", "qwen4-max", &["none", "low", "high", "xhigh"][..])][..],
@@ -1415,7 +1415,7 @@ fn cn_vendor_models_reviewed_on_2026_11_16_close_the_discovery_to_route_loop() {
     }
     let context = BTreeMap::from([("region".into(), json!("china"))]);
     for (provider, model, input, output, cache) in [
-        ("qwen", "qwen4-max", 1e-5, 3e-5, 5e-7),
+        ("bailian", "qwen4-max", 1e-5, 3e-5, 5e-7),
         ("kimi", "kimi-k3.1-pro-highspeed", 2.6e-5, 1.36e-4, 1.3e-6),
         ("minimax", "MiniMax-M3.1-Flash", 1e-6, 4e-6, 1e-7),
         ("doubao", "doubao-seed-2-1-pro-260915", 6e-6, 3e-5, 1.2e-6),
@@ -1633,7 +1633,7 @@ fn invalid_exact_and_cached_presets_are_rejected_and_unmapped_presets_diagnosed(
     let codecs = providers.codecs();
     let profile = providers
         .profiles()
-        .find(|p| p.provider_profile_id == "qwen")
+        .find(|p| p.provider_profile_id == "bailian")
         .unwrap();
     let inv = InventoryBuilder::build(
         profile,
@@ -2105,7 +2105,7 @@ fn provider_pricing_contains_all_rebased_model_defaults() {
         ("kimi", 6),
         ("minimax", 17),
         ("openai", 34),
-        ("qwen", 96),
+        ("bailian", 96),
     ] {
         assert_eq!(
             catalog
@@ -2649,12 +2649,12 @@ fn qwen_media_protocol_fixtures_resolve_to_routable_inventory() {
     let registry = builtin_provider_registry(&catalog).unwrap();
     let profile = registry
         .profiles()
-        .find(|profile| profile.provider_profile_id == "qwen")
+        .find(|profile| profile.provider_profile_id == "bailian")
         .unwrap();
     let ids = ["wanx2.1-t2i-turbo", "qwen-image-edit", "wan2.6-t2v"];
     let inventory = InventoryBuilder::build(
         profile,
-        &instance(profile, "qwen"),
+        &instance(profile, "bailian"),
         discovery(&[
             "qwen3.8-flash",
             "deepseek-v4-flash",

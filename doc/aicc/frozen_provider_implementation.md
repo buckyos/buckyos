@@ -85,7 +85,7 @@ Beta 2.2 内置 Provider Profile 基线：
 | `glm` | `legacy-openai-chat-completions` | `standard-models` |
 | `deepseek` | `openai-responses` | `standard-models` |
 | `doubao` | `openai-responses` | `volcengine-ark-models` |
-| `qwen` | `qwen-responses` | `standard-models` |
+| `bailian` | `bailian-responses` | `standard-models` |
 | `sn` | `openai-responses` | `sn-models`；支持 API key 与动态登录 |
 | `typesafe` | `typesafe-systemone` | `catalog-only`；别名由 Provider Rules `model_driver_overrides` 映射 |
 | `custom` | 用户显式选择的、对自定义开放的客户端 | `standard-models` 或 configured/static fallback |

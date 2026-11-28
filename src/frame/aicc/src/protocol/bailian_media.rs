@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub(crate) const QWEN_MEDIA_ADAPTER_ID: &str = "qwen-media";
+pub(crate) const BAILIAN_MEDIA_ADAPTER_ID: &str = "bailian-media";
 pub(crate) const QWEN_IMAGE_OPERATION_ID: &str = "dashscope.image_synthesis";
 pub(crate) const QWEN_IMAGE_GENERATION_OPERATION_ID: &str = "dashscope.image_generation";
 pub(crate) const QWEN_IMAGE_EDIT_OPERATION_ID: &str = "dashscope.image_edit";
@@ -30,7 +30,7 @@ pub(crate) const QWEN_VIDEO_OPERATION_ID: &str = "dashscope.video_synthesis";
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
-pub(super) fn qwen_media_registration() -> (Vec<OperationDescriptor>, CodecRegistration) {
+pub(super) fn bailian_media_registration() -> (Vec<OperationDescriptor>, CodecRegistration) {
     let image = task_operation(QWEN_IMAGE_OPERATION_ID, &[ApiType::ImageTextToImage]);
     let image_generation = task_operation_without_cancel(
         QWEN_IMAGE_GENERATION_OPERATION_ID,
@@ -47,12 +47,12 @@ pub(super) fn qwen_media_registration() -> (Vec<OperationDescriptor>, CodecRegis
     .into_iter()
     .map(|(descriptor, api_type)| {
         if descriptor.operation_id == QWEN_IMAGE_GENERATION_OPERATION_ID {
-            Arc::new(QwenImageGenerationTaskCodec {
+            Arc::new(BailianImageGenerationTaskCodec {
                 descriptor,
                 api_type,
             }) as Arc<dyn NativeTaskCodec>
         } else {
-            Arc::new(QwenMediaCodec {
+            Arc::new(BailianMediaCodec {
                 descriptor,
                 api_type,
             }) as Arc<dyn NativeTaskCodec>
@@ -62,7 +62,7 @@ pub(super) fn qwen_media_registration() -> (Vec<OperationDescriptor>, CodecRegis
     (
         vec![image, image_generation.clone(), image_edit.clone(), video],
         CodecRegistration {
-            operation_codecs: vec![Arc::new(QwenImageEditCodec {
+            operation_codecs: vec![Arc::new(BailianImageEditCodec {
                 descriptor: image_edit,
                 api_type: ApiType::ImageImageToImage,
             })],
@@ -71,12 +71,12 @@ pub(super) fn qwen_media_registration() -> (Vec<OperationDescriptor>, CodecRegis
     )
 }
 
-pub(crate) fn qwen_media_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    let (operations, registration) = qwen_media_registration();
+pub(crate) fn bailian_media_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    let (operations, registration) = bailian_media_registration();
     (
         AdapterDescriptor {
-            protocol_family_id: "qwen".to_owned(),
-            protocol_adapter_id: QWEN_MEDIA_ADAPTER_ID.to_owned(),
+            protocol_family_id: "bailian".to_owned(),
+            protocol_adapter_id: BAILIAN_MEDIA_ADAPTER_ID.to_owned(),
             interface_generation: "dashscope-v1".to_owned(),
             base_adapter_id: None,
             status: AdapterStatus::Stable,
@@ -125,13 +125,13 @@ fn immediate_operation(id: &str, api_type: ApiType) -> OperationDescriptor {
 }
 
 #[derive(Clone)]
-struct QwenImageEditCodec {
+struct BailianImageEditCodec {
     descriptor: OperationDescriptor,
     api_type: ApiType,
 }
 
 #[async_trait]
-impl OperationCodec for QwenImageEditCodec {
+impl OperationCodec for BailianImageEditCodec {
     fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
         crate::resource::ResourceInputForm::UrlOrBytes
     }
@@ -286,13 +286,13 @@ fn decode_qwen_image_result(value: &Value) -> ProtocolResultValue<ProtocolOutput
 }
 
 #[derive(Clone)]
-struct QwenImageGenerationTaskCodec {
+struct BailianImageGenerationTaskCodec {
     descriptor: OperationDescriptor,
     api_type: ApiType,
 }
 
 #[async_trait]
-impl NativeTaskCodec for QwenImageGenerationTaskCodec {
+impl NativeTaskCodec for BailianImageGenerationTaskCodec {
     fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
         crate::resource::ResourceInputForm::UrlOrBytes
     }
@@ -405,13 +405,13 @@ impl NativeTaskCodec for QwenImageGenerationTaskCodec {
 }
 
 #[derive(Clone)]
-struct QwenMediaCodec {
+struct BailianMediaCodec {
     descriptor: OperationDescriptor,
     api_type: ApiType,
 }
 
 #[async_trait]
-impl NativeTaskCodec for QwenMediaCodec {
+impl NativeTaskCodec for BailianMediaCodec {
     fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
         // DashScope accepts media by URL; `resource_string` passes it through
         // and only inlines bytes that were supplied as bytes.
@@ -885,7 +885,7 @@ mod tests {
             base_url: "https://ws.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_owned(),
             state_coordinate: ProviderStateCoordinate {
                 provider_profile_id: "qwen".to_owned(),
-                adapter_type: QWEN_MEDIA_ADAPTER_ID.to_owned(),
+                adapter_type: BAILIAN_MEDIA_ADAPTER_ID.to_owned(),
                 origin_provider: "qwen".to_owned(),
                 origin_model: "model".to_owned(),
             },
@@ -901,7 +901,7 @@ mod tests {
 
     #[test]
     fn uses_native_tasks_for_qwen_image_3_generation_and_editing() {
-        let (descriptor, registration) = qwen_media_adapter();
+        let (descriptor, registration) = bailian_media_adapter();
         let mut registry = CodecRegistry::default();
         registry.register_codecs(descriptor, registration).unwrap();
         let public_context = context();
@@ -928,7 +928,7 @@ mod tests {
         };
         let request = registry
             .encode_native(
-                QWEN_MEDIA_ADAPTER_ID,
+                BAILIAN_MEDIA_ADAPTER_ID,
                 QWEN_IMAGE_GENERATION_OPERATION_ID,
                 ApiType::ImageImageToImage,
                 &input,
@@ -970,7 +970,7 @@ mod tests {
         };
         let protected_request = registry
             .encode_native(
-                QWEN_MEDIA_ADAPTER_ID,
+                BAILIAN_MEDIA_ADAPTER_ID,
                 QWEN_IMAGE_GENERATION_OPERATION_ID,
                 ApiType::ImageImageToImage,
                 &protected_input,
@@ -1013,7 +1013,7 @@ mod tests {
         };
         let request = registry
             .encode_native(
-                QWEN_MEDIA_ADAPTER_ID,
+                BAILIAN_MEDIA_ADAPTER_ID,
                 QWEN_VIDEO_OPERATION_ID,
                 ApiType::VideoGenerate,
                 &input,

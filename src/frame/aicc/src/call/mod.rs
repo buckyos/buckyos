@@ -2977,7 +2977,7 @@ mod tests {
                 "minimax",
                 "openai",
                 "openrouter",
-                "qwen",
+                "bailian",
                 "sn",
                 "typesafe",
             ])

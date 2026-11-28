@@ -38,13 +38,13 @@ AICC_UPDATE_CLIENT_CATALOG_DOC=1 cargo test -p aicc protocol_client_catalog_docu
 | `legacy-openai-chat-completions` | A 标准，生态口径 | OpenAI 兼容生态 | `openai` | `openai-chat-completions` | 是 | `chat.completions.create` |
 | `legacy-claude-messages` | A 标准，生态口径 | Anthropic 兼容生态 | `claude` | `claude-messages` | 是 | `messages.create` |
 | `gemini-interactions` | B 官方独有 | Google | `gemini` | — | 否 | `interactions.background`<br>`interactions.create` |
-| `qwen-responses` | 方言 | 阿里云百炼 | `openai` | `openai-responses` | 否 | `responses.create` |
+| `bailian-responses` | 方言 | 阿里云百炼 | `openai` | `openai-responses` | 否 | `responses.create` |
 | `openrouter-responses` | 方言 | OpenRouter | `openai` | `openai-responses` | 否 | `responses.create` |
 | `fal-queue` | C 原生 | fal | `fal` | — | 否 | `queue.submit` |
 | `minimax-media` | C 原生 | MiniMax | `minimax` | — | 否 | `image_generation.create`<br>`music_generation.create`<br>`speech_to_text.create`<br>`t2a.create`<br>`video_generation.create`<br>`video_generation.v2.create` |
 | `doubao-media` | C 原生 | 火山方舟 | `doubao` | — | 否 | `ark.contents.generate`<br>`ark.embeddings.multimodal`<br>`ark.images.generate` |
 | `doubao-speech` | C 原生 | 豆包语音 | `doubao` | — | 否 | `asr.recognize.flash`<br>`asr.recognize.idle.submit`<br>`asr.recognize.submit`<br>`tts.unidirectional` |
-| `qwen-media` | C 原生 | 阿里云百炼 | `qwen` | — | 否 | `dashscope.image_edit`<br>`dashscope.image_generation`<br>`dashscope.image_synthesis`<br>`dashscope.video_synthesis` |
+| `bailian-media` | C 原生 | 阿里云百炼 | `bailian` | — | 否 | `dashscope.image_edit`<br>`dashscope.image_generation`<br>`dashscope.image_synthesis`<br>`dashscope.video_synthesis` |
 | `glm-video` | C 原生 | 智谱 | `glm` | — | 否 | `videos.generate` |
 | `openrouter-native` | C 原生 | OpenRouter | `openrouter` | — | 否 | `audio.speech`<br>`chat.completions.create`<br>`decisions.create`<br>`images.generate`<br>`videos.create` |
 | `typesafe-systemone` | C 原生 | TypeSafe | `typesafe-systemone` | — | 否 | `systemone.evaluate` |
@@ -52,9 +52,9 @@ AICC_UPDATE_CLIENT_CATALOG_DOC=1 cargo test -p aicc protocol_client_catalog_docu
 
 ## 方言的残余差异
 
-### `qwen-responses`
+### `bailian-responses`
 
-百炼 Responses 兼容接口的差异（2026-11-27 按官方文档核对，都仍受支持）：`enable_thinking` 放进请求体（官方已标为将废弃，推荐 `reasoning.effort`）；`session_cache` 参数改成 `x-dashscope-session-cache` 请求头；视频输入改写成 `input_video`（官方只支持公网 URL，且只有 `qwen3.8-omni-flash`）。`web_search` 不在客户端里处理：官方列出的 Qwen4-Max、Qwen3.8、Qwen3.7、Qwen3.5 系列在 Model Driver 里声明了这项能力。
+百炼 Responses 兼容接口的差异（2026-11-27 按官方文档核对，都仍受支持）：`session_cache` 参数改成 `x-dashscope-session-cache` 请求头；视频输入改写成 `input_video`（官方只支持公网 URL，且只有 `qwen3.8-omni-flash`）。思考开关用标准的 `reasoning.effort`，官方已标为将废弃的 `enable_thinking` 不再支持。`web_search` 不在客户端里处理：官方列出的 Qwen4-Max、Qwen3.8、Qwen3.7、Qwen3.5 系列在 Model Driver 里声明了这项能力。
 
 ### `openrouter-responses`
 

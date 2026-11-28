@@ -3,7 +3,7 @@ use crate::protocol::{
     gemini_generate_content_adapter, gemini_interactions_adapter, glm_video_adapter, minimax_media_adapter,
     openai_audio_adapter, openai_chat_completions_adapter, openai_embeddings_adapter,
     openai_images_adapter, openai_responses_adapter, openai_videos_adapter,
-    openrouter_native_adapter, qwen_media_adapter, rerank_adapter, CodecRegistry, ProtocolAdapterPlugin,
+    openrouter_native_adapter, bailian_media_adapter, rerank_adapter, CodecRegistry, ProtocolAdapterPlugin,
     ProtocolResultValue,
 };
 
@@ -26,7 +26,7 @@ impl ProtocolAdapterPlugin for Plugin {
             minimax_media_adapter(),
             doubao_media_adapter(),
             doubao_speech_adapter(),
-            qwen_media_adapter(),
+            bailian_media_adapter(),
             openrouter_native_adapter(),
             rerank_adapter(),
         ] {
